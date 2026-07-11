@@ -1,0 +1,26 @@
+{
+  "name": "openhorizon",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n client,server \"npm:dev:client\" \"npm:dev:server\"",
+    "dev:client": "vite",
+    "dev:server": "node server/index.mjs",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "validate": "vitest run tests/validate --passWithNoTests"
+  },
+  "dependencies": {
+    "express": "^4.19.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/three": "^0.180.0",
+    "concurrently": "^9.0.0",
+    "typescript": "^5.6.0",
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
+  }
+}

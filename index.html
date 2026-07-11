@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenHorizon</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+      #app { position: fixed; inset: 0; }
+      #app canvas { display: block; }
+      #hud {
+        position: fixed; top: 8px; left: 8px; z-index: 10;
+        color: #aef; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+        background: rgba(0, 8, 16, 0.55); padding: 8px 11px; border-radius: 6px;
+        white-space: pre; pointer-events: none; user-select: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
