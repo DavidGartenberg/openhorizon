@@ -1,20 +1,33 @@
 /**
- * Debug HUD: FPS, frame time, sim clock, sim rate, camera state, sun angle.
- * Also exposes `window.__oh` so automated browser verification can read the
- * same numbers the user sees.
+ * Debug HUD: flight data + performance. Every number is read from the
+ * simulation state — nothing is synthesized for display (§1). Exposes
+ * `window.__oh` for automated browser verification.
  */
+import type { FlightData } from '../sim/aircraft'
 
 export interface HudStats {
   simDate: Date
   simRate: number
-  cameraAltM: number
-  cameraSpeedMs: number
-  sunElevationDeg: number
+  flight: FlightData
+  throttlePct: number
+  trimPct: number
+  cameraMode: string
 }
 
 declare global {
   interface Window {
-    __oh?: { fps: number; frameMs: number; ticks: number }
+    __oh?: {
+      fps: number
+      frameMs: number
+      ticks: number
+      ias: number
+      alt: number
+      vs: number
+      rpm: number
+      aoa: number
+      stall: number
+      onGround: boolean
+    }
   }
 }
 
@@ -29,29 +42,47 @@ export class Hud {
     const el = document.getElementById('hud')
     if (!el) throw new Error('missing #hud element')
     this.el = el
-    window.__oh = { fps: 0, frameMs: 0, ticks: 0 }
   }
 
   update(stats: HudStats, ticks: number): void {
     this.frames += 1
     const now = performance.now()
     const windowMs = now - this.windowStart
-    if (windowMs >= 500) {
-      this.fps = (this.frames * 1000) / windowMs
-      this.frameMs = windowMs / this.frames
-      this.frames = 0
-      this.windowStart = now
-      window.__oh = { fps: this.fps, frameMs: this.frameMs, ticks }
+    if (windowMs < 250) return
+    this.fps = (this.frames * 1000) / windowMs
+    this.frameMs = windowMs / this.frames
+    this.frames = 0
+    this.windowStart = now
 
-      const rate = stats.simRate === 0 ? 'PAUSED' : `${stats.simRate}x`
-      this.el.textContent =
-        `OpenHorizon — Phase 0\n` +
-        `${this.fps.toFixed(0)} fps  (${this.frameMs.toFixed(1)} ms)\n` +
-        `sim ${formatUTC(stats.simDate)}  [${rate}]\n` +
-        `sun ${stats.sunElevationDeg >= 0 ? '+' : ''}${stats.sunElevationDeg.toFixed(1)}°\n` +
-        `cam ${stats.cameraAltM.toFixed(0)} m  spd ${stats.cameraSpeedMs.toFixed(0)} m/s\n` +
-        `drag look · WASD/RF move · wheel spd · Space pause · 1/2/3 rate · [ ] time`
+    const f = stats.flight
+    window.__oh = {
+      fps: this.fps,
+      frameMs: this.frameMs,
+      ticks,
+      ias: f.kias,
+      alt: f.altitudeFt,
+      vs: f.verticalSpeedFpm,
+      rpm: f.rpm,
+      aoa: f.alphaDeg,
+      stall: f.stallFraction,
+      onGround: f.onGround,
     }
+
+    const rate = stats.simRate === 0 ? 'PAUSED' : `${stats.simRate}x`
+    const stallWarn = f.stallFraction > 0.35 ? '  ⚠ STALL' : ''
+    this.el.textContent =
+      `OpenHorizon — Phase 1 · C172S\n` +
+      `IAS ${f.kias.toFixed(0).padStart(3)} kt   ALT ${f.altitudeFt.toFixed(0).padStart(5)} ft   ` +
+      `VS ${f.verticalSpeedFpm >= 0 ? '+' : ''}${f.verticalSpeedFpm.toFixed(0)} fpm\n` +
+      `HDG ${f.headingDeg.toFixed(0).padStart(3)}°   RPM ${f.rpm.toFixed(0)}   ` +
+      `FF ${f.fuelFlowGph.toFixed(1)} gph${stallWarn}\n` +
+      `THR ${(stats.throttlePct * 100).toFixed(0)}%   FLAPS ${f.flapsDeg.toFixed(0)}°   ` +
+      `TRIM ${stats.trimPct >= 0 ? '+' : ''}${(stats.trimPct * 100).toFixed(0)}%   ` +
+      `AoA ${f.alphaDeg.toFixed(1)}°   ${f.loadFactorG.toFixed(1)}g` +
+      `${f.onGround ? '   [GND]' : ''}\n` +
+      `${this.fps.toFixed(0)} fps · sim ${formatUTC(stats.simDate)} [${rate}] · cam ${stats.cameraMode}\n` +
+      `↑↓←→ fly · A/D rudder · W/S throttle · F/G flaps · ,/. trim · B brakes\n` +
+      `C camera · R reset · Space pause · 1/2/3 rate · [ ] time of day`
   }
 }
 

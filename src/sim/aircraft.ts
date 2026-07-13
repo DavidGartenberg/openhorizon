@@ -1,0 +1,268 @@
+/**
+ * The aircraft (§5): 6-DOF rigid body integrating aero + propulsion + gear +
+ * gravity at the fixed timestep. Body axes x fwd / y right / z down; world is
+ * local flat NED for Phase 1 (geodetic truth state arrives with Phase 2).
+ * Zero heap allocation in step() — all scratch preallocated.
+ */
+import { C172S } from './aircraft/c172s'
+import { computeAero, makeAeroOutput, type AeroInput } from './aero'
+import { stepPropulsion, makePropulsionState, type PropulsionState } from './propulsion'
+import { computeGear, makeGearOutput, type GearInput } from './gear'
+import { isa, casFromTas, kiasFromKcas, G, KT, FT, type AirState } from './atmosphere'
+import {
+  v3, q4, v3set, v3copy, v3cross, qrotate, qrotateInv, qintegrate, qfromEuler,
+  qtoEuler, clamp, type Euler,
+} from '../math/vec'
+
+const P = C172S
+
+export interface Controls {
+  /** Stick/yoke: +1 = full aft (nose up), -1 = full forward. */
+  pitch: number
+  /** +1 = full right roll. */
+  roll: number
+  /** +1 = right pedal. */
+  yaw: number
+  throttle: number // [0, 1]
+  mixture: number // [0, 1]
+  flapsIndex: number // 0..3 → 0/10/20/30°
+  brakeLeft: number
+  brakeRight: number
+  /** Elevator trim, [-1, 1] → ±trimMaxRad. */
+  trim: number
+}
+
+export interface FlightData {
+  kias: number
+  kcas: number
+  ktas: number
+  groundSpeedKt: number
+  altitudeFt: number
+  verticalSpeedFpm: number
+  headingDeg: number
+  pitchDeg: number
+  rollDeg: number
+  alphaDeg: number
+  betaDeg: number
+  rpm: number
+  fuelFlowGph: number
+  loadFactorG: number
+  stallFraction: number
+  onGround: boolean
+  flapsDeg: number
+  shaftPowerW: number
+  thrustN: number
+}
+
+export class Aircraft {
+  // ---- state ----
+  readonly posNed = v3() // m, z down (altitude = -z)
+  readonly velBody = v3() // u, v, w m/s
+  readonly quat = q4() // body→NED
+  readonly rates = v3() // p, q, r rad/s
+  readonly prop: PropulsionState = makePropulsionState()
+  fuelKg: number = P.fuelCapacityKg
+  payloadKg = 250 // pilot + pax + bags (W&B UI in Phase 8)
+  flapsDeg = 0
+
+  readonly controls: Controls = {
+    pitch: 0, roll: 0, yaw: 0, throttle: 0, mixture: 1,
+    flapsIndex: 0, brakeLeft: 0, brakeRight: 0, trim: 0,
+  }
+
+  /** Extra wind in NED (from WindModel), applied as air-mass motion. */
+  readonly windNed = v3()
+
+  readonly data: FlightData = {
+    kias: 0, kcas: 0, ktas: 0, groundSpeedKt: 0, altitudeFt: 0,
+    verticalSpeedFpm: 0, headingDeg: 0, pitchDeg: 0, rollDeg: 0,
+    alphaDeg: 0, betaDeg: 0, rpm: 0, fuelFlowGph: 0, loadFactorG: 1,
+    stallFraction: 0, onGround: false, flapsDeg: 0, shaftPowerW: 0, thrustN: 0,
+  }
+
+  // ---- scratch (no allocation in step) ----
+  private readonly air: AirState = isa(0)
+  private readonly velNed = v3()
+  private readonly windBody = v3()
+  private readonly vAirBody = v3()
+  private readonly force = v3()
+  private readonly moment = v3()
+  private readonly gravBody = v3()
+  private readonly coriolis = v3()
+  private readonly euler: Euler = { yaw: 0, pitch: 0, roll: 0 }
+  private readonly aeroOut = makeAeroOutput()
+  private readonly gearOut = makeGearOutput()
+  private readonly gearIn: GearInput = {
+    posNed: this.posNed, velNed: this.velNed, quat: this.quat, rates: this.rates,
+    rudder: 0, brakeLeft: 0, brakeRight: 0, groundZ: 0,
+  }
+  private readonly aeroIn: AeroInput = {
+    rho: 1.225, vAir: 0, alpha: 0, beta: 0, alphaDot: 0, p: 0, q: 0, r: 0,
+    elevatorRad: 0, aileronRad: 0, rudderRad: 0, flapsDeg: 0,
+    thrustN: 0, propTorqueNm: 0, heightAglM: 0,
+  }
+  private alphaPrev = 0
+  private alphaDotFilt = 0
+
+  get massKg(): number {
+    return P.emptyMassKg + this.fuelKg + this.payloadKg
+  }
+
+  /** Place the aircraft on the ground at rest, heading ψ (rad). */
+  spawnOnGround(north: number, east: number, headingRad: number): void {
+    qfromEuler(this.quat, headingRad, 0.03, 0)
+    v3set(this.posNed, north, east, -P.gear.mainL.z + 0.07) // settle onto struts
+    v3set(this.velBody, 0, 0, 0)
+    v3set(this.rates, 0, 0, 0)
+    this.prop.omegaRadS = (700 * Math.PI) / 30
+  }
+
+  step(dt: number): void {
+    const c = this.controls
+    const m = this.massKg
+    const altM = -this.posNed.z
+    isa(altM, this.air)
+    const rho = this.air.densityKgM3
+
+    // Flap actuator.
+    const flapTarget = P.flapDetentsDeg[clamp(c.flapsIndex, 0, 3)]!
+    const dFlap = clamp(flapTarget - this.flapsDeg, -P.flapRateDegS * dt, P.flapRateDegS * dt)
+    this.flapsDeg += dFlap
+
+    // Air-relative velocity in body frame.
+    qrotateInv(this.windBody, this.quat, this.windNed)
+    v3set(
+      this.vAirBody,
+      this.velBody.x - this.windBody.x,
+      this.velBody.y - this.windBody.y,
+      this.velBody.z - this.windBody.z,
+    )
+    const vAir = Math.max(Math.hypot(this.vAirBody.x, this.vAirBody.y, this.vAirBody.z), 0.001)
+    const alpha = Math.atan2(this.vAirBody.z, Math.max(this.vAirBody.x, 0.5))
+    const beta = Math.asin(clamp(this.vAirBody.y / vAir, -1, 1))
+
+    // Filtered alpha-dot (downwash lag terms).
+    const alphaDotRaw = (alpha - this.alphaPrev) / dt
+    this.alphaDotFilt += clamp(alphaDotRaw - this.alphaDotFilt, -50 * dt, 50 * dt)
+    this.alphaPrev = alpha
+
+    // ---- propulsion ----
+    stepPropulsion(
+      this.prop, dt, c.throttle, c.mixture, rho,
+      Math.max(this.vAirBody.x, 0), this.fuelKg > 0.5,
+    )
+    this.fuelKg = Math.max(this.fuelKg - this.prop.fuelFlowKgS * dt, 0)
+
+    // ---- aero ----
+    const ai = this.aeroIn
+    ai.rho = rho
+    ai.vAir = vAir
+    ai.alpha = alpha
+    ai.beta = beta
+    ai.alphaDot = this.alphaDotFilt
+    ai.p = this.rates.x
+    ai.q = this.rates.y
+    ai.r = this.rates.z
+    ai.elevatorRad = clamp(-c.pitch * P.elevatorMaxRad - c.trim * P.trimMaxRad, -P.elevatorMaxRad, P.elevatorMaxRad)
+    ai.aileronRad = c.roll * P.aileronMaxRad
+    // Convention bridge: +input = right pedal = nose right. The aero
+    // derivatives use Roskam's +δr = trailing-edge-left (nose left), so the
+    // aerodynamic rudder angle is the negative of the pilot input.
+    ai.rudderRad = -c.yaw * P.rudderMaxRad
+    ai.flapsDeg = this.flapsDeg
+    ai.thrustN = this.prop.thrustN
+    ai.propTorqueNm = this.prop.torqueNm
+    ai.heightAglM = altM // flat world: AGL = MSL until Phase 2 terrain
+    computeAero(ai, this.aeroOut)
+
+    v3copy(this.force, this.aeroOut.force)
+    this.force.x += this.prop.thrustN
+    v3copy(this.moment, this.aeroOut.moment)
+
+    // ---- gear ----
+    qrotate(this.velNed, this.quat, this.velBody)
+    this.gearIn.rudder = c.yaw
+    this.gearIn.brakeLeft = c.brakeLeft
+    this.gearIn.brakeRight = c.brakeRight
+    computeGear(this.gearIn, this.gearOut)
+    this.force.x += this.gearOut.force.x
+    this.force.y += this.gearOut.force.y
+    this.force.z += this.gearOut.force.z
+    this.moment.x += this.gearOut.moment.x
+    this.moment.y += this.gearOut.moment.y
+    this.moment.z += this.gearOut.moment.z
+
+    // ---- gravity ----
+    qrotateInv(this.gravBody, this.quat, v3set(this.windBody, 0, 0, m * G))
+    // (windBody reused as scratch — safe, no longer needed this step)
+
+    // ---- integrate (semi-implicit) ----
+    // Load factor before adding gravity: nz from non-gravitational forces.
+    this.data.loadFactorG = -(this.force.z / m) / G
+
+    v3cross(this.coriolis, this.rates, this.velBody)
+    this.velBody.x += ((this.force.x + this.gravBody.x) / m - this.coriolis.x) * dt
+    this.velBody.y += ((this.force.y + this.gravBody.y) / m - this.coriolis.y) * dt
+    this.velBody.z += ((this.force.z + this.gravBody.z) / m - this.coriolis.z) * dt
+
+    const massRatio = m / P.mtowKg
+    const ixx = P.inertiaMtow.ixx * massRatio
+    const iyy = P.inertiaMtow.iyy * massRatio
+    const izz = P.inertiaMtow.izz * massRatio
+    const { x: p, y: q, z: r } = this.rates
+    this.rates.x += ((this.moment.x - (izz - iyy) * q * r) / ixx) * dt
+    this.rates.y += ((this.moment.y - (ixx - izz) * p * r) / iyy) * dt
+    this.rates.z += ((this.moment.z - (iyy - ixx) * p * q) / izz) * dt
+
+    qintegrate(this.quat, this.rates, dt)
+    qrotate(this.velNed, this.quat, this.velBody)
+    this.posNed.x += this.velNed.x * dt
+    this.posNed.y += this.velNed.y * dt
+    this.posNed.z += this.velNed.z * dt
+
+    this.updateFlightData(vAir, alpha, beta, rho)
+  }
+
+  private updateFlightData(vAir: number, alpha: number, beta: number, rho: number): void {
+    const d = this.data
+    const kcas = casFromTas(vAir, rho) / KT
+    d.ktas = vAir / KT
+    d.kcas = kcas
+    d.kias = Math.max(kiasFromKcas(kcas, this.flapsDeg), 0)
+    d.groundSpeedKt = Math.hypot(this.velNed.x, this.velNed.y) / KT
+    d.altitudeFt = -this.posNed.z / FT
+    d.verticalSpeedFpm = (-this.velNed.z / FT) * 60
+    qtoEuler(this.euler, this.quat)
+    d.headingDeg = ((this.euler.yaw * 180) / Math.PI + 360) % 360
+    d.pitchDeg = (this.euler.pitch * 180) / Math.PI
+    d.rollDeg = (this.euler.roll * 180) / Math.PI
+    d.alphaDeg = (alpha * 180) / Math.PI
+    d.betaDeg = (beta * 180) / Math.PI
+    d.rpm = this.prop.rpm
+    d.fuelFlowGph = (this.prop.fuelFlowKgS / 2.72155) * 3600 // kg/s → USG/hr avgas
+    d.stallFraction = this.aeroOut.stallFraction
+    d.onGround = this.gearOut.onGround
+    d.flapsDeg = this.flapsDeg
+    d.shaftPowerW = this.prop.shaftPowerW
+    d.thrustN = this.prop.thrustN
+  }
+
+  /** Set full state for a trimmed flight condition (used by trim/tests). */
+  applyTrimState(
+    tasMs: number, alphaRad: number, altM: number, headingRad: number,
+    gammaRad: number, elevatorTrimRad: number, throttle: number, rpm: number,
+  ): void {
+    qfromEuler(this.quat, headingRad, alphaRad + gammaRad, 0)
+    v3set(this.velBody, tasMs * Math.cos(alphaRad), 0, tasMs * Math.sin(alphaRad))
+    v3set(this.posNed, 0, 0, -altM)
+    v3set(this.rates, 0, 0, 0)
+    this.controls.throttle = throttle
+    this.controls.trim = clamp(-elevatorTrimRad / P.trimMaxRad, -1, 1)
+    this.controls.pitch = clamp(
+      -(elevatorTrimRad + this.controls.trim * P.trimMaxRad) / P.elevatorMaxRad, -1, 1,
+    )
+    this.prop.omegaRadS = (rpm * Math.PI) / 30
+    this.alphaPrev = alphaRad
+    this.alphaDotFilt = 0
+  }
+}
