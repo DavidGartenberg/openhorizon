@@ -94,6 +94,7 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
     aircraft.posNed.y = e
   }
   aircraft.controls.brakeLeft = aircraft.controls.brakeRight = 0
+  setDaytimeAt(ap.lo)
   spawnDesc = `${ap.i} ${rwyIdent ?? ''}${onFinal ? ' final' : ''}`.trim()
   tiles.update(aircraft.posNed.x, aircraft.posNed.y)
   airports.updateVisuals(frame.anchor.lat, frame.anchor.lon)
@@ -139,6 +140,16 @@ function shapeAxis(current: number, held: number, dt: number, attack = 2.2, rece
 
 const baseDate = new Date()
 let scrubSeconds = 0
+
+/** Default the clock to pleasant daylight (~10:00 local solar time) at the
+ *  spawn longitude; the real/custom time-of-day picker is Phase 8 (§17).
+ *  The [ ] scrub keys still move time freely. */
+function setDaytimeAt(lonDeg: number): void {
+  const targetUtcHour = (10 - lonDeg / 15 + 24) % 24
+  const target = new Date(baseDate)
+  target.setUTCHours(Math.floor(targetUtcHour), Math.round((targetUtcHour % 1) * 60), 0, 0)
+  scrubSeconds = (target.getTime() - baseDate.getTime()) / 1000 - loop.simTime
+}
 let lastFrame = performance.now()
 let lastVisualUpdate = 0
 
