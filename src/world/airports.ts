@@ -145,11 +145,23 @@ export class Airports {
       const mLon = mLat * Math.cos((ap.la * Math.PI) / 180)
       const cx = (((r.lo1 + r.lo2) / 2 - ap.lo) * mLon)
       const cy = (((r.la1 + r.la2) / 2 - ap.la) * mLat)
-      const elevM = ((r.e1 + r.e2) / 2) * FT
-      const strip = new THREE.Mesh(new THREE.PlaneGeometry(widM, lenM), r.s === 0 ? ASPHALT : TURF)
+      const e1M = r.e1 * FT
+      const e2M = r.e2 * FT
+      const elevM = (e1M + e2M) / 2
+      const elevAt = (t: number) => e1M + (t + 0.5) * (e2M - e1M) // t ∈ [-0.5, 0.5]
+      // Slope the strip to match the physics flatten plane (real runways
+      // have grade — KHAF is 23 ft end to end; a flat slab buries the plane).
+      const stripGeo = new THREE.PlaneGeometry(widM, lenM, 1, 1)
+      const pos = stripGeo.attributes.position!
+      for (let v = 0; v < pos.count; v++) {
+        const t = pos.getY(v) / lenM // ±0.5 along length
+        pos.setZ(v, elevAt(t) - elevM)
+      }
+      stripGeo.computeVertexNormals()
+      const strip = new THREE.Mesh(stripGeo, r.s === 0 ? ASPHALT : TURF)
       strip.rotation.x = -Math.PI / 2
       strip.rotation.z = -hdg
-      strip.position.set(cx, elevM + 0.25, -cy)
+      strip.position.set(cx, elevM + 0.06, -cy)
       strip.renderOrder = 20
       group.add(strip)
       if (r.s === 0) {
@@ -162,7 +174,7 @@ export class Airports {
           const t = (k + 0.5) / nDash - 0.5
           m4.copy(rotM).setPosition(
             cx + Math.sin(hdg) * t * lenM,
-            elevM + 0.32,
+            elevAt(t) + 0.14,
             -(cy + Math.cos(hdg) * t * lenM),
           )
           dashes.setMatrixAt(k, m4)
@@ -181,7 +193,7 @@ export class Airports {
           for (const side of [-1, 1]) {
             m4.makeTranslation(
               cx + Math.sin(hdg) * t * lenM + Math.cos(hdg) * side * (widM / 2 + 1.5),
-              elevM + 0.5,
+              elevAt(t) + 0.55,
               -(cy + Math.cos(hdg) * t * lenM) + Math.sin(hdg) * side * (widM / 2 + 1.5),
             )
             lights.setMatrixAt(k++, m4)
