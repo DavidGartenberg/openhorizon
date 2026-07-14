@@ -5,6 +5,8 @@
  */
 
 export class Input {
+  /** When false (e.g. a text box has focus), key events are ignored. */
+  enabled = true
   private held = new Set<string>()
   private pressedSinceLastFrame = new Set<string>()
   private dragging = false
@@ -14,6 +16,7 @@ export class Input {
 
   constructor(target: HTMLElement) {
     window.addEventListener('keydown', (e) => {
+      if (!this.enabled) return
       if (!e.repeat) this.pressedSinceLastFrame.add(e.code)
       this.held.add(e.code)
     })

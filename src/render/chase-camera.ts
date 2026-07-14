@@ -14,6 +14,12 @@ export class ChaseCamera {
     private height = 3.8,
   ) {}
 
+  /** Shift internal smoothed state after a floating-origin rebase. */
+  shiftWorld(dxRender: number, dzRender: number): void {
+    this.smoothedTarget.x += dxRender
+    this.smoothedTarget.z += dzRender
+  }
+
   update(dt: number, aircraftPos: THREE.Vector3, headingRad: number): void {
     // Behind the aircraft along its heading (render: north = -z).
     const hx = Math.sin(headingRad) // east component of heading

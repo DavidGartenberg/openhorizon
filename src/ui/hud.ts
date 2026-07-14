@@ -12,6 +12,10 @@ export interface HudStats {
   throttlePct: number
   trimPct: number
   cameraMode: string
+  tilesReady: number
+  spawnDesc: string
+  lat: number
+  lon: number
 }
 
 declare global {
@@ -71,8 +75,9 @@ export class Hud {
     const rate = stats.simRate === 0 ? 'PAUSED' : `${stats.simRate}x`
     const stallWarn = f.stallFraction > 0.35 ? '  ⚠ STALL' : ''
     this.el.textContent =
-      `OpenHorizon — Phase 1 · C172S\n` +
+      `OpenHorizon — Phase 2 · C172S · ${stats.spawnDesc}\n` +
       `IAS ${f.kias.toFixed(0).padStart(3)} kt   ALT ${f.altitudeFt.toFixed(0).padStart(5)} ft   ` +
+      `AGL ${f.aglFt.toFixed(0).padStart(5)} ft   ` +
       `VS ${f.verticalSpeedFpm >= 0 ? '+' : ''}${f.verticalSpeedFpm.toFixed(0)} fpm\n` +
       `HDG ${f.headingDeg.toFixed(0).padStart(3)}°   RPM ${f.rpm.toFixed(0)}   ` +
       `FF ${f.fuelFlowGph.toFixed(1)} gph${stallWarn}\n` +
@@ -80,9 +85,10 @@ export class Hud {
       `TRIM ${stats.trimPct >= 0 ? '+' : ''}${(stats.trimPct * 100).toFixed(0)}%   ` +
       `AoA ${f.alphaDeg.toFixed(1)}°   ${f.loadFactorG.toFixed(1)}g` +
       `${f.onGround ? '   [GND]' : ''}\n` +
+      `${stats.lat.toFixed(4)}, ${stats.lon.toFixed(4)} · tiles ${stats.tilesReady}\n` +
       `${this.fps.toFixed(0)} fps · sim ${formatUTC(stats.simDate)} [${rate}] · cam ${stats.cameraMode}\n` +
       `↑↓←→ fly · A/D rudder · W/S throttle · F/G flaps · ,/. trim · B brakes\n` +
-      `C camera · R reset · Space pause · 1/2/3 rate · [ ] time of day`
+      `/ airport search · C camera · R reset · Space pause · 1/2/3 rate · [ ] time`
   }
 }
 

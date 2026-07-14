@@ -17,7 +17,9 @@ export interface GearInput {
   rudder: number // [-1, 1] → nosewheel steering
   brakeLeft: number // [0, 1]
   brakeRight: number
-  groundZ: number // NED z of terrain under aircraft (0 for Phase 1)
+  groundZ: number // fallback NED z of terrain (flat world)
+  /** Per-wheel terrain query: NED z of the ground at (north, east). */
+  groundZAt?: (nNed: number, eNed: number) => number
 }
 
 export interface GearOutput {
@@ -55,9 +57,16 @@ export function computeGear(inp: GearInput, out: GearOutput): GearOutput {
     v3set(rBody, g.x, g.y, g.z)
     qrotate(rNed, inp.quat, rBody)
 
-    // Penetration below ground plane (z down: wheel z > groundZ means below).
+    // Penetration below ground (z down: wheel z > groundZ means below).
     const wheelZ = inp.posNed.z + rNed.z
-    const pen = wheelZ - inp.groundZ
+    const groundZ = inp.groundZAt
+      ? inp.groundZAt(inp.posNed.x + rNed.x, inp.posNed.y + rNed.y)
+      : inp.groundZ
+    // A terrain/elevation query can occasionally come back non-finite
+    // (e.g. a tile decode gap); treat that as no contact this wheel rather
+    // than letting NaN flow into force/moment and the 6-DOF integrator.
+    if (!Number.isFinite(groundZ)) continue
+    const pen = wheelZ - groundZ
     if (pen <= 0) continue
     out.onGround = true
     out.maxCompressionM = Math.max(out.maxCompressionM, pen)

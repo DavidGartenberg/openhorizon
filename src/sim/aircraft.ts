@@ -38,6 +38,7 @@ export interface FlightData {
   ktas: number
   groundSpeedKt: number
   altitudeFt: number
+  aglFt: number
   verticalSpeedFpm: number
   headingDeg: number
   pitchDeg: number
@@ -73,8 +74,19 @@ export class Aircraft {
   /** Extra wind in NED (from WindModel), applied as air-mass motion. */
   readonly windNed = v3()
 
+  /** Terrain elevation (m MSL) at frame-local NED (north, east); Phase 2+. */
+  groundElevAt: ((n: number, e: number) => number) | null = null
+
+  /** groundElevAt with a finite guard: a flaky terrain sample (NaN tile
+   *  decode) must never reach aero (AGL/ground effect) or gear math —
+   *  fall back to sea level, which is what a missing tile really means. */
+  private safeGroundElev(n: number, e: number): number {
+    const h = this.groundElevAt?.(n, e) ?? 0
+    return Number.isFinite(h) ? h : 0
+  }
+
   readonly data: FlightData = {
-    kias: 0, kcas: 0, ktas: 0, groundSpeedKt: 0, altitudeFt: 0,
+    kias: 0, kcas: 0, ktas: 0, groundSpeedKt: 0, altitudeFt: 0, aglFt: 0,
     verticalSpeedFpm: 0, headingDeg: 0, pitchDeg: 0, rollDeg: 0,
     alphaDeg: 0, betaDeg: 0, rpm: 0, fuelFlowGph: 0, loadFactorG: 1,
     stallFraction: 0, onGround: false, flapsDeg: 0, shaftPowerW: 0, thrustN: 0,
@@ -95,6 +107,7 @@ export class Aircraft {
   private readonly gearIn: GearInput = {
     posNed: this.posNed, velNed: this.velNed, quat: this.quat, rates: this.rates,
     rudder: 0, brakeLeft: 0, brakeRight: 0, groundZ: 0,
+    groundZAt: (n, e) => -this.safeGroundElev(n, e),
   }
   private readonly aeroIn: AeroInput = {
     rho: 1.225, vAir: 0, alpha: 0, beta: 0, alphaDot: 0, p: 0, q: 0, r: 0,
@@ -109,15 +122,19 @@ export class Aircraft {
   }
 
   /** Place the aircraft on the ground at rest, heading ψ (rad). */
-  spawnOnGround(north: number, east: number, headingRad: number): void {
+  spawnOnGround(north: number, east: number, headingRad: number, groundElevM = 0): void {
     qfromEuler(this.quat, headingRad, 0.03, 0)
-    v3set(this.posNed, north, east, -P.gear.mainL.z + 0.07) // settle onto struts
+    v3set(this.posNed, north, east, -(groundElevM + P.gear.mainL.z - 0.07))
     v3set(this.velBody, 0, 0, 0)
     v3set(this.rates, 0, 0, 0)
     this.prop.omegaRadS = (700 * Math.PI) / 30
   }
 
+  /** Set on structural-impact or numeric blowup; freezes physics until reset. */
+  crashed = false
+
   step(dt: number): void {
+    if (this.crashed) return
     const c = this.controls
     const m = this.massKg
     const altM = -this.posNed.z
@@ -172,7 +189,9 @@ export class Aircraft {
     ai.flapsDeg = this.flapsDeg
     ai.thrustN = this.prop.thrustN
     ai.propTorqueNm = this.prop.torqueNm
-    ai.heightAglM = altM // flat world: AGL = MSL until Phase 2 terrain
+    const groundElev = this.safeGroundElev(this.posNed.x, this.posNed.y)
+    ai.heightAglM = altM - groundElev
+    this.data.aglFt = ai.heightAglM / FT
     computeAero(ai, this.aeroOut)
 
     v3copy(this.force, this.aeroOut.force)
@@ -219,6 +238,27 @@ export class Aircraft {
     this.posNed.x += this.velNed.x * dt
     this.posNed.y += this.velNed.y * dt
     this.posNed.z += this.velNed.z * dt
+
+    // Crash guard: structural impact (deep gear strike / extreme ground
+    // speed) or numeric blowup freezes the sim honestly instead of exploding.
+    const finite =
+      isFinite(this.posNed.x + this.posNed.y + this.posNed.z) &&
+      isFinite(this.velBody.x + this.velBody.y + this.velBody.z) &&
+      isFinite(this.rates.x + this.rates.y + this.rates.z) &&
+      isFinite(this.quat.w + this.quat.x + this.quat.y + this.quat.z)
+    const impact =
+      this.gearOut.maxCompressionM > 0.45 ||
+      (this.gearOut.onGround && Math.hypot(this.velNed.x, this.velNed.y, this.velNed.z) > 75)
+    if (!finite || impact) {
+      this.crashed = true
+      v3set(this.velBody, 0, 0, 0)
+      v3set(this.rates, 0, 0, 0)
+      if (!finite) {
+        qfromEuler(this.quat, 0, 0, 0)
+        v3set(this.posNed, 0, 0, this.posNed.z || 0)
+      }
+      return
+    }
 
     this.updateFlightData(vAir, alpha, beta, rho)
   }
