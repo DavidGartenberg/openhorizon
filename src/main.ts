@@ -46,6 +46,7 @@ const orbit = new OrbitCamera(camera)
 const freeCam = new FlyCamera(camera)
 let cameraMode: 'chase' | 'orbit' | 'free' = 'chase'
 let parkingBrake = false
+let assistOn = true
 let spawnDesc = 'boot'
 
 // ---- spawning ----
@@ -169,6 +170,7 @@ function handleDiscreteKeys(): void {
   for (const [key, rate] of [['Digit1', 1], ['Digit2', 2], ['Digit3', 4]] as const) {
     if (input.wasPressed(key)) loop.setRate(rate as SimRate)
   }
+  if (input.wasPressed('KeyX')) assistOn = !assistOn
   if (input.wasPressed('KeyC')) {
     cameraMode = cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'free' : 'chase'
   }
@@ -187,9 +189,12 @@ function handleDiscreteKeys(): void {
 function pollControls(dt: number): void {
   if (!input.enabled) return
   const c = aircraft.controls
-  shaped.pitch = shapeAxis(shaped.pitch, input.axis('ArrowDown', 'ArrowUp'), dt)
-  shaped.roll = shapeAxis(shaped.roll, input.axis('ArrowRight', 'ArrowLeft'), dt)
-  shaped.yaw = shapeAxis(shaped.yaw, input.axis('KeyD', 'KeyA'), dt, 2.5, 4)
+  const pitchKey = input.axis('ArrowDown', 'ArrowUp')
+  const rollKey = input.axis('ArrowRight', 'ArrowLeft')
+  const yawKey = input.axis('KeyD', 'KeyA')
+  shaped.pitch = shapeAxis(shaped.pitch, pitchKey, dt, 1.5, 2.5)
+  shaped.roll = shapeAxis(shaped.roll, rollKey, dt)
+  shaped.yaw = shapeAxis(shaped.yaw, yawKey, dt, 2.5, 4)
   c.throttle = Math.min(Math.max(c.throttle + input.axis('KeyW', 'KeyS') * 0.5 * dt, 0), 1)
   c.trim = Math.min(Math.max(c.trim + input.axis('Period', 'Comma') * 0.25 * dt, -1), 1)
   // Parking brake: set on ground spawn, auto-releases when power comes up.
@@ -205,9 +210,29 @@ function pollControls(dt: number): void {
     if (gp !== 0) shaped.pitch = gp
     if (gy !== 0) shaped.yaw = gy
   }
-  c.pitch = shaped.pitch
-  c.roll = shaped.roll
-  c.yaw = shaped.yaw
+  // Expo curve: fine control near center, full authority at the stops.
+  const expo = (v: number) => v * Math.abs(v) * 0.65 + v * 0.35
+  c.pitch = expo(shaped.pitch)
+  c.roll = expo(shaped.roll)
+  c.yaw = expo(shaped.yaw)
+  // Flight assist (X toggles): untouched axes get stability help — wing
+  // leveler, pitch-rate damping, auto-coordinated rudder. Pilot-side aid;
+  // the flight model itself is untouched.
+  if (assistOn && aircraft.data.onGround && yawKey === 0) {
+    // Ground assist: damp the torque/P-factor swerve on the takeoff roll.
+    c.yaw = Math.min(Math.max(-5 * aircraft.rates.z, -0.5), 0.5)
+  }
+  if (assistOn && !aircraft.data.onGround) {
+    const rollRad = (aircraft.data.rollDeg * Math.PI) / 180
+    const betaRad = (aircraft.data.betaDeg * Math.PI) / 180
+    if (rollKey === 0) {
+      c.roll = Math.min(Math.max(-0.9 * rollRad - 0.35 * aircraft.rates.x, -0.5), 0.5)
+    }
+    if (pitchKey === 0) c.pitch += Math.min(Math.max(-1.8 * aircraft.rates.y, -0.3), 0.3)
+    if (yawKey === 0) {
+      c.yaw = Math.min(Math.max(1.6 * betaRad - 0.8 * aircraft.rates.z, -0.6), 0.6)
+    }
+  }
   const scrub = input.axis('BracketRight', 'BracketLeft')
   if (scrub !== 0) scrubSeconds += scrub * dt * 3600
 }
