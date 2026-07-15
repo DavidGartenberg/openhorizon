@@ -121,4 +121,18 @@ describe('mixture/EGT model', () => {
     expect(egts[peakIdx]!).toBeGreaterThan(egts[peakIdx - 1]!)
     expect(egts[peakIdx]!).toBeGreaterThan(egts[peakIdx + 1]!)
   })
+
+  it('falls gradually toward ambient near lean cutoff — no instrument-breaking cliff', () => {
+    // Fine-grained sweep across and below the lean-cutoff boundary (0.12).
+    const step = 0.005
+    const mixtures: number[] = []
+    for (let m = 0.4; m >= 0.05; m -= step) mixtures.push(Number(m.toFixed(3)))
+    const egts = mixtures.map(egtC)
+
+    const MAX_STEP_JUMP_C = 150
+    for (let i = 1; i < egts.length; i++) {
+      const jump = Math.abs(egts[i]! - egts[i - 1]!)
+      expect(jump).toBeLessThan(MAX_STEP_JUMP_C)
+    }
+  })
 })

@@ -46,6 +46,10 @@ describe('fuel system', () => {
     stepFuel(st, 1, { selector: 'L', boostPumpOn: false, demandKgS: demand })
     expect(st.fuelFlowing).toBe(false)
 
+    // The selector switch itself causes a one-step flow interruption without
+    // the boost pump (see 'boost pump' describe block below); flow resumes
+    // on the following step.
+    stepFuel(st, 1, { selector: 'R', boostPumpOn: false, demandKgS: demand })
     stepFuel(st, 1, { selector: 'R', boostPumpOn: false, demandKgS: demand })
     expect(st.fuelFlowing).toBe(true)
     expect(st.rightKg).toBeLessThan(TANK_CAPACITY_KG)
@@ -66,5 +70,45 @@ describe('fuel system', () => {
     const full = makeFuelState()
     stepFuel(full, 1, { selector: 'BOTH', boostPumpOn: false, demandKgS: 0 })
     expect(full.lowFuelFlag).toBe(false)
+  })
+
+  describe('boost pump', () => {
+    it('without the pump, switching tanks causes a one-step flow interruption', () => {
+      const st = makeFuelState()
+      stepFuel(st, 1, { selector: 'L', boostPumpOn: false, demandKgS: demand })
+      expect(st.fuelFlowing).toBe(true)
+
+      // Switch to a different fuel-supplying tank with the pump off.
+      stepFuel(st, 1, { selector: 'R', boostPumpOn: false, demandKgS: demand })
+      expect(st.fuelFlowing).toBe(false)
+
+      // Flow resumes on the next step at the new selector.
+      stepFuel(st, 1, { selector: 'R', boostPumpOn: false, demandKgS: demand })
+      expect(st.fuelFlowing).toBe(true)
+    })
+
+    it('with the pump on, switching tanks does not interrupt flow', () => {
+      const st = makeFuelState()
+      stepFuel(st, 1, { selector: 'L', boostPumpOn: false, demandKgS: demand })
+      expect(st.fuelFlowing).toBe(true)
+
+      stepFuel(st, 1, { selector: 'R', boostPumpOn: true, demandKgS: demand })
+      expect(st.fuelFlowing).toBe(true)
+      expect(st.rightKg).toBeLessThan(TANK_CAPACITY_KG)
+    })
+
+    it('does not interrupt flow when the selector is unchanged', () => {
+      const st = makeFuelState()
+      stepFuel(st, 1, { selector: 'BOTH', boostPumpOn: false, demandKgS: demand })
+      expect(st.fuelFlowing).toBe(true)
+      stepFuel(st, 1, { selector: 'BOTH', boostPumpOn: false, demandKgS: demand })
+      expect(st.fuelFlowing).toBe(true)
+    })
+
+    it('boostPumpOn is reflected on state', () => {
+      const st = makeFuelState()
+      stepFuel(st, 1, { selector: 'BOTH', boostPumpOn: true, demandKgS: demand })
+      expect(st.boostPumpOn).toBe(true)
+    })
   })
 })

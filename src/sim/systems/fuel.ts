@@ -14,6 +14,19 @@
  * existing `C172S.fuelCapacityKg` convention in c172s.ts, which is
  * "53 US gal usable @ 6 lb/gal"); L/R capacity is exposed in both kg and
  * gal for cockpit gauges.
+ *
+ * Boost pump: real POH guidance (light singles with electric boost pumps,
+ * e.g. Cessna/Lycoming-family aircraft) is to switch the boost pump ON
+ * during tank-selector changes, because the engine-driven pump can
+ * momentarily lose prime/pressure while the selector valve is mid-transition
+ * between tanks, causing a brief flow hiccup. That's the one concrete,
+ * testable effect modeled here: switching the selector to a *different*
+ * fuel-supplying position (L/R/BOTH → a different one of those) causes a
+ * one-step flow interruption on the step of the switch, unless the boost
+ * pump is on, in which case the pump backs up the engine-driven pump and
+ * flow continues uninterrupted through the switch. This does not model
+ * turbulence/unporting (no such model exists yet in this file) — see
+ * `stepFuel` for the exact mechanism.
  */
 
 const LB_PER_GAL = 6 // avgas, matches the constant used in c172s.ts
@@ -41,10 +54,12 @@ export interface FuelState {
   lowFuelFlag: boolean
   /** False = starvation: selector points at an empty tank (or OFF). */
   fuelFlowing: boolean
+  /** Internal: previous step's selector, used to detect tank-to-tank switches. */
+  _lastSelector: FuelSelector | null
 }
 
 export function makeFuelState(leftKg = TANK_CAPACITY_KG, rightKg = TANK_CAPACITY_KG): FuelState {
-  return { leftKg, rightKg, boostPumpOn: false, lowFuelFlag: false, fuelFlowing: false }
+  return { leftKg, rightKg, boostPumpOn: false, lowFuelFlag: false, fuelFlowing: false, _lastSelector: null }
 }
 
 const EMPTY_EPS = 1e-9
@@ -53,13 +68,31 @@ export function stepFuel(st: FuelState, dt: number, inp: FuelInputs): void {
   st.boostPumpOn = inp.boostPumpOn
   const demand = Math.max(inp.demandKgS, 0)
 
+  // Tank-selector transition: switching between two fuel-supplying
+  // positions (L/R/BOTH) causes a one-step flow interruption unless the
+  // boost pump is on to back up the engine-driven pump through the switch.
+  // See file-header comment for the POH rationale. A transition into/out of
+  // OFF isn't a "switch" in this sense (no flow to interrupt on the OFF side).
+  const switchedTank =
+    st._lastSelector !== null &&
+    st._lastSelector !== 'OFF' &&
+    inp.selector !== 'OFF' &&
+    st._lastSelector !== inp.selector
+  st._lastSelector = inp.selector
+  // With the boost pump on, switchedTank is still true but interrupted is
+  // false — the pump is what "bridges" the switch, so normal flow logic
+  // below runs uninterrupted.
+  const interrupted = switchedTank && !inp.boostPumpOn
+
   switch (inp.selector) {
     case 'OFF': {
       st.fuelFlowing = false
       break
     }
     case 'L': {
-      if (st.leftKg > EMPTY_EPS) {
+      if (interrupted) {
+        st.fuelFlowing = false
+      } else if (st.leftKg > EMPTY_EPS) {
         st.leftKg = Math.max(st.leftKg - demand * dt, 0)
         st.fuelFlowing = true
       } else {
@@ -68,7 +101,9 @@ export function stepFuel(st: FuelState, dt: number, inp: FuelInputs): void {
       break
     }
     case 'R': {
-      if (st.rightKg > EMPTY_EPS) {
+      if (interrupted) {
+        st.fuelFlowing = false
+      } else if (st.rightKg > EMPTY_EPS) {
         st.rightKg = Math.max(st.rightKg - demand * dt, 0)
         st.fuelFlowing = true
       } else {
@@ -77,6 +112,10 @@ export function stepFuel(st: FuelState, dt: number, inp: FuelInputs): void {
       break
     }
     case 'BOTH': {
+      if (interrupted) {
+        st.fuelFlowing = false
+        break
+      }
       const haveL = st.leftKg > EMPTY_EPS
       const haveR = st.rightKg > EMPTY_EPS
       if (haveL && haveR) {

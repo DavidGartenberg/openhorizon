@@ -28,14 +28,40 @@ const EGT_PEAK_C = 732 // ≈1350°F, representative peak EGT (flagged assumptio
 const EGT_FULL_RICH_C = 620 // representative full-rich cruise EGT (flagged assumption)
 const AMBIENT_EGT_C = 15 // engine not combusting / cold, reads ~OAT (flagged assumption)
 
+// Width (in mixture units) above LEAN_CUTOFF over which EGT is blended from
+// AMBIENT_EGT_C up to the raw parabola, instead of jumping straight from the
+// (still-hot, ~700°C) modeled value to ambient at the cutoff boundary. The
+// raw parabola by itself never decays anywhere close to ambient (it's a
+// broad curve centered on EGT_PEAK_MIXTURE), so without this taper band the
+// engine-dies-below-cutoff transition reads as an instrument-breaking cliff.
+// 0.15 is wide enough that the steepest single 0.01-mixture step through the
+// band stays well under ~100°C (see engine-start.test.ts's continuity
+// check), while staying well clear of EGT_PEAK_MIXTURE so the genuine peak
+// is untouched.
+const EGT_TAPER_BAND = 0.15
+
 // Curvature chosen so the parabola passes through (mixture=1, EGT_FULL_RICH_C).
 const EGT_CURVATURE = (EGT_PEAK_C - EGT_FULL_RICH_C) / (1 - EGT_PEAK_MIXTURE) ** 2
+
+/** Smoothstep: 0 at t=0, 1 at t=1, zero slope at both ends. */
+function smoothstep(t: number): number {
+  return t * t * (3 - 2 * t)
+}
 
 /** EGT (°C) for a given mixture setting, full rich (1) → idle cutoff (0). */
 export function egtC(mixture: number): number {
   const m = Math.min(Math.max(mixture, 0), 1)
   if (m <= LEAN_CUTOFF) return AMBIENT_EGT_C
+
   const d = m - EGT_PEAK_MIXTURE
   const modeled = EGT_PEAK_C - EGT_CURVATURE * d * d
-  return Math.max(modeled, AMBIENT_EGT_C)
+
+  const taperEnd = LEAN_CUTOFF + EGT_TAPER_BAND
+  if (m >= taperEnd) return Math.max(modeled, AMBIENT_EGT_C)
+
+  // Blend smoothly from ambient (at LEAN_CUTOFF) up to the raw parabola (at
+  // taperEnd) so EGT falls gradually toward ambient as mixture approaches
+  // the cutoff, rather than clamping straight to ambient.
+  const t = (m - LEAN_CUTOFF) / EGT_TAPER_BAND
+  return AMBIENT_EGT_C + (modeled - AMBIENT_EGT_C) * smoothstep(t)
 }

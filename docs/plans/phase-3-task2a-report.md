@@ -99,3 +99,122 @@ with real POH numbers if/when sourced:
 
 Nothing in `src/sim/aero.ts`, `src/sim/gear.ts`, `src/sim/propulsion.ts`'s
 existing tables, or `src/sim/aircraft/c172s.ts` was modified.
+
+---
+
+## Task-review fix pass (2026-07-15)
+
+Two Important findings from task review of `bcec3c3` were addressed.
+
+### Finding 1 — EGT cliff at lean-cutoff boundary
+
+**File:** `src/sim/systems/mixture.ts`
+
+The old code returned a hard-clamped `AMBIENT_EGT_C` (15°C) for any
+`mixture <= LEAN_CUTOFF` (0.12), while mixtures just above 0.12 sat on the
+still-hot side of the parabola (~719°C at m=0.13). That's a ~700°C jump
+over a 0.01 mixture step — an instrument-breaking cliff, and it contradicted
+both the file's own "EGT falls gradually" doc comment and the smooth,
+linear `mixturePowerFactor` in `propulsion.ts` this file claims to mirror.
+
+Fix: added a smoothstep-blended taper band (`EGT_TAPER_BAND = 0.15`, i.e.
+mixture ∈ [0.12, 0.27]) that blends EGT from `AMBIENT_EGT_C` (at the cutoff,
+matching the flat region below it in both value and zero slope) up to the
+raw parabola value (at the top of the band, matching the parabola's value
+there). Below 0.12, behavior is unchanged (flat ambient — the engine is
+modeled as not sustaining combustion there, which is a real state
+transition, just no longer combined with a value-cliff at the boundary).
+The band (0.15 wide) sits well clear of `EGT_PEAK_MIXTURE` (0.35), so the
+genuine local peak used by the sweep test is untouched.
+
+Verified by hand-computing the blended curve at 0.01 steps through the
+band: the steepest single-step change is ~71°C (well under the ~150°C
+threshold), versus ~700°C in a single step under the old code.
+
+Added a new test in `tests/systems/engine-start.test.ts`
+(`'falls gradually toward ambient near lean cutoff — no
+instrument-breaking cliff'`) that sweeps mixture 0.4 → 0.05 in 0.005 steps
+and asserts every consecutive-step EGT delta is `< 150°C`. The pre-existing
+peak-sweep test (`'has a genuine local peak somewhere...'`) was left
+untouched and still passes.
+
+### Finding 2 — Fuel boost pump was UI-inert
+
+**File:** `src/sim/systems/fuel.ts`
+
+`boostPumpOn` was accepted, stored, and passed through, but nothing in
+`stepFuel` read it — flipping the switch had zero effect on simulated fuel
+delivery, and this gap wasn't disclosed in the original report.
+
+**Chose option (a):** gave the boost pump a real, testable effect, without
+inventing an unrelated turbulence/unporting model. Real POH guidance for
+light singles with an electric boost pump is to switch it on during
+tank-selector changes, because the engine-driven pump can momentarily lose
+prime while the selector valve is mid-transition. That maps directly onto
+the file's existing selector-based flow model:
+
+- `FuelState` gained an internal field, `_lastSelector`, to detect
+  selector transitions across steps.
+- `stepFuel` now treats a switch between two fuel-supplying selector
+  positions (L/R/BOTH → a *different* one of those) as causing a one-step
+  flow interruption (`fuelFlowing = false`, no fuel consumed that step)
+  *unless* the boost pump is on, in which case flow continues
+  uninterrupted through the switch. Transitions into/out of `OFF` are not
+  treated as a "switch" (there's no flow on the OFF side to interrupt).
+- This is documented in the file's header comment and inline in
+  `stepFuel`, including an explicit note that no turbulence/unporting model
+  exists yet in this file — the pump only backstops the modeled
+  selector-transition hiccup, nothing else.
+
+Updated the pre-existing test `'switching to a tank with fuel restores flow
+after starvation'` (it now expects the one-step interruption on the switch
+step, then flow restored the following step — this is the new, more
+realistic behavior, not a loosened assertion) and added a `'boost pump'`
+describe block with 4 new tests covering: interruption without the pump,
+no interruption with the pump on, no interruption when the selector is
+unchanged, and `boostPumpOn` being reflected on state.
+
+**Disclosed limitation:** this does not model turbulence, unusual
+attitudes, or tank unporting — there is no such model in this file to
+backstop. If one is added later, the boost pump's effect should likely be
+extended to cover it too.
+
+### Test results
+
+```
+npx vitest run tests/systems/fuel.test.ts tests/systems/engine-start.test.ts
+✓ tests/systems/fuel.test.ts (11 tests)
+✓ tests/systems/engine-start.test.ts (7 tests)
+Test Files  2 passed (2)
+     Tests  18 passed (18)
+
+npm test
+✓ tests/systems/electrical.test.ts (4 tests)
+✓ tests/loop.test.ts (7 tests)
+✓ tests/nan-ground.test.ts (2 tests)
+✓ tests/handling.test.ts (5 tests)
+✓ tests/validate/poh.test.ts (10 tests)
+✓ tests/sim-purity.test.ts (2 tests)
+✓ tests/systems/engine-start.test.ts (7 tests)
+✓ tests/geo.test.ts (9 tests)
+✓ tests/systems/fuel.test.ts (11 tests)
+✓ tests/solar.test.ts (5 tests)
+✓ tests/systems/pitot.test.ts (6 tests)
+Test Files  11 passed (11)
+     Tests  68 passed (68)
+```
+
+68 = 63 previous + 5 new (1 EGT continuity test + 4 boost-pump tests).
+
+`npx tsc --noEmit` — clean, no output.
+
+`tests/sim-purity.test.ts` — passing (included in the full-suite run above),
+confirming no three.js/DOM imports were introduced.
+
+### Files touched in this pass
+
+- `src/sim/systems/mixture.ts`
+- `src/sim/systems/fuel.ts`
+- `tests/systems/engine-start.test.ts`
+- `tests/systems/fuel.test.ts`
+- `docs/plans/phase-3-task2a-report.md` (this section)
