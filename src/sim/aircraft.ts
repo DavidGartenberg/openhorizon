@@ -77,6 +77,15 @@ export class Aircraft {
   /** Terrain elevation (m MSL) at frame-local NED (north, east); Phase 2+. */
   groundElevAt: ((n: number, e: number) => number) | null = null
 
+  /** Systems layer (Phase 3): whether the engine is actually running. Phase
+   *  1/2 always ran the engine, so this defaults to true — callers that
+   *  never touch systems (existing tests, current main.ts) see identical
+   *  behavior. `src/sim/systems/engine-start.ts` drives this once wired in
+   *  by the caller, making "stopped" (cold-and-dark, fuel-starved, shut
+   *  down) a real reachable state: false here means no fuel is available
+   *  to the engine this step, same mechanism as running the tank dry. */
+  engineRunning = true
+
   /** groundElevAt with a finite guard: a flaky terrain sample (NaN tile
    *  decode) must never reach aero (AGL/ground effect) or gear math —
    *  fall back to sea level, which is what a missing tile really means. */
@@ -166,7 +175,7 @@ export class Aircraft {
     // ---- propulsion ----
     stepPropulsion(
       this.prop, dt, c.throttle, c.mixture, rho,
-      Math.max(this.vAirBody.x, 0), this.fuelKg > 0.5,
+      Math.max(this.vAirBody.x, 0), this.fuelKg > 0.5 && this.engineRunning,
     )
     this.fuelKg = Math.max(this.fuelKg - this.prop.fuelFlowKgS * dt, 0)
 
