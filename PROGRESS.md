@@ -21,6 +21,44 @@ Node; add `~/.local/node/bin` to PATH).
 | 2 — The US | ✅ done | real terrain/airports verified, KSFO landing flown, rebase seamless |
 | 3–10 | not started | Phase 3 (cockpit & systems) next |
 
+## Flight assist — verification (2026-07-14)
+
+Committed `3920bf3` added assist (X toggles, was default ON) but was not
+browser-verified end-to-end. Verified this session via scripted flights
+(dispatched keyboard events + `__ohStep`, never wall-clock waits):
+
+- **Ground-yaw hold: fixed and passing.** The shipped damper was pure
+  rate-damping (`-5·rates.z`), which can't null a *steady* P-factor/torque
+  disturbance — measured 36.4° heading drift by rotation speed (KHAF 30).
+  Redesigned as heading-lock (P+D) plus an RPM-keyed feed-forward term
+  (the disturbance grows with RPM through the roll, 2378→2511, so a purely
+  reactive loop lags it). Re-verified: 5.7° max drift, within the ±10°
+  bar.
+- **Airborne climb-hold: not solved, assist defaulted OFF.** A pure
+  rate-only pitch damper has no target, so releasing the stick after
+  rotation let the aircraft sink back onto the runway instead of
+  sustaining the climb. Traced headlessly (bypassing terrain/input-layer
+  entirely) to confirm root cause: with elevator neutral and trim
+  untouched, the aircraft correctly seeks its *untrimmed* equilibrium —
+  not random instability. Tried, in order: (1) attitude-hold (lock
+  rotation pitch, P+D) — settles back to the runway; (2) attitude-hold +
+  trim follow-up (two gains) — delays the sink and raises peak altitude
+  but still settles within ~5 s, consistent with a phugoid-style
+  speed/altitude trade a fixed-attitude target can't damp; (3)
+  airspeed-hold (pitch-for-Vy) from the moment of liftoff — worse, dives
+  for speed with no altitude margin and drives it into the ground harder.
+  The real fix is a staged controller (attitude-hold to establish initial
+  climb, blended to airspeed-hold once altitude margin exists) — genuine
+  flight-control design, not a tuning pass, so it's left for a dedicated
+  session rather than guessed at here.
+- **Deviation from §17** ("assists default OFF"): `assistOn` default set
+  to `false` in `src/main.ts` — the verified ground-yaw hold is real and
+  useful, but an assist that can still fly a hands-off climb into the
+  ground should not default on. Revisit both the default and the climb
+  controller together, ideally with a headless regression test (mirroring
+  `tests/handling.test.ts`) so the phugoid behavior is caught without a
+  browser.
+
 ## Phase 2 — evidence (2026-07-14)
 
 - Suite 40/40, validate 10/10, tsc clean. New regression tests:

@@ -46,7 +46,20 @@ const orbit = new OrbitCamera(camera)
 const freeCam = new FlyCamera(camera)
 let cameraMode: 'chase' | 'orbit' | 'free' = 'chase'
 let parkingBrake = false
-let assistOn = true
+// Default OFF per §17 ("assists default OFF") — the ground-yaw hold is
+// verified (±5.7° drift, within tolerance), but the airborne climb-hold
+// is not: it delays but doesn't prevent settling back to the runway after
+// a hands-off rotation (phugoid-like — needs a staged attitude→airspeed
+// controller, not more gain tuning). Don't default-on an assist that can
+// still fly a hands-off climb into the ground.
+let assistOn = false
+/** Runway heading captured at the start of the takeoff roll (ground assist
+ *  holds it — a pure yaw-rate damper can't null the P-factor/torque bias,
+ *  it only slows the turn, so heading still drifts under constant torque). */
+let groundHeadingLockDeg: number | null = null
+/** Climb pitch attitude captured when the pilot releases pitch control
+ *  airborne (assist holds it — see the airborne assist branch below). */
+let airbornePitchLockDeg: number | null = null
 let spawnDesc = 'boot'
 
 // ---- spawning ----
@@ -219,8 +232,24 @@ function pollControls(dt: number): void {
   // leveler, pitch-rate damping, auto-coordinated rudder. Pilot-side aid;
   // the flight model itself is untouched.
   if (assistOn && aircraft.data.onGround && yawKey === 0) {
-    // Ground assist: damp the torque/P-factor swerve on the takeoff roll.
-    c.yaw = Math.min(Math.max(-5 * aircraft.rates.z, -0.5), 0.5)
+    // Ground assist: hold the heading captured the moment this condition
+    // first arms (a pure yaw-rate damper only slows the P-factor/torque
+    // swerve, it can't null a steady disturbance — heading still drifts).
+    // Lock once, not continuously, or an early swing before liftoff-speed
+    // never gets corrected — it just becomes the new "locked" heading.
+    if (groundHeadingLockDeg === null) groundHeadingLockDeg = aircraft.data.headingDeg
+    let errDeg = aircraft.data.headingDeg - groundHeadingLockDeg
+    errDeg = ((errDeg + 180) % 360 + 360) % 360 - 180
+    const errRad = (errDeg * Math.PI) / 180
+    // Feed-forward: the P-factor/torque/slipstream left-yaw tendency grows
+    // with power (RPM keeps climbing through the roll as speed builds on
+    // this fixed-pitch prop), so a reactive P+D loop on heading error alone
+    // always lags a still-increasing disturbance. Anticipate it from RPM
+    // directly instead of waiting for the error to appear.
+    const ffYaw = 0.4 * Math.min(aircraft.data.rpm / 2700, 1)
+    c.yaw = Math.min(Math.max(ffYaw - 2.2 * errRad - 6 * aircraft.rates.z, -0.6), 0.6)
+  } else {
+    groundHeadingLockDeg = null
   }
   if (assistOn && !aircraft.data.onGround) {
     const rollRad = (aircraft.data.rollDeg * Math.PI) / 180
@@ -228,10 +257,32 @@ function pollControls(dt: number): void {
     if (rollKey === 0) {
       c.roll = Math.min(Math.max(-0.9 * rollRad - 0.35 * aircraft.rates.x, -0.5), 0.5)
     }
-    if (pitchKey === 0) c.pitch += Math.min(Math.max(-1.8 * aircraft.rates.y, -0.3), 0.3)
+    // Pitch: hold the attitude captured the moment the pilot lets go, not
+    // just damp rate — a pure rate damper has no target, so releasing the
+    // stick after rotation let the aircraft sink back toward its trimmed
+    // (near-level) attitude and settle back onto the runway instead of
+    // sustaining the climb. Re-locks fresh each time the pilot takes pitch
+    // control back (or after a fresh liftoff — see the on-ground branch).
+    if (pitchKey === 0) {
+      if (airbornePitchLockDeg === null) airbornePitchLockDeg = aircraft.data.pitchDeg
+      const pitchErrRad = ((aircraft.data.pitchDeg - airbornePitchLockDeg) * Math.PI) / 180
+      const pitchCmd = Math.min(Math.max(-1.2 * pitchErrRad - 1.8 * aircraft.rates.y, -0.4), 0.4)
+      c.pitch += pitchCmd
+      // Trim follow-up: a real hands-off climb needs the trim wheel set,
+      // not a permanently-held elevator force (headless trace showed the
+      // aircraft pitching from +16 deg to -3.5 deg in 2.4 s at elevator
+      // neutral with trim untouched — it was seeking its untrimmed
+      // equilibrium, not unstable). Slowly bleed the sustained elevator
+      // command into trim so the controller isn't fighting it forever.
+      c.trim = Math.min(Math.max(c.trim + pitchCmd * dt * 0.4, -1), 1)
+    } else {
+      airbornePitchLockDeg = null
+    }
     if (yawKey === 0) {
       c.yaw = Math.min(Math.max(1.6 * betaRad - 0.8 * aircraft.rates.z, -0.6), 0.6)
     }
+  } else {
+    airbornePitchLockDeg = null
   }
   const scrub = input.axis('BracketRight', 'BracketLeft')
   if (scrub !== 0) scrubSeconds += scrub * dt * 3600
