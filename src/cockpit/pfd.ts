@@ -106,6 +106,11 @@ export const PFD_SOFTKEY_LABELS: readonly string[] = [
   'ALERTS',
 ]
 
+/** Softkey bezel row height as a fraction of canvas height — shared by
+ *  `pfdSoftkeyRegions` (click geometry) and `drawPfd` (body layout) so the
+ *  two can never drift out of sync. */
+export const SOFTKEY_ROW_HEIGHT_FRAC = 0.045
+
 /**
  * Click-target rectangles for the softkey bezel row, in canvas pixel space.
  * Pure geometry: evenly divides the bottom strip of the canvas into one box
@@ -114,7 +119,7 @@ export const PFD_SOFTKEY_LABELS: readonly string[] = [
  * layout.
  */
 export function pfdSoftkeyRegions(width: number, height: number): SoftkeyRegion[] {
-  const rowH = height * 0.045
+  const rowH = height * SOFTKEY_ROW_HEIGHT_FRAC
   const y = height - rowH
   const n = PFD_SOFTKEY_LABELS.length
   const w = width / n
@@ -622,7 +627,7 @@ export function drawPfd(ctx: CanvasRenderingContext2D, width: number, height: nu
   ctx.fillStyle = '#000000'
   ctx.fillRect(0, 0, width, height)
 
-  const softkeyRowH = height * 0.045
+  const softkeyRowH = height * SOFTKEY_ROW_HEIGHT_FRAC
   const topRowH = height * 0.06
   const bodyY = topRowH
   const bodyH = height - topRowH - softkeyRowH
