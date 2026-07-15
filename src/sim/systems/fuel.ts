@@ -38,6 +38,13 @@ export const TANK_CAPACITY_KG = TANK_CAPACITY_GAL * LB_PER_GAL * KG_PER_LB // â‰
 // picked as a conservative "just over 1/4 tank combined" warning point.
 const LOW_FUEL_TOTAL_KG = 0.25 * TANK_CAPACITY_KG * 2
 
+/** Fuel mass (kg) -> volume (US gal), avgas @ 6 lb/gal â€” the same conversion
+ *  this file uses internally for `TANK_CAPACITY_KG`, exposed for cockpit
+ *  gauges (MFD fuel-qty display) so they don't reinvent the constants. */
+export function kgToGal(kg: number): number {
+  return kg / KG_PER_LB / LB_PER_GAL
+}
+
 export type FuelSelector = 'L' | 'R' | 'BOTH' | 'OFF'
 
 export interface FuelInputs {

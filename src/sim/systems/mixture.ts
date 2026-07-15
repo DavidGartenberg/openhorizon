@@ -23,8 +23,8 @@
  */
 
 const LEAN_CUTOFF = 0.12 // matches propulsion.ts mixturePowerFactor's cutoff
-const EGT_PEAK_MIXTURE = 0.35 // mixture fraction at which EGT peaks (flagged assumption)
-const EGT_PEAK_C = 732 // ≈1350°F, representative peak EGT (flagged assumption)
+export const EGT_PEAK_MIXTURE = 0.35 // mixture fraction at which EGT peaks (flagged assumption)
+export const EGT_PEAK_C = 732 // ≈1350°F, representative peak EGT (flagged assumption) — exported for the MFD lean-assist page's delta-from-peak readout
 const EGT_FULL_RICH_C = 620 // representative full-rich cruise EGT (flagged assumption)
 const AMBIENT_EGT_C = 15 // engine not combusting / cold, reads ~OAT (flagged assumption)
 
