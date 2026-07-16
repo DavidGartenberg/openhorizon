@@ -206,3 +206,97 @@ flight-dynamics stack. Covers:
 5. NAV/APR/BC capture logic is a simple deviation-threshold check (no
    closure-rate prediction), consistent with the task's explicit
    permission to use simple, flagged capture-threshold heuristics.
+
+## Fix: ALTS capture not durable under a plausible caller usage pattern (Critical, post-review)
+
+### Root cause
+
+`stepAutopilot`'s vertical mode-change detector (`if (inputs.verticalMode
+!== state.lastCommandedVerticalMode)`) re-arms whenever the caller's
+`verticalMode` input differs from the module's *own last internally-set*
+mode. ALTS capture renamed `state.verticalMode` (and
+`lastCommandedVerticalMode`) to `'ALT'` at the capture point, but nothing
+required the caller to also switch its input to `'ALT'`. A real GFC700
+mode-select button's state doesn't revert itself just because the AP
+captured, so a caller that (reasonably) kept feeding the pilot's
+persisted selection — `verticalMode: 'ALTS'` — plus the original
+`vsTargetFpm`, saw a mismatch (`'ALTS' !== 'ALT'`) on every subsequent
+frame. That mismatch re-armed ALTS, recomputed `targetPitchDeg` from the
+stale underlying VS/FLC/PIT law (winding up the VS PID integrator
+against a now-irrelevant descent target every step), and then
+immediately re-captured back to `'ALT'` within the same step — so
+`state.verticalMode` still read `'ALT'` to anything checking afterward,
+masking a steadily worsening dive command. `GS` doesn't have this
+problem because it never renames `state.verticalMode` — it only flips
+`verticalArmed`, so the caller's input and the module's internal name
+always agree.
+
+### Fix chosen
+
+Option 1 from the review (persistent captured-state flag), implemented
+as a new `altsCaptured: boolean` field on `AutopilotState` (added to
+`makeAutopilotState()` and reset in `disconnect()`, mirroring how
+`verticalArmed` already works for `GS`):
+
+- Set `true` at the exact point ALTS captures (alongside the existing
+  `state.verticalMode = 'ALT'` / `verticalArmed = false` assignment).
+- The vertical mode-change detector now computes
+  `isReassertingCapturedAlts = inputs.verticalMode === 'ALTS' &&
+  state.altsCaptured` before acting on a mismatch. When true, the block
+  updates `lastCommandedVerticalMode` (so it doesn't re-trigger every
+  frame) but skips reassigning `state.verticalMode` / `verticalArmed` /
+  `altsCaptured` — i.e. a repeated `'ALTS'` input after capture is
+  recognized as the selector holding steady, not a new arm request.
+- Any other mismatch (a genuinely different mode, including a fresh
+  ALTS re-arm at a new target altitude) still runs the normal
+  reassignment path and clears `altsCaptured` back to `false`.
+
+Chose option 1 over option 2 (generalizing GS's never-rename approach to
+ALTS) because it's the smaller, more surgical change given the module is
+already committed with a wiring task waiting on it: `state.verticalMode
+=== 'ALT'` after capture is exactly the caller-visible contract the rest
+of the codebase (and this task's own tests) already depend on, so a
+one-field addition that preserves that output while fixing the internal
+re-arm bug seemed lower-risk than restructuring how captured state is
+exposed. Added a comment block above the vertical-mode section of
+`stepAutopilot` explaining the overlay-capture pattern (how ALTS/GS
+relate to their underlying modes and how "captured" state is tracked)
+per the related readability finding.
+
+### Reproduction (before / after)
+
+Reproduced the reviewer's exact scenario: correct ALTS→ALT capture at
+3000 ft (descending at -2000 fpm, captured within the predicted lead
+window), then fed `verticalMode: 'ALTS'` + the original `vsTargetFpm:
+-2000` every subsequent frame at level flight (0 fpm, 0 pitch, altitude
+pinned at the 3000 ft bug) for 300 more steps.
+
+- **Before fix** (checked out the pre-fix `007f610` version of
+  `src/sim/autopilot.ts` and ran the same scenario): `state.verticalMode`
+  read `'ALT'` every frame (looked captured), but `fdPitchDeg` pinned at
+  `-10.00°` (the `MAX_PITCH_CMD_DEG` dive cap) and `pitchCmd` railed to
+  `-1.0000` (full nose-down) within ~5 seconds — silently commanding a
+  continuous dive while reporting captured altitude-hold.
+- **After fix**: `state.verticalMode` stays `'ALT'`, `fdPitchDeg` settles
+  to `0.12°` (near level, the real ALT-hold steady state at zero
+  altitude error), and `pitchCmd` stays in the `0.37`–`0.44` range
+  (elevator load consistent with holding pitch, not a runaway dive
+  command), consistent across the full 300-step run.
+
+### Tests
+
+Added `tests/autopilot.test.ts` → `describe('ALTS armed -> ALT
+capture')` → new test `'stays durably captured on ALT-hold even if the
+caller keeps sending the original ALTS selection + target every frame
+(regression: capture must not depend on the caller switching its
+mode-select input to ALT)'`. It captures ALTS→ALT, then for 300 steps
+feeds the original `'ALTS'` selection + original `vsTargetFpm: -2000` at
+level flight, asserting every step that `fdPitchDeg` never drops toward
+the stale dive command, and that the final state is still `verticalMode
+=== 'ALT'`, `verticalArmed === false`, `fdPitchDeg` within 2° of level,
+and `pitchCmd` nowhere near the dive-command floor.
+
+- `npx tsc --noEmit`: clean.
+- `npm test` (`npx vitest run`): **218/218 passing** (217 baseline + 1
+  new regression test in `tests/autopilot.test.ts`, now 25 tests in that
+  file). No existing ALTS/GS/mode-transition tests regressed.

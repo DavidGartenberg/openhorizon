@@ -116,6 +116,15 @@ export interface AutopilotState {
   lateralArmed: boolean
   verticalMode: VerticalMode
   verticalArmed: boolean
+  /** True from the moment an ALTS arm captures (renaming `verticalMode` to
+   *  `'ALT'`) until a genuinely new mode selection is observed. Tracked
+   *  independently of the `lastCommandedVerticalMode` change-detector below
+   *  because a real mode-select button's state doesn't revert itself just
+   *  because the AP captured — a caller may keep feeding `verticalMode:
+   *  'ALTS'` every frame after capture, and that must NOT be read as a new
+   *  arm request. See the comment above the vertical-mode block in
+   *  `stepAutopilot` for the full story. */
+  altsCaptured: boolean
 
   // ---- primary control outputs, Controls-compatible [-1, 1] ----
   rollCmd: number
@@ -152,6 +161,7 @@ export function makeAutopilotState(): AutopilotState {
     lateralArmed: false,
     verticalMode: 'PIT',
     verticalArmed: false,
+    altsCaptured: false,
     rollCmd: 0,
     pitchCmd: 0,
     yawCmd: 0,
@@ -182,6 +192,7 @@ export function disconnect(state: AutopilotState): void {
   state.lastCommandedLateralMode = 'ROL'
   state.verticalMode = 'PIT'
   state.verticalArmed = false
+  state.altsCaptured = false
   state.lastCommandedVerticalMode = 'PIT'
   state.rollCmd = 0
   state.pitchCmd = 0
@@ -356,10 +367,33 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
   state.fdBankDeg = targetBankDeg
 
   // ================= VERTICAL =================
+  // Overlay-capture pattern: ALTS and GS are "armed" wrappers around an
+  // underlying flying mode (VS/FLC/PIT) rather than control laws of their
+  // own. GS never renames `state.verticalMode` — it only flips
+  // `verticalArmed` off once captured, so the caller-vs-internal mode name
+  // always agree and the change-detector below just works. ALTS instead
+  // *renames* `state.verticalMode` to `'ALT'` on capture (see below), and a
+  // real mode-select button's state doesn't revert itself just because the
+  // AP captured — a caller can go right on sending `verticalMode: 'ALTS'`
+  // every subsequent frame. Comparing that against `lastCommandedVerticalMode`
+  // naively would see a mismatch every frame post-capture and re-arm ALTS,
+  // recomputing `targetPitchDeg` from the stale underlying VS/FLC/PIT law
+  // before immediately re-capturing back to `'ALT'` within the same step —
+  // silently reintroducing the old climb/descent command while
+  // `state.verticalMode` still reads `'ALT'` to anything checking afterward.
+  // `altsCaptured` tracks "has this specific ALTS arm already captured"
+  // independently of the mode-name comparison, so a repeated `'ALTS'` input
+  // post-capture is recognized as the selector holding steady rather than a
+  // new arm request; it's cleared whenever a genuinely new mode is selected
+  // (including a fresh ALTS re-arm).
   if (inputs.verticalMode !== state.lastCommandedVerticalMode) {
+    const isReassertingCapturedAlts = inputs.verticalMode === 'ALTS' && state.altsCaptured
     state.lastCommandedVerticalMode = inputs.verticalMode
-    state.verticalMode = inputs.verticalMode
-    state.verticalArmed = inputs.verticalMode === 'ALTS' || inputs.verticalMode === 'GS'
+    if (!isReassertingCapturedAlts) {
+      state.verticalMode = inputs.verticalMode
+      state.verticalArmed = inputs.verticalMode === 'ALTS' || inputs.verticalMode === 'GS'
+      state.altsCaptured = false
+    }
   }
 
   let targetPitchDeg: number
@@ -379,6 +413,7 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       if (Math.abs(inputs.altitudeFt - inputs.altitudeBugFt) <= leadFt) {
         state.verticalMode = 'ALT'
         state.verticalArmed = false
+        state.altsCaptured = true
         state.lastCommandedVerticalMode = 'ALT'
       }
     }

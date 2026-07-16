@@ -291,6 +291,43 @@ describe('ALTS armed -> ALT capture', () => {
   it('a faster descent rate predicts a bigger (earlier) capture window', () => {
     expect(altsLeadFt(-2000)).toBeGreaterThan(altsLeadFt(-500))
   })
+
+  it('stays durably captured on ALT-hold even if the caller keeps sending the original ALTS selection + target every frame (regression: capture must not depend on the caller switching its mode-select input to ALT)', () => {
+    const state = makeAutopilotState()
+
+    // Capture ALTS -> ALT at 3000 ft, descending at -2000 fpm toward the bug.
+    const leadFt = altsLeadFt(-2000)
+    stepAutopilot(state, 0.1, baseInputs({
+      verticalMode: 'ALTS', underlyingVerticalMode: 'VS', vsTargetFpm: -2000,
+      verticalSpeedFpm: -2000, altitudeFt: 3000 + leadFt * 0.5, altitudeBugFt: 3000,
+    }))
+    expect(state.verticalMode).toBe('ALT')
+    expect(state.verticalArmed).toBe(false)
+
+    // A real mode-select button's state doesn't revert itself just because
+    // the AP captured — keep feeding the pilot's persisted selection
+    // ('ALTS') and the ORIGINAL vsTargetFpm (-2000) every subsequent frame,
+    // now at level flight exactly on the bugged altitude (0 fpm, 0 pitch).
+    // A durable capture must keep flying the real ALT altitude-hold law
+    // (ignoring the stale VS target) instead of re-arming and re-computing
+    // from the stale descent target every step.
+    for (let i = 0; i < 300; i++) {
+      stepAutopilot(state, 0.1, baseInputs({
+        verticalMode: 'ALTS', underlyingVerticalMode: 'VS', vsTargetFpm: -2000,
+        verticalSpeedFpm: 0, altitudeFt: 3000, altitudeBugFt: 3000, pitchDeg: 0,
+      }))
+      // Must never silently revert to commanding the dive every frame.
+      expect(state.fdPitchDeg).toBeGreaterThan(-9)
+    }
+
+    // Still reports captured, and the commanded pitch has settled near
+    // level (ALT-hold steady state), not pinned at the -10 deg dive cap
+    // the stale VS/FLC/PIT law would produce.
+    expect(state.verticalMode).toBe('ALT')
+    expect(state.verticalArmed).toBe(false)
+    expect(Math.abs(state.fdPitchDeg)).toBeLessThan(2)
+    expect(state.pitchCmd).toBeGreaterThan(-0.5)
+  })
 })
 
 describe('GS mode (glideslope)', () => {
