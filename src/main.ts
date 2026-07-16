@@ -2,7 +2,8 @@ import { FixedTimestepLoop, type SimRate } from './sim/loop'
 import { Aircraft } from './sim/aircraft'
 import { WindModel } from './sim/wind'
 import { trim } from './sim/trim'
-import { FT, KT, kcasFromKias } from './sim/atmosphere'
+import { FT, KT, isa, kcasFromKias } from './sim/atmosphere'
+import { C172S } from './sim/aircraft/c172s'
 import { bearingDeg, distanceM } from './math/geo'
 import { createScene } from './render/scene'
 import { SkyDome } from './render/sky'
@@ -10,11 +11,18 @@ import { Ocean } from './render/ocean'
 import { FlyCamera } from './render/camera'
 import { ChaseCamera } from './render/chase-camera'
 import { OrbitCamera } from './render/orbit-camera'
+import { CockpitCamera } from './render/cockpit-camera'
 import { buildC172, updateProp } from './render/aircraft-mesh'
+import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
 import { Input } from './input/input'
 import { Hud } from './ui/hud'
 import { WorldFrame, TileManager } from './world/tiles'
 import { Airports, type AirportData, type RunwayData } from './world/airports'
+import { makeElectricalState, stepElectrical } from './sim/systems/electrical'
+import { makeFuelState, stepFuel, type FuelSelector } from './sim/systems/fuel'
+import { PitotStaticSystem } from './sim/systems/pitot'
+import { stepEngineStart, type EngineStartState, type MagnetoPosition } from './sim/systems/engine-start'
+import { makeEngineTemps, stepEngineTemps } from './sim/systems/engine-temps'
 
 const KHAF = { lat: 37.5134, lon: -122.5011 }
 
@@ -39,12 +47,65 @@ aircraft.groundElevAt = (n, e) => {
 }
 const mesh = buildC172()
 scene.add(mesh.group)
+const cockpit = buildCockpit(mesh.group)
+const cockpitInteraction = new CockpitInteraction(camera)
 
 const wind = new WindModel()
 const chase = new ChaseCamera(camera)
 const orbit = new OrbitCamera(camera)
 const freeCam = new FlyCamera(camera)
-let cameraMode: 'chase' | 'orbit' | 'free' = 'chase'
+const cockpitCam = new CockpitCamera(camera)
+let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' = 'chase'
+const DEFAULT_NEAR = camera.near // 0.5 m (scene.ts) — correct for exterior views
+const COCKPIT_NEAR = 0.02 // cockpit controls sit centimeters from the eyepoint
+
+// ---- systems (Phase 3 §8): electrical, fuel, pitot-static, engine-start,
+// engine temps. None of this touches aero/gear/6-DOF math — it only feeds
+// `aircraft.engineRunning` and cockpit gauge truth. Wired into the fixed-
+// timestep loop in `advanceFrame` below. `engineStartState` is seeded
+// 'running' (not the cold-and-dark 'stopped' default the state machine
+// itself starts at) so existing verified spawn/takeoff behavior — which
+// assumes a running engine at spawn, e.g. the ground-yaw flight-assist
+// fix — is unaffected; cold-and-dark is fully reachable by turning the
+// ignition key/battery off via the cockpit switches or __ohFail, it's just
+// not the boot default. See task report for the full rationale.
+const electricalState = makeElectricalState()
+const fuelState = makeFuelState()
+const pitotSystem = new PitotStaticSystem()
+const engineStartState: EngineStartState = { status: 'running', rpm: 700, crankTimeS: 0 }
+const engineTemps = makeEngineTemps()
+
+/** Cockpit switch/knob/selector state — mirrors how `aircraft.controls`
+ *  already works, but for systems that live outside `Aircraft` (§ plan:
+ *  "a parallel SystemsControls lives with SystemsState"). Both the
+ *  keyboard/mouse flight controls (`pollControls`) and the 3D cockpit
+ *  click/drag (`cockpitInteraction`) write into this and `aircraft.controls`
+ *  side by side — this task adds a second input path, it doesn't replace
+ *  the first. */
+const systemsControls: {
+  masterBattery: boolean
+  masterAlternator: boolean
+  avionicsSwitch: boolean
+  pitotHeat: boolean
+  magneto: MagnetoPosition
+  starterEngaged: boolean
+  fuelSelector: FuelSelector
+  boostPumpOn: boolean
+} = {
+  masterBattery: true,
+  masterAlternator: true,
+  avionicsSwitch: true,
+  pitotHeat: false,
+  magneto: 'both',
+  starterEngaged: false,
+  fuelSelector: 'BOTH',
+  boostPumpOn: false,
+}
+
+/** Scenario/failure flags — the debug-hook side of the failures the phase
+ *  plan calls out (`__ohFail`); no in-sim UI to trigger these yet (that's
+ *  Phase 9 per the phase plan's recorded cuts). */
+const failures = { alternatorFailed: false, icingConditions: false, staticBlocked: false }
 let parkingBrake = false
 // Default OFF per §17 ("assists default OFF") — the ground-yaw hold is
 // verified (±5.7° drift, within tolerance), but the airborne climb-hold
@@ -185,7 +246,8 @@ function handleDiscreteKeys(): void {
   }
   if (input.wasPressed('KeyX')) assistOn = !assistOn
   if (input.wasPressed('KeyC')) {
-    cameraMode = cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'free' : 'chase'
+    cameraMode =
+      cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'free' : cameraMode === 'free' ? 'cockpit' : 'chase'
   }
   if (input.wasPressed('KeyF')) c.flapsIndex = Math.min(c.flapsIndex + 1, 3)
   if (input.wasPressed('KeyG')) c.flapsIndex = Math.max(c.flapsIndex - 1, 0)
@@ -326,6 +388,37 @@ function advanceFrame(elapsed: number, now: number): void {
     loop.advance(chunk, (dt) => {
       wind.step(dt, aircraft.windNed)
       aircraft.step(dt)
+
+      // ---- systems (Phase 3 §8) — fixed-timestep, same cadence as
+      // aircraft.step. Order matters: fuel's `fuelFlowing` must be fresh
+      // before engine-start reads it, and engine-start's status must be
+      // fresh before electrical reads `aircraft.engineRunning`.
+      stepFuel(fuelState, dt, {
+        selector: systemsControls.fuelSelector,
+        boostPumpOn: systemsControls.boostPumpOn,
+        demandKgS: aircraft.prop.fuelFlowKgS,
+      })
+      stepEngineStart(engineStartState, dt, {
+        masterBattery: systemsControls.masterBattery,
+        starterEngaged: systemsControls.starterEngaged,
+        magneto: systemsControls.magneto,
+        mixtureRich: aircraft.controls.mixture > 0.9,
+        throttleFrac: aircraft.controls.throttle,
+        fuelAvailable: fuelState.fuelFlowing,
+        hotEngine: false,
+        floodedEngine: false,
+        primed: false,
+      })
+      aircraft.engineRunning = engineStartState.status === 'running'
+      stepElectrical(electricalState, dt, {
+        masterBattery: systemsControls.masterBattery,
+        masterAlternator: systemsControls.masterAlternator,
+        avionicsSwitch: systemsControls.avionicsSwitch,
+        alternatorFailed: failures.alternatorFailed,
+        engineRunning: aircraft.engineRunning,
+      })
+      const oatC = isa(Math.max(aircraft.data.altitudeFt, 0) * FT).temperatureK - 273.15
+      stepEngineTemps(engineTemps, dt, aircraft.data.rpm, C172S.redlineRpm, aircraft.engineRunning, oatC)
     })
     remaining -= chunk
   }
@@ -350,7 +443,100 @@ function advanceFrame(elapsed: number, now: number): void {
 
   if (cameraMode === 'chase') chase.update(elapsed, mesh.group.position, (d.headingDeg * Math.PI) / 180)
   else if (cameraMode === 'orbit') orbit.update(input, mesh.group.position)
-  else freeCam.update(elapsed, input)
+  else if (cameraMode === 'cockpit') {
+    // The shared camera's default near plane (0.5 m, `scene.ts`) is tuned
+    // for exterior views of a ~2 m aircraft — every cockpit control sits
+    // well inside that distance from the eyepoint, so it must shrink while
+    // in this mode or the whole panel clips out of view. Restored on the
+    // else-branch below when leaving cockpit mode.
+    if (camera.near !== COCKPIT_NEAR) {
+      camera.near = COCKPIT_NEAR
+      camera.updateProjectionMatrix()
+    }
+    cockpitInteraction.update(input, cockpit, systemsControls, aircraft.controls)
+    cockpitCam.update(
+      mesh.group.position,
+      (d.headingDeg * Math.PI) / 180,
+      (d.pitchDeg * Math.PI) / 180,
+      (d.rollDeg * Math.PI) / 180,
+      input,
+      !cockpitInteraction.isDraggingControl,
+    )
+  } else {
+    if (camera.near !== DEFAULT_NEAR) {
+      camera.near = DEFAULT_NEAR
+      camera.updateProjectionMatrix()
+    }
+    freeCam.update(elapsed, input)
+  }
+
+  const switchStates: Record<SwitchId, boolean> = {
+    masterBattery: systemsControls.masterBattery,
+    masterAlternator: systemsControls.masterAlternator,
+    avionicsSwitch: systemsControls.avionicsSwitch,
+    pitotHeat: systemsControls.pitotHeat,
+  }
+  updateCockpitControls(
+    cockpit,
+    switchStates,
+    aircraft.controls.throttle,
+    aircraft.controls.mixture,
+    aircraft.controls.flapsIndex,
+    aircraft.controls.trim,
+    d.pitchDeg,
+    d.rollDeg,
+  )
+  const pitotReadings = pitotSystem.step({
+    trueIasKt: d.kias,
+    trueAltFt: d.altitudeFt,
+    trueVsiFpm: d.verticalSpeedFpm,
+    pitotHeatOn: systemsControls.pitotHeat,
+    icingConditions: failures.icingConditions,
+    staticBlocked: failures.staticBlocked,
+  })
+  const annunciations: string[] = []
+  if (!electricalState.mainBusPowered) annunciations.push('AVIONICS BUS OFF')
+  if (failures.alternatorFailed) annunciations.push('ALTERNATOR FAIL')
+  if (fuelState.lowFuelFlag) annunciations.push('FUEL LOW')
+  if (!fuelState.fuelFlowing) annunciations.push('FUEL STARV')
+  updateCockpitDisplays(
+    cockpit,
+    {
+      iasKt: pitotReadings.iasKt,
+      iasTrendKtPerS: 0,
+      pitchDeg: d.pitchDeg,
+      rollDeg: d.rollDeg,
+      slipSkidDeg: d.betaDeg,
+      altitudeFt: pitotReadings.altFt,
+      verticalSpeedFpm: pitotReadings.vsiFpm,
+      baroInHg: 29.92,
+      headingDeg: d.headingDeg,
+      headingBugDeg: d.headingDeg,
+      windDirDeg: 0,
+      windSpeedKt: Math.hypot(aircraft.windNed.x, aircraft.windNed.y) / KT,
+      ktas: d.ktas,
+      groundSpeedKt: d.groundSpeedKt,
+      oatC: isa(Math.max(d.altitudeFt, 0) * FT).temperatureK - 273.15,
+      nav1: { activeMhz: 110.0, standbyMhz: 115.0 },
+      com1: { activeMhz: 118.0, standbyMhz: 121.5 },
+      squawk: '1200',
+      annunciations,
+    },
+    {
+      page: 'lean',
+      rpm: d.rpm,
+      fuelFlowGph: d.fuelFlowGph,
+      mixture: aircraft.controls.mixture,
+      engineTemps,
+      fuelLeftKg: fuelState.leftKg,
+      fuelRightKg: fuelState.rightKg,
+      electrical: {
+        busVoltage: electricalState.busVoltage,
+        alternatorAmps: electricalState.alternatorAmps,
+        batteryAmps: electricalState.batteryAmps,
+      },
+    },
+  )
 
   const simDate = new Date(baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000)
   const sunDir = sky.update(simDate, ll.lat, ll.lon)
@@ -449,6 +635,23 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohTime: (hours: number) => {
     scrubSeconds += hours * 3600
   },
+  /** Debug hook (Phase 3 §8 plan) to trigger a systems failure for
+   *  verification, ahead of a real failures-menu UI (Phase 9). Recognized
+   *  names: 'alternator', 'icing', 'staticBlock'; any other name (or a
+   *  falsy `on`) clears/no-ops. */
+  __ohFail: (name: string, on = true) => {
+    if (name === 'alternator') failures.alternatorFailed = on
+    else if (name === 'icing') failures.icingConditions = on
+    else if (name === 'staticBlock') failures.staticBlocked = on
+  },
+  __ohSystems: () => ({
+    electrical: { ...electricalState },
+    fuel: { ...fuelState },
+    engineStart: { ...engineStartState },
+    engineTemps: { ...engineTemps },
+    controls: { ...systemsControls },
+    failures: { ...failures },
+  }),
 })
 
 void distanceM

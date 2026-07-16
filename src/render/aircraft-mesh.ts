@@ -16,7 +16,26 @@ export interface AircraftMesh {
 const WHITE = new THREE.MeshStandardMaterial({ color: 0xf2f3f5, roughness: 0.55, metalness: 0.1 })
 const RED = new THREE.MeshStandardMaterial({ color: 0xa31621, roughness: 0.6 })
 const DARK = new THREE.MeshStandardMaterial({ color: 0x1a1d20, roughness: 0.9 })
-const GLASS = new THREE.MeshStandardMaterial({ color: 0x223138, roughness: 0.15, metalness: 0.4 })
+// Semi-transparent (was fully opaque): this box is a flat "windshield hint",
+// never meant to be looked at face-on — from outside it only ever appeared
+// as a small, oblique, mostly-shadowed sliver, so its opacity never
+// mattered. Task 2d's cockpit camera is the first view that looks straight
+// through it, filling much of the frame, and this face happens to point
+// away from the sun (dim hemisphere-ambient-only lighting, no direct
+// light), so as an opaque solid it rendered as a large flat black void
+// rather than a windshield. Real glass is transmissive; making this one
+// partially see-through (rather than juicing its lit brightness, which
+// would just be a differently-wrong flat color) lets the actual sky/exterior
+// show through, which is what a windshield is supposed to do. metalness 0
+// (was 0.4) also avoids `MeshStandardMaterial`'s "black metal with no
+// envMap" trap for the still-visible tinted portion.
+const GLASS = new THREE.MeshStandardMaterial({
+  color: 0x223138,
+  roughness: 0.15,
+  metalness: 0,
+  transparent: true,
+  opacity: 0.25,
+})
 
 /** Place a mesh using BODY coordinates (x fwd, y right, z down). */
 function placeBody(m: THREE.Object3D, x: number, y: number, z: number): void {
@@ -39,8 +58,17 @@ export function buildC172(): AircraftMesh {
   add(tail, -2.5, 0, -0.28)
   const cowl = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.85, 0.85), RED)
   add(cowl, 1.75, 0, -0.05)
-  // Windshield hint.
-  add(new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.55, 0.6), GLASS), 1.05, 0, -0.72)
+  // Windshield hint. Depth (fore-aft) was 0.6, spanning body-x 0.75-1.35 —
+  // fine as a small oblique sliver seen from outside, but that range
+  // physically overlaps `cockpit.ts`'s panel bezel/PFD/MFD (body-x
+  // ~0.99-1.05), which Task 2d's cockpit camera looks at head-on for the
+  // first time. With this box now semi-transparent (see GLASS, above) so it
+  // doesn't read as a solid black void, that overlap meant the glass sat
+  // *in front of* the avionics screens from the pilot's eyepoint, tinting/
+  // dimming them. Shrunk to 0.12 and moved forward so its aft face (~1.06)
+  // clears the PFD/MFD screen plane (~0.99) — still overlaps the thin bezel
+  // box by a hair, but that's opaque and unaffected by any of this.
+  add(new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.55, 0.12), GLASS), 1.12, 0, -0.72)
 
   // Wing (high, slight visible thickness), struts.
   add(new THREE.Mesh(new THREE.BoxGeometry(11.0, 0.15, 1.5), WHITE), 0.25, 0, -1.05)
