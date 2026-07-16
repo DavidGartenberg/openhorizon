@@ -180,13 +180,24 @@ export function activeLegProgress(legs: Leg[], aircraft: LatLon, startIndex = 0)
  * perpendicular projection sits, measured from `leg.from`. Uses the
  * companion formula to `crossTrackDistanceM` (same Aviation Formulary
  * source): along-track = acos( cos(dist13) / cos(xtd/R) ) * R.
+ *
+ * Sign ambiguity (documented in the Aviation Formulary itself): acos always
+ * returns a value in [0, pi], so this formula alone can never report a
+ * negative distance — it cannot distinguish "ahead of `from`" from "behind
+ * `from`" on the course line. The Formulary's fix is to separately compare
+ * the bearing from `from` to `point` against the leg's course: if they
+ * differ by more than 90 degrees, the point's projection falls behind
+ * `from`, and the along-track distance must be negated.
  */
 export function alongTrackDistanceM(leg: Leg, point: LatLon): number {
   const from: LatLon = { lat: leg.from.lat, lon: leg.from.lon }
   const dist13 = distanceM(from, point) / EARTH_R_M
   const xtd = crossTrackDistanceM(leg, point) / EARTH_R_M
   const cosArg = clamp(Math.cos(dist13) / Math.cos(xtd), -1, 1)
-  return Math.acos(cosArg) * EARTH_R_M
+  const magnitude = Math.acos(cosArg) * EARTH_R_M
+  const brg13 = bearingDeg(from, point)
+  const courseDiff = Math.abs(((brg13 - leg.courseDeg + 540) % 360) - 180)
+  return courseDiff > 90 ? -magnitude : magnitude
 }
 
 // ---- turn anticipation ----

@@ -132,6 +132,32 @@ describe('cross-track error', () => {
     const expected = leg.distanceM / 2
     expect(alongTrack).toBeCloseTo(expected, -1)
   })
+
+  it('along-track distance is negative for a point behind the leg\'s start (sign-ambiguity fix)', () => {
+    // Leg A(0,0) -> B(1,0), course ~0 deg (north). Aircraft at (-0.5, 0) is
+    // ~55.6 km south of A, i.e. behind the start of the leg. The raw
+    // acos-based formula is sign-blind (acos in [0, pi] only), so without
+    // the bearing-vs-course check this would incorrectly read positive.
+    const from: Waypoint = { ident: 'A', lat: 0, lon: 0 }
+    const to: Waypoint = { ident: 'B', lat: 1, lon: 0 }
+    const leg: Leg = makeLeg(from, to)
+    const aircraft: LatLon = { lat: -0.5, lon: 0 }
+    const alongTrack = alongTrackDistanceM(leg, aircraft)
+    expect(alongTrack).toBeLessThan(0)
+    expect(alongTrack).toBeCloseTo(-55_660, -3)
+  })
+
+  it('along-track distance is positive for a point ahead of the leg\'s start, near the boundary', () => {
+    // A point just past the perpendicular-from-start boundary (slightly
+    // ahead, near lat=0) should still read positive/near-zero, not flip
+    // sign — confidence check on the 90-degree boundary condition.
+    const from: Waypoint = { ident: 'A', lat: 0, lon: 0 }
+    const to: Waypoint = { ident: 'B', lat: 1, lon: 0 }
+    const leg: Leg = makeLeg(from, to)
+    const aircraft: LatLon = { lat: 0.01, lon: 0 } // just ahead of A
+    const alongTrack = alongTrackDistanceM(leg, aircraft)
+    expect(alongTrack).toBeGreaterThan(0)
+  })
 })
 
 describe('active-leg tracking', () => {
