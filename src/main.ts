@@ -4,7 +4,7 @@ import { WindModel } from './sim/wind'
 import { trim } from './sim/trim'
 import { FT, KT, isa, kcasFromKias } from './sim/atmosphere'
 import { C172S } from './sim/aircraft/c172s'
-import { bearingDeg, distanceM } from './math/geo'
+import { bearingDeg, distanceM, windDirFromNed } from './math/geo'
 import { createScene } from './render/scene'
 import { SkyDome } from './render/sky'
 import { Ocean } from './render/ocean'
@@ -72,7 +72,12 @@ const COCKPIT_NEAR = 0.02 // cockpit controls sit centimeters from the eyepoint
 const electricalState = makeElectricalState()
 const fuelState = makeFuelState()
 const pitotSystem = new PitotStaticSystem()
-const engineStartState: EngineStartState = { status: 'running', rpm: 700, crankTimeS: 0 }
+// Boot default: engine already running (see comment above) rather than the
+// cold-and-dark default `makeEngineStartState()` would give. Shared with
+// `resetSystemsState` below so respawn seeds the exact same values instead
+// of a second, hand-maintained "normal" state.
+const ENGINE_START_BOOT_RUNNING: EngineStartState = { status: 'running', rpm: 700, crankTimeS: 0 }
+const engineStartState: EngineStartState = { ...ENGINE_START_BOOT_RUNNING }
 const engineTemps = makeEngineTemps()
 
 /** Cockpit switch/knob/selector state — mirrors how `aircraft.controls`
@@ -82,7 +87,7 @@ const engineTemps = makeEngineTemps()
  *  click/drag (`cockpitInteraction`) write into this and `aircraft.controls`
  *  side by side — this task adds a second input path, it doesn't replace
  *  the first. */
-const systemsControls: {
+type SystemsControls = {
   masterBattery: boolean
   masterAlternator: boolean
   avionicsSwitch: boolean
@@ -91,7 +96,10 @@ const systemsControls: {
   starterEngaged: boolean
   fuelSelector: FuelSelector
   boostPumpOn: boolean
-} = {
+}
+// Shared with `resetSystemsState` below so a respawn puts these switches
+// back to the same "just started" defaults the sim boots with.
+const SYSTEMS_CONTROLS_DEFAULT: SystemsControls = {
   masterBattery: true,
   masterAlternator: true,
   avionicsSwitch: true,
@@ -101,11 +109,31 @@ const systemsControls: {
   fuelSelector: 'BOTH',
   boostPumpOn: false,
 }
+const systemsControls: SystemsControls = { ...SYSTEMS_CONTROLS_DEFAULT }
 
 /** Scenario/failure flags — the debug-hook side of the failures the phase
  *  plan calls out (`__ohFail`); no in-sim UI to trigger these yet (that's
  *  Phase 9 per the phase plan's recorded cuts). */
 const failures = { alternatorFailed: false, icingConditions: false, staticBlocked: false }
+
+/** Resets every Phase 3 §8 systems-state object to its boot-time default.
+ *  Called on respawn (KeyR / search-spawn) so draining a tank, killing the
+ *  battery, or stopping the engine via the cockpit switches doesn't leave a
+ *  fresh airframe stuck with stale/dead systems state (§ task review finding:
+ *  respawn didn't reset `fuelState`/`electricalState`/`engineStartState`,
+ *  only `Aircraft`'s own fields). Mirrors the module-scope boot seeding above
+ *  exactly (reuses the same defaults/constants) rather than inventing a
+ *  second "normal" state. */
+function resetSystemsState(): void {
+  Object.assign(fuelState, makeFuelState())
+  Object.assign(electricalState, makeElectricalState())
+  Object.assign(engineStartState, ENGINE_START_BOOT_RUNNING)
+  Object.assign(engineTemps, makeEngineTemps())
+  Object.assign(systemsControls, SYSTEMS_CONTROLS_DEFAULT)
+  failures.alternatorFailed = false
+  failures.icingConditions = false
+  failures.staticBlocked = false
+}
 let parkingBrake = false
 // Default OFF per §17 ("assists default OFF") — the ground-yaw hold is
 // verified (±5.7° drift, within tolerance), but the airborne climb-hold
@@ -136,6 +164,7 @@ function pickRunway(ap: AirportData, ident?: string): { r: RunwayData; fromHigh:
 
 function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): void {
   aircraft.crashed = false
+  resetSystemsState()
   const { r, fromHigh } = pickRunway(ap, rwyIdent)
   const thr = fromHigh ? { lat: r.la2, lon: r.lo2, e: r.e2 } : { lat: r.la1, lon: r.lo1, e: r.e1 }
   const far = fromHigh ? { lat: r.la1, lon: r.lo1, e: r.e1 } : { lat: r.la2, lon: r.lo2, e: r.e2 }
@@ -398,6 +427,18 @@ function advanceFrame(elapsed: number, now: number): void {
         boostPumpOn: systemsControls.boostPumpOn,
         demandKgS: aircraft.prop.fuelFlowKgS,
       })
+      // `fuelState.leftKg`/`rightKg` (this file) is the authoritative fuel
+      // ledger — it's the only one that knows about the selector/starvation
+      // logic (a tank can run dry while the other is full). `aircraft.fuelKg`
+      // (src/sim/aircraft.ts) is a single-pool mirror that `aircraft.step()`
+      // above already decremented by the same `prop.fuelFlowKgS * dt` this
+      // tick, blind to per-tank state; overwriting it here from the fresh
+      // `fuelState` sum makes it track the authoritative ledger exactly
+      // (mass/propulsion gating in Aircraft still reads `fuelKg` as before)
+      // instead of drifting as an independent second ledger. Not a double
+      // decrement: this replaces aircraft.step()'s decrement for the tick
+      // rather than subtracting again.
+      aircraft.fuelKg = fuelState.leftKg + fuelState.rightKg
       stepEngineStart(engineStartState, dt, {
         masterBattery: systemsControls.masterBattery,
         starterEngaged: systemsControls.starterEngaged,
@@ -512,7 +553,7 @@ function advanceFrame(elapsed: number, now: number): void {
       baroInHg: 29.92,
       headingDeg: d.headingDeg,
       headingBugDeg: d.headingDeg,
-      windDirDeg: 0,
+      windDirDeg: windDirFromNed(aircraft.windNed),
       windSpeedKt: Math.hypot(aircraft.windNed.x, aircraft.windNed.y) / KT,
       ktas: d.ktas,
       groundSpeedKt: d.groundSpeedKt,

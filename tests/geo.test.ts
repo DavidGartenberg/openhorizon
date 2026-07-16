@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   lonToTileX, latToTileY, tileXToLon, tileYToLat, toNedMeters, fromNedMeters,
   terrariumDecode, curvatureDrop, sampleGrid, flattenForRunway, distanceM, bearingDeg,
+  windDirFromNed,
 } from '../src/math/geo'
 // @ts-expect-error — plain .mjs module without type declarations
 import { splitCsvLine, buildUsAirports } from '../server/parse.mjs'
+import { WindModel } from '../src/sim/wind'
 
 describe('geo math', () => {
   it('tile ↔ lat/lon roundtrips', () => {
@@ -49,6 +51,29 @@ describe('geo math', () => {
     const mid = flattenForRunway(100, 0, 130, -500, 0, 500, 0, 20, 20, 25)
     expect(mid).toBeGreaterThan(20)
     expect(mid).toBeLessThan(100)
+  })
+
+  it('windDirFromNed: recovers the "blowing FROM" direction a wind box shows', () => {
+    // North wind (blowing FROM the north, i.e. TOWARD the south) → NED
+    // vector points south (negative north component) → wind box reads 0/360.
+    expect(windDirFromNed({ x: -1, y: 0 })).toBeCloseTo(0, 6)
+    // East wind (FROM the east, blowing toward the west) → vector points
+    // west (negative east component) → wind box reads 090.
+    expect(windDirFromNed({ x: 0, y: -1 })).toBeCloseTo(90, 6)
+    // South wind (FROM the south, blowing toward the north) → vector points
+    // north → wind box reads 180.
+    expect(windDirFromNed({ x: 1, y: 0 })).toBeCloseTo(180, 6)
+    // West wind (FROM the west, blowing toward the east) → vector points
+    // east → wind box reads 270.
+    expect(windDirFromNed({ x: 0, y: 1 })).toBeCloseTo(270, 6)
+  })
+
+  it('windDirFromNed round-trips through WindModel.setSteady', () => {
+    const wind = new WindModel()
+    wind.setSteady(230, 15)
+    const out = { x: 0, y: 0, z: 0 }
+    wind.step(0, out) // dt=0: no turbulence growth, pure steady component
+    expect(windDirFromNed(out)).toBeCloseTo(230, 3)
   })
 
   it('distance/bearing sanity: KHAF→KSFO ≈ 9 nm, NE-ish', () => {

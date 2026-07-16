@@ -98,6 +98,19 @@ export function distanceM(a: LatLon, b: LatLon): number {
   return 2 * EARTH_R * Math.asin(Math.sqrt(s))
 }
 
+/**
+ * Direction wind is blowing FROM (deg true) given its NED (x=north, y=east)
+ * velocity vector — the "wind box" convention pilots expect (matches how
+ * METARs report wind direction). This is the inverse of
+ * `WindModel.setSteady`, which builds the NED vector from a "from" direction
+ * by rotating it 180° to the "blowing toward" direction before projecting.
+ * A vector that points due south (blowing toward the south, i.e. a wind
+ * FROM the north) returns 0/360, not 180.
+ */
+export function windDirFromNed(windNed: { x: number; y: number }): number {
+  return ((Math.atan2(windNed.y, windNed.x) * 180) / Math.PI + 180 + 360) % 360
+}
+
 /** Initial bearing a→b, degrees true. */
 export function bearingDeg(a: LatLon, b: LatLon): number {
   const rad = Math.PI / 180

@@ -219,3 +219,151 @@ get a trustworthy screenshot.
   (moving the screens 2 cm proud of the bezel) sidesteps it for this
   specific pair without touching the shared near/far setup, which would be
   a larger, riskier change outside this task's scope.
+
+## Review fix-pass (three Important findings)
+
+Fixes for three "Important" findings from the task review of `dd67513`. All
+three fixes live in `src/main.ts` (plus one small, pure helper extracted to
+`src/math/geo.ts`); no flight-dynamics/tuning files touched.
+
+### Finding 1 — wind direction hardcoded to 0 on the PFD
+
+`main.ts`'s `updateCockpitDisplays` call passed `windDirDeg: 0` literally,
+while `windSpeedKt` right next to it was correctly computed from
+`aircraft.windNed`. Root cause: nobody had derived the "from" direction from
+the NED wind vector.
+
+Fix: added a pure helper, `windDirFromNed(windNed: { x, y })`, to
+`src/math/geo.ts` (next to `bearingDeg`, same file/convention family) and
+wired it into `main.ts`: `windDirDeg: windDirFromNed(aircraft.windNed)`.
+
+Direction convention check: `WindModel.setSteady(directionFromDeg, speedKt)`
+(`src/sim/wind.ts`) rotates the "from" input 180° before building the NED
+vector (`toRad = (directionFromDeg + 180) * …`), i.e. the vector it produces
+points in the direction the wind is blowing *toward*. `windDirFromNed` inverts
+that: `atan2(y, x)` (matching the `headingDeg` computation pattern already
+used in `src/sim/aircraft.ts`'s `(euler.yaw * 180 / Math.PI + 360) % 360`)
+gives the "toward" bearing of the vector, and adding 180° converts it back to
+the "from" convention a wind box/METAR reports. Verified: a north wind
+(`windNed` pointing south, i.e. `{x: -1, y: 0}`) now reads 000°/360°, not
+180°.
+
+Added `tests/geo.test.ts` cases for `windDirFromNed` (cardinal directions,
+plus a round-trip through `WindModel.setSteady` at dt=0 to keep it
+deterministic).
+
+### Finding 2 — respawn didn't reset the new systems state
+
+`fuelState`, `electricalState`, `engineStartState` (plus `systemsControls`
+and `failures`) are module-scope objects in `main.ts` that `spawnAtAirport`
+never touched, so draining a tank, killing the battery, or stopping the
+engine via the cockpit switches left that state dead/stale across a respawn
+(KeyR or a search-spawn), even though `Aircraft`'s own fields (`fuelKg`,
+position, controls) reset fine.
+
+Fix: added `resetSystemsState()` in `main.ts`, called at the very top of
+`spawnAtAirport` (covers both the KeyR handler and `handleSearch`, since both
+paths funnel through `spawnAtAirport`). It:
+- `Object.assign(fuelState, makeFuelState())` — full tanks, selector logic
+  state cleared (`_lastSelector: null`, `fuelFlowing: false` until the first
+  post-spawn tick sets it true again, matching boot behavior).
+- `Object.assign(electricalState, makeElectricalState())` — full battery;
+  `stepElectrical` normalizes `busVoltage`/`mainBusPowered` on the next tick,
+  exactly as it does at boot (boot also just calls `makeElectricalState()`
+  and lets the first tick settle it — no second "normal" state invented).
+- `Object.assign(engineStartState, ENGINE_START_BOOT_RUNNING)` — a new
+  shared constant (`{ status: 'running', rpm: 700, crankTimeS: 0 }`, hoisted
+  out of the previous inline object literal) so boot seeding and respawn
+  reset are provably the same values, not two hand-maintained copies.
+- `Object.assign(systemsControls, SYSTEMS_CONTROLS_DEFAULT)` — a new shared
+  constant for the same reason (battery/alternator/avionics on, pitot heat
+  off, magneto BOTH, fuel selector BOTH, boost pump off, starter
+  disengaged).
+- `failures.alternatorFailed/icingConditions/staticBlocked` all cleared —
+  restarting the sim should mean a genuinely fresh airplane, matching the
+  spirit of `spawnAtAirport`'s existing `aircraft.crashed = false`.
+- Also resets `engineTemps` via `makeEngineTemps()` for the same
+  fresh-airplane reasoning (not explicitly called out in the finding, but a
+  stale hot CHT/oil temp surviving a respawn is the same class of bug).
+
+Browser-verified: `__ohFail('alternator', true)` then stepping showed
+`batteryAmps` going negative (discharging, no alternator contribution) via
+`__ohSystems()`; dispatching a `KeyR` keydown/keyup and stepping again showed
+`failures.alternatorFailed: false`, `electricalState.batteryAh` back to
+`25.5` (full)/`busVoltage: 28` (alternator-up), and `fuelState.leftKg`/
+`rightKg` back to `72.12` (full tank) each — and the PFD screenshot post-
+respawn showed no annunciations and `FUEL L/R GAL 26.5`, `VOLTS 28.0`.
+
+### Finding 3 — two unreconciled fuel-mass ledgers
+
+`aircraft.fuelKg` (single pool, decremented inside `Aircraft.step()` at
+`src/sim/aircraft.ts:180` by `prop.fuelFlowKgS * dt`, and driving `massKg`/
+propulsion gating) and `fuelState.leftKg`/`rightKg` (decremented independently
+by `stepFuel` in `main.ts`'s loop, using the *same* `prop.fuelFlowKgS * dt`
+demand, but with per-tank/selector/starvation logic `Aircraft` knows nothing
+about) had no reconciliation — two sources of truth for "fuel remaining"
+that could diverge the moment a tank ran dry or the selector wasn't BOTH.
+
+Fix (minimal footprint, no `Aircraft` internals touched, as constrained):
+in the fixed-timestep loop in `main.ts`, immediately after `stepFuel(fuelState,
+dt, …)` returns, added:
+
+```ts
+aircraft.fuelKg = fuelState.leftKg + fuelState.rightKg
+```
+
+with a comment explaining that `fuelState` is authoritative (it's the only
+ledger that models per-tank starvation) and `aircraft.fuelKg` is now a
+derived mirror that `Aircraft.step()` still consumes unchanged for mass/
+propulsion gating.
+
+Double-decrement check (traced the actual per-tick call order): each fixed
+tick runs `aircraft.step(dt)` (decrements `aircraft.fuelKg` by
+`prop.fuelFlowKgS * dt`, computed from the *previous* tick's already-synced
+`aircraft.fuelKg`) → `stepFuel(fuelState, dt, …)` (decrements
+`fuelState.leftKg/rightKg` by the same demand, gated by selector/tank-empty
+logic) → the new sync line overwrites `aircraft.fuelKg` from the fresh
+`fuelState` sum. The overwrite *replaces* `aircraft.step()`'s decrement for
+that tick rather than stacking a second subtraction on top of it, so there's
+no double-count — `aircraft.fuelKg` after the tick equals exactly what
+`fuelState` says is left, and next tick's `aircraft.step()` decrements from
+that correct baseline. This also incidentally fixes a related pre-existing
+gap: `spawnOnGround`/`applyTrimState` in `aircraft.ts` never reset
+`aircraft.fuelKg` on respawn either — now that it's a mirror of `fuelState`
+(which Finding 2's `resetSystemsState()` does reset), it comes back full on
+respawn too, for free.
+
+### Verification
+
+- `npx tsc --noEmit` — clean, no errors.
+- `npm test` — 141/141 passing (139 pre-existing + 2 new `windDirFromNed`
+  cases in `tests/geo.test.ts`). `tests/sim-purity.test.ts` stayed green
+  (the only `src/math` change, `windDirFromNed`, is a pure function with no
+  three.js/DOM dependency).
+- Browser-verified via the Browser pane against the running dev server
+  (`http://localhost:5173`):
+  - `__ohWind(230, 15)` then stepping the sim and switching to cockpit
+    camera showed the PFD wind box reading exactly `WIND 230°/15`, matching
+    the debug hook's input value (not just "non-zero").
+  - `__ohFail('alternator', true)` → `__ohSystems()` showed the electrical
+    model discharging the battery (`batteryAmps < 0`, `alternatorAmps: 0`) —
+    confirms the failure is live.
+  - Dispatched a synthetic `KeyR` keydown/keyup (respawn) → `__ohSystems()`
+    showed `failures.alternatorFailed: false`, electrical back to full/
+    alternator-up, and fuel tanks back to full capacity; the PFD screenshot
+    post-respawn showed no annunciations, `FUEL L/R GAL 26.5`, `VOLTS 28.0`.
+  - Note: the Browser pane's synthetic `KeyboardEvent`s dispatched via the
+    `computer` tool's native key-press path were flaky in this headless
+    environment (camera-mode cycling didn't always advance); switching to
+    `window.dispatchEvent(new KeyboardEvent(...))` via the JS eval tool was
+    reliable and is what the verification above used. This is an artifact of
+    the test environment, not a product bug — worth knowing if a future pass
+    tries to browser-verify keyboard-driven behavior here.
+
+### Files changed
+
+- `src/main.ts` — wind direction wiring (Finding 1), `resetSystemsState()` +
+  its call site in `spawnAtAirport` plus the two new shared default
+  constants (Finding 2), fuel-ledger sync line + comment (Finding 3).
+- `src/math/geo.ts` — added `windDirFromNed` pure helper.
+- `tests/geo.test.ts` — added `windDirFromNed` unit tests.
