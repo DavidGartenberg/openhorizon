@@ -5,7 +5,7 @@ import {
   windDirFromNed,
 } from '../src/math/geo'
 // @ts-expect-error — plain .mjs module without type declarations
-import { splitCsvLine, buildUsAirports } from '../server/parse.mjs'
+import { splitCsvLine, buildUsAirports, buildUsNavaids } from '../server/parse.mjs'
 import { WindModel } from '../src/sim/wind'
 
 describe('geo math', () => {
@@ -109,5 +109,44 @@ describe('OurAirports parsing', () => {
     expect(ap.r[0].s).toBe(0) // asphalt = hard
     expect(ap.r[0].lt).toBe(1)
     expect(ap.r[0].li).toBe('12')
+  })
+
+  it('builds compact US navaids: VOR-DME, plain VOR, and NDB', () => {
+    const header =
+      'id,filename,ident,name,type,frequency_khz,latitude_deg,longitude_deg,elevation_ft,iso_country,' +
+      'dme_frequency_khz,dme_channel,dme_latitude_deg,dme_longitude_deg,dme_elevation_ft,' +
+      'slaved_variation_deg,magnetic_variation_deg,usageType,power,associated_airport\n'
+    // Real-world-shaped rows (SFO VOR-DME numbers match the actual live
+    // OurAirports data fetched during this task).
+    const rows =
+      '93531,"San_Francisco_VOR-DME_US","SFO","San Francisco","VOR-DME",115800,37.6195,-122.374,13,"US",' +
+      '115800,"105X",,,,17.001,14.423,"BOTH","MEDIUM","KSFO"\n' +
+      '85399,"Allendale_VOR_US","ALD","Allendale","VOR",116700,33.0125,-81.2922,190,"US",,,,,,-1.001,-6.129,"LO","MEDIUM",\n' +
+      '85050,"Williams_Harbour_NDB_CA","1A","Williams Harbour","NDB",373,52.5589,-55.7822,70,"CA",,,,,,,-23.072,"LO","MEDIUM","CCA6"\n' +
+      '85264,"Mount_Moffett_NDB-DME_US","ADK","Mount Moffett","NDB-DME",530,51.8719,-176.676,332,"US",' +
+      '114000,"087X",51.8713,-176.674,379,,6.285,"BOTH","MEDIUM","PADK"\n'
+    const out = buildUsNavaids(header + rows)
+    // The CA row (Williams Harbour) must be filtered out — US only.
+    expect(out.map((n: any) => n.i).sort()).toEqual(['ADK', 'ALD', 'SFO'])
+
+    const sfo = out.find((n: any) => n.i === 'SFO')
+    expect(sfo.t).toBe(1) // VOR-DME
+    expect(sfo.f).toBe(115800) // stored kHz == real 115.800 MHz VOR freq
+    expect(sfo.la).toBeCloseTo(37.6195, 4)
+    // DME co-located (blank dme_lat/lon in the source) falls back to the
+    // station's own position rather than being dropped.
+    expect(sfo.dla).toBeCloseTo(sfo.la, 5)
+    expect(sfo.dlo).toBeCloseTo(sfo.lo, 5)
+
+    const ald = out.find((n: any) => n.i === 'ALD')
+    expect(ald.t).toBe(0) // plain VOR
+    expect(ald.dla).toBeUndefined() // no DME component at all
+
+    const adk = out.find((n: any) => n.i === 'ADK')
+    expect(adk.t).toBe(6) // NDB-DME
+    expect(adk.f).toBe(530) // NDB frequency stays real kHz, not scaled
+    // ADK has a genuinely distinct DME antenna position in the source data.
+    expect(adk.dla).toBeCloseTo(51.8713, 4)
+    expect(adk.dla).not.toBeCloseTo(adk.la, 3)
   })
 })

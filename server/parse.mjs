@@ -109,3 +109,71 @@ export function buildUsAirports(airportsCsv, runwaysCsv) {
 
   return [...byIdent.values()].filter((ap) => ap.r.length > 0)
 }
+
+/**
+ * OurAirports navaids.csv → compact US VOR/NDB JSON (pure, unit-tested).
+ * Real schema (confirmed against the live CSV, Phase 4 Task 1):
+ *   id, filename, ident, name, type, frequency_khz, latitude_deg,
+ *   longitude_deg, elevation_ft, iso_country, dme_frequency_khz,
+ *   dme_channel, dme_latitude_deg, dme_longitude_deg, dme_elevation_ft,
+ *   slaved_variation_deg, magnetic_variation_deg, usageType, power,
+ *   associated_airport
+ * `type` observed values (US rows): VOR, VOR-DME, VORTAC, TACAN, DME, NDB,
+ * NDB-DME. `frequency_khz` is genuinely kHz for every type — a VOR at
+ * 115.800 MHz is stored as 115800, an NDB at 373 kHz is stored as 373, so no
+ * unit correction is needed, only formatting on display (VOR/TACAN divide by
+ * 1000 for MHz, NDB stays as kHz). Most VOR-DME/VORTAC rows have blank
+ * dme_latitude_deg/dme_longitude_deg — that means the DME is co-located with
+ * the VOR (same lat/lon), not that it's missing; only ~29 US rows carry a
+ * distinct DME antenna position, so fall back to the primary lat/lon when
+ * the DME fields are blank.
+ *
+ * Output per navaid: { i: ident, n: name, t: type-code, la, lo, e: elevFt,
+ *   f: frequency_khz (or NDB kHz), dla, dlo, de: DME elevFt (all three only
+ *   present when the station carries a DME/TACAN component), mv: magnetic
+ *   variation deg (signed, station declination) }
+ * `t` type codes: 0 VOR, 1 VOR-DME, 2 VORTAC, 3 TACAN, 4 DME, 5 NDB,
+ * 6 NDB-DME. Unknown/other types are dropped.
+ */
+const NAVAID_TYPE_CODE = {
+  VOR: 0, 'VOR-DME': 1, VORTAC: 2, TACAN: 3, DME: 4, NDB: 5, 'NDB-DME': 6,
+}
+
+/** Does this navaid type carry a DME/TACAN distance component? */
+const HAS_DME = new Set(['VOR-DME', 'VORTAC', 'TACAN', 'DME', 'NDB-DME'])
+
+export function buildUsNavaids(navaidsCsv) {
+  const { idx, rows } = parseCsv(navaidsCsv)
+  const out = []
+  for (const row of rows) {
+    if (row[idx.iso_country] !== 'US') continue
+    const type = row[idx.type]
+    const t = NAVAID_TYPE_CODE[type]
+    if (t === undefined) continue
+    const lat = parseFloat(row[idx.latitude_deg])
+    const lon = parseFloat(row[idx.longitude_deg])
+    if (!isFinite(lat) || !isFinite(lon)) continue
+    const freq = parseFloat(row[idx.frequency_khz])
+    const entry = {
+      i: row[idx.ident],
+      n: row[idx.name],
+      t,
+      la: +lat.toFixed(5),
+      lo: +lon.toFixed(5),
+      e: Math.round(parseFloat(row[idx.elevation_ft]) || 0),
+      f: isFinite(freq) ? freq : 0,
+    }
+    const mv = parseFloat(row[idx.magnetic_variation_deg])
+    if (isFinite(mv)) entry.mv = mv
+    if (HAS_DME.has(type)) {
+      const dLat = parseFloat(row[idx.dme_latitude_deg])
+      const dLon = parseFloat(row[idx.dme_longitude_deg])
+      const dElev = parseFloat(row[idx.dme_elevation_ft])
+      entry.dla = isFinite(dLat) ? +dLat.toFixed(5) : entry.la
+      entry.dlo = isFinite(dLon) ? +dLon.toFixed(5) : entry.lo
+      entry.de = isFinite(dElev) ? Math.round(dElev) : entry.e
+    }
+    out.push(entry)
+  }
+  return out
+}

@@ -6,7 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildUsAirports } from './parse.mjs'
+import { buildUsAirports, buildUsNavaids } from './parse.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 fs.mkdirSync(path.join(cacheDir, 'terrain'), { recursive: true })
@@ -54,6 +54,31 @@ export async function airportsData() {
   return airportsJson
 }
 
+let navaidsJson = null
+
+/** GET /api/navaids.json — compact US VOR/NDB navaids. */
+export async function navaidsData() {
+  if (navaidsJson) return navaidsJson
+  const jsonFile = path.join(cacheDir, 'us-navaids.json')
+  if (fs.existsSync(jsonFile)) {
+    navaidsJson = fs.readFileSync(jsonFile, 'utf8')
+    return navaidsJson
+  }
+  const f = path.join(cacheDir, 'navaids.csv')
+  let navaidsCsv
+  if (fs.existsSync(f)) {
+    navaidsCsv = fs.readFileSync(f, 'utf8')
+  } else {
+    const res = await fetch(`${OA_BASE}/navaids.csv`)
+    if (!res.ok) throw new Error(`navaids.csv: ${res.status}`)
+    navaidsCsv = await res.text()
+    fs.writeFileSync(f, navaidsCsv)
+  }
+  navaidsJson = JSON.stringify(buildUsNavaids(navaidsCsv))
+  fs.writeFileSync(jsonFile, navaidsJson)
+  return navaidsJson
+}
+
 /** Node http-style routing used by both Express and Vite middleware. */
 export async function route(url, res) {
   const terrain = url.match(/^\/proxy\/terrain\/(\d+)\/(\d+)\/(\d+)\.png$/)
@@ -70,6 +95,16 @@ export async function route(url, res) {
     }
     if (url === '/api/airports.json') {
       const json = await airportsData()
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=86400',
+        'Access-Control-Allow-Origin': '*',
+      })
+      res.end(json)
+      return true
+    }
+    if (url === '/api/navaids.json') {
+      const json = await navaidsData()
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Cache-Control': 'public, max-age=86400',
