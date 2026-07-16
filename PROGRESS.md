@@ -19,7 +19,104 @@ Node; add `~/.local/node/bin` to PATH).
 | 0 — Skeleton | ✅ done | 61 fps measured, 14/14 tests green |
 | 1 — Flight model | ✅ done | POH table 10/10, handling 5/5, browser takeoff verified |
 | 2 — The US | ✅ done | real terrain/airports verified, KSFO landing flown, rebase seamless |
-| 3–10 | not started | Phase 3 (cockpit & systems) next |
+| 3 — Cockpit & systems | ✅ done | G1000 PFD/MFD, full systems sim, 3D cockpit, cold-and-dark verified |
+| 4–10 | not started | Phase 4 (nav, autopilot, airspace) next |
+
+## Phase 3 — evidence (2026-07-15)
+
+Plan: `docs/plans/phase-3.md`. Built in 4 reviewed/fixed tasks (2a-2d) plus
+acceptance verification (2e), each with a fresh implementer + independent
+reviewer subagent, following `superpowers:subagent-driven-development`.
+Full task reports: `docs/plans/phase-3-task2a-report.md` through
+`phase-3-task2d-report.md`, plus `phase-3-acceptance-report.md`.
+
+- **Suite: 141/141 tests, tsc clean, sim-purity green.** New systems
+  suites: `tests/systems/{electrical,fuel,pitot,engine-start,engine-temps}.test.ts`,
+  cockpit math suites `tests/cockpit/{pfd,mfd}.test.ts`,
+  `tests/render/cockpit.test.ts`.
+- **Systems sim** (`src/sim/systems/`): 28V electrical bus with
+  alternator-failure battery drain + standby-outlives-main load shed;
+  L/R/BOTH fuel with gravity-feed imbalance, starvation, and restart;
+  pitot-icing/static-blockage instrument misreads (never touches truth
+  data, only what the gauge shows); cold/hot/flooded engine-start state
+  machine with POH-range magneto check; peak-EGT mixture model (smooth,
+  no discontinuities) driving lean-assist; a small first-order thermal-lag
+  model for oil temp/press/CHT (didn't exist before this phase — built as
+  a real model, not an INOP stub).
+- **G1000 PFD/MFD** (`src/cockpit/pfd.ts`, `mfd.ts`): canvas-2D textures,
+  ≥1024px. PFD: airspeed tape w/ real V-speed arcs (from `c172s.ts`, not
+  reinvented) + trend vector, attitude w/ slip/skid, altitude tape + baro,
+  VSI, HSI with an honestly-inert CDI ("NO NAV" — no fake guidance before
+  Phase 4's real nav), NAV/COM/XPDR boxes, OAT/TAS/GS, annunciator,
+  softkey bezel. MFD: EIS strip (RPM/FF/oil/EGT+CHT/fuel/volts-amps)
+  always visible, lean-assist page, map page (airport symbols + elevation
+  shading, reusing Phase 2's `TileManager`/`Airports`), FPL skeleton
+  (honest empty state).
+- **3D cockpit** (`src/render/cockpit.ts`, `cockpit-camera.ts`): panel
+  built from primitives (no glTF pipeline available — same as the
+  exterior model, disclosed deviation, not silent). PFD/MFD mounted as
+  live `CanvasTexture` planes. Switch row, ignition key, starter,
+  throttle/mixture verniers, flap lever, trim wheel, floor fuel selector
+  all physically clickable/draggable via raycasting, routed into
+  `aircraft.controls` (second input path alongside keyboard — doesn't
+  regress it) and a new `SystemsControls` object. 4th camera mode
+  (`cockpit`) added to the chase/orbit/free cycle. Systems wired into the
+  fixed-timestep loop for the first time — `aircraft.engineRunning` now
+  reflects the real engine-start state machine.
+- **Acceptance (2026-07-15, full report in `phase-3-acceptance-report.md`)**:
+  - *Cold-and-dark → run-up, every switch physical*: **PASS.** Genuine
+    fuel-starvation flameout via a physical fuel-selector click (not a
+    debug hook), full dark-cockpit reached via physical switches, restart
+    via physical battery/throttle/ignition/starter. Magneto check via
+    physical ignition-key clicks: RIGHT 793 RPM, LEFT 808 RPM, BOTH 918
+    RPM → drops of 125/110 RPM, 15 RPM split — exact match to
+    `engine-start.ts`'s tested constants, confirmed reachable through the
+    real cockpit UI, not just headlessly.
+  - *Alternator-failure drill*: **PASS.** `__ohFail('alternator')`
+    (a legitimate scenario trigger) → battery immediately flips to
+    discharge, drains steadily, main/avionics bus load-shed exactly at
+    the 15% SOC threshold, standby bus stayed powered throughout
+    (confirmed at every sample including after main-bus loss) —
+    `batteryAmps` after shed matched `STANDBY_LOAD_AMPS` exactly,
+    confirming main-bus loads were genuinely disconnected.
+  - *Lean-assist finds peak EGT*: **PASS.** Real mixture-knob control
+    (`__ohCtl`/physical drag both exercised) at mixture≈0.35 shows
+    `EGT: 732 C`, `-0 C FROM PEAK`, with the lean-assist graph's peak
+    marker sitting exactly on the curve's maximum — matches
+    `mixture.ts`'s tested `EGT_PEAK_C`/`EGT_PEAK_MIXTURE` constants
+    exactly, confirmed live on the MFD, not just headlessly.
+
+## Phase 3 deviations & known issues
+
+- **Ignition key click-cycle** (`off → right → left → both → off`) makes
+  `BOTH` cyclically adjacent to `OFF`, unlike a real magneto switch's
+  detent layout (`OFF–R–L–BOTH–START`, where `BOTH`→`R`/`L` never passes
+  through `OFF`). Verified real: cycling forward from `BOTH` stops the
+  engine. Doesn't block the magneto check (start the crank on `RIGHT`
+  instead) but should be fixed so the habitual "start/check from BOTH"
+  workflow doesn't require a workaround.
+- **No physical fuel-pump/boost-pump switch** in the 3D cockpit yet
+  (`systemsControls.boostPumpOn` has no mesh) — doesn't block engine
+  start (no dependency in `engine-start.ts`), but is a gap against the
+  POH's "battery on → fuel pump → mixture rich..." flow text.
+- **MFD page softkeys not wired** — `page` is hardcoded to `'lean'` in
+  `main.ts`; `mfdSoftkeyRegions` hit-test geometry exists but nothing
+  routes a click to change the active page. Map/FPL pages are built and
+  correct, just not reachable via UI yet.
+- Full nav (VOR/ILS/GPS, real CDI, procedures) is Phase 4 — PFD/MFD nav
+  elements render but are honestly inert this phase, per plan.
+- Standby instruments are placeholder shapes in the 3D cockpit (not a
+  full canvas gauge renderer) — the master spec allows this scope for
+  Task 2d; a dedicated standby-gauge canvas is a reasonable follow-up.
+- Two independent fuel ledgers existed briefly during Task 2d
+  (`aircraft.fuelKg` vs `fuelState.leftKg/rightKg`) — fixed in review:
+  `fuelState` is now authoritative, `aircraft.fuelKg` syncs from it each
+  tick without touching `Aircraft`'s internals.
+- Cold-and-dark is fully reachable (verified above) but is **not** the
+  boot default — boot seeds `engineStartState` to `running` to preserve
+  already-verified spawn/takeoff behavior (e.g. the ground-yaw flight-
+  assist fix from the prior session assumes a running engine at spawn).
+  A deliberate, disclosed tradeoff, not a shortcut.
 
 ## Flight assist — verification (2026-07-14)
 
