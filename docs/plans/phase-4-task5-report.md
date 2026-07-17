@@ -37,10 +37,13 @@ field derivation in `server/parse.mjs`'s header comment for
 - Class Airspace: `NAME`, `ICAO_ID`, `LOCAL_TYPE` (finer-grained than the
   plain `CLASS` field — e.g. real `CLASS_E2`/`CLASS_E3`/`CLASS_E5`/`CLASS_E6`
   records all report `CLASS: "E"`, but only `CLASS_E2` is the
-  surface-based Class E this task scopes as "Class E-surface"; confirmed
-  against real KSFO-area E2 records — `LOWER_CODE: "SFC"` — vs. real "SAN
-  FRANCISCO CLASS E5" records, which start at 700/1200 ft, not the
-  surface), `UPPER_VAL`/`UPPER_UOM`/`UPPER_CODE`,
+  surface-based Class E this task scopes as "Class E-surface". Correction
+  (found during review): `LOCAL_TYPE` is the sole discriminator — `LOWER_CODE`
+  does NOT reliably distinguish E2 from E5, since live data shows real "SAN
+  FRANCISCO CLASS E5" records also report `LOWER_CODE: "SFC"` (with a
+  nonzero `LOWER_VAL`, e.g. 700/1200 ft) despite not being surface-based.
+  The parser keys off `LOCAL_TYPE` only for this distinction, never
+  `LOWER_CODE`), `UPPER_VAL`/`UPPER_UOM`/`UPPER_CODE`,
   `LOWER_VAL`/`LOWER_UOM`/`LOWER_CODE`, `SECTOR` (shelf label — real SF
   Class B carries 17 shelves nationwide in the final dataset, `SECTOR`
   "AREA A".."AREA Q"-ish, each a separate feature sharing `NAME`/`ICAO_ID`

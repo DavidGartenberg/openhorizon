@@ -535,10 +535,13 @@ export function buildCifpProcedures(cifpText) {
  * class code below — the plainer `CLASS` field is coarser: e.g. real
  * `CLASS_E2`/`CLASS_E3`/`CLASS_E5` records all report `CLASS: "E"`, but
  * only E2 is the surface-based Class E this task renders/detects, per the
- * phase plan's "Class E-surface" scope — confirmed against real KSFO-area
- * E2 records, which have `LOWER_CODE: "SFC"`, vs. real "SAN FRANCISCO CLASS
- * E5" records, which start at 700/1200 ft AGL-equivalent, not the
- * surface), `UPPER_VAL`/`UPPER_UOM`/`UPPER_CODE`,
+ * phase plan's "Class E-surface" scope. `LOCAL_TYPE` is the actual, sole
+ * discriminator — `LOWER_CODE` does NOT reliably distinguish E2 from E5:
+ * live data shows real "SAN FRANCISCO CLASS E5" records also report
+ * `LOWER_CODE: "SFC"` (with a nonzero `LOWER_VAL`, e.g. 700/1200 ft) even
+ * though E5 isn't surface-based, so `LOWER_CODE` alone would misclassify
+ * them. The parser keys off `LOCAL_TYPE` only, never `LOWER_CODE`, for
+ * this distinction), `UPPER_VAL`/`UPPER_UOM`/`UPPER_CODE`,
  * `LOWER_VAL`/`LOWER_UOM`/`LOWER_CODE`, `SECTOR` (shelf label — real SF
  * Class B carries 14 shelves, `SECTOR` "AREA A".."AREA Q" minus a few
  * letters, each a separate feature sharing `NAME`/`ICAO_ID` "SAN FRANCISCO
