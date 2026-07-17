@@ -123,15 +123,21 @@ export interface KnownIlsEntry {
 
 /** Real, publicly-published FAA ILS frequencies — a scoped stopgap, see
  *  module header. KSFO ILS RWY 28R (109.55 MHz) is this phase's acceptance
- *  scenario; a couple of others are included as a reasonable, not-fabricated
- *  starting set. Flagged: not independently re-verified against a primary
- *  FAA source inside this repo (no such source is in the data pipeline —
- *  that's the whole gap this table stands in for) — treat as
- *  best-effort-accurate pending a real data pipeline. */
+ *  scenario. Flagged: not independently re-verified against a primary FAA
+ *  source inside this repo (no such source is in the data pipeline — that's
+ *  the whole gap this table stands in for) — treat as best-effort-accurate
+ *  pending a real data pipeline.
+ *
+ *  A prior revision of this table included a `KHAF` runway 30 entry. Review
+ *  research found no evidence KHAF (Half Moon Bay, a small non-towered
+ *  single-runway field) has a real ground-based ILS at all — every real
+ *  procedure reference found for it is an RNAV (GPS) approach, not an ILS.
+ *  Removed rather than left in as an unverified/likely-fictional entry,
+ *  per this project's binding "no fabricated data" rule; only re-add if
+ *  confirmed against a primary FAA source. */
 export const KNOWN_ILS_FREQUENCIES: readonly KnownIlsEntry[] = [
   { icao: 'KSFO', runway: '28R', freqMhz: 109.55 },
   { icao: 'KSFO', runway: '28L', freqMhz: 111.7 },
-  { icao: 'KHAF', runway: '30', freqMhz: 111.3 },
 ]
 
 /** Which runway (if any) a tuned NAV frequency at `icao` corresponds to,
