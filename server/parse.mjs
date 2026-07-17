@@ -514,3 +514,219 @@ export function buildCifpProcedures(cifpText) {
   }
   return out
 }
+
+/**
+ * FAA airspace boundaries (Class B/C/D/E-surface + Special Use Airspace) →
+ * compact JSON (Phase 4 Task 5, §6.5). Real source: the FAA's ArcGIS
+ * open-data REST API (confirmed reachable this session, clean GeoJSON, no
+ * shapefile parsing needed):
+ *   Class Airspace: https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/Class_Airspace/FeatureServer/0/query?where=1=1&outFields=*&f=geojson
+ *   Special Use Airspace: https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services/Special_Use_Airspace/FeatureServer/0/query?where=1=1&outFields=*&f=geojson
+ * Both paginate (server `maxRecordCount` 2000; `handlers.mjs`'s fetcher
+ * pages in smaller 500-feature chunks with retries — larger single
+ * requests were observed to intermittently truncate mid-transfer during
+ * this task's real-data verification). This function takes the
+ * already-paginated, already-merged GeoJSON `Feature[]` arrays (one array
+ * per source) and produces the compact representation; it does no
+ * networking itself so it's plain-Node-testable against small real
+ * fixtures.
+ *
+ * Class Airspace fields used: `NAME`, `ICAO_ID`, `LOCAL_TYPE` (drives the
+ * class code below — the plainer `CLASS` field is coarser: e.g. real
+ * `CLASS_E2`/`CLASS_E3`/`CLASS_E5` records all report `CLASS: "E"`, but
+ * only E2 is the surface-based Class E this task renders/detects, per the
+ * phase plan's "Class E-surface" scope — confirmed against real KSFO-area
+ * E2 records, which have `LOWER_CODE: "SFC"`, vs. real "SAN FRANCISCO CLASS
+ * E5" records, which start at 700/1200 ft AGL-equivalent, not the
+ * surface), `UPPER_VAL`/`UPPER_UOM`/`UPPER_CODE`,
+ * `LOWER_VAL`/`LOWER_UOM`/`LOWER_CODE`, `SECTOR` (shelf label — real SF
+ * Class B carries 14 shelves, `SECTOR` "AREA A".."AREA Q" minus a few
+ * letters, each a separate feature sharing `NAME`/`ICAO_ID` "SAN FRANCISCO
+ * CLASS B"/"KSFO").
+ *
+ * Special Use Airspace fields used: `NAME`, `TYPE_CODE` (confirmed real
+ * values: `A` alert, `D` danger, `MOA`, `P` prohibited, `R` restricted, `W`
+ * warning — `P` already appears in this one feed, so the separate
+ * `Prohibited_Areas` FeatureServer mentioned as a fallback wasn't needed),
+ * same `UPPER`/`LOWER` triad as Class Airspace.
+ *
+ * Altitude normalization to feet MSL, per the real `LOWER_CODE`/
+ * `UPPER_CODE` values actually observed across both feeds:
+ *   `'SFC'`        -> 0 ft, regardless of `VAL` (`VAL` is `"0"`/`0` anyway)
+ *   `'UNLTD'`, or any record where `VAL` parses negative (a real `-9998`
+ *              placeholder was observed both explicitly under `UNLTD` and
+ *              once under a `null` code on a real Class E2 record and a
+ *              real SUA record) -> `CEILING_UNLIMITED_FT` sentinel
+ *   `'MSL'`/`'STD'`/`null` + uom `'FT'` -> `VAL` directly. (`STD` = based
+ *              on standard pressure 29.92 rather than local altimeter
+ *              setting, only ever observed above 18000 ft in this data —
+ *              treated identically to MSL feet for in-sim detection, a
+ *              standard aviation simplification since the sim doesn't
+ *              model altimeter-setting-dependent indicated altitude.)
+ *   uom `'FL'` -> `VAL * 100` ft (flight level, e.g. real "FL180"-style
+ *              row: `LOWER_VAL: "180", LOWER_UOM: "FL"` -> 18000 ft)
+ * Flagged assumption: real Class E2 "surface area" records carry no
+ * explicit ceiling in the source data (they extend up to wherever the
+ * overlying controlled-airspace structure begins) — rendered/detected here
+ * with the same `CEILING_UNLIMITED_FT` sentinel as genuinely unlimited SUA.
+ * That's conservative for in-airspace detection (never under-reports
+ * "you're in controlled airspace") but technically overstates a real E2's
+ * vertical extent; a real implementation would need the local Class
+ * B/C/D/E(700ft) structure it hands off to, which isn't in this feed.
+ *
+ * Polygon simplification: several real polygons in this feed carry
+ * extreme, survey-grade vertex density (one real Class Airspace polygon
+ * sampled had 16904 ring points; 500 real Class Airspace features totaled
+ * ~920k points, ~34MB of GeoJSON) — far more resolution than a chart-style
+ * MFD line needs. `simplifyRing` (standard Douglas-Peucker, well-known and
+ * correct) cuts this by ~40x at `AIRSPACE_SIMPLIFY_EPSILON_DEG` (~50m at
+ * mid-latitudes — comfortably below what's visually distinguishable on the
+ * MFD's map page) while preserving overall shape, keeping the full
+ * nationwide compacted dataset in the low single-digit MB range so it can
+ * ship as one blob like `airports.json`/`navaids.json` rather than needing
+ * a regional split.
+ */
+export const CEILING_UNLIMITED_FT = 99999
+
+/** `LOCAL_TYPE` -> compact class-airspace kind code. Other real values seen
+ *  (`CLASS_A`, `CLASS_E3`/`E4`/`E5`/`E6`, `MODE C`, null) are out of this
+ *  task's rendering/detection scope and dropped. */
+const CLASS_LOCAL_TYPE_KIND = { CLASS_B: 0, CLASS_C: 1, CLASS_D: 2, CLASS_E2: 3 }
+
+/** SUA `TYPE_CODE` -> compact kind code. */
+const SUA_TYPE_KIND = { R: 4, P: 5, MOA: 6, A: 7, W: 8, D: 9 }
+
+/** Kind code -> name, for callers/tests that want a readable label. Index
+ *  matches the numeric `k` values assigned above. */
+export const AIRSPACE_KIND_NAMES = [
+  'CLASS_B', 'CLASS_C', 'CLASS_D', 'CLASS_E_SFC',
+  'RESTRICTED', 'PROHIBITED', 'MOA', 'ALERT', 'WARNING', 'DANGER',
+]
+
+/** Normalize one FAA floor/ceiling field triad to feet MSL. See the
+ *  header-comment derivation above for the real code values handled. */
+export function faaAltFt(val, uom, code) {
+  const n = typeof val === 'string' ? parseFloat(val) : val
+  if (code === 'SFC') return 0
+  // 'UNLTD', or the real "-9998" no-data placeholder observed under a null
+  // code — checked against a threshold well below any real floor/ceiling
+  // (rather than "any negative value") so a genuine below-sea-level floor
+  // (e.g. a hypothetical Death-Valley-area surface boundary) would never
+  // misfire this sentinel; no such real record was observed in this data,
+  // but real Class/SUA floors always use LOWER_CODE 'SFC' rather than an
+  // actual negative feet value in practice.
+  if (code === 'UNLTD' || !isFinite(n) || n <= -9000) return CEILING_UNLIMITED_FT
+  return uom === 'FL' ? n * 100 : n
+}
+
+/** Squared perpendicular distance from point `p` to the line through `a`/`b`
+ *  (plain-degree units — adequate at the small epsilon this task uses; not
+ *  a geodesic distance, a documented simplification for a simplification
+ *  tolerance). */
+function perpDistSq(px, py, ax, ay, bx, by) {
+  const dx = bx - ax
+  const dy = by - ay
+  const lenSq = dx * dx + dy * dy
+  if (lenSq === 0) return (px - ax) ** 2 + (py - ay) ** 2
+  const t = ((px - ax) * dx + (py - ay) * dy) / lenSq
+  const cx = ax + t * dx
+  const cy = ay + t * dy
+  return (px - cx) ** 2 + (py - cy) ** 2
+}
+
+/**
+ * Douglas-Peucker polyline simplification (standard, well-known algorithm;
+ * ring-preserving — a ring's first/last point is always kept). `points` is
+ * an array of `[x, y]` pairs (here: `[lon, lat]`); `epsilonDeg` is the
+ * distance tolerance in the same units as the input coordinates.
+ */
+export function simplifyRing(points, epsilonDeg) {
+  if (points.length < 3) return points.slice()
+  const keep = new Array(points.length).fill(false)
+  keep[0] = true
+  keep[points.length - 1] = true
+  const epsSq = epsilonDeg * epsilonDeg
+  const stack = [[0, points.length - 1]]
+  while (stack.length > 0) {
+    const [start, end] = stack.pop()
+    const [ax, ay] = points[start]
+    const [bx, by] = points[end]
+    let maxD = -1
+    let idx = -1
+    for (let i = start + 1; i < end; i++) {
+      const [px, py] = points[i]
+      const d = perpDistSq(px, py, ax, ay, bx, by)
+      if (d > maxD) {
+        maxD = d
+        idx = i
+      }
+    }
+    if (maxD > epsSq) {
+      keep[idx] = true
+      stack.push([start, idx], [idx, end])
+    }
+  }
+  return points.filter((_, i) => keep[i])
+}
+
+/** ~50m at mid-latitudes — see header comment for why this is plenty for
+ *  chart-style MFD rendering. */
+export const AIRSPACE_SIMPLIFY_EPSILON_DEG = 0.0005
+
+function compactRing(ring) {
+  return simplifyRing(ring, AIRSPACE_SIMPLIFY_EPSILON_DEG).map(([lon, lat]) => [+lon.toFixed(5), +lat.toFixed(5)])
+}
+
+/** GeoJSON `Polygon`/`MultiPolygon` geometry -> array of compact rings
+ *  (first ring of each polygon part is the exterior, any further rings are
+ *  holes — no holes were observed in the real Class Airspace/SUA data
+ *  sampled for this task, but the shape is preserved generically rather
+ *  than assumed away). `MultiPolygon` wasn't observed in this feed either
+ *  (every sampled feature was a single `Polygon`); if it occurs, all parts'
+ *  rings are flattened into one record's ring list — a flagged
+ *  simplification, since a genuine multi-part airspace would render/detect
+ *  as if it were one contiguous shape. */
+function compactPolygonRings(geometry) {
+  if (!geometry) return []
+  if (geometry.type === 'Polygon') return geometry.coordinates.map(compactRing)
+  if (geometry.type === 'MultiPolygon') return geometry.coordinates.flat().map(compactRing)
+  return []
+}
+
+/**
+ * Build the compact US airspace dataset from already-fetched GeoJSON
+ * `Feature[]` arrays (Class Airspace + Special Use Airspace). Pure,
+ * unit-tested against small real fixtures extracted from the live feeds
+ * (`tests/nav/airspace-parse.test.ts`).
+ *
+ * Output per airspace record:
+ *   { n: name, k: kind code (see `AIRSPACE_KIND_NAMES`), fl: floor ft MSL,
+ *     ce: ceiling ft MSL (or `CEILING_UNLIMITED_FT`), i?: ICAO airport ident
+ *     (Class Airspace only, when present), se?: sector/shelf label (e.g.
+ *     "AREA A", when present), r: rings — `[[ [lon,lat], ... ], ...]` }
+ */
+export function buildUsAirspace(classFeatures, suaFeatures) {
+  const out = []
+  const pushFrom = (features, kindOf) => {
+    for (const f of features) {
+      const p = f.properties
+      const kind = kindOf(p)
+      if (kind === undefined) continue
+      const rings = compactPolygonRings(f.geometry).filter((ring) => ring.length >= 3)
+      if (rings.length === 0) continue
+      const entry = {
+        n: p.NAME,
+        k: kind,
+        fl: faaAltFt(p.LOWER_VAL, p.LOWER_UOM, p.LOWER_CODE),
+        ce: faaAltFt(p.UPPER_VAL, p.UPPER_UOM, p.UPPER_CODE),
+        r: rings,
+      }
+      if (p.ICAO_ID) entry.i = p.ICAO_ID
+      if (p.SECTOR) entry.se = p.SECTOR
+      out.push(entry)
+    }
+  }
+  pushFrom(classFeatures, (p) => CLASS_LOCAL_TYPE_KIND[p.LOCAL_TYPE])
+  pushFrom(suaFeatures, (p) => SUA_TYPE_KIND[p.TYPE_CODE])
+  return out
+}

@@ -39,6 +39,7 @@ import { kgToGal, TANK_CAPACITY_GAL } from '../sim/systems/fuel'
 import type { EngineTemps } from '../sim/systems/engine-temps'
 import { OIL_TEMP_MAX_C, OIL_PRESS_MAX_PSI, OIL_PRESS_MIN_GREEN_PSI, CHT_MAX_C } from '../sim/systems/engine-temps'
 import { distanceM, bearingDeg, type LatLon } from '../math/geo'
+import { pointInPolygonRings, AirspaceKind, type AirspacePolygon } from '../sim/nav/airspace'
 import type { SoftkeyRegion } from './types'
 
 // ============================================================================
@@ -121,6 +122,52 @@ export function projectToMap(
   return { x: r * Math.sin(angleRad), y: -r * Math.cos(angleRad) }
 }
 
+// ---- Airspace overlay (Phase 4 Task 5, §6.5) ----
+
+/**
+ * Filter candidate airspace polygons down to those relevant to the
+ * displayed map range: either a ring vertex sits within `rangeM` of the
+ * aircraft, or the aircraft itself is inside the polygon (covers the case
+ * of a polygon whose vertices are all outside `rangeM` but which still
+ * surrounds the aircraft — not expected for the FAA airspace shapes this
+ * task renders, but a cheap, correct check to have). Pure — no drawing,
+ * mirrors `filterAirportsInRange`.
+ */
+export function filterAirspaceInRange(
+  aircraft: LatLon,
+  polygons: readonly AirspacePolygon[],
+  rangeM: number,
+): AirspacePolygon[] {
+  return polygons.filter((poly) => {
+    if (pointInPolygonRings(aircraft.lon, aircraft.lat, poly.r)) return true
+    const exterior = poly.r[0]
+    if (!exterior) return false
+    return exterior.some(([lon, lat]) => distanceM(aircraft, { lat, lon }) <= rangeM)
+  })
+}
+
+/**
+ * Same projection math as `projectToMap`, but never clips to `rangeM` —
+ * used for airspace polygon edges, which can be worth drawing even when
+ * some of their vertices fall outside the displayed range (a shelf that
+ * straddles the range ring should still show the portion that's in view,
+ * not disappear entirely). Pure, no drawing.
+ */
+export function projectToMapUnclipped(
+  aircraft: LatLon,
+  target: LatLon,
+  headingDeg: number,
+  rangeM: number,
+  trackUp: boolean,
+): { x: number; y: number } {
+  const dist = distanceM(aircraft, target)
+  const brg = bearingDeg(aircraft, target)
+  const angleDeg = trackUp ? brg - headingDeg : brg
+  const angleRad = (angleDeg * Math.PI) / 180
+  const r = dist / rangeM
+  return { x: r * Math.sin(angleRad), y: -r * Math.cos(angleRad) }
+}
+
 /** One sampled elevation-grid point around the aircraft, in NED-meter
  *  offsets, for simple terrain shading on the map page. */
 export interface MapElevationOffset {
@@ -174,6 +221,10 @@ export interface MfdMapInput {
   airports: readonly MapAirport[]
   /** Optional terrain-shading samples, pre-resolved via `mapElevationGridOffsets` + `TileManager.elevationAt`. */
   elevationSamples?: readonly MapElevationSample[]
+  /** Optional airspace polygons (Class B/C/D/E-surface + SUA) — filtered to
+   *  `rangeM` internally via `filterAirspaceInRange`, so callers may pass
+   *  the whole nationwide `/api/airspace.json` array unfiltered. */
+  airspace?: readonly AirspacePolygon[]
 }
 
 // ============================================================================
@@ -408,6 +459,121 @@ function drawLeanPage(ctx: CanvasRenderingContext2D, x: number, y: number, w: nu
   ctx.fill()
 }
 
+/** Airspace stroke/fill styling per §6.5: Class B solid blue, Class C solid
+ *  magenta, Class D dashed blue, SUA (restricted/prohibited/MOA/alert/
+ *  warning/danger) hatched. Not a sourced sectional-chart color table (no
+ *  in-repo spec) — a reasonable representative chart-style scheme, same
+ *  caveat as the rest of this file's layout/color choices. */
+function airspaceStrokeStyle(kind: AirspaceKind): { color: string; dash: number[] } {
+  switch (kind) {
+    case AirspaceKind.ClassB:
+      return { color: '#3060ff', dash: [] }
+    case AirspaceKind.ClassC:
+      return { color: COLORS.magenta, dash: [] }
+    case AirspaceKind.ClassD:
+      return { color: '#3060ff', dash: [6, 4] }
+    case AirspaceKind.ClassESfc:
+      return { color: '#a060ff', dash: [2, 3] }
+    default:
+      return { color: COLORS.yellow, dash: [] } // SUA: hatched fill carries the type, outline is a plain solid yellow
+  }
+}
+
+/** Draw one airspace polygon's exterior ring plus (for Class D) a small
+ *  floor/ceiling label box near the shape's first vertex. `project` maps a
+ *  lat/lon to unit-disc x/y (same convention as `projectToMap`/
+ *  `projectToMapUnclipped`). */
+function drawAirspacePolygon(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radiusPx: number,
+  poly: AirspacePolygon,
+  project: (lat: number, lon: number) => { x: number; y: number },
+): void {
+  const ring = poly.r[0]
+  if (!ring || ring.length < 3) return
+  const pts = ring.map(([lon, lat]) => {
+    const p = project(lat, lon)
+    return { px: cx + p.x * radiusPx, py: cy + p.y * radiusPx }
+  })
+
+  const { color, dash } = airspaceStrokeStyle(poly.k)
+  const isSua = poly.k >= AirspaceKind.Restricted
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.moveTo(pts[0]!.px, pts[0]!.py)
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i]!.px, pts[i]!.py)
+  ctx.closePath()
+
+  if (isSua) {
+    // Hatched fill: a simple diagonal-line clip pattern rather than an
+    // actual repeating-tile canvas pattern — visually reads as "hatched"
+    // without needing an offscreen pattern canvas.
+    ctx.save()
+    ctx.clip()
+    const xs = pts.map((p) => p.px)
+    const ys = pts.map((p) => p.py)
+    const minX = Math.min(...xs)
+    const maxX = Math.max(...xs)
+    const minY = Math.min(...ys)
+    const maxY = Math.max(...ys)
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1
+    const step = Math.max(4, radiusPx * 0.03)
+    for (let d = minX - (maxY - minY); d < maxX; d += step) {
+      ctx.beginPath()
+      ctx.moveTo(d, minY)
+      ctx.lineTo(d + (maxY - minY), maxY)
+      ctx.stroke()
+    }
+    ctx.restore()
+  }
+
+  ctx.setLineDash(dash)
+  ctx.strokeStyle = color
+  ctx.lineWidth = isSua ? 1.5 : 2
+  ctx.stroke()
+  ctx.setLineDash([])
+  ctx.restore()
+
+  if (poly.k === AirspaceKind.ClassD) {
+    const ceilHundreds = Math.round(poly.ce / 100)
+    const floorHundreds = Math.round(poly.fl / 100)
+    const label = `${ceilHundreds}/${floorHundreds}`
+    const lx = pts[0]!.px + 4
+    const ly = pts[0]!.py - 4
+    ctx.font = `${Math.round(radiusPx * 0.035)}px monospace`
+    const textW = ctx.measureText(label).width
+    ctx.fillStyle = COLORS.bg
+    ctx.fillRect(lx - 2, ly - radiusPx * 0.035, textW + 4, radiusPx * 0.045)
+    ctx.strokeStyle = color
+    ctx.lineWidth = 1
+    ctx.strokeRect(lx - 2, ly - radiusPx * 0.035, textW + 4, radiusPx * 0.045)
+    ctx.fillStyle = color
+    ctx.textAlign = 'left'
+    ctx.fillText(label, lx, ly)
+  }
+}
+
+/** Draw every in-range airspace polygon (already filtered by the caller via
+ *  `filterAirspaceInRange`). */
+function drawAirspace(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  radiusPx: number,
+  map: MfdMapInput,
+  polygons: readonly AirspacePolygon[],
+): void {
+  const aircraft: LatLon = { lat: map.aircraftLat, lon: map.aircraftLon }
+  const project = (lat: number, lon: number) => projectToMapUnclipped(aircraft, { lat, lon }, map.headingDeg, map.rangeM, map.trackUp)
+  for (const poly of polygons) {
+    drawAirspacePolygon(ctx, cx, cy, radiusPx, poly, project)
+  }
+}
+
 /** Map page: range ring, simple elevation shading, and airport symbols within range. */
 function drawMapPage(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, map: MfdMapInput): void {
   ctx.fillStyle = COLORS.bg
@@ -432,6 +598,13 @@ function drawMapPage(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
       ctx.fillStyle = elevationColor(s.elevM)
       ctx.fillRect(px - cellPx / 2, py - cellPx / 2, cellPx, cellPx)
     }
+  }
+
+  // Airspace boundaries (Class B/C/D/E-surface + SUA), drawn above terrain
+  // shading and below the range rings/airport symbols — sectional-chart
+  // convention. Optional: only drawn if the caller supplied polygons.
+  if (map.airspace) {
+    drawAirspace(ctx, cx, cy, radiusPx, map, filterAirspaceInRange(aircraft, map.airspace, map.rangeM))
   }
 
   // Range ring(s).

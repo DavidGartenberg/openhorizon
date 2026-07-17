@@ -6,6 +6,8 @@ import {
   egtDeltaFromPeakC,
   filterAirportsInRange,
   projectToMap,
+  projectToMapUnclipped,
+  filterAirspaceInRange,
   mapElevationGridOffsets,
   elevationColor,
   mfdSoftkeyRegions,
@@ -13,6 +15,7 @@ import {
   RPM_GAUGE_MAX,
   type MapAirport,
 } from '../../src/cockpit/mfd'
+import { AirspaceKind, type AirspacePolygon } from '../../src/sim/nav/airspace'
 import { C172S } from '../../src/sim/aircraft/c172s'
 import { TANK_CAPACITY_GAL, TANK_CAPACITY_KG, kgToGal } from '../../src/sim/systems/fuel'
 import { EGT_PEAK_MIXTURE, EGT_PEAK_C, egtC } from '../../src/sim/systems/mixture'
@@ -146,6 +149,57 @@ describe('projectToMap', () => {
     const near = projectToMap(aircraft, { lat: 0.025, lon: 0 }, 0, 20_000, false)
     const far = projectToMap(aircraft, { lat: 0.05, lon: 0 }, 0, 20_000, false)
     expect(Math.abs(near!.y)).toBeCloseTo(Math.abs(far!.y) / 2, 1)
+  })
+})
+
+describe('projectToMapUnclipped', () => {
+  const aircraft = { lat: 0, lon: 0 }
+
+  it('matches projectToMap for a target within range', () => {
+    const target = { lat: 0.025, lon: 0.01 }
+    const clipped = projectToMap(aircraft, target, 15, 20_000, false)
+    const unclipped = projectToMapUnclipped(aircraft, target, 15, 20_000, false)
+    expect(clipped).not.toBeNull()
+    expect(unclipped.x).toBeCloseTo(clipped!.x, 9)
+    expect(unclipped.y).toBeCloseTo(clipped!.y, 9)
+  })
+
+  it('unlike projectToMap, still returns a point beyond rangeM instead of null', () => {
+    const target = { lat: 5, lon: 0 } // far beyond any sane rangeM
+    expect(projectToMap(aircraft, target, 0, 10_000, false)).toBeNull()
+    const p = projectToMapUnclipped(aircraft, target, 0, 10_000, false)
+    expect(p.y).toBeLessThan(-1) // outside the unit disc, as expected
+  })
+})
+
+describe('filterAirspaceInRange', () => {
+  const aircraft = { lat: 37.0, lon: -122.0 }
+  // A ~2km-wide synthetic rectangle centered near the aircraft — not real
+  // airspace data, a hand-built fixture (this module's tests intentionally
+  // stay independent of real FAA data, mirroring filterAirportsInRange's
+  // synthetic-fixture style above).
+  const nearBox: AirspacePolygon = {
+    n: 'NEAR', k: AirspaceKind.ClassD, fl: 0, ce: 3000,
+    r: [[[-122.02, 36.99], [-121.98, 36.99], [-121.98, 37.01], [-122.02, 37.01], [-122.02, 36.99]]],
+  }
+  const farBox: AirspacePolygon = {
+    n: 'FAR', k: AirspaceKind.ClassD, fl: 0, ce: 3000,
+    r: [[[-119.02, 34.99], [-118.98, 34.99], [-118.98, 35.01], [-119.02, 35.01], [-119.02, 34.99]]],
+  }
+
+  it('includes a polygon with a vertex within range and excludes a far one', () => {
+    const inRange = filterAirspaceInRange(aircraft, [nearBox, farBox], 20_000)
+    expect(inRange).toEqual([nearBox])
+  })
+
+  it('includes a polygon the aircraft is inside even if no vertex is within a tiny rangeM', () => {
+    // `aircraft` (37.0, -122.0) sits inside nearBox's rectangle.
+    const inRange = filterAirspaceInRange(aircraft, [nearBox], 1) // 1 meter — no vertex is this close
+    expect(inRange).toEqual([nearBox])
+  })
+
+  it('excludes everything when nothing is in range or contains the aircraft', () => {
+    expect(filterAirspaceInRange(aircraft, [farBox], 20_000)).toEqual([])
   })
 })
 

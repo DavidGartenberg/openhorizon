@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { buildUsAirports, buildUsNavaids, buildCifpProcedures } from './parse.mjs'
+import { buildUsAirports, buildUsNavaids, buildCifpProcedures, buildUsAirspace } from './parse.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 fs.mkdirSync(path.join(cacheDir, 'terrain'), { recursive: true })
@@ -155,6 +155,78 @@ export async function proceduresData(icao) {
   return JSON.stringify(byAirport.get(icao.toUpperCase()) ?? [])
 }
 
+// ---- Airspace (Class B/C/D/E-surface + SUA, Phase 4 Task 5, §6.5) ----
+
+const ARCGIS_BASE = 'https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/arcgis/rest/services'
+const CLASS_AIRSPACE_FIELDS = 'NAME,ICAO_ID,LOCAL_TYPE,UPPER_VAL,UPPER_UOM,UPPER_CODE,LOWER_VAL,LOWER_UOM,LOWER_CODE,SECTOR'
+const SUA_FIELDS = 'NAME,TYPE_CODE,UPPER_VAL,UPPER_UOM,UPPER_CODE,LOWER_VAL,LOWER_UOM,LOWER_CODE'
+
+/**
+ * Page through an ArcGIS FeatureServer `query` endpoint and return the
+ * concatenated GeoJSON `Feature[]`. The server's own `maxRecordCount` is
+ * 2000, but real ~500-feature/~34MB-per-page responses were observed
+ * during this task's data-source verification to sometimes truncate
+ * mid-transfer (a plain `fetch(...).json()` throwing "Unexpected end of
+ * JSON input"), so this fetches in smaller 500-feature pages with retries
+ * per page rather than trusting one large request. Stops once a page
+ * returns fewer than `pageSize` features (the standard "last page" signal
+ * — no separate count query needed).
+ */
+async function fetchArcgisFeatures(serviceUrl, fields) {
+  const pageSize = 500
+  let offset = 0
+  let all = []
+  for (;;) {
+    const url = `${serviceUrl}/query?where=1=1&outFields=${fields}&f=geojson&resultOffset=${offset}&resultRecordCount=${pageSize}`
+    let json
+    let lastErr
+    for (let attempt = 0; attempt < 4 && !json; attempt++) {
+      try {
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(`${url}: ${res.status}`)
+        json = JSON.parse(await res.text())
+      } catch (err) {
+        lastErr = err
+      }
+    }
+    if (!json) throw new Error(`airspace fetch failed at offset ${offset}: ${lastErr}`)
+    const features = json.features ?? []
+    all = all.concat(features)
+    if (features.length < pageSize) break
+    offset += pageSize
+  }
+  return all
+}
+
+let airspaceJson = null
+
+/** GET /api/airspace.json — compact US Class B/C/D/E-surface + Special Use
+ *  Airspace boundaries. Cached to disk like `airports.json`/`navaids.json`
+ *  (cache-forever-until-manually-refreshed — airspace boundaries change on
+ *  the same slow cycle as sectional charts, not per-run). */
+export async function airspaceData() {
+  if (airspaceJson) return airspaceJson
+  const jsonFile = path.join(cacheDir, 'us-airspace.json')
+  if (fs.existsSync(jsonFile)) {
+    airspaceJson = fs.readFileSync(jsonFile, 'utf8')
+    return airspaceJson
+  }
+  const rawFile = path.join(cacheDir, 'airspace-raw.json')
+  let classFeatures, suaFeatures
+  if (fs.existsSync(rawFile)) {
+    ;({ classFeatures, suaFeatures } = JSON.parse(fs.readFileSync(rawFile, 'utf8')))
+  } else {
+    ;[classFeatures, suaFeatures] = await Promise.all([
+      fetchArcgisFeatures(`${ARCGIS_BASE}/Class_Airspace/FeatureServer/0`, CLASS_AIRSPACE_FIELDS),
+      fetchArcgisFeatures(`${ARCGIS_BASE}/Special_Use_Airspace/FeatureServer/0`, SUA_FIELDS),
+    ])
+    fs.writeFileSync(rawFile, JSON.stringify({ classFeatures, suaFeatures }))
+  }
+  airspaceJson = JSON.stringify(buildUsAirspace(classFeatures, suaFeatures))
+  fs.writeFileSync(jsonFile, airspaceJson)
+  return airspaceJson
+}
+
 /** Node http-style routing used by both Express and Vite middleware. */
 export async function route(url, res) {
   const terrain = url.match(/^\/proxy\/terrain\/(\d+)\/(\d+)\/(\d+)\.png$/)
@@ -181,6 +253,16 @@ export async function route(url, res) {
     }
     if (url === '/api/navaids.json') {
       const json = await navaidsData()
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=86400',
+        'Access-Control-Allow-Origin': '*',
+      })
+      res.end(json)
+      return true
+    }
+    if (url === '/api/airspace.json') {
+      const json = await airspaceData()
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Cache-Control': 'public, max-age=86400',
