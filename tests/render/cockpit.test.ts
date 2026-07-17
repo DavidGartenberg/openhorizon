@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cycleFuelSelector, cycleMagneto, dragToAxisValue, nearestFlapDetent } from '../../src/render/cockpit'
+import { cycleFuelSelector, cycleMagneto, dragToAxisValue, nearestFlapDetent, tuneFrequency } from '../../src/render/cockpit'
 
 describe('cycleFuelSelector (floor fuel selector click-cycle)', () => {
   it('cycles OFF -> L -> BOTH -> R -> OFF', () => {
@@ -64,5 +64,29 @@ describe('nearestFlapDetent (flap lever position -> detent index)', () => {
   it('clamps out-of-range fractions', () => {
     expect(nearestFlapDetent(-1)).toBe(0)
     expect(nearestFlapDetent(2)).toBe(3)
+  })
+})
+
+describe('tuneFrequency (NAV/COM standby-frequency click knob)', () => {
+  it('increments by one step', () => {
+    expect(tuneFrequency(118.0, 1, 0.025, 118.0, 136.0)).toBeCloseTo(118.025, 6)
+  })
+
+  it('decrements by one step', () => {
+    expect(tuneFrequency(118.025, -1, 0.025, 118.0, 136.0)).toBeCloseTo(118.0, 6)
+  })
+
+  it('clamps at the max', () => {
+    expect(tuneFrequency(135.99, 1, 0.025, 118.0, 136.0)).toBe(136.0)
+  })
+
+  it('clamps at the min', () => {
+    expect(tuneFrequency(108.01, -1, 0.05, 108.0, 117.95)).toBe(108.0)
+  })
+
+  it('does not accumulate float drift over repeated clicks', () => {
+    let f = 118.0
+    for (let i = 0; i < 40; i++) f = tuneFrequency(f, 1, 0.025, 118.0, 136.0)
+    expect(f).toBeCloseTo(119.0, 9)
   })
 })

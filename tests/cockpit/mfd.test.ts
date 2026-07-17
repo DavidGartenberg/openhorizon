@@ -13,6 +13,8 @@ import {
   mfdSoftkeyRegions,
   MFD_SOFTKEY_LABELS,
   RPM_GAUGE_MAX,
+  glideRangeRadiusM,
+  BEST_GLIDE_RATIO,
   type MapAirport,
 } from '../../src/cockpit/mfd'
 import { AirspaceKind, type AirspacePolygon } from '../../src/sim/nav/airspace'
@@ -255,5 +257,24 @@ describe('mfdSoftkeyRegions', () => {
       expect(r.x + r.w).toBeLessThanOrEqual(width + 1e-6)
       expect(r.y + r.h).toBeLessThanOrEqual(height + 1e-6)
     }
+  })
+})
+
+describe('glideRangeRadiusM (best-glide range ring, Phase 4 Task 6)', () => {
+  it('is zero at ground level (0 ft AGL)', () => {
+    expect(glideRangeRadiusM(0)).toBe(0)
+  })
+
+  it('scales linearly with AGL at the default 9:1 glide ratio', () => {
+    // 1000 ft AGL * 9 * 0.3048 m/ft
+    expect(glideRangeRadiusM(1000)).toBeCloseTo(1000 * BEST_GLIDE_RATIO * 0.3048, 3)
+  })
+
+  it('never goes negative for a below-ground AGL reading', () => {
+    expect(glideRangeRadiusM(-50)).toBe(0)
+  })
+
+  it('accepts a caller-supplied glide ratio', () => {
+    expect(glideRangeRadiusM(1000, 10)).toBeCloseTo(1000 * 10 * 0.3048, 3)
   })
 })

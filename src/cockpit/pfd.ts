@@ -165,6 +165,33 @@ export interface PfdInput {
 
   // Annunciations
   annunciations: readonly string[]
+
+  // ---- Phase 4 Task 6: real CDI, flight director, AP mode annunciation ----
+  /** Real CDI source + deflection, replacing the old hardcoded-inert "NO
+   *  NAV" state. `source: null` (or the field omitted entirely) means no
+   *  valid nav signal is tuned/receivable right now — the HSI honestly
+   *  shows the flagged "NO NAV" state rather than a fake centered needle,
+   *  same anti-faking rule the old inert placeholder followed. */
+  cdi?: {
+    source: 'GPS' | 'VOR' | 'LOC'
+    deflectionFraction: number // -1..1, +1 = full-scale right/fly-right
+    toFrom?: 'TO' | 'FROM'
+    identifier?: string
+  }
+  /** Flight-director attitude targets (`AutopilotState.fdBankDeg`/`fdPitchDeg`
+   *  — computed every autopilot step regardless of servo engagement, per
+   *  that module's own doc comment). Omitted entirely = FD bars not drawn
+   *  (e.g. before the autopilot module is wired up at all). */
+  fd?: { pitchDeg: number; bankDeg: number }
+  /** AP mode annunciation (mirrors `AutopilotState`'s mode/armed fields).
+   *  Omitted = no AP annunciator row drawn. */
+  apAnnunciation?: {
+    masterEnabled: boolean
+    lateralMode: string
+    lateralArmed: boolean
+    verticalMode: string
+    verticalArmed: boolean
+  }
 }
 
 // ============================================================================
@@ -384,6 +411,34 @@ function drawAttitude(ctx: CanvasRenderingContext2D, x: number, y: number, w: nu
     ctx.stroke()
     ctx.fillText(String(Math.abs(p)), -lineW - w * 0.06, ly)
   }
+
+  // Flight-director single-cue crossbar (Phase 4 Task 6): shows the
+  // autopilot's commanded pitch/bank attitude (`AutopilotState.fdPitchDeg`/
+  // `fdBankDeg`, computed every step regardless of servo engagement per
+  // that module's own doc comment) as a distinct-colored bar the pilot
+  // flies toward — same "still shows the target hand-flown" convention as
+  // a real flight director. Drawn in this same rolled/pitched local frame,
+  // re-rotated by the *difference* between actual and commanded bank so
+  // its absolute screen angle reflects the commanded bank, not the
+  // aircraft's current one.
+  if (data.fd) {
+    const fdLy = (data.pitchDeg - data.fd.pitchDeg) * pxPerDeg
+    ctx.save()
+    ctx.rotate(((data.rollDeg - data.fd.bankDeg) * Math.PI) / 180)
+    ctx.strokeStyle = COLORS.cyan
+    ctx.lineWidth = Math.max(3, h * 0.014)
+    const half = w * 0.22
+    ctx.beginPath()
+    ctx.moveTo(-half, fdLy)
+    ctx.lineTo(half, fdLy)
+    ctx.moveTo(-half, fdLy)
+    ctx.lineTo(-half + w * 0.035, fdLy + h * 0.025)
+    ctx.moveTo(half, fdLy)
+    ctx.lineTo(half - w * 0.035, fdLy + h * 0.025)
+    ctx.stroke()
+    ctx.restore()
+  }
+
   ctx.restore()
 
   // Fixed (non-rolling/non-pitching) bank pointer + roll scale at top of the box.
@@ -489,20 +544,28 @@ function drawHsi(ctx: CanvasRenderingContext2D, x: number, y: number, w: number,
   ctx.fill()
   ctx.restore()
 
-  // CDI: honestly-inert instrument face. No live VOR/GPS nav exists until
-  // Phase 4, so this renders a centered needle with a flagged/inactive
-  // annunciation rather than fabricating a live deviation signal.
+  // CDI: real deviation once a nav source is tuned/receivable (Phase 4);
+  // otherwise the same honest "NO NAV" inert needle as before — no source
+  // means no fabricated deviation signal, per the anti-faking rule.
+  const cdi = data.cdi
+  const cdiOffset = cdi ? Math.max(-1, Math.min(1, cdi.deflectionFraction)) * r * 0.5 : 0
   ctx.strokeStyle = COLORS.magenta
   ctx.lineWidth = Math.max(2, r * 0.03)
   ctx.beginPath()
-  ctx.moveTo(0, -r * 0.7)
-  ctx.lineTo(0, r * 0.7)
+  ctx.moveTo(cdiOffset, -r * 0.7)
+  ctx.lineTo(cdiOffset, r * 0.7)
   ctx.stroke()
-  // Deviation dots (always centered/inert this phase).
+  // Deviation dots (fixed reference positions — the needle above moves
+  // relative to these, matching a real CDI's dot-scale convention).
   for (const d of [-0.6, -0.3, 0.3, 0.6]) {
     ctx.beginPath()
     ctx.arc(d * r * 0.5, 0, r * 0.02, 0, Math.PI * 2)
     ctx.stroke()
+  }
+  if (cdi?.toFrom) {
+    ctx.fillStyle = COLORS.white
+    ctx.font = `${Math.round(r * 0.12)}px monospace`
+    ctx.fillText(cdi.toFrom, 0, -r * 0.18)
   }
 
   ctx.restore()
@@ -524,11 +587,11 @@ function drawHsi(ctx: CanvasRenderingContext2D, x: number, y: number, w: number,
   ctx.textAlign = 'center'
   ctx.fillText(Math.round(data.headingDeg).toString().padStart(3, '0') + '°', cx, cy - r - r * 0.25)
 
-  // "NO NAV" flag — honest placeholder in place of a real CDI source flag,
-  // since no VOR/GPS source selection exists yet (Phase 4).
-  ctx.fillStyle = COLORS.annunciatorWarn
+  // "NO NAV" flag when nothing is tuned/receivable; the real source
+  // identifier otherwise (Phase 4 — replaces the old always-on placeholder).
+  ctx.fillStyle = cdi ? COLORS.green : COLORS.annunciatorWarn
   ctx.font = `${Math.round(r * 0.14)}px monospace`
-  ctx.fillText('NO NAV', cx, cy + r * 0.35)
+  ctx.fillText(cdi ? `${cdi.source}${cdi.identifier ? ' ' + cdi.identifier : ''}` : 'NO NAV', cx, cy + r * 0.35)
 
   // Wind vector box (direction + speed), corner of the HSI.
   ctx.textAlign = 'left'
@@ -602,6 +665,33 @@ function drawAnnunciator(ctx: CanvasRenderingContext2D, x: number, y: number, w:
   })
 }
 
+/** AP mode-annunciation bar (Phase 4 Task 6): a thin strip above the
+ *  attitude indicator showing master AP/FD status + lateral/vertical mode
+ *  names, white = armed (not yet capturing/tracking), green = active —
+ *  standard avionics convention, mirrors `AutopilotState`'s own
+ *  armed-vs-active fields directly rather than re-deriving them. Undrawn
+ *  (dim placeholder) when no autopilot data is supplied at all. */
+function drawApAnnunciator(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, ap: PfdInput['apAnnunciation']): void {
+  ctx.fillStyle = COLORS.bezel
+  ctx.fillRect(x, y, w, h)
+  ctx.strokeStyle = COLORS.bezelText
+  ctx.strokeRect(x, y, w, h)
+  ctx.font = `bold ${Math.round(h * 0.55)}px monospace`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const segW = w / 3
+  ctx.fillStyle = ap?.masterEnabled ? COLORS.green : '#505050'
+  ctx.fillText(ap?.masterEnabled ? 'AP' : 'FD OFF', x + segW * 0.5, y + h / 2)
+  if (ap) {
+    ctx.fillStyle = ap.lateralArmed ? COLORS.white : COLORS.green
+    ctx.fillText(ap.lateralMode, x + segW * 1.5, y + h / 2)
+    ctx.fillStyle = ap.verticalArmed ? COLORS.white : COLORS.green
+    ctx.fillText(ap.verticalMode, x + segW * 2.5, y + h / 2)
+  }
+  ctx.textAlign = 'left'
+  ctx.textBaseline = 'alphabetic'
+}
+
 /** Softkey bezel row along the bottom of the display. */
 function drawSoftkeys(ctx: CanvasRenderingContext2D, width: number, height: number): void {
   for (const region of pfdSoftkeyRegions(width, height)) {
@@ -649,7 +739,9 @@ export function drawPfd(ctx: CanvasRenderingContext2D, width: number, height: nu
   drawAirspeedTape(ctx, 0, bodyY, asiW, bodyH * 0.62, data)
   drawOatTas(ctx, 0, bodyY + bodyH * 0.64, asiW, bodyH * 0.34, data)
 
-  drawAttitude(ctx, attX, bodyY, attW, bodyH * 0.55, data)
+  const apBarH = bodyH * 0.045
+  drawApAnnunciator(ctx, attX, bodyY, attW, apBarH, data.apAnnunciation)
+  drawAttitude(ctx, attX, bodyY + apBarH, attW, bodyH * 0.55 - apBarH, data)
   drawHsi(ctx, attX, bodyY + bodyH * 0.57, attW, bodyH * 0.4, data)
 
   drawAltitudeTape(ctx, attX + attW, bodyY, altW, bodyH * 0.62, data)

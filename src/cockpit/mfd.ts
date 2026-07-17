@@ -38,6 +38,7 @@ import { egtC, EGT_PEAK_C } from '../sim/systems/mixture'
 import { kgToGal, TANK_CAPACITY_GAL } from '../sim/systems/fuel'
 import type { EngineTemps } from '../sim/systems/engine-temps'
 import { OIL_TEMP_MAX_C, OIL_PRESS_MAX_PSI, OIL_PRESS_MIN_GREEN_PSI, CHT_MAX_C } from '../sim/systems/engine-temps'
+import { FT } from '../sim/atmosphere'
 import { distanceM, bearingDeg, type LatLon } from '../math/geo'
 import { pointInPolygonRings, AirspaceKind, type AirspacePolygon } from '../sim/nav/airspace'
 import type { SoftkeyRegion } from './types'
@@ -120,6 +121,29 @@ export function projectToMap(
   const angleRad = (angleDeg * Math.PI) / 180
   const r = dist / rangeM
   return { x: r * Math.sin(angleRad), y: -r * Math.cos(angleRad) }
+}
+
+// ---- Glide-range ring (Phase 4 Task 6) ----
+
+/** Best-glide L/D ratio, reused directly from the C172S's own POH-validated
+ *  figure (`tests/validate/poh.test.ts`'s "glides ~9:1 ±0.8 at 68 KIAS,
+ *  power idle", also recorded in `PROGRESS.md`) — not a re-guessed number.
+ *  `C172S.vSpeeds.glide` (68 KIAS) is the speed to fly to achieve it; the
+ *  ratio itself isn't stored on the params object (it's a *result* of the
+ *  flight model, validated by that POH test, not an input parameter), so
+ *  it's restated here with its source cited rather than silently assumed. */
+export const BEST_GLIDE_RATIO = 9
+
+/**
+ * Wind-agnostic best-glide footprint radius (m): horizontal distance
+ * = altitude AGL * glide ratio. This is an honest simplification (a circle,
+ * not a wind-drifted ellipse) — real glide range is skewed downwind, but
+ * modeling that would need a wind-drift shaping pass this task's scope
+ * doesn't cover; flagged here rather than silently presented as
+ * wind-corrected. Pure — no drawing.
+ */
+export function glideRangeRadiusM(altAglFt: number, glideRatio = BEST_GLIDE_RATIO): number {
+  return Math.max(altAglFt, 0) * glideRatio * FT
 }
 
 // ---- Airspace overlay (Phase 4 Task 5, §6.5) ----
@@ -225,6 +249,10 @@ export interface MfdMapInput {
    *  `rangeM` internally via `filterAirspaceInRange`, so callers may pass
    *  the whole nationwide `/api/airspace.json` array unfiltered. */
   airspace?: readonly AirspacePolygon[]
+  /** Aircraft height above ground, ft — draws a best-glide range ring
+   *  (`glideRangeRadiusM`) when supplied. Omitted = ring not drawn (e.g.
+   *  AGL unknown/not computed by the caller). */
+  aircraftAglFt?: number
 }
 
 // ============================================================================
@@ -620,6 +648,25 @@ function drawMapPage(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
   ctx.font = `${Math.round(h * 0.03)}px monospace`
   ctx.textAlign = 'left'
   ctx.fillText(`${(map.rangeM / 1852).toFixed(0)} NM`, cx + 4, cy - radiusPx + h * 0.03)
+
+  // Best-glide range ring (Phase 4 Task 6): a wind-agnostic circle (flagged
+  // simplification, see `glideRangeRadiusM`'s doc), only drawn if AGL was
+  // supplied and it's smaller than the display range (otherwise it'd just
+  // be a giant circle off past the edge of the screen, not useful).
+  if (map.aircraftAglFt !== undefined) {
+    const glideRadiusPx = (glideRangeRadiusM(map.aircraftAglFt) / map.rangeM) * radiusPx
+    if (glideRadiusPx > 0 && glideRadiusPx <= radiusPx * 1.5) {
+      ctx.save()
+      ctx.strokeStyle = COLORS.green
+      ctx.setLineDash([5, 4])
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.arc(cx, cy, Math.min(glideRadiusPx, radiusPx), 0, Math.PI * 2)
+      ctx.stroke()
+      ctx.setLineDash([])
+      ctx.restore()
+    }
+  }
 
   // Airports within range.
   const inRange = filterAirportsInRange(aircraft, map.airports, map.rangeM)

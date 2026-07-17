@@ -14,6 +14,7 @@ import { OrbitCamera } from './render/orbit-camera'
 import { CockpitCamera } from './render/cockpit-camera'
 import { buildC172, updateProp } from './render/aircraft-mesh'
 import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
+import type { PfdInput } from './cockpit/pfd'
 import { Input } from './input/input'
 import { Hud } from './ui/hud'
 import { WorldFrame, TileManager } from './world/tiles'
@@ -23,6 +24,14 @@ import { makeFuelState, stepFuel, type FuelSelector } from './sim/systems/fuel'
 import { PitotStaticSystem } from './sim/systems/pitot'
 import { stepEngineStart, type EngineStartState, type MagnetoPosition } from './sim/systems/engine-start'
 import { makeEngineTemps, stepEngineTemps } from './sim/systems/engine-temps'
+import { NavaidsIndex } from './sim/nav/navaids'
+import { FlightPlan, gpsCdiDeflection, determinePhase, activeLegProgress } from './sim/nav/gps'
+import { airspacesContaining, type AirspacePolygon } from './sim/nav/airspace'
+import { makeAutopilotState, stepAutopilot, disconnect as disconnectAutopilot, type LateralMode, type VerticalMode } from './sim/autopilot'
+import {
+  findTunedVor, vorCdiFraction, ilsRefFromRunwayThreshold, localizerFraction, glideslopeFraction, findKnownIls,
+  NO_NAV_RESULT, type TunedNavResult,
+} from './sim/nav/tuning'
 
 const KHAF = { lat: 37.5134, lon: -122.5011 }
 
@@ -39,6 +48,39 @@ const loop = new FixedTimestepLoop(120)
 const frame = new WorldFrame(KHAF)
 const airports = new Airports(scene, frame)
 const tiles = new TileManager(scene, frame, (s, n, w, e) => airports.runwaysInBounds(s, n, w, e))
+
+// ---- Phase 4: nav/airspace data loading. `NavaidsIndex`/`airspacesContaining`
+// are pure `/sim` modules (§4.1) that don't fetch themselves — this mirrors
+// `Airports.load()`'s "caller fetches JSON, hands the parsed array to the
+// pure holder" pattern, just without a dedicated class (there's no three.js-
+// side rendering/spatial-index need for navaids/airspace the way there is
+// for airports/runways).
+const navaidsIndex = new NavaidsIndex()
+let airspacePolygons: AirspacePolygon[] = []
+fetch('/api/navaids.json')
+  .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`navaids: HTTP ${res.status}`))))
+  .then((data) => navaidsIndex.load(data))
+  .catch((err) => console.error('navaid data failed to load:', err))
+fetch('/api/airspace.json')
+  .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`airspace: HTTP ${res.status}`))))
+  .then((data) => {
+    airspacePolygons = data as AirspacePolygon[]
+  })
+  .catch((err) => console.error('airspace data failed to load:', err))
+
+/** CIFP procedure JSON, fetched on demand per airport (not all at boot —
+ *  there could be many airports' worth of procedures, per the phase plan's
+ *  explicit "on demand" instruction) and cached once loaded. */
+const procedureCache = new Map<string, unknown>()
+async function loadProcedures(icao: string): Promise<unknown> {
+  const cached = procedureCache.get(icao)
+  if (cached) return cached
+  const res = await fetch(`/api/procedures/${icao}.json`)
+  if (!res.ok) throw new Error(`procedures ${icao}: HTTP ${res.status}`)
+  const json = await res.json()
+  procedureCache.set(icao, json)
+  return json
+}
 
 const aircraft = new Aircraft()
 aircraft.groundElevAt = (n, e) => {
@@ -96,6 +138,10 @@ type SystemsControls = {
   starterEngaged: boolean
   fuelSelector: FuelSelector
   boostPumpOn: boolean
+  /** GFC700 autopilot master engage/disengage (Phase 4 Task 6) — a real
+   *  physical cockpit switch, unlike the mode-select targets below it
+   *  which are debug-hook-only this task (see `apTargets`' doc). */
+  apMaster: boolean
 }
 // Shared with `resetSystemsState` below so a respawn puts these switches
 // back to the same "just started" defaults the sim boots with.
@@ -108,8 +154,48 @@ const SYSTEMS_CONTROLS_DEFAULT: SystemsControls = {
   starterEngaged: false,
   fuelSelector: 'BOTH',
   boostPumpOn: false,
+  apMaster: false,
 }
 const systemsControls: SystemsControls = { ...SYSTEMS_CONTROLS_DEFAULT }
+
+// ---- Phase 4 Task 6: radio/GPS/autopilot state ----
+
+/** NAV1/NAV2/COM1/COM2 flip-flop frequency state + OBS course selectors.
+ *  NAV1/COM1 get physical 3D-cockpit tuning knobs (`render/cockpit.ts`);
+ *  NAV2/COM2 are modeled state without a physical control this task (scope
+ *  cut — see task report). Boot frequencies are arbitrary in-band defaults,
+ *  not tied to any real station until the pilot tunes one. */
+const radios = {
+  nav1: { activeMhz: 109.55, standbyMhz: 115.8 },
+  nav2: { activeMhz: 112.3, standbyMhz: 112.3 },
+  com1: { activeMhz: 118.0, standbyMhz: 121.5 },
+  com2: { activeMhz: 122.8, standbyMhz: 122.8 },
+  obs1Deg: 0,
+  obs2Deg: 0,
+}
+
+/** Minimal flight plan (`gps.ts`'s `FlightPlan`) — no FPL-entry UI this task
+ *  (MFD's FPL page stays a visual skeleton per Phase 3's disclosed gap,
+ *  per the task brief's explicit scope guidance); populated via the
+ *  `__ohFpl` debug hook for verification, empty by default. */
+const flightPlan = new FlightPlan()
+
+/** GFC700 autopilot state + mode-select targets. No physical mode-select
+ *  panel this task (scope cut, see task report) — modes/targets are set via
+ *  the `__ohApMode` debug hook, mirroring the existing `__ohFail`/`__ohWind`
+ *  hook pattern. AP master engage/disengage IS a physical cockpit switch
+ *  (`systemsControls.apMaster`, wired through `CockpitInteraction`). */
+const apState = makeAutopilotState()
+const apTargets = {
+  lateralMode: 'ROL' as LateralMode,
+  verticalMode: 'PIT' as VerticalMode,
+  headingBugDeg: 0,
+  altitudeBugFt: 0,
+  vsTargetFpm: 0,
+  iasTargetKt: 90,
+  bankCommandDeg: 0,
+  pitchCommandDeg: 0,
+}
 
 /** Scenario/failure flags — the debug-hook side of the failures the phase
  *  plan calls out (`__ohFail`); no in-sim UI to trigger these yet (that's
@@ -133,6 +219,7 @@ function resetSystemsState(): void {
   failures.alternatorFailed = false
   failures.icingConditions = false
   failures.staticBlocked = false
+  disconnectAutopilot(apState)
 }
 let parkingBrake = false
 // Default OFF per §17 ("assists default OFF") — the ground-yaw hold is
@@ -400,6 +487,68 @@ let holdWingsLevel = false
  *  (which writes the axes every frame), else scripts get wiped to zero. */
 let ctlOverride: Record<string, number> | null = null
 
+// ---- Phase 4 Task 6: NAV1 CDI source resolution ----
+
+/**
+ * What NAV1 is actually receiving right now, given its tuned active
+ * frequency and the aircraft's position: a real ILS localizer/glideslope
+ * (via the known-ILS stopgap table + real runway threshold geometry, see
+ * `tuning.ts`'s header for why a table is needed at all), a real VOR radial,
+ * or — honestly — nothing (`NO_NAV_RESULT`), never a fabricated signal.
+ */
+function computeTunedNav(aircraftLL: { lat: number; lon: number }, altitudeFt: number): TunedNavResult {
+  const activeMhz = radios.nav1.activeMhz
+  for (const ap of airports.near(aircraftLL.lat, aircraftLL.lon, 30 * 1852)) {
+    const known = findKnownIls(ap.i, activeMhz)
+    if (!known) continue
+    const rwy = ap.r.find((r) => r.li === known.runway || r.hi === known.runway)
+    if (!rwy) continue
+    const fromHigh = rwy.hi === known.runway
+    const threshold = fromHigh ? { lat: rwy.la2, lon: rwy.lo2, elevFt: rwy.e2 } : { lat: rwy.la1, lon: rwy.lo1, elevFt: rwy.e1 }
+    const opposite = fromHigh ? { lat: rwy.la1, lon: rwy.lo1 } : { lat: rwy.la2, lon: rwy.lo2 }
+    const ils = ilsRefFromRunwayThreshold({
+      thresholdLat: threshold.lat, thresholdLon: threshold.lon, thresholdElevFt: threshold.elevFt,
+      oppositeLat: opposite.lat, oppositeLon: opposite.lon,
+    })
+    const loc = localizerFraction(ils, aircraftLL)
+    const gs = glideslopeFraction(ils, aircraftLL, altitudeFt)
+    return {
+      source: 'LOC', identifier: `${ap.i} ${known.runway}`,
+      deflectionFraction: loc.deflectionFraction, hasGlideslope: true, glideslopeFraction: gs,
+    }
+  }
+  const nearbyNavaids = navaidsIndex.near(aircraftLL.lat, aircraftLL.lon, 200 * 1852)
+  const vor = findTunedVor(nearbyNavaids, activeMhz)
+  if (vor) {
+    const r = vorCdiFraction(vor, radios.obs1Deg, aircraftLL)
+    return { source: 'VOR', identifier: vor.i, deflectionFraction: r.deflectionFraction, toFrom: r.toFrom, hasGlideslope: false }
+  }
+  return NO_NAV_RESULT
+}
+
+/** GPS/flight-plan CDI, if a flight plan is loaded and has an active leg —
+ *  undefined (not zero) when there's genuinely nothing to track, same
+ *  anti-faking rule as `computeTunedNav`. */
+function computeGpsCdi(aircraftLL: { lat: number; lon: number }): { deflectionFraction: number } | undefined {
+  const legs = flightPlan.legs()
+  if (legs.length === 0) return undefined
+  const progress = activeLegProgress(legs, aircraftLL)
+  if (!progress) return undefined
+  const phase = determinePhase({
+    distFromDepartureNm: Infinity,
+    distToDestinationNm: progress.distanceRemainingM / 1852,
+    onFinalApproachSegment: progress.legIndex === legs.length - 1,
+  })
+  return gpsCdiDeflection(progress.crossTrackNm, phase)
+}
+
+let mfdPage: 'map' | 'lean' | 'fpl' = 'map'
+/** Last computed in-airspace result (Phase 4 Task 5 wiring) — updated once
+ *  per frame in `advanceFrame`, exposed via `__ohAirspace` for a later
+ *  acceptance task to verify "the sim knows when the aircraft is inside the
+ *  Bravo shelf" without needing its own polygon math. */
+let currentAirspace: AirspacePolygon[] = []
+
 function advanceFrame(elapsed: number, now: number): void {
   handleDiscreteKeys()
   pollControls(elapsed)
@@ -411,11 +560,67 @@ function advanceFrame(elapsed: number, now: number): void {
     aircraft.controls.yaw = Math.min(Math.max(1.8 * betaRad - 0.9 * aircraft.rates.z, -1), 1)
   }
 
+  // ---- Phase 4 Task 6: nav-source resolution + autopilot, once per
+  // rendered frame (not re-resolved every fixed sub-tick — the aircraft
+  // moves negligibly relative to navaid/runway geometry within one frame,
+  // same "doesn't need to be literally every physics tick" latitude the
+  // task brief gives airspace detection). Computed against the position at
+  // the *start* of this frame, one frame stale at most.
+  const preStepLL = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+  const tunedNav = computeTunedNav(preStepLL, aircraft.data.altitudeFt)
+  const gpsCdi = computeGpsCdi(preStepLL)
+  let navDeviationForAp = 0
+  let glideslopeDeviationForAp = 0
+  if (apTargets.lateralMode === 'APR' || apTargets.lateralMode === 'BC') {
+    navDeviationForAp = tunedNav.source === 'LOC' ? tunedNav.deflectionFraction : 0
+    glideslopeDeviationForAp = tunedNav.hasGlideslope ? tunedNav.glideslopeFraction ?? 0 : 0
+  } else if (apTargets.lateralMode === 'NAV') {
+    navDeviationForAp = gpsCdi ? gpsCdi.deflectionFraction : tunedNav.source === 'VOR' ? tunedNav.deflectionFraction : 0
+  }
+  const pfdCdi: PfdInput['cdi'] = tunedNav.source
+    ? { source: tunedNav.source, deflectionFraction: tunedNav.deflectionFraction, toFrom: tunedNav.toFrom, identifier: tunedNav.identifier }
+    : gpsCdi
+      ? { source: 'GPS', deflectionFraction: gpsCdi.deflectionFraction }
+      : undefined
+
   let remaining = elapsed
   while (remaining > 1e-6) {
     const chunk = Math.min(remaining, 0.25)
     loop.advance(chunk, (dt) => {
       wind.step(dt, aircraft.windNed)
+
+      stepAutopilot(apState, dt, {
+        iasKt: aircraft.data.kias,
+        altitudeFt: aircraft.data.altitudeFt,
+        verticalSpeedFpm: aircraft.data.verticalSpeedFpm,
+        headingDeg: aircraft.data.headingDeg,
+        pitchDeg: aircraft.data.pitchDeg,
+        rollDeg: aircraft.data.rollDeg,
+        masterEnabled: systemsControls.apMaster,
+        lateralMode: apTargets.lateralMode,
+        verticalMode: apTargets.verticalMode,
+        headingBugDeg: apTargets.headingBugDeg,
+        altitudeBugFt: apTargets.altitudeBugFt,
+        vsTargetFpm: apTargets.vsTargetFpm,
+        iasTargetKt: apTargets.iasTargetKt,
+        bankCommandDeg: apTargets.bankCommandDeg,
+        pitchCommandDeg: apTargets.pitchCommandDeg,
+        navDeviation: navDeviationForAp,
+        glideslopeDeviation: glideslopeDeviationForAp,
+      })
+      // Servos take the yoke when engaged — overwrites the same
+      // `aircraft.controls` fields `pollControls`/`CockpitInteraction` write,
+      // exactly like a real AP servo clutch; when disengaged those two
+      // input paths are untouched (see `AutopilotState.rollCmd` etc.'s doc:
+      // they rate-limit to 0 on disconnect rather than snapping, so this
+      // assignment is always well-defined even mid-disconnect).
+      if (apState.masterEnabled) {
+        aircraft.controls.pitch = apState.pitchCmd
+        aircraft.controls.roll = apState.rollCmd
+        aircraft.controls.yaw = apState.yawCmd
+        aircraft.controls.trim = apState.trimCommand
+      }
+
       aircraft.step(dt)
 
       // ---- systems (Phase 3 §8) — fixed-timestep, same cadence as
@@ -474,6 +679,12 @@ function advanceFrame(elapsed: number, now: number): void {
   }
   airports.positionAll()
 
+  // Phase 4 Task 5 wiring: in-airspace detection, once per rendered frame
+  // (airspace shelves are large relative to per-tick aircraft motion — the
+  // task brief explicitly allows a "reasonable update cadence", not every
+  // physics tick).
+  currentAirspace = airspacesContaining(ll, aircraft.data.altitudeFt, airspacePolygons)
+
   mesh.group.position.set(pos.y, -pos.z, -pos.x)
   const d = aircraft.data
   mesh.group.rotation.order = 'YXZ'
@@ -494,7 +705,7 @@ function advanceFrame(elapsed: number, now: number): void {
       camera.near = COCKPIT_NEAR
       camera.updateProjectionMatrix()
     }
-    cockpitInteraction.update(input, cockpit, systemsControls, aircraft.controls)
+    cockpitInteraction.update(input, cockpit, systemsControls, aircraft.controls, radios)
     cockpitCam.update(
       mesh.group.position,
       (d.headingDeg * Math.PI) / 180,
@@ -516,6 +727,7 @@ function advanceFrame(elapsed: number, now: number): void {
     masterAlternator: systemsControls.masterAlternator,
     avionicsSwitch: systemsControls.avionicsSwitch,
     pitotHeat: systemsControls.pitotHeat,
+    apMaster: systemsControls.apMaster,
   }
   updateCockpitControls(
     cockpit,
@@ -552,19 +764,28 @@ function advanceFrame(elapsed: number, now: number): void {
       verticalSpeedFpm: pitotReadings.vsiFpm,
       baroInHg: 29.92,
       headingDeg: d.headingDeg,
-      headingBugDeg: d.headingDeg,
+      headingBugDeg: apTargets.headingBugDeg,
       windDirDeg: windDirFromNed(aircraft.windNed),
       windSpeedKt: Math.hypot(aircraft.windNed.x, aircraft.windNed.y) / KT,
       ktas: d.ktas,
       groundSpeedKt: d.groundSpeedKt,
       oatC: isa(Math.max(d.altitudeFt, 0) * FT).temperatureK - 273.15,
-      nav1: { activeMhz: 110.0, standbyMhz: 115.0 },
-      com1: { activeMhz: 118.0, standbyMhz: 121.5 },
+      nav1: radios.nav1,
+      com1: radios.com1,
       squawk: '1200',
       annunciations,
+      cdi: pfdCdi,
+      fd: { pitchDeg: apState.fdPitchDeg, bankDeg: apState.fdBankDeg },
+      apAnnunciation: {
+        masterEnabled: apState.masterEnabled,
+        lateralMode: apState.lateralMode,
+        lateralArmed: apState.lateralArmed,
+        verticalMode: apState.verticalMode,
+        verticalArmed: apState.verticalArmed,
+      },
     },
     {
-      page: 'lean',
+      page: mfdPage,
       rpm: d.rpm,
       fuelFlowGph: d.fuelFlowGph,
       mixture: aircraft.controls.mixture,
@@ -576,6 +797,16 @@ function advanceFrame(elapsed: number, now: number): void {
         alternatorAmps: electricalState.alternatorAmps,
         batteryAmps: electricalState.batteryAmps,
       },
+      map: mfdPage === 'map' ? {
+        aircraftLat: ll.lat,
+        aircraftLon: ll.lon,
+        headingDeg: d.headingDeg,
+        rangeM: 20 * 1852,
+        trackUp: false,
+        airports: airports.near(ll.lat, ll.lon, 60 * 1852).map((ap) => ({ id: ap.i, name: ap.n, lat: ap.la, lon: ap.lo })),
+        airspace: currentAirspace,
+        aircraftAglFt: d.aglFt,
+      } : undefined,
     },
   )
 
@@ -663,7 +894,73 @@ Object.assign(window as unknown as Record<string, unknown>, {
       tiles: tiles.readyCount,
       spawn: spawnDesc,
       airportsLoaded: airports.loaded,
+      navaidsLoaded: navaidsIndex.count > 0,
+      airspaceLoaded: airspacePolygons.length > 0,
     }
+  },
+  /** Phase 4 Task 6: current in-airspace result (§6.5 acceptance —
+   *  "the sim knows when the aircraft is inside the Bravo shelf") — the
+   *  same `currentAirspace` array fed into the MFD map page, exposed
+   *  directly so a later acceptance task doesn't need to re-derive it. */
+  __ohAirspace: () => currentAirspace.map((p) => ({ name: p.n, kind: p.k, floorFt: p.fl, ceilingFt: p.ce })),
+  /** Current NAV1 CDI/localizer/glideslope resolution (Phase 4 Task 6) —
+   *  the same value fed to the PFD and the autopilot's NAV/APR modes. */
+  __ohNav: () => {
+    const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+    return computeTunedNav(ll, aircraft.data.altitudeFt)
+  },
+  /** Tune NAV1/COM1 active+standby frequencies directly (bypassing the 3D
+   *  cockpit knobs) and/or the OBS1 course, for headless verification. Any
+   *  omitted field is left unchanged. */
+  __ohTune: (freqs: { nav1Active?: number; nav1Standby?: number; com1Active?: number; com1Standby?: number; obs1Deg?: number }) => {
+    if (freqs.nav1Active !== undefined) radios.nav1.activeMhz = freqs.nav1Active
+    if (freqs.nav1Standby !== undefined) radios.nav1.standbyMhz = freqs.nav1Standby
+    if (freqs.com1Active !== undefined) radios.com1.activeMhz = freqs.com1Active
+    if (freqs.com1Standby !== undefined) radios.com1.standbyMhz = freqs.com1Standby
+    if (freqs.obs1Deg !== undefined) radios.obs1Deg = freqs.obs1Deg
+  },
+  /** Load a flight plan directly as a waypoint list (no FPL-entry UI this
+   *  task — see task report). Also usable to load a CIFP procedure's legs
+   *  as waypoints for a simple GPS-mode flyable path: fetch via
+   *  `/api/procedures/{ICAO}.json` and pass the resolved fixes in. */
+  __ohFpl: (waypoints: { ident: string; lat: number; lon: number }[]) => {
+    flightPlan.setWaypoints(waypoints)
+  },
+  /** Fetch + expose a raw CIFP procedure JSON blob for a later acceptance
+   *  task's own leg assembly/inspection (`assembleProcedureLegs`,
+   *  `procedures.ts`) — this hook only fetches/caches, it doesn't fly the
+   *  procedure (that's `__ohFpl` + `__ohApMode('NAV', ...)` composed by the
+   *  caller). */
+  __ohProcedures: (icao: string) => loadProcedures(icao),
+  /** AP mode-select debug hook (Phase 4 Task 6) — mirrors this file's
+   *  existing `__ohFail`/`__ohWind` hook pattern. A full physical AP
+   *  mode-select panel (HDG/NAV/APR/ALT/VS buttons in the 3D cockpit) is
+   *  deferred (scope cut, see task report); AP master engage/disengage IS
+   *  a physical switch (`sw_apMaster`). Any omitted argument leaves that
+   *  part of `apTargets` unchanged. */
+  __ohApMode: (
+    lateral?: LateralMode,
+    vertical?: VerticalMode,
+    targets?: Partial<{ headingBugDeg: number; altitudeBugFt: number; vsTargetFpm: number; iasTargetKt: number; bankCommandDeg: number; pitchCommandDeg: number }>,
+  ) => {
+    if (lateral) apTargets.lateralMode = lateral
+    if (vertical) apTargets.verticalMode = vertical
+    if (targets) Object.assign(apTargets, targets)
+  },
+  __ohApState: () => ({ ...apState }),
+  /** Switch the MFD's active page (no physical softkey wiring this task —
+   *  the softkey regions remain functionally inert per `mfd.ts`'s own doc
+   *  comment, unchanged from Phase 3). Defaults to 'map' at boot so the
+   *  airspace/glide-ring wiring (Phase 4 Tasks 5/6) is visible without
+   *  needing this hook at all. */
+  __ohMfdPage: (page: 'map' | 'lean' | 'fpl') => {
+    mfdPage = page
+  },
+  /** Verification-only camera-mode switch (mirrors pressing 'C' repeatedly)
+   *  — useful for headless/automated cockpit-camera checks where dispatching
+   *  a real keyboard event isn't reliable. */
+  __ohCam: (mode: 'chase' | 'orbit' | 'free' | 'cockpit') => {
+    cameraMode = mode
   },
   __ohSpawn: (q: string) => handleSearch(q),
   __ohHold: (on: boolean) => {

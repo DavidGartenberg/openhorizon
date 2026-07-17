@@ -69,6 +69,19 @@ export function nearestFlapDetent(fraction: number, detentCount = 4): number {
   return Math.round(clamped * (detentCount - 1))
 }
 
+/** Click-increment/decrement a radio's standby frequency by one step,
+ *  clamped to [minMhz, maxMhz] (Phase 4 Task 6 NAV/COM tuning knobs) — a
+ *  simplified stand-in for a real G1000 dual-concentric knob's drag-to-
+ *  rotate feel, matching the coarse click-cycle interaction style already
+ *  used for the fuel selector/ignition key above rather than inventing a
+ *  new drag paradigm. Rounds to avoid float drift after repeated clicks
+ *  (e.g. 118.000 + 0.025 * n staying on exact channel spacing). */
+export function tuneFrequency(standbyMhz: number, deltaSteps: number, stepMhz: number, minMhz: number, maxMhz: number): number {
+  const raw = standbyMhz + deltaSteps * stepMhz
+  const clamped = Math.min(maxMhz, Math.max(minMhz, raw))
+  return Math.round(clamped * 1000) / 1000
+}
+
 // ============================================================================
 // Meshes
 // ============================================================================
@@ -90,7 +103,7 @@ function placeBody(m: THREE.Object3D, x: number, y: number, z: number): void {
   m.position.set(y, -z, -x)
 }
 
-export type SwitchId = 'masterBattery' | 'masterAlternator' | 'avionicsSwitch' | 'pitotHeat'
+export type SwitchId = 'masterBattery' | 'masterAlternator' | 'avionicsSwitch' | 'pitotHeat' | 'apMaster'
 
 export interface CockpitMeshes {
   group: THREE.Group
@@ -110,6 +123,18 @@ export interface CockpitMeshes {
   trimWheel: THREE.Mesh
   yokeColumn: THREE.Mesh
   yokeWheel: THREE.Mesh
+  /** NAV1/COM1 tuning knobs (Phase 4 Task 6) — click-increment/decrement
+   *  buttons flanking each radio's standby-frequency position, plus a
+   *  flip-flop swap button. NAV2/COM2 get modeled radio state (`main.ts`)
+   *  but no physical knobs this task (scope cut, see task report). */
+  nav1TuneUp: THREE.Mesh
+  nav1TuneDown: THREE.Mesh
+  nav1FlipFlop: THREE.Mesh
+  com1TuneUp: THREE.Mesh
+  com1TuneDown: THREE.Mesh
+  com1FlipFlop: THREE.Mesh
+  obs1Up: THREE.Mesh
+  obs1Down: THREE.Mesh
   /** Every raycast-clickable/draggable object, tagged via `userData.controlId`. */
   interactive: THREE.Object3D[]
 }
@@ -205,18 +230,56 @@ export function buildCockpit(parent: THREE.Object3D): CockpitMeshes {
   }
 
   // Switch row, bottom-left of the panel: master battery/alt, avionics,
-  // pitot heat.
+  // pitot heat, AP master (Phase 4 Task 6 engage/disengage).
   const switches = {
     masterBattery: makeSwitch('sw_masterBattery'),
     masterAlternator: makeSwitch('sw_masterAlternator'),
     avionicsSwitch: makeSwitch('sw_avionicsSwitch'),
     pitotHeat: makeSwitch('sw_pitotHeat'),
+    apMaster: makeSwitch('sw_apMaster'),
   } as Record<SwitchId, THREE.Mesh>
-  const swIds: SwitchId[] = ['masterBattery', 'masterAlternator', 'avionicsSwitch', 'pitotHeat']
+  const swIds: SwitchId[] = ['masterBattery', 'masterAlternator', 'avionicsSwitch', 'pitotHeat', 'apMaster']
   swIds.forEach((id, i) => {
     add(switches[id]!, 0.97, -0.5 + i * 0.045, -0.22)
     interactive.push(switches[id]!)
   })
+
+  // NAV1/COM1 tuning knobs + flip-flop swap buttons, and the OBS course
+  // knob (Phase 4 Task 6) — small pushbutton pairs below the PFD's radio
+  // stack readout, coarse click-increment/decrement rather than a fine
+  // drag-to-rotate knob (see `tuneFrequency`'s doc for the reasoning).
+  const makeButton = (id: string, mat = KNOB): THREE.Mesh => {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.015, 10), mat)
+    m.rotation.x = Math.PI / 2
+    m.userData.controlId = id
+    return m
+  }
+  const nav1TuneDown = makeButton('nav1TuneDown')
+  add(nav1TuneDown, 0.975, -0.62, -0.4)
+  interactive.push(nav1TuneDown)
+  const nav1TuneUp = makeButton('nav1TuneUp')
+  add(nav1TuneUp, 0.975, -0.6, -0.4)
+  interactive.push(nav1TuneUp)
+  const nav1FlipFlop = makeButton('nav1FlipFlop', RED_KNOB)
+  add(nav1FlipFlop, 0.975, -0.58, -0.4)
+  interactive.push(nav1FlipFlop)
+
+  const com1TuneDown = makeButton('com1TuneDown')
+  add(com1TuneDown, 0.975, -0.62, -0.36)
+  interactive.push(com1TuneDown)
+  const com1TuneUp = makeButton('com1TuneUp')
+  add(com1TuneUp, 0.975, -0.6, -0.36)
+  interactive.push(com1TuneUp)
+  const com1FlipFlop = makeButton('com1FlipFlop', RED_KNOB)
+  add(com1FlipFlop, 0.975, -0.58, -0.36)
+  interactive.push(com1FlipFlop)
+
+  const obs1Down = makeButton('obs1Down')
+  add(obs1Down, 0.975, -0.62, -0.32)
+  interactive.push(obs1Down)
+  const obs1Up = makeButton('obs1Up')
+  add(obs1Up, 0.975, -0.6, -0.32)
+  interactive.push(obs1Up)
 
   // Ignition key (rotary, click-cycles off/right/left/both) + starter
   // pushbutton (momentary, separate from the key per `EngineStartInputs`'s
@@ -307,6 +370,14 @@ export function buildCockpit(parent: THREE.Object3D): CockpitMeshes {
     trimWheel,
     yokeColumn,
     yokeWheel,
+    nav1TuneUp,
+    nav1TuneDown,
+    nav1FlipFlop,
+    com1TuneUp,
+    com1TuneDown,
+    com1FlipFlop,
+    obs1Up,
+    obs1Down,
     interactive,
   }
 }
@@ -409,8 +480,9 @@ export class CockpitInteraction {
   update(
     input: Input,
     meshes: CockpitMeshes,
-    systems: { masterBattery: boolean; masterAlternator: boolean; avionicsSwitch: boolean; pitotHeat: boolean; magneto: MagnetoPosition; starterEngaged: boolean; fuelSelector: FuelSelector },
+    systems: { masterBattery: boolean; masterAlternator: boolean; avionicsSwitch: boolean; pitotHeat: boolean; apMaster: boolean; magneto: MagnetoPosition; starterEngaged: boolean; fuelSelector: FuelSelector },
     controls: { throttle: number; mixture: number; flapsIndex: number; trim: number },
+    radios?: { nav1: { activeMhz: number; standbyMhz: number }; com1: { activeMhz: number; standbyMhz: number }; obs1Deg: number },
   ): void {
     if (input.wasMousePressed()) {
       const hit = this.pick(input, meshes)
@@ -419,6 +491,7 @@ export class CockpitInteraction {
       else if (id === 'sw_masterAlternator') systems.masterAlternator = !systems.masterAlternator
       else if (id === 'sw_avionicsSwitch') systems.avionicsSwitch = !systems.avionicsSwitch
       else if (id === 'sw_pitotHeat') systems.pitotHeat = !systems.pitotHeat
+      else if (id === 'sw_apMaster') systems.apMaster = !systems.apMaster
       else if (id === 'ignitionKey') systems.magneto = cycleMagneto(systems.magneto)
       else if (id === 'starterButton') systems.starterEngaged = true
       else if (id === 'fuelSelector') systems.fuelSelector = cycleFuelSelector(systems.fuelSelector)
@@ -427,6 +500,23 @@ export class CockpitInteraction {
         const axis: DraggableAxis = id === 'throttleKnob' ? 'throttle' : id === 'mixtureKnob' ? 'mixture' : id === 'trimWheel' ? 'trim' : 'flap'
         const startValue = axis === 'throttle' ? controls.throttle : axis === 'mixture' ? controls.mixture : axis === 'trim' ? controls.trim : controls.flapsIndex / 3
         this.activeDrag = { axis, startValue, startPxX: x, startPxY: y }
+      } else if (radios) {
+        // NAV1/COM1 tuning knobs + flip-flop swap, OBS course knob (Phase 4
+        // Task 6) — click-only, no drag state (see `tuneFrequency`'s doc).
+        if (id === 'nav1TuneUp') radios.nav1.standbyMhz = tuneFrequency(radios.nav1.standbyMhz, 1, 0.05, 108.0, 117.95)
+        else if (id === 'nav1TuneDown') radios.nav1.standbyMhz = tuneFrequency(radios.nav1.standbyMhz, -1, 0.05, 108.0, 117.95)
+        else if (id === 'nav1FlipFlop') {
+          const t = radios.nav1.activeMhz
+          radios.nav1.activeMhz = radios.nav1.standbyMhz
+          radios.nav1.standbyMhz = t
+        } else if (id === 'com1TuneUp') radios.com1.standbyMhz = tuneFrequency(radios.com1.standbyMhz, 1, 0.025, 118.0, 136.0)
+        else if (id === 'com1TuneDown') radios.com1.standbyMhz = tuneFrequency(radios.com1.standbyMhz, -1, 0.025, 118.0, 136.0)
+        else if (id === 'com1FlipFlop') {
+          const t = radios.com1.activeMhz
+          radios.com1.activeMhz = radios.com1.standbyMhz
+          radios.com1.standbyMhz = t
+        } else if (id === 'obs1Up') radios.obs1Deg = (radios.obs1Deg + 1 + 360) % 360
+        else if (id === 'obs1Down') radios.obs1Deg = (radios.obs1Deg - 1 + 360) % 360
       }
     }
 
