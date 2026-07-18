@@ -153,6 +153,23 @@ export interface AutopilotState {
   flcPitch: PidMemory
   bankAttitude: PidMemory
   pitchAttitude: PidMemory
+
+  /** Last (slew-limited) `effectiveDeviation` seen by the NAV/APR/BC
+   *  tracking-phase law — see the slew-rate-limit comment at its use site
+   *  in `stepAutopilot`. `navTrackInitialized` guards the first tracking
+   *  step after each capture so that step doesn't slew-limit against a
+   *  stale/first-frame value. */
+  navTrackPrevDeviation: number
+  navTrackInitialized: boolean
+  /** Low-pass-filtered deviation fed to the tracking law's P term — see
+   *  the constant-block comment above `NAV_MAX_INTERCEPT_DEG`. */
+  navTrackFilteredDeviation: number
+  /** Tracking law's integral accumulator — see the constant-block comment
+   *  above `NAV_MAX_INTERCEPT_DEG`. */
+  navTrackIntegral: number
+  /** Last (rate-limited) intercept-angle bias commanded — see the
+   *  rate-limit comment at its use site in `stepAutopilot`. */
+  navTrackInterceptOffsetDeg: number
 }
 
 export function makeAutopilotState(): AutopilotState {
@@ -178,6 +195,11 @@ export function makeAutopilotState(): AutopilotState {
     flcPitch: makePid(),
     bankAttitude: makePid(),
     pitchAttitude: makePid(),
+    navTrackPrevDeviation: 0,
+    navTrackInitialized: false,
+    navTrackFilteredDeviation: 0,
+    navTrackIntegral: 0,
+    navTrackInterceptOffsetDeg: 0,
   }
 }
 
@@ -285,6 +307,45 @@ export const NAV_INTERCEPT_GAIN_K_DEG = 25
  *  see that constant's comment. Deliberately well under a 45 deg "standard"
  *  intercept angle so re-capturing after a disturbance stays gentle. */
 export const NAV_MAX_INTERCEPT_DEG = 25
+
+/** SECOND, independent fix layered on the tracking law above — see the fix
+ *  report (`docs/plans/phase-4-autopilot-oscillation-fix-report.md`,
+ *  "still-broken tracking-phase instability" section) for the full story,
+ *  including a sweep across a genuine derivative-on-deviation term (raw AND
+ *  low-pass-filtered, both signs, gains from -2000 to +50000) that was tried
+ *  FIRST and empirically found to make the instability WORSE at every
+ *  magnitude tested, not better — the intercept-angle-bias law's
+ *  "proportional-only outer loop" diagnosis was right, but the missing term
+ *  turned out to be integral (nulling a small persistent bias the bank
+ *  inner loop can't fully null on its own) and a slower/filtered
+ *  proportional response, not derivative. The actual fix applied at the
+ *  call site (`stepAutopilot`'s NAV/APR/BC tracking branch) layers three
+ *  independent pieces onto `NAV_INTERCEPT_GAIN_K_DEG`'s bare-P law:
+ *   1. A ~5s low-pass filter on the deviation fed to the P term
+ *      (`navTrackFilteredDeviation`) — slows the outer loop's response just
+ *      enough to stop it exciting the ~70-100s lightly-damped mode a bare
+ *      instantaneous P term rings at.
+ *   2. A genuine integrator (`navTrackIntegral`, gain 0.2 deg per
+ *      unit-deviation-second) — nulls the small sustained heading/deviation
+ *      bias a pure-P law leaves uncorrected forever (confirmed directly: a
+ *      1200s long-range repro held a STEADY ~0.26-fraction deviation
+ *      indefinitely under P-only, never reaching zero; adding the
+ *      integrator drove that down to <0.02 over the same run).
+ *   3. A dynamic cap on the bias (`dynamicMaxInterceptDeg`) that stays tight
+ *      while the aircraft's heading is already close to the course AND the
+ *      integrator hasn't wound up much — this is glitch immunity for the
+ *      genuine geometric singularity in bearing-based localizer navigation
+ *      right at/very near the station (angular deflection is undefined
+ *      exactly overhead the antenna), confirmed directly: deviation held
+ *      converged for 10+ minutes in a long-range repro, then snapped from
+ *      near-zero to full-scale within 1-2 simulated seconds purely from
+ *      proximity to the antenna, not a control-law error. The cap opens
+ *      back up once the integrator shows a persistent (not transient)
+ *      error, so it can't permanently ignore a genuine sustained deviation.
+ *  Deliberately scoped as local `const`s at the call site rather than
+ *  module-level exports (unlike `NAV_INTERCEPT_GAIN_K_DEG`) — they're all
+ *  empirically-tuned knobs for this one law and don't need external
+ *  visibility the way the primary gain does. */
 
 /** Assumed achievable vertical-speed deceleration (fpm per second) used to
  *  predict the ALTS/altitude-capture lead point — the vertical-axis analog
@@ -408,6 +469,13 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
     state.lastCommandedLateralMode = inputs.lateralMode
     state.lateralMode = inputs.lateralMode
     state.lateralArmed = inputs.lateralMode === 'NAV' || inputs.lateralMode === 'APR' || inputs.lateralMode === 'BC'
+    // A fresh mode selection invalidates any deviation-rate history from a
+    // prior tracking session (see `navTrackPrevDeviation`'s comment) — the
+    // next capture must start its derivative fresh, not diff against a
+    // stale deviation from a previous approach/track.
+    state.navTrackInitialized = false
+    state.navTrackIntegral = 0
+    state.navTrackInterceptOffsetDeg = 0
   }
 
   let targetBankDeg: number
@@ -425,22 +493,85 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       const effectiveDeviation = sign * inputs.navDeviation
       if (Math.abs(effectiveDeviation) <= CAPTURE_FRACTION) {
         state.lateralArmed = false // captured — starts tracking below next call
+        // Fresh capture: the next tracking step must not diff against a
+        // deviation value from before capture (see `navTrackPrevDeviation`).
+        state.navTrackInitialized = false
+        state.navTrackIntegral = 0
+        state.navTrackInterceptOffsetDeg = 0
       }
     } else {
       // Tracking (captured): see `NAV_INTERCEPT_GAIN_K_DEG`'s comment for the
-      // root-cause story on why this isn't a bare deviation PID. Convert
-      // deviation into a bounded intercept-angle bias off the course
-      // (`headingBugDeg`, the pilot's course reference — same field the
-      // ARMED branch above flies toward) and hand the resulting
+      // first root-cause story (why this isn't a bare deviation PID) and the
+      // comment just above that constant for the SECOND, independent fix
+      // layered on top (the "desired heading" reframe converges by
+      // construction but a long-run re-check found it only delays a growing
+      // oscillation). Convert deviation into a bounded intercept-angle bias
+      // off the course (`headingBugDeg`, the pilot's course reference — same
+      // field the ARMED branch above flies toward) and hand the resulting
       // desired-heading error to the exact same heading-to-bank law HDG
       // uses, so tracking inherits HDG's already-validated convergence
-      // instead of needing its own separately-tuned (and, it turned out,
-      // structurally incomplete) control law.
+      // instead of needing its own separately-tuned control law.
       const sign = state.lateralMode === 'BC' ? -1 : 1
-      const effectiveDeviation = sign * inputs.navDeviation
+      const rawEffectiveDeviation = sign * inputs.navDeviation
+      // Deviation SLEW-RATE limit: a genuine ILS localizer's angular
+      // sensitivity is inversely proportional to distance from the station,
+      // and right at/very near the station itself the bearing-based
+      // deviation computation is a true geometric singularity (bearing FROM
+      // a point you're sitting on top of is undefined) — raw `navDeviation`
+      // can swing across its entire range within a second or two purely
+      // from proximity, not a control error. Confirmed directly: a long-run
+      // (1200s) repro held a converged, sub-0.01 deviation for 10+ straight
+      // minutes right up until the aircraft got within about a mile of the
+      // threshold, at which point deviation snapped from small to
+      // full-scale within 1-2 seconds — an order of magnitude faster than
+      // anything seen during genuine track-law dynamics (which topped out
+      // around 0.05-0.15 units/sec even while oscillating). Slew-limiting
+      // the deviation the control law reacts to (rather than an instant
+      // step) turns that glitch into a brief, bounded ramp. `0.5` units/sec
+      // sits well above the ordinary-dynamics ceiling (never interferes
+      // with legitimate response) and well below the near-antenna snap
+      // rate.
+      const NAV_DEVIATION_SLEW_RATE_PER_S = 0.5
+      const effectiveDeviation = state.navTrackInitialized
+        ? rateLimit(state.navTrackPrevDeviation, rawEffectiveDeviation, NAV_DEVIATION_SLEW_RATE_PER_S, dt)
+        : rawEffectiveDeviation
+      state.navTrackPrevDeviation = effectiveDeviation
+      state.navTrackInitialized = true
+      // Low-pass the deviation fed to the P term (see the constant-block
+      // comment above `NAV_MAX_INTERCEPT_DEG` for why): slows the outer
+      // loop's response just enough to stop exciting the lightly-damped
+      // slow mode a bare instantaneous P term rings at.
+      const P_FILTER_TAU_S = 5
+      const pAlpha = dt > 1e-6 ? clamp(dt / P_FILTER_TAU_S, 0, 1) : 0
+      state.navTrackFilteredDeviation += (effectiveDeviation - state.navTrackFilteredDeviation) * pAlpha
+      // Genuine integral term: nulls the small sustained bias a pure-P law
+      // leaves uncorrected forever (see the constant-block comment).
+      const NAV_INTEGRAL_GAIN_K_DEG_PER_UNIT_S = 0.2
+      const NAV_INTEGRAL_MAX = 85
+      state.navTrackIntegral = clamp(state.navTrackIntegral + effectiveDeviation * dt, -NAV_INTEGRAL_MAX, NAV_INTEGRAL_MAX)
+      // Dynamic cap: while heading is already close to the course AND the
+      // integrator hasn't wound up much (i.e. no evidence of a persistent,
+      // real error), keep the bias tight — this is what actually protects
+      // against the near-antenna geometric glitch above turning into a
+      // large, wrong control input. It reopens automatically once the
+      // integrator shows a genuinely sustained deviation (see the
+      // constant-block comment for why using integrator wind-up, not a
+      // fixed cap, avoids permanently ignoring a real, persistent error).
+      const headingAlignErrorDeg = Math.abs(headingErrorDeg(inputs.headingBugDeg, inputs.headingDeg))
+      const windUpImpliedDeg = Math.abs(state.navTrackIntegral) * NAV_INTEGRAL_GAIN_K_DEG_PER_UNIT_S
+      const dynamicMaxInterceptDeg = clamp(Math.max(headingAlignErrorDeg * 2, windUpImpliedDeg), 3, NAV_MAX_INTERCEPT_DEG)
       // Positive deviation = right of course -> need a left (negative)
       // intercept-angle bias to converge, hence the negation.
-      const interceptOffsetDeg = clamp(-NAV_INTERCEPT_GAIN_K_DEG * effectiveDeviation, -NAV_MAX_INTERCEPT_DEG, NAV_MAX_INTERCEPT_DEG)
+      const rawInterceptOffsetDeg = clamp(
+        -(NAV_INTERCEPT_GAIN_K_DEG * state.navTrackFilteredDeviation + NAV_INTEGRAL_GAIN_K_DEG_PER_UNIT_S * state.navTrackIntegral),
+        -dynamicMaxInterceptDeg, dynamicMaxInterceptDeg,
+      )
+      // Rate-limit the commanded bias itself too — belt-and-suspenders
+      // against the same near-antenna glitch (independent of the deviation
+      // slew-limit above, which protects the P/I *inputs*; this protects
+      // the *output* actually handed to the heading-to-bank law).
+      state.navTrackInterceptOffsetDeg = rateLimit(state.navTrackInterceptOffsetDeg, rawInterceptOffsetDeg, 3, dt)
+      const interceptOffsetDeg = state.navTrackInterceptOffsetDeg
       const desiredHeadingDeg = (inputs.headingBugDeg + interceptOffsetDeg + 360) % 360
       targetBankDeg = clamp(2.0 * headingErrorDeg(desiredHeadingDeg, inputs.headingDeg), -MAX_BANK_DEG, MAX_BANK_DEG)
     }

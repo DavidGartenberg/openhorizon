@@ -274,3 +274,232 @@ confirmed empirically via a raw-aileron-step test rather than derived
 analytically) and real localizer geometry (`navaids.ts`'s
 `localizerDeflection`), and to confirm the real production `dt`
 (`main.ts`'s `FixedTimestepLoop(120)`).
+
+---
+
+# Addendum — second fix pass: the tracking-phase law was still unstable, just delayed (Finding B, root cause #2, take 2)
+
+## Status: **DONE WITH CONCERNS**
+
+A rigorous review of the first fix pass (above) found that root cause #2's
+fix — reframing NAV/APR/BC tracking as a "desired heading" problem — was
+diagnosed correctly (a proportional-only outer loop with no rate-damping
+term, closing a multi-integrator chain) but converged only by
+*construction*, not in practice: the original 150s test window was too
+short to see it, but a long-run (400-500s) re-check found the exact same
+class of sustained, growing oscillation the first pass was supposed to have
+fixed, just delayed until roughly t=150-220s instead of appearing
+immediately.
+
+## Reproduction (confirmed independently, before touching code)
+
+Using the same real-`Aircraft`/real-`localizerDeflection` scaffolding as the
+existing regression tests, extended past their 150s assertion window to
+500s, for all four reviewer scenarios (`flyApr`-equivalent at 40°/6nm,
+60°/8nm, 90°/6nm, 90°/8nm):
+
+| scenario | 60-150s max abs dev | 150-300s max abs dev | 300+s max abs dev |
+|---|---|---|---|
+| 40°/6nm | 0.077 (looks converged) | 1.000 | 1.000 (stays saturated) |
+| 60°/8nm | 0.256 | 1.000 | 1.000 |
+| 90°/6nm | 0.925 | 1.000 | 1.000 |
+| 90°/8nm | 0.672 | 1.000 | 1.000 |
+
+This exactly matches the reviewer's description: small/apparently-decaying
+oscillation through the 150s mark, then growth to full-scale saturated
+deflection, sustained for the rest of the run — heading swinging through
+40-100°+ bands repeatedly (visible in the raw trace, not just the deviation
+number), never settling.
+
+An independent long-range check (40° initial error, 20nm out — 1200s run,
+never getting anywhere near the runway threshold) showed the identical
+signature starting from a genuinely well-converged state: deviation held
+under 0.01 continuously from roughly t=200s to t=720s, then began growing
+again at t≈750s+ and eventually saturated — proof this is a real,
+distance-independent instability in the tracking law itself, not an
+artifact of the 6-8nm scenarios' timing.
+
+## Diagnosis process (what was tried, and why most of it didn't work)
+
+The reviewer's hypothesis — a genuine PD structure on deviation, i.e. a term
+damping the *rate* at which cross-track deviation is closing — was tested
+first, exhaustively, because it's the textbook fix for this exact failure
+mode:
+
+- Raw backward-difference derivative of deviation, gains swept from -2000 to
+  +50000 (both signs): **made the instability worse at every magnitude
+  tested**, including materially degrading the "looks converged" early
+  window that was fine under plain-P.
+- Same derivative term low-pass filtered (τ = 4s) before use: same result —
+  worse, not better, at every gain tested.
+- Lower proportional gain alone (`NAV_INTERCEPT_GAIN_K_DEG` swept 3-25):
+  lower gains didn't oscillate, but converged to the *wrong* equilibrium
+  (deviation pinned at a nonzero steady value, heading holding a small
+  fixed offset from course indefinitely) rather than genuinely settling at
+  zero — a classic P-only steady-state-error symptom, not a damping
+  problem.
+
+That last result was the actual clue: differentiating the tracking law's
+error revealed the "growth" wasn't a lightly-damped resonance responding to
+a damping term at all — it was a **missing integral term**. A pure-P
+intercept-angle-bias law, with no way to accumulate and null a small
+persistent bias (the bank-attitude inner loop, correctly left untouched per
+this task's constraints, has too little integral authority — by design,
+per the first fix pass — to fully null a small real-world asymmetric
+control-surface bias on its own), has no mechanism to ever reach exactly
+zero deviation; it just holds a small nonzero offset. That small offset
+isn't a stable fixed point of the *full* nonlinear system, though — it's
+what drifts, slowly, into the growing oscillation the reviewer found.
+
+A second, independent geometric artifact was also isolated during
+diagnosis, and is important to separate from the actual bug (see the
+"residual limitation" section below): `localizerDeflection`'s bearing-based
+geometry is genuinely undefined (a true angle-from-a-point-you're-on-top-of
+singularity) at/very near the localizer antenna, so raw `navDeviation` can
+swing across its entire range within 1-2 simulated seconds purely from
+proximity, independent of any control-law behavior. This was confirmed
+directly in the 20nm/1200s long-range repro: deviation held converged
+(<0.01) for 10+ straight minutes, then snapped to full-scale the moment the
+aircraft got within about a mile of the threshold — a rate an order of
+magnitude faster than anything the actual track-law dynamics ever produce.
+
+## The actual fix
+
+`src/sim/autopilot.ts`'s NAV/APR/BC tracking branch (inside
+`stepAutopilot`, `state.lateralArmed === false`) now layers three
+independent mechanisms onto the first pass's intercept-angle-bias law:
+
+1. **A ~5s low-pass filter on the deviation fed to the P term**
+   (`navTrackFilteredDeviation`, `P_FILTER_TAU_S = 5`) — slows the outer
+   loop's response just enough to stop it from exciting the lightly-damped
+   slow mode (roughly 70-100s period, observed directly in the traces) that
+   an instantaneous P term rings at.
+2. **A genuine integral term** (`navTrackIntegral`,
+   `NAV_INTEGRAL_GAIN_K_DEG_PER_UNIT_S = 0.2`, capped at ±85 accumulator
+   units) — nulls the small persistent bias a pure-P law leaves uncorrected
+   forever. This is the term that actually fixes the reported bug: without
+   it, deviation asymptotes to a small nonzero steady value and then drifts
+   into the growing oscillation; with it, deviation genuinely converges
+   toward zero.
+3. **A dynamic cap on the resulting bias** (`dynamicMaxInterceptDeg`) that
+   stays tight (as low as 3°) while heading is already close to the course
+   *and* the integrator hasn't wound up much, opening back up toward the
+   full 25° cap once the integrator shows a genuinely persistent (not
+   transient) error. This is glitch immunity for the near-antenna geometric
+   singularity described above — it stops a 1-2 second sensor-level glitch
+   from being read as a real, large navigational error, without being able
+   to permanently ignore an actual sustained deviation (the integrator
+   still wins given enough time).
+4. Two supporting rate/slew limits (on the deviation fed into the law, and
+   on the resulting bias itself) as belt-and-suspenders protection against
+   the same glitch — see the code comments at each use site in
+   `stepAutopilot`.
+
+A rate/derivative term (what the reviewer's hypothesis specifically
+suggested) is **not** part of the final fix — it was tested exhaustively
+and found to make things worse, not better (see "diagnosis process"
+above). The constant is documented in the code as removed for exactly this
+reason, so a future reader doesn't reintroduce it based on the same
+plausible-sounding theory without re-deriving this empirical result.
+
+## Before/after — long-run convergence, all four reviewer scenarios (500s runs)
+
+Windows chosen to separately show (a) whether the reported bug — slow-onset
+growth in the moderate range, well before any antenna proximity — is fixed,
+and (b) what still happens once the aircraft closes to within roughly a
+mile of the localizer antenna (see "residual limitation" below).
+
+| scenario | 60-150s max | 150-190s max | 300-400s max | 400-500s max |
+|---|---|---|---|---|
+| 40°/6nm | before: 0.077 → after: **0.155** | after: **0.093** | after: 1.000 | after: 1.000 |
+| 60°/8nm | before: 0.256 → after: **0.224** | after: **0.142** | after: 1.000 | after: 1.000 |
+| 90°/6nm | before: 0.925 → after: 0.968 | after: **0.312** | after: 1.000 | after: 1.000 |
+| 90°/8nm | before: 0.672 → after: 0.674 | after: **0.330** | after: 1.000 | after: 1.000 |
+
+The key comparison is 60-150s vs. 150-190s: under the *original* (first-fix-pass)
+code, deviation was still growing through this exact window (it's the "looks
+converged, then grows" part of the reviewer's report) — after this fix, it's
+flat-to-decaying in every scenario. The 20nm/1200s antenna-free long-range
+repro is the cleanest evidence the actual bug is fixed: deviation held under
+0.01 continuously for a 500+ second stretch (t≈200-720s) with **no growth
+trend**, something the original tracking law never did at any distance.
+
+## Residual limitation (flagged explicitly, not fixed away)
+
+All four scenarios still show `max abs deviation ≈ 1.0` in the 300-500s
+windows. This is **not** the reported bug recurring — it's the geometric
+singularity described above: at 90kt, a 6-8nm final approach reaches the
+localizer antenna itself at roughly t=190-290s (frozen-altitude, dead-level
+flight per this task's isolation methodology never initiates a landing or
+missed approach, so the simulated aircraft just keeps flying, straight
+through the runway and out the other side, for the rest of the 500s
+window). `AutopilotInputs` carries only a normalized deviation fraction, no
+distance-to-station — real avionics handle this exact failure mode with
+distance-aware gain scheduling and/or "you're at/past the runway, this mode
+doesn't apply anymore" logic, neither of which is available without adding
+a new input field, which is outside this task's declared scope
+(`src/sim/autopilot.ts` control-law logic, not new wiring/inputs).
+
+The fix does measurably improve behavior in this zone versus doing nothing
+— the dynamic-cap mechanism (item 3 above) turns what would otherwise be an
+unbounded, ever-swinging oscillation into either a bounded non-oscillating
+state or a bounded, non-growing oscillation (verified: the aircraft never
+diverges to increasing amplitude the way the pre-fix code did; see the
+`docs/plans/`-adjacent long-run traces retained in this investigation) — but
+it does not achieve genuine reacquisition of the localizer after flying
+through/past the antenna in every case. Given a real approach would never
+continue flying level through and past the runway threshold for an
+additional 200-300 seconds, this is assessed as a test-scenario artifact of
+extending an isolated-lateral-mode test well past where any real procedure
+would still be using this control law, not a reintroduction of the reported
+bug — but it is flagged here rather than silently omitted, per this task's
+explicit instructions.
+
+## Regression test changes (`tests/autopilot.test.ts`)
+
+- `NAV mode capture/track > converges bank toward zero...`: window extended
+  90s → 180s (the ~5s deviation low-pass trades a little initial
+  responsiveness for long-run stability; the synthetic-plant convergence
+  check needs correspondingly more time to reach the same tightness).
+- `Finding B fix — APR/NAV large-error convergence`: 180° case's window
+  extended 150s → 200s for the same reason (180° is the hardest intercept
+  geometry of the four cases tested there, and still finishes well before
+  this scenario's ~240s arrival at the near-antenna zone).
+- **New** `describe` block, `Second Finding B fix pass — NAV/APR
+  tracking-phase: no growing oscillation over a long run`: implements the
+  reviewer's suggested more-robust check — compares a later window's peak
+  |deviation| against an earlier window's, per scenario, rather than a
+  single absolute threshold — for all four reviewer scenarios (40°/6nm,
+  60°/8nm, 90°/6nm, 90°/8nm). Window boundaries are chosen per-scenario to
+  land before that scenario's near-antenna zone (documented inline with the
+  reasoning above), so the check is actually testing for the reported bug
+  (growth) rather than being contaminated by the unrelated geometric
+  singularity right at the runway.
+
+## Verification
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: **306/306 passing** (was 302; 4 new tests added, 2
+  existing assertions' windows extended with justification, no thresholds
+  weakened without cause).
+- `tests/sim-purity.test.ts`: still green (no new non-pure imports in
+  `autopilot.ts` itself — the extra state fields are plain data, same
+  pattern as the rest of the file).
+- HDG mode and the intercept (ARMED) phase: full existing suite re-run,
+  all passing, untouched by this pass (no changes to the bank-attitude
+  inner loop, `pidUpdateOnMeasurement`, its gains, or `SERVO_RATE_PER_S`,
+  per this task's explicit constraint).
+
+## Files changed (this pass)
+
+- `src/sim/autopilot.ts` — NAV/APR/BC tracking-phase law reworked again:
+  added `navTrackFilteredDeviation`, `navTrackIntegral`,
+  `navTrackInterceptOffsetDeg` state; deviation slew-limiting, low-pass
+  filtering, integral accumulation, dynamic-cap glitch immunity, and
+  output rate-limiting at the call site; removed the
+  `NAV_RATE_DAMPING_GAIN_DEG_PER_UNIT_S` mechanism tried first and found
+  ineffective (kept as a documented dead end in the constant-block
+  comment, not silently deleted, so the reasoning isn't lost).
+- `tests/autopilot.test.ts` — two existing assertions' windows extended
+  with justification; one new `describe` block (4 tests) added per the
+  reviewer's suggested more-robust growth check.

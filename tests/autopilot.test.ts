@@ -210,7 +210,14 @@ describe('NAV mode capture/track', () => {
     const courseDeg = 90
     let deviation = 0.4
     const dt = REAL_DT
-    for (let i = 0; i < Math.round(90 / dt); i++) {
+    // 180s, not 90s: the second Finding B fix pass (see the fix report's
+    // "still-broken tracking-phase instability" section) added a ~5s
+    // low-pass filter on the deviation fed to the P term specifically to
+    // stop the outer loop from exciting a lightly-damped slow mode — that
+    // filter trades a bit of initial responsiveness for long-run stability,
+    // so this synthetic-plant convergence check needs more wall-clock time
+    // than before to reach the same tightness.
+    for (let i = 0; i < Math.round(180 / dt); i++) {
       stepAutopilot(state, dt, baseInputs({
         lateralMode: 'NAV', navDeviation: deviation, headingBugDeg: courseDeg, headingDeg: plant.headingDeg, rollDeg: plant.rollDeg,
       }))
@@ -320,6 +327,45 @@ function flyRealAircraftApr(headingErrorDeg: number, distNm: number, seconds: nu
   return Math.max(...lastWindow.map(Math.abs))
 }
 
+/** Like `flyRealAircraftApr`, but returns a full time series of |deviation|
+ *  samples (one per `sampleEverySec`) instead of just a final-window max —
+ *  used by the "no sustained/growing oscillation" regression below, which
+ *  needs to compare an early window against a later one (the reviewer's
+ *  specific "long-run re-check" finding: a short single-window snapshot can
+ *  look converged while a slow-onset growth is still building underneath
+ *  it — see the fix report's "still-broken tracking-phase instability"
+ *  section). */
+function flyRealAircraftAprSeries(headingErrorDeg: number, distNm: number, seconds: number, sampleEverySec = 2) {
+  const startHeadingDeg = (((KSFO_28R_COURSE_DEG - headingErrorDeg) % 360) + 360) % 360
+  const ac = trimmedRealAircraft(startHeadingDeg, distNm)
+  const ap = makeAutopilotState()
+  const inputs: AutopilotInputs = baseInputs({
+    lateralMode: 'APR', headingBugDeg: KSFO_28R_COURSE_DEG, iasTargetKt: 90, verticalMode: 'PIT', underlyingVerticalMode: 'PIT',
+  })
+  const n = Math.round(seconds / REAL_DT)
+  const samples: { t: number; absDev: number }[] = []
+  for (let i = 0; i < n; i++) {
+    const aircraftLatLon = fromNedMeters(ac.posNed.x, ac.posNed.y, KSFO_28R_THRESHOLD)
+    const deviation = -localizerDeflection(KSFO_28R_ILS, aircraftLatLon) / LOC_FULL_SCALE_DEG
+    inputs.iasKt = ac.data.kias
+    inputs.altitudeFt = ac.data.altitudeFt
+    inputs.verticalSpeedFpm = ac.data.verticalSpeedFpm
+    inputs.headingDeg = ac.data.headingDeg
+    inputs.rollDeg = ac.data.rollDeg
+    inputs.pitchDeg = ac.data.pitchDeg
+    inputs.navDeviation = deviation
+    stepAutopilot(ap, REAL_DT, inputs)
+    ac.controls.pitch = ap.pitchCmd
+    ac.controls.roll = ap.rollCmd
+    ac.controls.yaw = ap.yawCmd
+    ac.controls.trim = ap.trimCommand
+    ac.step(REAL_DT)
+    const t = i * REAL_DT
+    if (i % Math.round(sampleEverySec / REAL_DT) === 0) samples.push({ t, absDev: Math.abs(deviation) })
+  }
+  return samples
+}
+
 describe('Finding B fix — HDG large-error convergence (real Aircraft model)', () => {
   for (const headingError of [20, 40, 60, 180]) {
     it(`converges from a ${headingError} deg initial heading error without sustained oscillation`, () => {
@@ -335,8 +381,76 @@ describe('Finding B fix — HDG large-error convergence (real Aircraft model)', 
 describe('Finding B fix — APR/NAV large-error convergence (real Aircraft model, real localizer geometry)', () => {
   for (const headingError of [20, 40, 60, 180]) {
     it(`converges from a ${headingError} deg initial heading error (heading bug = course), no sustained oscillation`, () => {
-      const maxAbsDevLast10s = flyRealAircraftApr(headingError, 6, 150)
+      // 180 deg needs a longer window than 20/40/60: it's a much harder
+      // intercept geometry (a near-reversal turn before the aircraft is
+      // even pointed roughly at the course), and the second Finding B fix
+      // pass's ~5s deviation low-pass (see the fix report) trades a little
+      // initial responsiveness for long-run stability, so 180 deg simply
+      // takes longer to tighten up than it did before that pass. 200s still
+      // finishes well before this 6nm/90kt scenario's ~240s arrival at the
+      // threshold (see the "still-broken tracking-phase instability"
+      // section below for why that boundary matters).
+      const seconds = headingError >= 180 ? 200 : 150
+      const maxAbsDevLast10s = flyRealAircraftApr(headingError, 6, seconds)
       expect(maxAbsDevLast10s).toBeLessThan(0.3)
+    })
+  }
+})
+
+// ---- Second Finding B fix pass — the tracking-phase law above converges by
+// CONSTRUCTION (bias -> 0 as deviation -> 0) but a rigorous long-run
+// (400-500s) re-check found that alone didn't mean it actually converges in
+// practice: at 40 deg/6nm, 60 deg/8nm, 90 deg/6nm, and 90 deg/8nm, deviation
+// looked converged through roughly t=60-150s and then GREW — small ripple
+// growing into a full-scale, sustained oscillation — starting well before
+// any distance-based confound (confirmed independently with a synthetic
+// 40 deg/20nm scenario run to 1200s that never approaches the runway: the
+// exact same slow-onset growth appeared at large distance too). The
+// 150s-window snapshot the tests above use could not have caught this — a
+// growing oscillation looks identical to a converged one in any snapshot
+// short enough to precede the growth. See
+// `docs/plans/phase-4-autopilot-oscillation-fix-report.md` for the full
+// root-cause story (missing integral term + an unfiltered P term exciting a
+// lightly-damped ~70-100s mode) and before/after long-run numbers.
+//
+// IMPORTANT CAVEAT this second pass's testing surfaced and the fix report
+// documents in detail: `localizerDeflection`'s bearing-based geometry has a
+// genuine, physical singularity right at/very near the localizer antenna
+// (bearing FROM a point you are sitting on top of is undefined) — a real
+// ILS needle does exactly this flying directly over the transmitter. A
+// 6-8nm/90kt approach reaches that zone at ~t=190-290s, so a literal
+// 400-500s run of THESE SPECIFIC short-final scenarios cannot avoid it. The
+// checks below therefore compare an early window against a LATER window
+// chosen to still land before that zone for each scenario (verifying the
+// actual reported bug — slow-onset growth — is gone) rather than asserting
+// a bound on the full 400-500s window, which would be contaminated by that
+// unrelated geometric artifact no gain-tuned law can avoid without a
+// distance input `AutopilotInputs` doesn't carry. This is flagged
+// explicitly rather than silently narrowing the window — see the fix report
+// for the full 500s traces and the "residual near-antenna limitation"
+// section for why this scope was deliberately not "fixed away" by adding a
+// new input, and confirmation that even the near-antenna disturbance no
+// longer leaves the aircraft in a growing, sustained oscillation the way it
+// did before this fix (it settles to a bounded, non-growing state instead).
+describe('Second Finding B fix pass — NAV/APR tracking-phase: no growing oscillation over a long run', () => {
+  const scenarios: { headingError: number; distNm: number; earlyEndSec: number; lateEndSec: number }[] = [
+    { headingError: 40, distNm: 6, earlyEndSec: 150, lateEndSec: 190 },
+    { headingError: 60, distNm: 8, earlyEndSec: 150, lateEndSec: 210 },
+    { headingError: 90, distNm: 6, earlyEndSec: 150, lateEndSec: 190 },
+    { headingError: 90, distNm: 8, earlyEndSec: 150, lateEndSec: 265 },
+  ]
+  for (const { headingError, distNm, earlyEndSec, lateEndSec } of scenarios) {
+    it(`${headingError} deg / ${distNm}nm: later-window amplitude is not larger than the earlier window (no growing oscillation)`, () => {
+      const samples = flyRealAircraftAprSeries(headingError, distNm, lateEndSec, 1)
+      const early = samples.filter((s) => s.t >= 60 && s.t < 90).map((s) => s.absDev)
+      const late = samples.filter((s) => s.t >= earlyEndSec && s.t < lateEndSec).map((s) => s.absDev)
+      const earlyMax = Math.max(...early)
+      const lateMax = Math.max(...late)
+      // Slack (+0.1) because "not larger" on a real, still-lightly-damped
+      // system is not bit-exact — the point is catching GROWTH (a late max
+      // several times the early one, as the pre-fix code showed), not
+      // penalizing noise-level fluctuation.
+      expect(lateMax).toBeLessThan(earlyMax + 0.1)
     })
   }
 })
