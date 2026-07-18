@@ -97,10 +97,13 @@ export interface AutopilotInputs {
 interface PidMemory {
   integrator: number
   prevError: number
+  /** Last measured process value, used only by `pidUpdateOnMeasurement`
+   *  (the inner bank-attitude loop) — see that function's comment. */
+  prevMeasurement: number
 }
 
 function makePid(): PidMemory {
-  return { integrator: 0, prevError: 0 }
+  return { integrator: 0, prevError: 0, prevMeasurement: 0 }
 }
 
 export interface AutopilotState {
@@ -144,7 +147,6 @@ export interface AutopilotState {
   //      exported-state style) ----
   lastCommandedLateralMode: LateralMode
   lastCommandedVerticalMode: VerticalMode
-  navBank: PidMemory
   gsPitch: PidMemory
   altPitch: PidMemory
   vsPitch: PidMemory
@@ -170,7 +172,6 @@ export function makeAutopilotState(): AutopilotState {
     fdPitchDeg: 0,
     lastCommandedLateralMode: 'ROL',
     lastCommandedVerticalMode: 'PIT',
-    navBank: makePid(),
     gsPitch: makePid(),
     altPitch: makePid(),
     vsPitch: makePid(),
@@ -215,10 +216,19 @@ export const MAX_BANK_DEG = 25
 export const MAX_PITCH_CMD_DEG = 10
 
 /** Servo rate limit, fraction of full [-1,1] control travel per second —
- *  ~4 s to traverse center-to-full. This is what makes a capture visibly
- *  roll/pitch in over a couple of seconds instead of snapping. Design
- *  choice; real servo rates vary by installation and aren't published. */
-export const SERVO_RATE_PER_S = 0.5
+ *  ~0.4 s to traverse center-to-full (raised from the original 0.5, ~4s
+ *  traversal). Empirically, 0.5 was too slow relative to the real
+ *  `Aircraft` model's actual roll authority (a full-aileron step produces
+ *  ~40-50 deg/s roll rate): once the bank-attitude PID decided to retract a
+ *  command, the old rate limit held the aileron near its prior deflection
+ *  for up to ~2s while the aircraft kept rolling, which was a second
+ *  contributor (alongside the derivative-kick fix, see
+ *  `pidUpdateOnMeasurement`) to Finding B's sustained oscillation. Still
+ *  slow enough to roll in over roughly half a second rather than snap — the
+ *  master spec's "visible roll-in, not a teleport" intent is preserved; see
+ *  the fix report for measured captures that still look like a smooth
+ *  roll-in, not a jump. */
+export const SERVO_RATE_PER_S = 2.5
 
 /** Trim follow-up rate: trimCommand fraction moved per second per unit of
  *  sustained primary-axis command. Chosen so a steady moderate elevator
@@ -240,6 +250,41 @@ export const GAIN_REF_IAS_KT = 90
  *  choice approximating real avionics capture logic without modeling
  *  closure-rate prediction. */
 export const CAPTURE_FRACTION = 0.5
+
+/** NAV/APR/BC tracking-law gain, deg of intercept-angle bias per unit of
+ *  full-scale deviation, capped at `NAV_MAX_INTERCEPT_DEG`. ROOT CAUSE
+ *  (confirmed against the real `Aircraft` model, see the fix report): the
+ *  original tracking law fed cross-track deviation straight into a
+ *  standalone bank-command PID (`kp=15,ki=1.5,kd=0.3`) with no notion of
+ *  which way the aircraft's HEADING was pointed relative to the course —
+ *  only how far away it was laterally. Once captured with any material
+ *  heading/course misalignment (the normal case right after an intercept,
+ *  not an edge case), that law had no mechanism to actually turn the
+ *  aircraft parallel to the course; it just chased a small deviation
+ *  number, producing the same class of sustained, undamped oscillation as
+ *  Finding B's HDG bug (confirmed via a real localizer-geometry repro:
+ *  heading swinging through the full compass rose, deviation pinned at
+ *  full-scale for minutes). The fix reframes tracking as a "desired
+ *  heading" problem instead: deviation is converted into a bounded
+ *  intercept-angle bias off the course (`inputs.headingBugDeg`, which — per
+ *  the ARMED branch just above — is already the reference the pilot flies
+ *  toward), and the resulting desired-heading error is fed through the
+ *  exact same already-validated heading-to-bank law HDG uses (2.0 gain,
+ *  ±`MAX_BANK_DEG` cap, derivative-on-measurement inner loop). This
+ *  guarantees the tracking law converges by construction once deviation
+ *  reaches 0 (bias -> 0 -> flies the course heading directly), the same way
+ *  HDG converges on its bug. `25` (deg per unit deviation, i.e. full-scale
+ *  deviation commands a 25 deg intercept) and a matching `25` deg cap were
+ *  the best all-around empirical fit across a 10-180 deg initial
+ *  heading/course-error sweep (see fix report) — high enough to correct a
+ *  large deviation with real authority, capped low enough to not
+ *  re-introduce large-angle overshoot. */
+export const NAV_INTERCEPT_GAIN_K_DEG = 25
+
+/** Cap on the intercept-angle bias `NAV_INTERCEPT_GAIN_K_DEG` can command —
+ *  see that constant's comment. Deliberately well under a 45 deg "standard"
+ *  intercept angle so re-capturing after a disturbance stays gentle. */
+export const NAV_MAX_INTERCEPT_DEG = 25
 
 /** Assumed achievable vertical-speed deceleration (fpm per second) used to
  *  predict the ALTS/altitude-capture lead point — the vertical-axis analog
@@ -271,6 +316,34 @@ export function gainScale(iasKt: number): number {
 function pidUpdate(mem: PidMemory, error: number, dt: number, kp: number, ki: number, kd: number, iMax: number): number {
   mem.integrator = clamp(mem.integrator + error * dt, -iMax, iMax)
   const deriv = dt > 1e-6 ? (error - mem.prevError) / dt : 0
+  mem.prevError = error
+  return kp * error + ki * mem.integrator + kd * deriv
+}
+
+/** Derivative-ON-MEASUREMENT variant of `pidUpdate`, for loops whose target
+ *  (setpoint) itself changes every step rather than holding still — e.g. the
+ *  bank-attitude loop's target is `2.0 * headingErrorDeg(...)`, which keeps
+ *  shrinking continuously as the aircraft turns toward the bug, not just on
+ *  a one-time mode-select step.
+ *
+ *  ROOT CAUSE (confirmed empirically against the real `Aircraft` model, see
+ *  `docs/plans/phase-4-autopilot-oscillation-fix-report.md`): differentiating
+ *  `error = target - measurement` means the D term reacts to the setpoint's
+ *  OWN rate of change, not just the measured bank angle's rate of change. As
+ *  heading closes in on the bug, `targetBankDeg` retracts quickly (it's
+ *  directly proportional to a shrinking heading error); that retraction rate
+ *  showed up as a large derivative "kick" pushing the control output hard in
+ *  the wrong direction well before the bank angle itself had actually
+ *  overshot the target — a textbook "derivative kick from a moving
+ *  setpoint," and the actual mechanism behind the sustained oscillation
+ *  found in Finding B. Differentiating the measured bank angle instead
+ *  (`-(measurement - prevMeasurement) / dt`) damps the aircraft's own roll
+ *  rate, which is what a rate-damping D term is supposed to do, and ignores
+ *  how fast the outer loop's target is sliding around. */
+function pidUpdateOnMeasurement(mem: PidMemory, error: number, measurement: number, dt: number, kp: number, ki: number, kd: number, iMax: number): number {
+  mem.integrator = clamp(mem.integrator + error * dt, -iMax, iMax)
+  const deriv = dt > 1e-6 ? -(measurement - mem.prevMeasurement) / dt : 0
+  mem.prevMeasurement = measurement
   mem.prevError = error
   return kp * error + ki * mem.integrator + kd * deriv
 }
@@ -354,14 +427,22 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
         state.lateralArmed = false // captured — starts tracking below next call
       }
     } else {
+      // Tracking (captured): see `NAV_INTERCEPT_GAIN_K_DEG`'s comment for the
+      // root-cause story on why this isn't a bare deviation PID. Convert
+      // deviation into a bounded intercept-angle bias off the course
+      // (`headingBugDeg`, the pilot's course reference — same field the
+      // ARMED branch above flies toward) and hand the resulting
+      // desired-heading error to the exact same heading-to-bank law HDG
+      // uses, so tracking inherits HDG's already-validated convergence
+      // instead of needing its own separately-tuned (and, it turned out,
+      // structurally incomplete) control law.
       const sign = state.lateralMode === 'BC' ? -1 : 1
       const effectiveDeviation = sign * inputs.navDeviation
-      // Positive deviation = right of course -> need a left (negative) bank
-      // to converge, hence the negated error fed to the PID. Kd is kept
-      // small here (unlike the inner attitude loops) since the error input
-      // is a raw deviation signal that can change abruptly — a large
-      // derivative gain on it would inject a destabilizing "kick".
-      targetBankDeg = clamp(pidUpdate(state.navBank, -effectiveDeviation, dt, 15, 1.5, 0.3, 1), -MAX_BANK_DEG, MAX_BANK_DEG)
+      // Positive deviation = right of course -> need a left (negative)
+      // intercept-angle bias to converge, hence the negation.
+      const interceptOffsetDeg = clamp(-NAV_INTERCEPT_GAIN_K_DEG * effectiveDeviation, -NAV_MAX_INTERCEPT_DEG, NAV_MAX_INTERCEPT_DEG)
+      const desiredHeadingDeg = (inputs.headingBugDeg + interceptOffsetDeg + 360) % 360
+      targetBankDeg = clamp(2.0 * headingErrorDeg(desiredHeadingDeg, inputs.headingDeg), -MAX_BANK_DEG, MAX_BANK_DEG)
     }
   }
   state.fdBankDeg = targetBankDeg
@@ -435,8 +516,21 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
   state.fdPitchDeg = targetPitchDeg
 
   // ================= INNER ATTITUDE LOOPS -> CONTROL SURFACES =================
+  // Bank loop uses derivative-ON-MEASUREMENT (see `pidUpdateOnMeasurement`)
+  // — its target (`targetBankDeg` above) tracks a continuously-shrinking
+  // heading error, not a one-time step, and differentiating the raw error
+  // was found to inject a destabilizing "derivative kick" from the target's
+  // own motion (Finding B, see the function's doc comment and the fix
+  // report). kd raised 0.01 -> 0.4 and iMax tightened 30 -> 3 (ki 0.03 ->
+  // 0.005) — empirically tuned against the real `Aircraft` model's actual
+  // roll response (a full-aileron step produces ~40-50 deg/s roll rate, far
+  // more authority than the old, tiny kd could arrest before overshoot; the
+  // old iMax=30/ki=0.03 combination could also wind up ~0.9 of full control
+  // authority during a large, sustained heading error, adding to the
+  // overshoot once the target passed). See fix report for before/after
+  // convergence numbers across 20/40/60/180 deg initial errors.
   const bankError = targetBankDeg - inputs.rollDeg
-  const rawRoll = clamp(pidUpdate(state.bankAttitude, bankError, dt, 0.05, 0.03, 0.01, 30) * gain, -1, 1)
+  const rawRoll = clamp(pidUpdateOnMeasurement(state.bankAttitude, bankError, inputs.rollDeg, dt, 0.05, 0.005, 0.4, 3) * gain, -1, 1)
 
   const pitchError = targetPitchDeg - inputs.pitchDeg
   const rawPitch = clamp(pidUpdate(state.pitchAttitude, pitchError, dt, 0.08, 0.03, 0.02, 30) * gain, -1, 1)
