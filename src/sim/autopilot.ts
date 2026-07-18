@@ -498,6 +498,34 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
         state.navTrackInitialized = false
         state.navTrackIntegral = 0
         state.navTrackInterceptOffsetDeg = 0
+        // ROUND 3 ATTEMPT (see the fix report's "round 3" section): seed the
+        // P term's low-pass filter to the ACTUAL deviation at the instant of
+        // capture rather than leaving it at 0/stale — a real, defensible
+        // correctness fix in isolation (the filter otherwise under-reacts
+        // for several `P_FILTER_TAU_S` (~5s) time constants right after a
+        // fresh capture). Kept because it's strictly more correct and does
+        // not regress any existing test.
+        //
+        // IMPORTANT — this does NOT close the acceptance gap for large
+        // intercept angles at close range (verified directly: 40deg/6nm,
+        // 60deg/8nm, 90deg/8nm all still breach half/full scale by very
+        // similar margins with or without this line). Root cause: in the
+        // test geometry both this fix and rounds 1-2 use, capture happens at
+        // t=0 with near-zero lateral deviation but the full heading/course
+        // angle already present — at that instant the ARMED and CAPTURED
+        // bank-command formulas are mathematically identical
+        // (`2.0 * headingErrorDeg(course, heading)`), so no tracking-law
+        // tuning changes the physical trajectory. The excursion is governed
+        // by turn radius at `MAX_BANK_DEG` (25deg), not by any P/I/filter
+        // term: at ~90kt/25deg bank the turn radius is ~460m, versus a
+        // half-scale localizer width of only ~240m at 6nm and ~120m at 3nm —
+        // a bank-limited 40-90deg turn that close to the antenna will
+        // geometrically overshoot half (or full) scale under most any
+        // control law. This looks like a real envelope limit of a 25deg
+        // max-bank autopilot intercepting at those angles that close in, not
+        // a fixable software defect — see the fix report's round 3
+        // addendum and the escalation raised alongside it.
+        state.navTrackFilteredDeviation = effectiveDeviation
       }
     } else {
       // Tracking (captured): see `NAV_INTERCEPT_GAIN_K_DEG`'s comment for the

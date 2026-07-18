@@ -503,3 +503,76 @@ explicit instructions.
 - `tests/autopilot.test.ts` — two existing assertions' windows extended
   with justification; one new `describe` block (4 tests) added per the
   reviewer's suggested more-robust growth check.
+
+## Round 3 — capture-phase transient (independent re-review finding)
+
+Status: **NOT CLOSED — assessed as a likely physical/design-envelope limit,
+not a fixable control-law defect. Escalated for a scope decision rather than
+attempted a fourth autonomous tuning pass.**
+
+An independent re-review of round 2 (above) built the first test in this
+investigation to actually couple lateral tracking to a genuine descending
+approach (`lateralMode: 'APR'` + `verticalMode: 'GS'`, armed→captured, real
+altitude loss via `glideslopeDeflection`, run to 200 ft AGL) rather than the
+frozen-altitude/`PIT` methodology every prior round used. Result: for a
+20-90° initial heading/course error sweep at 3-8nm, the 20° cases pass
+(worst |deviation| 0.15-0.22) but **40°, 60°, and 90° all fail**, reaching
+0.64-1.00 in the first 10-90 seconds after capture — a different failure
+window from both round 1's (60-190s, growing oscillation) and round 2's
+residual antenna-proximity zone (200s+), and unrelated to either.
+
+**Investigated fix**: `state.navTrackFilteredDeviation` was reset to 0 at
+the ARMED→CAPTURED transition (`src/sim/autopilot.ts`, capture block) while
+every other `navTrack*` field was reset to a value reflecting "nothing has
+happened yet" — 0 is the wrong such value for the filter, since capture by
+construction only happens with a real, non-zero deviation already present.
+Seeding the filter to the actual deviation at capture is a real, defensible
+correctness fix (kept — does not regress any of the 37 existing tests) but
+**does not close the acceptance gap**: directly re-running the reviewer's
+own scenario shapes with the fix applied gives 0.748 (40°/6nm), 0.993
+(60°/8nm), 1.000 (90°/8nm, 40°/3nm) — statistically indistinguishable from
+before the fix.
+
+**Root cause, as far as this investigation could determine**: in the test
+geometry used by all three rounds (aircraft starts on the localizer
+centerline — zero lateral deviation — but with the full heading/course
+angle error already present, at a given distance), capture triggers
+immediately at t=0 because deviation starts at 0. At that instant the ARMED
+and CAPTURED bank-command formulas are mathematically identical
+(`2.0 * headingErrorDeg(course, heading)`, clamped to `MAX_BANK_DEG` = 25°) —
+so no tracking-law tuning, filter seeding, or capture-timing change alters
+the aircraft's physical trajectory during the turn. The excursion is instead
+governed by turn radius at 25° max bank: at ~90kt, turn radius ≈ 460m, versus
+a half-scale localizer width of only ≈240m at 6nm and ≈120m at 3nm. A
+bank-limited 40-90° turn that close to the antenna will geometrically
+overshoot half (or full) scale under almost any control law that respects a
+25° bank cap — this looks like a real envelope limit of how close-in a
+GA-autopilot-realistic (25° max bank) intercept can be flown at those
+angles, not a software defect in the tracking law rounds 1-3 have been
+tuning.
+
+This has not been independently re-verified by a second reviewer (unlike
+rounds 1-2) — it is this investigation's own best-effort diagnosis, offered
+with that caveat. Two rounds of genuine, independently-confirmed fixes
+(derivative-kick in round 1, missing-integral/antenna-glitch-immunity in
+round 2) plus this round's partial filter-seeding fix have not closed the
+25-40°+ close-in intercept gap the original acceptance report flagged,
+which is why this was escalated rather than attempted as a fourth
+autonomous tuning pass — see the escalation raised alongside this report
+for the specific decision needed (e.g., whether the acceptance criterion's
+crossing-angle/distance combinations should be bounded to match a
+25°-max-bank aircraft's realistic capability, mirroring how real avionics
+procedures limit intercept angles, rather than treated as an unconditional
+requirement).
+
+### Files changed (round 3)
+
+- `src/sim/autopilot.ts` — `navTrackFilteredDeviation` now seeded to the
+  actual effective deviation at the ARMED→CAPTURED transition instead of
+  left at 0/stale (kept as a real, non-regressing correctness fix; does not
+  close the acceptance gap — see above).
+- No test or report changes beyond this section — the realistic GS-descent
+  regression test the reviewer's own scenario calls for was not added,
+  since committing a test that's expected to keep failing without a
+  resolved design decision was judged more likely to mislead a future
+  reader than to help; the reviewer's numbers above stand in for it for now.
