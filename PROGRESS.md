@@ -342,3 +342,12 @@ browser-verified end-to-end. Verified this session via scripted flights
   sim KDEN "267@6 10SM FEW180 ISA+18" vs actual "27007KT 10SM FEW180
   22/11". Suite 333/333. Remaining: QNH→indicated alt (baro), sky, clouds/
   whiteout, FIS-B NEXRAD+lightning, land-cover texturing (phase-5.md 2-6).
+
+- **Phase 5 steps 4/2/5 (2026-07-19)**: METAR cloud layers (billboard fields,
+  world-grid stable) + in-cloud whiteout driven by the same slabs (0.76 in
+  BKN verified in-flight); visibility fog from reported vis; Kollsman
+  altimetry w/ baro knob (;/') + live QNH; teleport clears stale-region
+  weather to neutral; FIS-B NEXRAD on the MFD w/ age stamp + in-precip vis
+  caps + lightning/thunder — verified against a real KHSV storm system (171
+  cells). Suite 342/342. REMAINING for Phase 5 close: custom scattering sky
+  (step 3), land-cover texturing (step 6), acceptance wrap + PROGRESS.
