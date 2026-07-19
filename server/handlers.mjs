@@ -319,6 +319,31 @@ export async function landcoverTile(z, x, y) {
   return buf
 }
 
+let frequenciesJson = null
+
+/** GET /api/frequencies.json — per-US-airport comms frequencies (§12). */
+export async function frequenciesData() {
+  if (frequenciesJson) return frequenciesJson
+  const jsonFile = path.join(cacheDir, 'us-frequencies.json')
+  if (fs.existsSync(jsonFile)) {
+    frequenciesJson = fs.readFileSync(jsonFile, 'utf8')
+    return frequenciesJson
+  }
+  const f = path.join(cacheDir, 'frequencies.csv')
+  let csv
+  if (fs.existsSync(f)) csv = fs.readFileSync(f, 'utf8')
+  else {
+    const res = await fetch(`${OA_BASE}/frequencies.csv`)
+    if (!res.ok) throw new Error(`frequencies.csv: ${res.status}`)
+    csv = await res.text()
+    fs.writeFileSync(f, csv)
+  }
+  const idents = new Set(JSON.parse(await airportsData()).map((a) => a.i))
+  frequenciesJson = JSON.stringify(buildUsFrequencies(csv, idents))
+  fs.writeFileSync(jsonFile, frequenciesJson)
+  return frequenciesJson
+}
+
 export async function route(url, res) {
   const terrain = url.match(/^\/proxy\/terrain\/(\d+)\/(\d+)\/(\d+)\.png$/)
   const metar = url.match(/^\/api\/metar\?bbox=([-\d.,]+)$/)
@@ -363,6 +388,16 @@ export async function route(url, res) {
         'Access-Control-Allow-Origin': '*',
       })
       res.end(buf)
+      return true
+    }
+    if (url === '/api/frequencies.json') {
+      const json = await frequenciesData()
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=86400',
+        'Access-Control-Allow-Origin': '*',
+      })
+      res.end(json)
       return true
     }
     if (url === '/api/frequencies.json') {

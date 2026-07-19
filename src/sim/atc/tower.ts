@@ -29,6 +29,11 @@ interface Strip {
   callsign: string
   phase: TowerPhase
   view: TrafficView
+  /** Arrival-sequence number (FIFO). Distance-to-threshold is NOT sequence
+   *  order — a downwind-abeam aircraft is closer to the threshold than one
+   *  on base, which inverted the queue and double-cleared the runway (found
+   *  by the two-plane integration test's radio log). */
+  seq: number
 }
 
 export function pilotPhrase(callsign: string, kind: PilotRequestKind, runway: string): string {
@@ -48,6 +53,7 @@ const FINAL_CONFLICT_M = 5 * 1852 // arrival inside 5 nm blocks a departure
 
 export class TowerController {
   private readonly strips = new Map<string, Strip>()
+  private seqCounter = 0
 
   constructor(
     private readonly cfg: { facility: string; freqMhz: number; activeRunway: string },
@@ -59,7 +65,7 @@ export class TowerController {
 
   /** Register/refresh AI or player position knowledge. */
   registerInbound(callsign: string, view: TrafficView): void {
-    this.strips.set(callsign, { callsign, phase: 'inbound', view })
+    this.strips.set(callsign, { callsign, phase: 'inbound', view, seq: ++this.seqCounter })
   }
 
   update(callsign: string, view: TrafficView): void {
@@ -75,7 +81,7 @@ export class TowerController {
   private arrivalQueue(): Strip[] {
     return [...this.strips.values()]
       .filter((s) => (s.phase === 'inbound' || s.phase === 'clearedLand') && !s.view.onGround)
-      .sort((a, b) => a.view.distanceM - b.view.distanceM)
+      .sort((a, b) => a.seq - b.seq)
   }
 
   private runwayOccupied(): boolean {
@@ -85,7 +91,10 @@ export class TowerController {
   }
 
   request(callsign: string, kind: PilotRequestKind, view: TrafficView, atSimS = 0): Transmission[] {
-    this.strips.set(callsign, { callsign, phase: this.strips.get(callsign)?.phase ?? 'holdingShort', view })
+    const prev = this.strips.get(callsign)
+    this.strips.set(callsign, {
+      callsign, phase: prev?.phase ?? 'holdingShort', view, seq: prev?.seq ?? ++this.seqCounter,
+    })
     const s = this.strips.get(callsign)!
     const rwy = this.cfg.activeRunway
     switch (kind) {
@@ -100,7 +109,8 @@ export class TowerController {
       }
       case 'inboundLanding': {
         s.phase = 'inbound'
-        const ahead = this.arrivalQueue().filter((a) => a.callsign !== callsign && a.view.distanceM < view.distanceM)
+        s.seq = ++this.seqCounter
+        const ahead = this.arrivalQueue().filter((a) => a.callsign !== callsign && a.seq < s.seq)
         if (ahead.length === 0) {
           s.phase = 'clearedLand'
           return [this.say(`${callsign}, runway ${rwy}, cleared to land`, atSimS)]
@@ -114,6 +124,7 @@ export class TowerController {
       }
       case 'goAround': {
         s.phase = 'inbound'
+        s.seq = ++this.seqCounter // rejoin at the back of the sequence
         return [this.say(`${callsign}, roger, fly runway heading, report downwind runway ${rwy}`, atSimS)]
       }
       case 'taxiOut':
