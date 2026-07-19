@@ -1,6 +1,8 @@
 import { FixedTimestepLoop, type SimRate } from './sim/loop'
 import { Aircraft } from './sim/aircraft'
 import { WindModel } from './sim/wind'
+import { parseMetar } from './sim/weather/metar'
+import { blendWeather, type StationWeather } from './sim/weather/weather'
 import { trim } from './sim/trim'
 import { FT, KT, isa, kcasFromKias } from './sim/atmosphere'
 import { C172S } from './sim/aircraft/c172s'
@@ -466,6 +468,59 @@ function pollControls(dt: number): void {
   if (scrub !== 0) scrubSeconds += scrub * dt * 3600
 }
 
+// ---- live weather (Phase 5 §11) ----
+// Fetch METARs in a bbox around the aircraft every 10 min (or on a >50 km
+// move), blend at the aircraft position every few seconds, and apply to BOTH
+// physics (wind model, ISA temperature offset → density altitude) and the
+// HUD from the same state (§1). `__ohWind` switches to manual weather.
+let liveWeatherOn = true
+let wxStations: StationWeather[] = []
+let wxDesc = ''
+let lastWxFetchAt = -Infinity
+let lastWxFetchLL = { lat: 0, lon: 0 }
+let lastWxApplyAt = -Infinity
+
+function updateLiveWeather(lat: number, lon: number, now: number): void {
+  if (!liveWeatherOn) return
+  if (
+    now - lastWxFetchAt > 600_000 ||
+    distanceM(lastWxFetchLL, { lat, lon }) > 50_000
+  ) {
+    lastWxFetchAt = now
+    // Teleport/long-move: drop the old region's stations immediately so a
+    // stale set can never be blended at the new position mid-refetch (the
+    // 150 km guard in blendWeather is the second line of defense).
+    if (distanceM(lastWxFetchLL, { lat, lon }) > 50_000) wxStations = []
+    lastWxFetchLL = { lat, lon }
+    const bbox = `${(lat - 1.2).toFixed(2)},${(lon - 1.5).toFixed(2)},${(lat + 1.2).toFixed(2)},${(lon + 1.5).toFixed(2)}`
+    fetch(`/api/metar?bbox=${bbox}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((arr: Array<{ rawOb?: string; lat?: number; lon?: number; elev?: number }>) => {
+        wxStations = arr
+          .filter((e) => e.rawOb && e.lat !== undefined && e.lon !== undefined)
+          .map((e) => ({
+            metar: parseMetar(e.rawOb!),
+            lat: e.lat!,
+            lon: e.lon!,
+            elevFt: (e.elev ?? 0) / 0.3048,
+          }))
+      })
+      .catch((err) => console.warn('live weather unavailable (manual/calm retained):', err))
+  }
+  if (now - lastWxApplyAt > 5000 && wxStations.length > 0) {
+    lastWxApplyAt = now
+    const b = blendWeather(wxStations, lat, lon)
+    if (b) {
+      wind.setSteady(b.windDirDeg, b.windKt, b.gustKt)
+      wind.intensity = Math.min(Math.max((b.gustKt - b.windKt) / 8, 0), 2)
+      aircraft.isaTempOffsetC = b.isaTempOffsetC
+      const cl = b.clouds[0] ? ` ${b.clouds[0].cover}${String(Math.round(b.clouds[0].baseFt / 100)).padStart(3, '0')}` : ''
+      wxDesc = `${b.nearestStation} ${String(b.windDirDeg).padStart(3, '0')}@${Math.round(b.windKt)}` +
+        `${b.gustKt > b.windKt + 3 ? `G${Math.round(b.gustKt)}` : ''} ${b.visibilitySm}SM${cl} ISA${b.isaTempOffsetC >= 0 ? '+' : ''}${b.isaTempOffsetC.toFixed(0)}`
+    }
+  }
+}
+
 function rebaseIfNeeded(): void {
   const n = aircraft.posNed.x
   const e = aircraft.posNed.y
@@ -716,6 +771,7 @@ function advanceFrame(elapsed: number, now: number): void {
     airports.updateVisuals(ll.lat, ll.lon)
   }
   airports.positionAll()
+  updateLiveWeather(ll.lat, ll.lon, now)
 
   // Phase 4 Task 5 wiring: in-airspace detection, once per rendered frame
   // (airspace shelves are large relative to per-tick aircraft motion — the
@@ -863,6 +919,7 @@ function advanceFrame(elapsed: number, now: number): void {
       trimPct: aircraft.controls.trim,
       cameraMode,
       tilesReady: tiles.readyCount,
+      wx: wxDesc || undefined,
       spawnDesc,
       lat: ll.lat,
       lon: ll.lon,
@@ -1012,7 +1069,18 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohCtl: (c: Record<string, number> | null) => {
     ctlOverride = c === null ? null : { ...(ctlOverride ?? {}), ...c }
   },
-  __ohWind: (dirDeg: number, kt: number) => wind.setSteady(dirDeg, kt),
+  __ohWind: (dirDeg: number, kt: number) => {
+    // Manual weather: live METAR application stops so it can't overwrite.
+    liveWeatherOn = false
+    wxDesc = ''
+    aircraft.isaTempOffsetC = 0
+    wind.setSteady(dirDeg, kt)
+  },
+  __ohWx: () => ({ on: liveWeatherOn, desc: wxDesc, stations: wxStations.length, isaOffsetC: aircraft.isaTempOffsetC }),
+  __ohLiveWx: (on: boolean) => {
+    liveWeatherOn = on
+    if (on) lastWxFetchAt = -Infinity
+  },
   __ohTime: (hours: number) => {
     scrubSeconds += hours * 3600
   },

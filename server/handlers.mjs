@@ -228,9 +228,41 @@ export async function airspaceData() {
 }
 
 /** Node http-style routing used by both Express and Vite middleware. */
+// ---- Live METAR (Phase 5 §11): aviationweather.gov bbox query, 10-min TTL ----
+
+const metarCache = new Map() // key → { at: ms, body: string }
+
+/** GET /api/metar?bbox=lat0,lon0,lat1,lon1 — passes through the FAA/NWS
+ *  aviationweather.gov JSON (station lat/lon + rawOb per entry). Cached
+ *  10 minutes per bbox (METARs update hourly; §11 says ~10-min refresh). */
+export async function metarData(bbox) {
+  if (!/^-?\d+(\.\d+)?,-?\d+(\.\d+)?,-?\d+(\.\d+)?,-?\d+(\.\d+)?$/.test(bbox)) {
+    throw new Error('bad bbox')
+  }
+  const hit = metarCache.get(bbox)
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.body
+  const url = `https://aviationweather.gov/api/data/metar?bbox=${bbox}&format=json`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`metar: ${res.status}`)
+  const body = await res.text()
+  metarCache.set(bbox, { at: Date.now(), body })
+  return body
+}
+
 export async function route(url, res) {
   const terrain = url.match(/^\/proxy\/terrain\/(\d+)\/(\d+)\/(\d+)\.png$/)
+  const metar = url.match(/^\/api\/metar\?bbox=([-\d.,]+)$/)
   try {
+    if (metar) {
+      const body = await metarData(metar[1])
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=600',
+        'Access-Control-Allow-Origin': '*',
+      })
+      res.end(body)
+      return true
+    }
     if (terrain) {
       const buf = await terrainTile(terrain[1], terrain[2], terrain[3])
       res.writeHead(200, {

@@ -8,7 +8,7 @@ import { C172S } from './aircraft/c172s'
 import { computeAero, makeAeroOutput, type AeroInput } from './aero'
 import { stepPropulsion, makePropulsionState, type PropulsionState } from './propulsion'
 import { computeGear, makeGearOutput, type GearInput } from './gear'
-import { isa, casFromTas, kiasFromKcas, G, KT, FT, type AirState } from './atmosphere'
+import { isa, casFromTas, kiasFromKcas, G, KT, FT, R_AIR, type AirState } from './atmosphere'
 import {
   v3, q4, v3set, v3copy, v3cross, qrotate, qrotateInv, qintegrate, qfromEuler,
   qtoEuler, clamp, type Euler,
@@ -78,6 +78,12 @@ export class Aircraft {
 
   /** Terrain elevation (m MSL) at frame-local NED (north, east); Phase 2+. */
   groundElevAt: ((n: number, e: number) => number) | null = null
+
+  /** Live-weather ISA temperature offset, °C (Phase 5 §11): shifts air
+   *  density (hot day → thinner air → longer takeoff, weaker climb) while
+   *  leaving pressure untouched — the dominant density-altitude term. 0 =
+   *  ISA, which keeps the POH validation suite exactly as tuned. */
+  isaTempOffsetC = 0
 
   /** Systems layer (Phase 3): whether the engine is actually running. Phase
    *  1/2 always ran the engine, so this defaults to true — callers that
@@ -150,6 +156,10 @@ export class Aircraft {
     const m = this.massKg
     const altM = -this.posNed.z
     isa(altM, this.air)
+    if (this.isaTempOffsetC !== 0) {
+      this.air.temperatureK += this.isaTempOffsetC
+      this.air.densityKgM3 = this.air.pressurePa / (R_AIR * this.air.temperatureK)
+    }
     const rho = this.air.densityKgM3
 
     // Flap actuator.

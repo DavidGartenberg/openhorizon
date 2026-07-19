@@ -13,6 +13,8 @@ export interface HudStats {
   trimPct: number
   cameraMode: string
   tilesReady: number
+  /** Live-weather one-liner (nearest station + wind/vis/clouds), if loaded. */
+  wx?: string
   spawnDesc: string
   lat: number
   lon: number
@@ -85,7 +87,8 @@ export class Hud {
       `TRIM ${stats.trimPct >= 0 ? '+' : ''}${(stats.trimPct * 100).toFixed(0)}%   ` +
       `AoA ${f.alphaDeg.toFixed(1)}°   ${f.loadFactorG.toFixed(1)}g` +
       `${f.onGround ? '   [GND]' : ''}\n` +
-      `${stats.lat.toFixed(4)}, ${stats.lon.toFixed(4)} · tiles ${stats.tilesReady}\n` +
+      `${stats.lat.toFixed(4)}, ${stats.lon.toFixed(4)} · tiles ${stats.tilesReady}` +
+      `${stats.wx ? ` · wx ${stats.wx}` : ''}\n` +
       `${this.fps.toFixed(0)} fps · sim ${formatUTC(stats.simDate)} [${rate}] · cam ${stats.cameraMode}\n` +
       `↑↓←→ fly · A/D rudder · W/S throttle · F/G flaps · ,/. trim · B brakes\n` +
       `/ airport search · C camera · R reset · Space pause · 1/2/3 rate · [ ] time`
