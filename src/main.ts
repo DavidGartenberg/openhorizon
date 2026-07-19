@@ -5,6 +5,7 @@ import { parseMetar } from './sim/weather/metar'
 import { blendWeather, type StationWeather, type BlendedWeather } from './sim/weather/weather'
 import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-model'
 import { Clouds } from './render/clouds'
+import { NexradField } from './world/nexrad'
 import { trim } from './sim/trim'
 import { FT, KT, isa, kcasFromKias, indicatedAltitudeFt } from './sim/atmosphere'
 import { C172S } from './sim/aircraft/c172s'
@@ -535,6 +536,72 @@ function updateLiveWeather(lat: number, lon: number, now: number): void {
   }
 }
 
+// ---- FIS-B NEXRAD + in-world precip/lightning (Phase 5 step 5) ----
+const nexrad = new NexradField()
+let nexradMfdCells: Array<{ dNorthM: number; dEastM: number; intensity: 1 | 2 | 3 }> = []
+let lastRadarCellsAt = -Infinity
+let nextLightningAt = 0
+let appliedWxVisM = 45 * 1609
+const lightningFlash = document.createElement('div')
+lightningFlash.style.cssText =
+  'position:fixed;inset:0;pointer-events:none;z-index:6;opacity:0;background:#eaf2ff;transition:opacity 90ms linear'
+document.body.appendChild(lightningFlash)
+
+/** Low rumble via WebAudio, delayed by distance at the call site. No sample
+ *  assets — synthesized noise burst (full sound design is Phase 9 §16). */
+let thunderCtx: AudioContext | null = null
+function thunder(): void {
+  try {
+    thunderCtx ??= new AudioContext()
+    const len = 1.8
+    const buf = thunderCtx.createBuffer(1, thunderCtx.sampleRate * len, thunderCtx.sampleRate)
+    const ch = buf.getChannelData(0)
+    for (let i = 0; i < ch.length; i++) {
+      const t = i / ch.length
+      ch[i] = (Math.random() * 2 - 1) * Math.exp(-3.2 * t) * (1 - Math.exp(-50 * t))
+    }
+    const src = thunderCtx.createBufferSource()
+    src.buffer = buf
+    const lp = thunderCtx.createBiquadFilter()
+    lp.type = 'lowpass'
+    lp.frequency.value = 200
+    const gain = thunderCtx.createGain()
+    gain.gain.value = 0.45
+    src.connect(lp)
+    lp.connect(gain)
+    gain.connect(thunderCtx.destination)
+    src.start()
+  } catch {
+    // Autoplay policy blocks audio before a user gesture — visual-only then.
+  }
+}
+
+function updateRadar(lat: number, lon: number, now: number): void {
+  nexrad.update(lat, lon, now)
+  if (now - lastRadarCellsAt < 5000) return
+  lastRadarCellsAt = now
+  const mLat = 111_320
+  const mLon = mLat * Math.cos((lat * Math.PI) / 180)
+  nexradMfdCells = nexrad.cellsNear(lat, lon, 45 * 1852).map((c) => ({
+    dNorthM: (c.lat - lat) * mLat,
+    dEastM: (c.lon - lon) * mLon,
+    intensity: c.intensity,
+  }))
+  // In-precip visibility: radar returns cap visibility below the METAR value
+  // while inside a cell (light 5 SM / moderate 2.5 / heavy 1).
+  const here = nexrad.intensityAt(lat, lon)
+  const radarVisM = here > 0 ? [0, 5, 2.5, 1][here]! * 1609 : Infinity
+  tiles.setVisibilityM(Math.min(appliedWxVisM, radarVisM))
+  // Lightning near heavy cells: flash now, thunder delayed by distance.
+  const heavyDistM = nexrad.nearestHeavyM(lat, lon, 25_000)
+  if (heavyDistM !== null && now >= nextLightningAt) {
+    nextLightningAt = now + 5000 + Math.random() * 12_000
+    lightningFlash.style.opacity = '0.8'
+    setTimeout(() => (lightningFlash.style.opacity = '0'), 110)
+    setTimeout(thunder, (heavyDistM / 340) * 1000)
+  }
+}
+
 function applyBlendedWeather(b: BlendedWeather | null): void {
   wxBlended = b
   if (!b) {
@@ -547,7 +614,8 @@ function applyBlendedWeather(b: BlendedWeather | null): void {
     qnhInHg = 29.92
     wind.setSteady(0, 0)
     wind.intensity = 0
-    tiles.setVisibilityM(45 * 1609)
+    appliedWxVisM = 45 * 1609
+    tiles.setVisibilityM(appliedWxVisM)
     return
   }
   wxSlabs = cloudSlabs(b.clouds, b.stationElevFt)
@@ -555,7 +623,8 @@ function applyBlendedWeather(b: BlendedWeather | null): void {
   wind.intensity = Math.min(Math.max((b.gustKt - b.windKt) / 8, 0), 2)
   aircraft.isaTempOffsetC = b.isaTempOffsetC
   qnhInHg = b.qnhInHg
-  tiles.setVisibilityM((b.visibilitySm >= 10 ? 45 : b.visibilitySm) * 1609)
+  appliedWxVisM = (b.visibilitySm >= 10 ? 45 : b.visibilitySm) * 1609
+  tiles.setVisibilityM(appliedWxVisM)
   const cl = b.clouds[0] ? ` ${b.clouds[0].cover}${String(Math.round(b.clouds[0].baseFt / 100)).padStart(3, '0')}` : ''
   wxDesc = `${b.nearestStation} ${String(b.windDirDeg).padStart(3, '0')}@${Math.round(b.windKt)}` +
     `${b.gustKt > b.windKt + 3 ? `G${Math.round(b.gustKt)}` : ''} ${b.visibilitySm}SM${cl} ISA${b.isaTempOffsetC >= 0 ? '+' : ''}${b.isaTempOffsetC.toFixed(0)}`
@@ -815,6 +884,7 @@ function advanceFrame(elapsed: number, now: number): void {
   }
   airports.positionAll()
   updateLiveWeather(ll.lat, ll.lon, now)
+  updateRadar(ll.lat, ll.lon, now)
 
   // Phase 4 Task 5 wiring: in-airspace detection, once per rendered frame
   // (airspace shelves are large relative to per-tick aircraft motion — the
@@ -943,6 +1013,8 @@ function advanceFrame(elapsed: number, now: number): void {
         airports: airports.near(ll.lat, ll.lon, 60 * 1852).map((ap) => ({ id: ap.i, name: ap.n, lat: ap.la, lon: ap.lo })),
         airspace: currentAirspace,
         aircraftAglFt: d.aglFt,
+        radarCells: nexradMfdCells,
+        radarAgeMin: nexrad.ageMin(now),
       } : undefined,
     },
   )
@@ -1130,6 +1202,14 @@ Object.assign(window as unknown as Record<string, unknown>, {
     on: liveWeatherOn, desc: wxDesc, stations: wxStations.length,
     isaOffsetC: aircraft.isaTempOffsetC, slabs: wxSlabs,
     baroSetInHg, qnhInHg,
+    radar: (() => {
+      const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+      return {
+        cells: nexradMfdCells.length,
+        here: nexrad.intensityAt(ll.lat, ll.lon),
+        ageMin: nexrad.ageMin(performance.now()),
+      }
+    })(),
     inCloud: inCloudFactor(wxSlabs, aircraft.data.altitudeFt),
     blended: wxBlended,
   }),

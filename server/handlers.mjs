@@ -249,10 +249,39 @@ export async function metarData(bbox) {
   return body
 }
 
+// ---- NEXRAD composite tiles (Phase 5 §11, FIS-B presentation) ----
+
+const nexradCache = new Map() // key → { at: ms, buf: Buffer }
+
+/** GET /proxy/nexrad/{z}/{x}/{y}.png — IEM national composite (n0q),
+ *  5-min TTL (matches the product's own update cadence). */
+export async function nexradTile(z, x, y) {
+  if (!/^\d+$/.test(z) || !/^\d+$/.test(x) || !/^\d+$/.test(y)) throw new Error('bad tile')
+  const key = `${z}/${x}/${y}`
+  const hit = nexradCache.get(key)
+  if (hit && Date.now() - hit.at < 5 * 60 * 1000) return hit.buf
+  const res = await fetch(`https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/${z}/${x}/${y}.png`)
+  if (!res.ok) throw new Error(`nexrad ${key}: ${res.status}`)
+  const buf = Buffer.from(await res.arrayBuffer())
+  nexradCache.set(key, { at: Date.now(), buf })
+  return buf
+}
+
 export async function route(url, res) {
   const terrain = url.match(/^\/proxy\/terrain\/(\d+)\/(\d+)\/(\d+)\.png$/)
   const metar = url.match(/^\/api\/metar\?bbox=([-\d.,]+)$/)
+  const nexrad = url.match(/^\/proxy\/nexrad\/(\d+)\/(\d+)\/(\d+)\.png$/)
   try {
+    if (nexrad) {
+      const buf = await nexradTile(nexrad[1], nexrad[2], nexrad[3])
+      res.writeHead(200, {
+        'Content-Type': 'image/png',
+        'Cache-Control': 'public, max-age=300',
+        'Access-Control-Allow-Origin': '*',
+      })
+      res.end(buf)
+      return true
+    }
     if (metar) {
       const body = await metarData(metar[1])
       res.writeHead(200, {

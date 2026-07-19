@@ -253,6 +253,12 @@ export interface MfdMapInput {
    *  (`glideRangeRadiusM`) when supplied. Omitted = ring not drawn (e.g.
    *  AGL unknown/not computed by the caller). */
   aircraftAglFt?: number
+  /** FIS-B NEXRAD cells (offsets from aircraft, meters) — drawn as the
+   *  standard green/yellow/red overlay. Optional. */
+  radarCells?: readonly { dNorthM: number; dEastM: number; intensity: 1 | 2 | 3 }[]
+  /** Age of the radar picture, minutes — stamped on the map (the datalink
+   *  picture lags reality; §11). null/omitted = no radar data yet. */
+  radarAgeMin?: number | null
 }
 
 // ============================================================================
@@ -626,6 +632,32 @@ function drawMapPage(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
       ctx.fillStyle = elevationColor(s.elevM)
       ctx.fillRect(px - cellPx / 2, py - cellPx / 2, cellPx, cellPx)
     }
+  }
+
+  // FIS-B NEXRAD overlay (§11): datalink radar, standard green/yellow/red,
+  // drawn above terrain and below airspace/symbols. The age stamp below is
+  // part of the product's honesty — the picture lags reality by minutes.
+  if (map.radarCells) {
+    // Cells arrive decimated to ~9.6 km spacing (z6 pixels × stride 4).
+    const cellPx = Math.max((9600 / map.rangeM) * radiusPx, 5)
+    for (const c of map.radarCells) {
+      const dist = Math.hypot(c.dNorthM, c.dEastM)
+      if (dist > map.rangeM * 1.05) continue
+      const angleDeg = map.trackUp
+        ? (Math.atan2(c.dEastM, c.dNorthM) * 180) / Math.PI - map.headingDeg
+        : (Math.atan2(c.dEastM, c.dNorthM) * 180) / Math.PI
+      const angleRad = (angleDeg * Math.PI) / 180
+      const dPx = (dist / map.rangeM) * radiusPx
+      ctx.fillStyle =
+        c.intensity === 3 ? 'rgba(226,44,44,0.55)' : c.intensity === 2 ? 'rgba(233,200,44,0.5)' : 'rgba(64,190,64,0.45)'
+      ctx.fillRect(cx + dPx * Math.sin(angleRad) - cellPx / 2, cy - dPx * Math.cos(angleRad) - cellPx / 2, cellPx, cellPx)
+    }
+  }
+  if (map.radarAgeMin !== undefined && map.radarAgeMin !== null) {
+    ctx.fillStyle = COLORS.yellow
+    ctx.font = `${Math.round(h * 0.032)}px monospace`
+    ctx.textAlign = 'right'
+    ctx.fillText(`FIS-B ${map.radarAgeMin} MIN`, x + w - w * 0.015, y + h * 0.045)
   }
 
   // Airspace boundaries (Class B/C/D/E-surface + SUA), drawn above terrain
