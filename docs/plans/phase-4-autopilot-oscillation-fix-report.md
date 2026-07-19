@@ -576,3 +576,93 @@ requirement).
   since committing a test that's expected to keep failing without a
   resolved design decision was judged more likely to mislead a future
   reader than to help; the reviewer's numbers above stand in for it for now.
+
+---
+
+# Round 4 — the coupled-descent divergence: range-dependent loop gain (CLOSED)
+
+## Root cause (confirmed by instrumentation, not inferred)
+
+The tracking law closed its loop on the deviation FRACTION. A localizer's
+full-scale width is proportional to range, so the plant's gain in fraction
+space grows ~1/range — the same bank produces an ever-larger fraction change
+as the beam narrows. Constant fraction-domain gains therefore cross the
+loop's stability margin at some range regardless of tuning; rounds 1–3 each
+fixed a real defect and could never have fixed this one.
+
+Instrumented evidence (0° initial error — the handoff's control case — with
+absolute cross-track in METERS alongside the fraction): converged 8→4 m at
+8–11 km, then oscillation with growing physical amplitude and shortening
+period as range fell (−13, +15, −23, +34, −59 m from 6.9→2.3 km), full-scale
+fraction by 1.2 km. Growing meters, not constant-meters-revealed-by-
+narrowing-scale: genuine instability with a range-dependent onset (~5–7 km),
+matching every failing case breaking at the same PLACE, not the same time.
+
+## Fix
+
+`AutopilotInputs.navRangeM` (optional, meters to station) added; tracking
+branch multiplies the deviation by `clamp(range/8000 m, 0, 2.5)` before the
+slew/filter/integral/P chain. Physical loop gain is thereby frozen at the
+known-stable 8 km behavior at every range. Side benefit: the round-2
+near-antenna singularity dissolves (a fraction pinned ±1 attenuates → 0 as
+range → 0). Fixed-width sources (GPS CDI) omit the field — factor 1,
+behavior-identical (all 37 prior autopilot tests pass unmodified).
+
+## Results
+
+- On-beam 0°/6nm control case: worst |dev| 1.000 → **0.194**, DH reached.
+- 20°/6nm, 20°/8nm on-beam: PASS (0.252 / 0.303).
+- Realistic vectors-to-final intercepts (offset from beam, ARMED on the
+  vector, bug slewed to course at capture): 30°/45°/60° cuts all PASS —
+  worst |loc| = the 0.499–0.500 capture threshold itself, monotonically
+  improving to 200 ft AGL; GS ≤ 0.41 after capture+30 s. Including two
+  **15 kt crosswind** cases (the §24 acceptance wording): PASS.
+- Teleported-on-centerline 40–90° entries still overshoot transiently at
+  capture — round 3's 25°-bank envelope analysis stands (turn radius ≈460 m
+  vs ≈240 m half-scale); no real procedure enters that way. Documented as
+  out-of-envelope in tests/autopilot-gs-descent.test.ts's header.
+
+## Independent adversarial review (fresh agent, instructed to reproduce)
+
+Verdict: control law CONFIRMED FIXED — reviewer independently reproduced the
+pre-fix failure by omitting navRangeM (1.000 at t=178 s) and its absence
+with it (0.194); probed 80/110 kt speeds, 12 nm approaches (2.5 upper clamp
+benign), left-side captures (sign-symmetric) — all PASS. The review also
+found two REAL app-side defects outside the law, both fixed in this round:
+
+1. **Sign inversion in main.ts's AP feed**: `localizerDeflection` is
+   positive-left; `AutopilotInputs.navDeviation` is positive-right; both
+   test files negate, main.ts didn't — app-side APR diverged to pinned
+   full-scale. Fixed (negation + sign-contract comment at the feed).
+2. **Course datum never slewed at capture**: the heading bug is this AP's
+   course reference; leaving it on a >25°-off vector heading after capture
+   starves the tracking law. main.ts now slews the bug to the localizer
+   front course at the ARMED→captured transition (`tunedNav.courseDeg`).
+   Plus: filter seed now made in the range-scaled domain (was up to 2.5×
+   off for one filter time-constant; benign but wrong).
+
+## Known limitations recorded (not silently dropped)
+
+- **GS axis, 15 kt TAILWIND + unmanaged power**: reviewer found |gs| peaks
+  0.527–0.533 (> 0.5) near DH when the approach is flown at fixed throttle
+  0.6 (accelerating to ~118 KIAS) with a 15 kt tailwind; managed power
+  (~96 kt) gives 0.193. Root cause identified (GS pitch integrator authority
+  ki·iMax ≈ 0.5° vs ~3° needed; GS fraction also un-normalized by range).
+  The §24 criterion (15 kt CROSSWIND) passes. Follow-up queued for Phase 5:
+  range-normalize GS + raise its integrator authority.
+- **NAV+VOR** remains an angular source fed without range (pre-existing;
+  enroute ranges keep it in the stable regime) and vorCdi's TO/FROM sign
+  convention vs the AP deserves the same wiring test — queued with the above.
+
+## Round 4 addendum: instant-capture course-datum gap (closed)
+
+The reviewer's re-verification passed the vectors-to-final app-faithful path
+(0.499 worst, DH reached; previously pinned 1.000) but found the capture
+slew never fired when stepAutopilot arms AND captures within a single step
+(APR engaged already inside half-scale, bug still on a vector — |loc| 1.000
+by t=24 s). Fixed by pinning the bug to the front course CONTINUOUSLY while
+localizer tracking is active (main.ts), which is also the more faithful
+GFC700 emulation (tracking ignores the heading bug entirely). The reviewer's
+exact scenario is now a permanent regression test in
+tests/autopilot-gs-descent.test.ts ("instant capture with stale vector
+bug") — suite 316/316.

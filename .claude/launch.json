@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "openhorizon-dev-2d",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:client", "--", "--port", "5177"],
+      "port": 5177
+    }
+  ]
+}

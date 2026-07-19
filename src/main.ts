@@ -515,6 +515,8 @@ function computeTunedNav(aircraftLL: { lat: number; lon: number }, altitudeFt: n
     return {
       source: 'LOC', identifier: `${ap.i} ${known.runway}`,
       deflectionFraction: loc.deflectionFraction, hasGlideslope: true, glideslopeFraction: gs,
+      stationRangeM: distanceM(aircraftLL, { lat: threshold.lat, lon: threshold.lon }),
+      courseDeg: ils.courseDeg,
     }
   }
   const nearbyNavaids = navaidsIndex.near(aircraftLL.lat, aircraftLL.lon, 200 * 1852)
@@ -571,9 +573,15 @@ function advanceFrame(elapsed: number, now: number): void {
   const gpsCdi = computeGpsCdi(preStepLL)
   let navDeviationForAp = 0
   let glideslopeDeviationForAp = 0
+  let navRangeForAp: number | undefined
   if (apTargets.lateralMode === 'APR' || apTargets.lateralMode === 'BC') {
-    navDeviationForAp = tunedNav.source === 'LOC' ? tunedNav.deflectionFraction : 0
+    // SIGN CONTRACT (found by round-4's independent review — the un-negated
+    // feed made app-side APR diverge even after the control law was fixed):
+    // `localizerDeflection` is positive = aircraft LEFT of course;
+    // `AutopilotInputs.navDeviation` requires positive = RIGHT of course.
+    navDeviationForAp = tunedNav.source === 'LOC' ? -tunedNav.deflectionFraction : 0
     glideslopeDeviationForAp = tunedNav.hasGlideslope ? tunedNav.glideslopeFraction ?? 0 : 0
+    navRangeForAp = tunedNav.source === 'LOC' ? tunedNav.stationRangeM : undefined
   } else if (apTargets.lateralMode === 'NAV') {
     navDeviationForAp = gpsCdi ? gpsCdi.deflectionFraction : tunedNav.source === 'VOR' ? tunedNav.deflectionFraction : 0
   }
@@ -607,7 +615,24 @@ function advanceFrame(elapsed: number, now: number): void {
         pitchCommandDeg: apTargets.pitchCommandDeg,
         navDeviation: navDeviationForAp,
         glideslopeDeviation: glideslopeDeviationForAp,
+        navRangeM: navRangeForAp,
       })
+      // While localizer TRACKING is active, the heading bug is this AP's
+      // course datum — pin it to the front course continuously (a real
+      // GFC700 reads the CDI course input and ignores the bug here; leaving
+      // it >25° off-course starves the tracking law's intercept authority —
+      // the second app-side divergence round-4's review found). Continuous,
+      // not edge-triggered: stepAutopilot can arm AND capture within one
+      // step when APR is engaged already inside half-scale (reviewer's
+      // instant-capture repro), so a captured-transition detector never
+      // fires on that path.
+      if (
+        !apState.lateralArmed &&
+        (apTargets.lateralMode === 'APR' || apTargets.lateralMode === 'BC') &&
+        tunedNav.courseDeg !== undefined
+      ) {
+        apTargets.headingBugDeg = Math.round(tunedNav.courseDeg)
+      }
       // Servos take the yoke when engaged — overwrites the same
       // `aircraft.controls` fields `pollControls`/`CockpitInteraction` write,
       // exactly like a real AP servo clutch; when disengaged those two

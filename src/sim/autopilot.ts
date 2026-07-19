@@ -90,6 +90,14 @@ export interface AutopilotInputs {
    *  (`glideslopeDeflection(...) / GS_FULL_SCALE_DEG`). Positive = aircraft
    *  above the glidepath (fly down). */
   glideslopeDeviation: number
+  /** Distance to the tracked lateral station/threshold, meters — REQUIRED
+   *  for angular sources (LOC/BC localizers) whose full-scale width shrinks
+   *  linearly with range; omit for fixed-width sources (GPS CDI). See the
+   *  round-4 comment in the tracking branch: without this, closing the loop
+   *  on the bare fraction makes physical loop gain grow ~1/range and the
+   *  law goes unstable inside ~5-7 km (confirmed with a 0°-error coupled
+   *  GS-descent control case — not an intercept-geometry problem). */
+  navRangeM?: number
 }
 
 // ---- output / state ----
@@ -540,7 +548,31 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       // uses, so tracking inherits HDG's already-validated convergence
       // instead of needing its own separately-tuned control law.
       const sign = state.lateralMode === 'BC' ? -1 : 1
-      const rawEffectiveDeviation = sign * inputs.navDeviation
+      // ---- ROUND 4 (the fix that finally closed the coupled-descent bug):
+      // range-normalize angular deviations. A localizer's full-scale width
+      // is proportional to range, so a loop closed on the bare FRACTION has
+      // physical gain growing ~1/range — the same bank produces an ever
+      // larger fraction change as the beam narrows. Diagnosed via a 0°-
+      // initial-error coupled GS-descent control case (tests/autopilot.test.ts,
+      // "coupled GS-descent" block): absolute cross-track was CONVERGED
+      // (8→4 m) at 8-11 km, then oscillated with growing physical amplitude
+      // (±13, ±23, ±34, ±59 m) and shortening period as range fell through
+      // ~7→2 km — textbook loss of gain margin, unfixable by any constant-
+      // gain tuning (rounds 1-3 each fixed something real and left this).
+      // Multiplying the fraction by range/REF freezes physical loop gain at
+      // the known-good 8 km behavior for all ranges. It also dissolves the
+      // round-2 near-antenna singularity for free: a fraction pinned at ±1
+      // right at the station attenuates toward 0 as range→0 instead of
+      // slamming the law. Fixed-width sources (GPS CDI) omit `navRangeM`
+      // and keep factor 1 — their fraction is already physically uniform.
+      const NAV_REF_RANGE_M = 8000
+      const rangeFactor =
+        inputs.navRangeM !== undefined ? clamp(inputs.navRangeM / NAV_REF_RANGE_M, 0, 2.5) : 1
+      const rawEffectiveDeviation = sign * inputs.navDeviation * rangeFactor
+      // First tracking step: seed the P-term filter in the SAME (range-
+      // scaled) domain the loop closes on — the capture-block seed uses the
+      // unscaled ARMED-branch deviation, up to 2.5× off (review finding).
+      if (!state.navTrackInitialized) state.navTrackFilteredDeviation = rawEffectiveDeviation
       // Deviation SLEW-RATE limit: a genuine ILS localizer's angular
       // sensitivity is inversely proportional to distance from the station,
       // and right at/very near the station itself the bearing-based

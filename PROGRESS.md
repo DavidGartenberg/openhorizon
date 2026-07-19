@@ -20,7 +20,51 @@ Node; add `~/.local/node/bin` to PATH).
 | 1 — Flight model | ✅ done | POH table 10/10, handling 5/5, browser takeoff verified |
 | 2 — The US | ✅ done | real terrain/airports verified, KSFO landing flown, rebase seamless |
 | 3 — Cockpit & systems | ✅ done | G1000 PFD/MFD, full systems sim, 3D cockpit, cold-and-dark verified |
-| 4–10 | not started | Phase 4 (nav, autopilot, airspace) next |
+| 4 — Nav & autopilot | ✅ done | radio nav, GPS/FPL, GFC700, CIFP, airspace; coupled-ILS acceptance passed after 4-round AP fix |
+| 5–10 | not started | Phase 5 (weather & sky) next |
+
+## Phase 4 — evidence (2026-07-19)
+
+- Tasks 1–6 (radio nav, GPS flight plan, GFC700, CIFP procedures, airspace
+  data, cockpit wiring): done and committed in prior sessions (`c825999`..).
+- **Task 7 acceptance (coupled ILS within half-scale to 200 ft AGL): PASSES**,
+  including the §24-named 15 kt crosswind — after a four-round autopilot
+  investigation documented in full in
+  `docs/plans/phase-4-autopilot-oscillation-fix-report.md`.
+- **Round-4 root cause**: the APR tracking loop closed on the deviation
+  FRACTION of a localizer whose full-scale width shrinks with range —
+  physical loop gain grew ~1/range and went unstable inside ~5–7 km (a 0°-
+  error control case diverged; absolute cross-track oscillation grew ±13→±59 m
+  with shortening period). Fix: `AutopilotInputs.navRangeM` range-normalizes
+  angular deviations (clamp(range/8 km, 0, 2.5)); also dissolves the round-2
+  near-antenna singularity. GPS CDI (fixed width) unchanged; all 37 prior AP
+  tests pass unmodified.
+- **Independent adversarial review** (fresh agent, reproduce-don't-trust):
+  confirmed the law fix; independently reproduced pre-fix divergence with
+  the range term removed; probed 80/110 kt, 12 nm, left-side, tailwind. It
+  found two real app-side defects, both fixed and re-verified end-to-end:
+  main.ts fed the AP a sign-inverted LOC deviation (positive-left vs the
+  AP's positive-right contract), and the course datum (heading bug) was
+  never slewed at capture — now pinned to the front course continuously
+  during tracking (edge-triggered slew missed same-step instant captures;
+  reviewer's repro is now a permanent regression test).
+- New permanent coverage: `tests/autopilot-gs-descent.test.ts` (10 tests) —
+  the coupled-GS-descent blind spot that let three earlier rounds look
+  complete. Full suite **316/316**, `tsc --noEmit` clean.
+
+## Phase 4 known limitations (recorded, queued for Phase 5 session)
+
+- GS axis with 15 kt TAILWIND + unmanaged power (fixed throttle accelerating
+  to ~118 KIAS) peaks |gs| 0.527–0.533 near DH; managed power gives 0.193.
+  Cause identified: GS pitch-integrator authority (~0.5° vs ~3° needed) and
+  the GS fraction is not yet range-normalized. §24's crosswind criterion
+  passes.
+- NAV+VOR is an angular source fed without `navRangeM` (enroute ranges keep
+  it stable) and the VOR TO/FROM sign vs the AP convention needs the same
+  wiring test the LOC path now has.
+- Browser end-to-end PROC-loaded coupled approach still owed as the Phase 5
+  session's opening verification (headless app-faithful feed path verified
+  by the reviewer; the in-browser flight is the last mile).
 
 ## Phase 3 — evidence (2026-07-15)
 

@@ -158,6 +158,13 @@ export interface TunedNavResult {
   /** Only present when source is 'LOC' and a glideslope is being tracked. */
   glideslopeFraction?: number
   hasGlideslope: boolean
+  /** Distance to the tracked station (LOC: runway threshold), meters — feeds
+   *  `AutopilotInputs.navRangeM` for range-normalized angular tracking. */
+  stationRangeM?: number
+  /** Localizer front course, degrees true — the AP's course datum once APR
+   *  captures (the heading bug is slewed to it, standing in for a real
+   *  GFC700's CDI-course input). */
+  courseDeg?: number
 }
 
 /** The "no signal" result — used whenever nothing is tuned/receivable, so
