@@ -6,10 +6,14 @@ import { blendWeather, type StationWeather, type BlendedWeather } from './sim/we
 import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-model'
 import { Clouds } from './render/clouds'
 import { NexradField } from './world/nexrad'
+import { CommsBus, isAudible, type Transmission } from './sim/atc/comms'
+import { buildAtis } from './sim/atc/atis'
+import { TowerController, pilotPhrase, type PilotRequestKind, type TrafficView } from './sim/atc/tower'
+import { GroundController } from './sim/atc/ground'
 import { trim } from './sim/trim'
 import { FT, KT, isa, kcasFromKias, indicatedAltitudeFt } from './sim/atmosphere'
 import { C172S } from './sim/aircraft/c172s'
-import { bearingDeg, distanceM, windDirFromNed } from './math/geo'
+import { bearingDeg, distanceM, windDirFromNed, type LatLon } from './math/geo'
 import { createScene } from './render/scene'
 import { SkyDome } from './render/sky'
 import { Ocean } from './render/ocean'
@@ -362,9 +366,25 @@ function handleDiscreteKeys(): void {
     input.enabled = false
     return
   }
+  if (input.wasPressed('KeyT')) {
+    atcMenuOpen = !atcMenuOpen
+    renderAtcMenu()
+  }
+  if (atcMenuOpen) {
+    const items = atcMenuItems()
+    for (let k = 1; k <= Math.min(items.length, 9); k++) {
+      if (input.wasPressed(`Digit${k}`)) {
+        items[k - 1]!.run()
+        atcMenuOpen = false
+        renderAtcMenu()
+      }
+    }
+  }
   if (input.wasPressed('Space')) loop.setRate(loop.paused ? 1 : 0)
-  for (const [key, rate] of [['Digit1', 1], ['Digit2', 2], ['Digit3', 4]] as const) {
-    if (input.wasPressed(key)) loop.setRate(rate as SimRate)
+  if (!atcMenuOpen) {
+    for (const [key, rate] of [['Digit1', 1], ['Digit2', 2], ['Digit3', 4]] as const) {
+      if (input.wasPressed(key)) loop.setRate(rate as SimRate)
+    }
   }
   if (input.wasPressed('KeyX')) assistOn = !assistOn
   if (input.wasPressed('KeyC')) {
@@ -534,6 +554,199 @@ function updateLiveWeather(lat: number, lon: number, now: number): void {
     lastWxApplyAt = now
     applyBlendedWeather(blendWeather(wxStations, lat, lon))
   }
+}
+
+// ---- ATC (Phase 6c): nearest towered field wired to the real radios ----
+const CALLSIGN = 'Skyhawk 123AB'
+const comms = new CommsBus()
+let atcFreqs: Record<string, Array<{ t: string; f: number; d: string }>> = {}
+fetch('/api/frequencies.json')
+  .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+  .then((j) => (atcFreqs = j))
+  .catch((e) => console.warn('frequencies unavailable (ATC silent):', e))
+
+interface ActiveAtc {
+  ident: string
+  ll: LatLon
+  tower: TowerController
+  ground: GroundController
+  atis: ReturnType<typeof buildAtis>
+  twrF: number
+  gndF: number
+  atisF: number
+}
+let activeAtc: ActiveAtc | null = null
+let atisPlayedFor = ''
+let lastAtcScanAt = -Infinity
+let lastTowerTickAt = -Infinity
+let atcMenuOpen = false
+
+const transcriptDiv = document.createElement('div')
+transcriptDiv.style.cssText =
+  'position:fixed;left:8px;bottom:8px;max-width:520px;z-index:12;font:12px/1.5 ui-monospace,monospace;' +
+  'color:#cfe;background:rgba(0,10,18,.72);padding:8px 10px;border-radius:6px;white-space:pre-wrap;display:none'
+document.body.appendChild(transcriptDiv)
+const atcMenuDiv = document.createElement('div')
+atcMenuDiv.style.cssText =
+  'position:fixed;right:8px;bottom:8px;z-index:12;font:13px/1.7 ui-monospace,monospace;' +
+  'color:#ffd;background:rgba(10,14,4,.85);padding:8px 12px;border-radius:6px;white-space:pre;display:none'
+document.body.appendChild(atcMenuDiv)
+const transcript: string[] = []
+
+function radioSquelch(): void {
+  try {
+    thunderCtx ??= new AudioContext()
+    const len = 0.06
+    const buf = thunderCtx.createBuffer(1, thunderCtx.sampleRate * len, thunderCtx.sampleRate)
+    const ch = buf.getChannelData(0)
+    for (let i = 0; i < ch.length; i++) ch[i] = (Math.random() * 2 - 1) * 0.25
+    const src = thunderCtx.createBufferSource()
+    src.buffer = buf
+    const bp = thunderCtx.createBiquadFilter()
+    bp.type = 'bandpass'
+    bp.frequency.value = 1600
+    src.connect(bp)
+    bp.connect(thunderCtx.destination)
+    src.start()
+  } catch { /* pre-gesture autoplay block — fine */ }
+}
+
+/** Voice: speechSynthesis with a per-speaker voice. LIMITATION (recorded):
+ *  the Web Speech API cannot route through WebAudio, so the §12.3 band-pass
+ *  radio effect is approximated with squelch clicks around the utterance. */
+function speak(t: Transmission): void {
+  const synth = window.speechSynthesis
+  if (!synth) return
+  const u = new SpeechSynthesisUtterance(t.text)
+  const voices = synth.getVoices()
+  if (voices.length > 0) {
+    let h = 0
+    for (const c of t.from) h = (h * 31 + c.charCodeAt(0)) | 0
+    u.voice = voices[Math.abs(h) % voices.length]!
+  }
+  u.rate = 1.15
+  radioSquelch()
+  u.onend = () => radioSquelch()
+  synth.speak(u)
+}
+
+comms.subscribe((t) => {
+  if (!isAudible(t.freqMhz, radios.com1.activeMhz)) return // wrong freq = silence
+  transcript.push(`[${t.freqMhz.toFixed(2)}] ${t.from}: ${t.text}`)
+  if (transcript.length > 7) transcript.shift()
+  transcriptDiv.style.display = 'block'
+  transcriptDiv.textContent = transcript.join('\n')
+  if (t.from !== CALLSIGN) speak(t)
+})
+
+function playerAtcView(): TrafficView {
+  const d = aircraft.data
+  if (!activeAtc) return { distanceM: 0, aglFt: d.aglFt, onGround: d.onGround }
+  const p = frame.toLocal(activeAtc.ll.lat, activeAtc.ll.lon)
+  return {
+    distanceM: Math.hypot(p.n - aircraft.posNed.x, p.e - aircraft.posNed.y),
+    aglFt: d.aglFt,
+    onGround: d.onGround,
+  }
+}
+
+function scanAtc(lat: number, lon: number, now: number): void {
+  if (now - lastAtcScanAt > 5000) {
+    lastAtcScanAt = now
+    const candidates = airports
+      .near(lat, lon, 25_000)
+      .filter((ap) => (atcFreqs[ap.i] ?? []).some((f) => f.t === 'TWR'))
+      .sort((a, b) => distanceM({ lat, lon }, { lat: a.la, lon: a.lo }) - distanceM({ lat, lon }, { lat: b.la, lon: b.lo }))
+    const nearest = candidates[0]
+    if (nearest && activeAtc?.ident !== nearest.i) {
+      const fs = atcFreqs[nearest.i]!
+      const twrF = fs.find((f) => f.t === 'TWR')!.f
+      const gndF = fs.find((f) => f.t === 'GND')?.f ?? twrF
+      const atisF = fs.find((f) => f.t === 'ATIS')?.f ?? twrF
+      const runwayHeadings = nearest.r.flatMap((r) => {
+        const h = bearingDeg({ lat: r.la1, lon: r.lo1 }, { lat: r.la2, lon: r.lo2 })
+        return [
+          { ident: r.li, headingDeg: h },
+          { ident: r.hi, headingDeg: (h + 180) % 360 },
+        ]
+      })
+      const name = nearest.n.replace(/ (Airport|Field|Municipal.*|Regional.*|International.*)$/i, '')
+      const atis = buildAtis(name, wxBlended, runwayHeadings, Math.floor(now / 3_600_000) % 26)
+      activeAtc = {
+        ident: nearest.i,
+        ll: { lat: nearest.la, lon: nearest.lo },
+        tower: new TowerController({ facility: `${name} Tower`, freqMhz: twrF, activeRunway: atis.activeRunway }),
+        ground: new GroundController({ facility: `${name} Ground`, freqMhz: gndF, activeRunway: atis.activeRunway }),
+        atis, twrF, gndF, atisF,
+      }
+      atisPlayedFor = ''
+    } else if (!nearest) {
+      activeAtc = null
+    }
+  }
+  if (activeAtc) {
+    // ATIS broadcast on tune-in.
+    const key = `${activeAtc.ident}-${activeAtc.atis.letter}`
+    if (isAudible(activeAtc.atisF, radios.com1.activeMhz) && atisPlayedFor !== key) {
+      atisPlayedFor = key
+      comms.transmit({ freqMhz: activeAtc.atisF, from: `${activeAtc.ident} ATIS`, text: activeAtc.atis.text, atSimS: loop.simTime })
+    }
+    if (now - lastTowerTickAt > 5000) {
+      lastTowerTickAt = now
+      for (const t of activeAtc.tower.tick(loop.simTime, [{ callsign: CALLSIGN, view: playerAtcView() }])) comms.transmit(t)
+    }
+  }
+}
+
+type AtcMenuItem = { label: string; run: () => void }
+function atcMenuItems(): AtcMenuItem[] {
+  const a = activeAtc
+  if (!a) return []
+  const view = playerAtcView()
+  const items: AtcMenuItem[] = []
+  const sendPilot = (kind: PilotRequestKind, freq: number, handle: () => Transmission[]) => {
+    comms.transmit({ freqMhz: radios.com1.activeMhz, from: CALLSIGN, text: pilotPhrase(CALLSIGN, kind, a.atis.activeRunway), atSimS: loop.simTime })
+    if (isAudible(freq, radios.com1.activeMhz)) {
+      const replies = handle()
+      setTimeout(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
+    }
+  }
+  if (view.onGround && a.ground.awaitingReadback(CALLSIGN)) {
+    items.push({
+      label: 'Read back taxi clearance',
+      run: () => {
+        comms.transmit({
+          freqMhz: radios.com1.activeMhz, from: CALLSIGN,
+          text: `runway ${a.atis.activeRunway}, taxi via the parallel, hold short ${a.atis.activeRunway}, ${CALLSIGN}`,
+          atSimS: loop.simTime,
+        })
+        if (isAudible(a.gndF, radios.com1.activeMhz)) {
+          const replies = a.ground.readback(CALLSIGN, 'taxiOut', loop.simTime)
+          setTimeout(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
+        }
+      },
+    })
+  } else if (view.onGround) {
+    items.push({ label: `Request taxi (Ground ${a.gndF.toFixed(2)})`, run: () => sendPilot('taxiOut', a.gndF, () => a.ground.request(CALLSIGN, 'taxiOut', loop.simTime)) })
+    items.push({ label: `Ready for departure (Tower ${a.twrF.toFixed(2)})`, run: () => sendPilot('readyTakeoff', a.twrF, () => a.tower.request(CALLSIGN, 'readyTakeoff', playerAtcView(), loop.simTime)) })
+  } else {
+    items.push({ label: `Inbound for landing (Tower ${a.twrF.toFixed(2)})`, run: () => sendPilot('inboundLanding', a.twrF, () => a.tower.request(CALLSIGN, 'inboundLanding', playerAtcView(), loop.simTime)) })
+    items.push({ label: 'Going around', run: () => sendPilot('goAround', a.twrF, () => a.tower.request(CALLSIGN, 'goAround', playerAtcView(), loop.simTime)) })
+  }
+  return items
+}
+
+function renderAtcMenu(): void {
+  if (!atcMenuOpen || !activeAtc) {
+    atcMenuDiv.style.display = 'none'
+    return
+  }
+  const items = atcMenuItems()
+  atcMenuDiv.style.display = 'block'
+  atcMenuDiv.textContent =
+    `ATC — ${activeAtc.ident} (ATIS ${activeAtc.atisF.toFixed(2)})\n` +
+    items.map((it, i) => ` ${i + 1}. ${it.label}`).join('\n') +
+    `\n T close`
 }
 
 // ---- FIS-B NEXRAD + in-world precip/lightning (Phase 5 step 5) ----
@@ -885,6 +1098,8 @@ function advanceFrame(elapsed: number, now: number): void {
   airports.positionAll()
   updateLiveWeather(ll.lat, ll.lon, now)
   updateRadar(ll.lat, ll.lon, now)
+  scanAtc(ll.lat, ll.lon, now)
+  if (atcMenuOpen) renderAtcMenu()
 
   // Phase 4 Task 5 wiring: in-airspace detection, once per rendered frame
   // (airspace shelves are large relative to per-tick aircraft motion — the
@@ -1182,6 +1397,21 @@ Object.assign(window as unknown as Record<string, unknown>, {
     cameraMode = mode
   },
   __ohSpawn: (q: string) => handleSearch(q),
+  __ohAtc: (kindOrIndex?: string | number) => {
+    if (typeof kindOrIndex === 'number') {
+      const it = atcMenuItems()[kindOrIndex]
+      if (it) it.run()
+      return { ran: it?.label ?? null }
+    }
+    return {
+      nearest: activeAtc?.ident ?? null,
+      activeRunway: activeAtc?.atis.activeRunway ?? null,
+      freqs: activeAtc ? { twr: activeAtc.twrF, gnd: activeAtc.gndF, atis: activeAtc.atisF } : null,
+      com1: radios.com1.activeMhz,
+      options: atcMenuItems().map((i) => i.label),
+      transcript: [...transcript],
+    }
+  },
   __ohHold: (on: boolean) => {
     holdWingsLevel = on
   },

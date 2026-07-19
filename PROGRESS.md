@@ -366,3 +366,13 @@ browser-verified end-to-end. Verified this session via scripted flights
   caps + lightning/thunder — verified against a real KHSV storm system (171
   cells). Suite 342/342. REMAINING for Phase 5 close: custom scattering sky
   (step 3), land-cover texturing (step 6), acceptance wrap + PROGRESS.
+
+- **Phase 6 slices a-c (2026-07-19)**: comms bus w/ freq-gated audibility,
+  real airport frequencies pipeline, ATIS from live weather (runway by
+  headwind), Ground taxi+readback, Tower strip machine (hold short/clear
+  takeoff/sequence/clear to land), pilot request menu (T + digits),
+  transcript window, per-speaker speechSynthesis voices w/ squelch clicks
+  (Web Speech cannot route through WebAudio band-pass — recorded).
+  Browser-verified full KPAO departure exchange on real 135.275/125.0/
+  118.6. Suite 356/356. NEXT: 6d AI traffic, 6e integration, 6f IFR +
+  acceptance flights (see docs/plans/phase-6.md).
