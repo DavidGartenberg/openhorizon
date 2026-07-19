@@ -218,6 +218,10 @@ export class TileManager {
       worker.postMessage({
         key: tile.key,
         url: `/proxy/terrain/${z}/${x}/${y}.png`,
+        // NLCD biome coloring for the near rings only (z11/z13) — far rings
+        // keep the elevation ramp to bound WMS load; the visual difference
+        // at 60+ km is negligible under haze.
+        landcoverUrl: tile.z >= 11 ? `/proxy/landcover/${z}/${x}/${y}.png` : undefined,
         gridSize: ring.grid,
         sizeEastM: tile.sizeEastM,
         sizeNorthM: tile.sizeNorthM,

@@ -267,11 +267,47 @@ export async function nexradTile(z, x, y) {
   return buf
 }
 
+// ---- NLCD land cover via MRLC WMS (Phase 5 step 6, §6.2) ----
+
+/** GET /proxy/landcover/{z}/{x}/{y}.png — slippy tile served from the MRLC
+ *  NLCD 2021 WMS (EPSG:3857 bbox computed from the tile), disk-cached
+ *  forever (land cover changes on a multi-year cycle). */
+export async function landcoverTile(z, x, y) {
+  if (!/^\d+$/.test(z) || !/^\d+$/.test(x) || !/^\d+$/.test(y)) throw new Error('bad tile')
+  const file = path.join(cacheDir, 'terrain', `lc-${z}-${x}-${y}.png`)
+  if (fs.existsSync(file)) return fs.readFileSync(file)
+  const half = 20037508.342789244
+  const size = (2 * half) / 2 ** Number(z)
+  const minx = -half + Number(x) * size
+  const maxy = half - Number(y) * size
+  const bbox = `${minx},${maxy - size},${minx + size},${maxy}`
+  const url =
+    'https://www.mrlc.gov/geoserver/mrlc_display/NLCD_2021_Land_Cover_L48/wms' +
+    `?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=NLCD_2021_Land_Cover_L48&STYLES=` +
+    `&FORMAT=image/png&TRANSPARENT=true&SRS=EPSG:3857&WIDTH=256&HEIGHT=256&BBOX=${bbox}`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`landcover ${z}/${x}/${y}: ${res.status}`)
+  const buf = Buffer.from(await res.arrayBuffer())
+  fs.writeFileSync(file, buf)
+  return buf
+}
+
 export async function route(url, res) {
   const terrain = url.match(/^\/proxy\/terrain\/(\d+)\/(\d+)\/(\d+)\.png$/)
   const metar = url.match(/^\/api\/metar\?bbox=([-\d.,]+)$/)
   const nexrad = url.match(/^\/proxy\/nexrad\/(\d+)\/(\d+)\/(\d+)\.png$/)
+  const landcover = url.match(/^\/proxy\/landcover\/(\d+)\/(\d+)\/(\d+)\.png$/)
   try {
+    if (landcover) {
+      const buf = await landcoverTile(landcover[1], landcover[2], landcover[3])
+      res.writeHead(200, {
+        'Content-Type': 'image/png',
+        'Cache-Control': 'public, max-age=2592000',
+        'Access-Control-Allow-Origin': '*',
+      })
+      res.end(buf)
+      return true
+    }
     if (nexrad) {
       const buf = await nexradTile(nexrad[1], nexrad[2], nexrad[3])
       res.writeHead(200, {

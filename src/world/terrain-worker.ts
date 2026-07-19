@@ -5,10 +5,14 @@
  * origin = tile center, y = height meters). Transfers buffers to main.
  */
 import { terrariumDecode, flattenForRunway } from '../math/geo'
+import { classifyNlcdPixel } from './nlcd-palette'
 
 export interface TileRequest {
   key: string
   url: string
+  /** NLCD land-cover tile for biome coloring (§6.2); fetch failure or
+   *  off-legend pixels fall back to the elevation/slope ramp. */
+  landcoverUrl?: string
   gridSize: number
   sizeEastM: number
   sizeNorthM: number
@@ -28,10 +32,18 @@ export interface TileResponse {
   error?: string
 }
 
-function colorFor(h: number, slope: number, out: [number, number, number]): void {
-  // Elevation/slope ramp (land-cover splatting arrives in Phase 5).
+function colorFor(
+  h: number,
+  slope: number,
+  out: [number, number, number],
+  biome: [number, number, number] | null = null,
+): void {
   let r: number, g: number, b: number
-  if (h < 1.5) { r = 0.72; g = 0.66; b = 0.5 } // beach
+  if (biome && h >= 1.5 && h < 3000) {
+    // Real land cover (NLCD) wins where classified; snowline and beaches
+    // stay elevation-driven, slope-rock blend applies to both paths.
+    ;[r, g, b] = biome
+  } else if (h < 1.5) { r = 0.72; g = 0.66; b = 0.5 } // beach
   else if (h < 500) { r = 0.24; g = 0.36; b = 0.18 } // lowland green
   else if (h < 1200) { r = 0.3; g = 0.34; b = 0.17 } // foothills
   else if (h < 2200) { r = 0.42; g = 0.38; b = 0.28 } // mountain scrub
@@ -55,6 +67,26 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
     ctx.drawImage(bitmap, 0, 0)
     const img = ctx.getImageData(0, 0, px, bitmap.height)
     bitmap.close()
+
+    // Land cover (optional, best-effort — never fails the tile).
+    let lc: ImageData | null = null
+    let lcPx = 0
+    if (req.landcoverUrl) {
+      try {
+        const lcRes = await fetch(req.landcoverUrl)
+        if (lcRes.ok) {
+          const lcBmp = await createImageBitmap(await lcRes.blob())
+          lcPx = lcBmp.width
+          const lcCanvas = new OffscreenCanvas(lcPx, lcBmp.height)
+          const lcCtx = lcCanvas.getContext('2d')!
+          lcCtx.drawImage(lcBmp, 0, 0)
+          lc = lcCtx.getImageData(0, 0, lcPx, lcBmp.height)
+          lcBmp.close()
+        }
+      } catch {
+        lc = null
+      }
+    }
 
     const G = req.gridSize
     const heights = new Float32Array(G * G)
@@ -115,7 +147,15 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
         normals[idx * 3 + 1] = inv
         normals[idx * 3 + 2] = nz
         const slope = Math.hypot((hR - hL) / (2 * dxe), (hD - hU) / (2 * dyn))
-        colorFor(h, slope, c)
+        let biome: [number, number, number] | null = null
+        if (lc) {
+          const lx = Math.min(Math.round((i / (G - 1)) * (lcPx - 1)), lcPx - 1)
+          const ly = Math.min(Math.round((j / (G - 1)) * (lcPx - 1)), lcPx - 1)
+          const lo = (ly * lcPx + lx) * 4
+          const cls = classifyNlcdPixel(lc.data[lo]!, lc.data[lo + 1]!, lc.data[lo + 2]!, lc.data[lo + 3]!)
+          biome = cls?.color ?? null
+        }
+        colorFor(h, slope, c, biome)
         colors[idx * 3] = c[0]
         colors[idx * 3 + 1] = c[1]
         colors[idx * 3 + 2] = c[2]

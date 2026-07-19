@@ -21,7 +21,22 @@ Node; add `~/.local/node/bin` to PATH).
 | 2 — The US | ✅ done | real terrain/airports verified, KSFO landing flown, rebase seamless |
 | 3 — Cockpit & systems | ✅ done | G1000 PFD/MFD, full systems sim, 3D cockpit, cold-and-dark verified |
 | 4 — Nav & autopilot | ✅ done | radio nav, GPS/FPL, GFC700, CIFP, airspace; coupled-ILS acceptance passed after 4-round AP fix |
-| 5–10 | not started | Phase 5 (weather & sky) next |
+| 5 — Weather & sky | ✅ done | live METAR wx, clouds/whiteout, altimetry, FIS-B NEXRAD, scattering sky+stars, NLCD land cover |
+| 6–10 | not started | Phase 6 (ATC & AI traffic) next |
+
+## Phase 5 — acceptance (2026-07-19)
+
+All three §24 criteria met, evidence in the step notes appended below:
+KDEN sim-vs-actual METAR side-by-side match (step 1); BKN layer whiteout at
+0.76 obscuration verified in-flight (step 4); hot-high takeoff +15% ground
+roll as a permanent regression test (step 1). Steps 3/6 this session:
+custom Nishita scattering sky w/ sun disc, star field and antipode moon
+(real ephemeris/star catalog → §28); NLCD 2021 land cover via MRLC WMS
+proxy classified per-vertex in the terrain worker (near rings z11/z13;
+elevation ramp beyond + as fallback — off-legend/void pixels defer).
+Deviations recorded: day-sky radiance point-tuned against ACES exposure;
+moon is a permanent full moon at the solar antipode; landcover far rings
+keep the ramp. Suite 345/345, POH 10/10.
 
 ## Phase 4 — evidence (2026-07-19)
 
