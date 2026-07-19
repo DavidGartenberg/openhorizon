@@ -330,3 +330,15 @@ browser-verified end-to-end. Verified this session via scripted flights
   app path used it); KSFO 28R/28L freqs swapped vs published; crosswind +
   instant-capture diverged until tracking steers ground TRACK (new
   trackDeg input; crab falls out physically). Suite 317/317.
+
+- **Phase 5 steps 0b+1 (2026-07-19)**: GS law range-normalized + integrator
+  authority 0.5°→3° (15 kt tailwind regression test passes); vorCdi needle
+  convention unified across TO/FROM (AP tracking TO a VOR steered away —
+  review finding), VOR negated+ranged at the AP feed, GPS needle flipped
+  for display. Live METAR weather: TDD parser, bbox proxy (10-min TTL),
+  IDW blending w/ 150 km region guard (a live race applied coastal fog at
+  Denver — now a regression test), wind/gusts/turbulence + ISA temp offset
+  → density altitude (hot-high +15% roll test). Verified live side-by-side:
+  sim KDEN "267@6 10SM FEW180 ISA+18" vs actual "27007KT 10SM FEW180
+  22/11". Suite 333/333. Remaining: QNH→indicated alt (baro), sky, clouds/
+  whiteout, FIS-B NEXRAD+lightning, land-cover texturing (phase-5.md 2-6).
