@@ -38,6 +38,16 @@ export function isa(altitudeM: number, out?: AirState): AirState {
   return { temperatureK: T, pressurePa: p, densityKgM3: rho, speedOfSoundMs: a }
 }
 
+/**
+ * Altimeter indication (Kollsman correction, §11): with the baro window set
+ * to the actual QNH the altimeter reads true altitude; each 0.01 inHg of
+ * mis-set shifts the reading ~9.25 ft (≈925 ft/inHg in the lower
+ * troposphere). Sign: setting the window HIGHER than actual QNH reads HIGH.
+ */
+export function indicatedAltitudeFt(trueAltFt: number, baroSetInHg: number, qnhInHg: number): number {
+  return trueAltFt + (baroSetInHg - qnhInHg) * 925
+}
+
 /** Density ratio σ at altitude. */
 export function sigma(altitudeM: number): number {
   return isa(altitudeM).densityKgM3 / RHO0

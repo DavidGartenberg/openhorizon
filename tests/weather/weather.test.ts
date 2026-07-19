@@ -3,7 +3,7 @@ import { parseMetar } from '../../src/sim/weather/metar'
 import { blendWeather, type StationWeather } from '../../src/sim/weather/weather'
 import { Aircraft } from '../../src/sim/aircraft'
 import { C172S } from '../../src/sim/aircraft/c172s'
-import { FT } from '../../src/sim/atmosphere'
+import { FT, indicatedAltitudeFt } from '../../src/sim/atmosphere'
 
 function station(raw: string, lat: number, lon: number, elevFt = 0): StationWeather {
   return { metar: parseMetar(raw), lat, lon, elevFt }
@@ -54,6 +54,14 @@ describe('blendWeather', () => {
     expect(m.windDirDeg).toBe(270)
     expect(m.windKt).toBe(7)
     expect(m.clouds).toEqual([{ cover: 'FEW', baseFt: 18000 }])
+  })
+})
+
+describe('altimetry (Kollsman)', () => {
+  it('reads true altitude when set to QNH; mis-set shifts ~925 ft/inHg', () => {
+    expect(indicatedAltitudeFt(5000, 30.10, 30.10)).toBe(5000)
+    expect(indicatedAltitudeFt(5000, 30.10, 30.0)).toBeCloseTo(5092.5, 1)
+    expect(indicatedAltitudeFt(5000, 29.92, 30.12)).toBeCloseTo(4815, 0)
   })
 })
 

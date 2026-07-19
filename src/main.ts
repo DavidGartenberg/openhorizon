@@ -6,7 +6,7 @@ import { blendWeather, type StationWeather, type BlendedWeather } from './sim/we
 import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-model'
 import { Clouds } from './render/clouds'
 import { trim } from './sim/trim'
-import { FT, KT, isa, kcasFromKias } from './sim/atmosphere'
+import { FT, KT, isa, kcasFromKias, indicatedAltitudeFt } from './sim/atmosphere'
 import { C172S } from './sim/aircraft/c172s'
 import { bearingDeg, distanceM, windDirFromNed } from './math/geo'
 import { createScene } from './render/scene'
@@ -393,6 +393,7 @@ function pollControls(dt: number): void {
   shaped.yaw = shapeAxis(shaped.yaw, yawKey, dt, 2.5, 4)
   c.throttle = Math.min(Math.max(c.throttle + input.axis('KeyW', 'KeyS') * 0.5 * dt, 0), 1)
   c.trim = Math.min(Math.max(c.trim + input.axis('Period', 'Comma') * 0.25 * dt, -1), 1)
+  baroSetInHg = Math.min(Math.max(baroSetInHg + input.axis('Quote', 'Semicolon') * 0.2 * dt, 27.5), 31.5)
   // Parking brake: set on ground spawn, auto-releases when power comes up.
   if (parkingBrake && c.throttle > 0.15) parkingBrake = false
   c.brakeLeft = c.brakeRight = input.isHeld('KeyB') || parkingBrake ? 1 : 0
@@ -480,6 +481,10 @@ let liveWeatherOn = true
 let wxStations: StationWeather[] = []
 let wxDesc = ''
 let wxSlabs: CloudSlab[] = []
+/** Altimeter baro window (Kollsman) and the actual area QNH it should be
+ *  set to; ; and ' keys turn the knob (±0.01 inHg steps, held = spin). */
+let baroSetInHg = 29.92
+let qnhInHg = 29.92
 let wxBlended: BlendedWeather | null = null
 let lastWxFetchAt = -Infinity
 let lastWxFetchLL = { lat: 0, lon: 0 }
@@ -504,7 +509,10 @@ function updateLiveWeather(lat: number, lon: number, now: number): void {
     // Teleport/long-move: drop the old region's stations immediately so a
     // stale set can never be blended at the new position mid-refetch (the
     // 150 km guard in blendWeather is the second line of defense).
-    if (distanceM(lastWxFetchLL, { lat, lon }) > 50_000) wxStations = []
+    if (distanceM(lastWxFetchLL, { lat, lon }) > 50_000) {
+      wxStations = []
+      applyBlendedWeather(null) // neutral until the new region's data lands
+    }
     lastWxFetchLL = { lat, lon }
     const bbox = `${(lat - 1.2).toFixed(2)},${(lon - 1.5).toFixed(2)},${(lat + 1.2).toFixed(2)},${(lon + 1.5).toFixed(2)}`
     fetch(`/api/metar?bbox=${bbox}`)
@@ -529,11 +537,24 @@ function updateLiveWeather(lat: number, lon: number, now: number): void {
 
 function applyBlendedWeather(b: BlendedWeather | null): void {
   wxBlended = b
-  if (!b) return
+  if (!b) {
+    // No usable stations here (e.g. just teleported, region refetch still in
+    // flight): neutral conditions, empty readout — never leave the previous
+    // region's weather applied at the new position (§1).
+    wxDesc = ''
+    wxSlabs = []
+    aircraft.isaTempOffsetC = 0
+    qnhInHg = 29.92
+    wind.setSteady(0, 0)
+    wind.intensity = 0
+    tiles.setVisibilityM(45 * 1609)
+    return
+  }
   wxSlabs = cloudSlabs(b.clouds, b.stationElevFt)
   wind.setSteady(b.windDirDeg, b.windKt, b.gustKt)
   wind.intensity = Math.min(Math.max((b.gustKt - b.windKt) / 8, 0), 2)
   aircraft.isaTempOffsetC = b.isaTempOffsetC
+  qnhInHg = b.qnhInHg
   tiles.setVisibilityM((b.visibilitySm >= 10 ? 45 : b.visibilitySm) * 1609)
   const cl = b.clouds[0] ? ` ${b.clouds[0].cover}${String(Math.round(b.clouds[0].baseFt / 100)).padStart(3, '0')}` : ''
   wxDesc = `${b.nearestStation} ${String(b.windDirDeg).padStart(3, '0')}@${Math.round(b.windKt)}` +
@@ -876,16 +897,16 @@ function advanceFrame(elapsed: number, now: number): void {
       pitchDeg: d.pitchDeg,
       rollDeg: d.rollDeg,
       slipSkidDeg: d.betaDeg,
-      altitudeFt: pitotReadings.altFt,
+      altitudeFt: indicatedAltitudeFt(pitotReadings.altFt, baroSetInHg, qnhInHg),
       verticalSpeedFpm: pitotReadings.vsiFpm,
-      baroInHg: 29.92,
+      baroInHg: baroSetInHg,
       headingDeg: d.headingDeg,
       headingBugDeg: apTargets.headingBugDeg,
       windDirDeg: windDirFromNed(aircraft.windNed),
       windSpeedKt: Math.hypot(aircraft.windNed.x, aircraft.windNed.y) / KT,
       ktas: d.ktas,
       groundSpeedKt: d.groundSpeedKt,
-      oatC: isa(Math.max(d.altitudeFt, 0) * FT).temperatureK - 273.15,
+      oatC: isa(Math.max(d.altitudeFt, 0) * FT).temperatureK - 273.15 + aircraft.isaTempOffsetC,
       nav1: radios.nav1,
       com1: radios.com1,
       squawk: '1200',
@@ -1108,6 +1129,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohWx: () => ({
     on: liveWeatherOn, desc: wxDesc, stations: wxStations.length,
     isaOffsetC: aircraft.isaTempOffsetC, slabs: wxSlabs,
+    baroSetInHg, qnhInHg,
     inCloud: inCloudFactor(wxSlabs, aircraft.data.altitudeFt),
     blended: wxBlended,
   }),
