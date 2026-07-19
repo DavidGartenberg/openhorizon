@@ -733,3 +733,27 @@ export function buildUsAirspace(classFeatures, suaFeatures) {
   pushFrom(suaFeatures, (p) => SUA_TYPE_KIND[p.TYPE_CODE])
   return out
 }
+
+/**
+ * OurAirports frequencies.csv → per-airport comms JSON (Phase 6a, §12).
+ * Schema: id,airport_ref,airport_ident,type,description,frequency_mhz.
+ * Only types the ATC system uses are kept; rows are filtered to the same
+ * US-airport ident set `buildUsAirports` emits, so the two datasets always
+ * join. Output: { [ident]: [{ t: type, f: mhz, d: description }] }.
+ */
+const FREQ_TYPES = new Set(['TWR', 'GND', 'ATIS', 'CTAF', 'UNICOM', 'CLD', 'DEL', 'A/D', 'APP', 'DEP', 'CNTR'])
+
+export function buildUsFrequencies(frequenciesCsv, usIdentSet) {
+  const { idx, rows } = parseCsv(frequenciesCsv)
+  const out = {}
+  for (const row of rows) {
+    const ident = row[idx.airport_ident]
+    if (!usIdentSet.has(ident)) continue
+    const type = row[idx.type]
+    if (!FREQ_TYPES.has(type)) continue
+    const f = parseFloat(row[idx.frequency_mhz])
+    if (!isFinite(f) || f < 108 || f > 137) continue
+    ;(out[ident] ??= []).push({ t: type, f, d: row[idx.description] ?? '' })
+  }
+  return out
+}

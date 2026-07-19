@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { buildUsAirports, buildUsNavaids, buildCifpProcedures, buildUsAirspace } from './parse.mjs'
+import { buildUsAirports, buildUsNavaids, buildCifpProcedures, buildUsAirspace, buildUsFrequencies } from './parse.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 fs.mkdirSync(path.join(cacheDir, 'terrain'), { recursive: true })
@@ -249,6 +249,33 @@ export async function metarData(bbox) {
   return body
 }
 
+// ---- Comms frequencies (Phase 6a, §12) ----
+
+let frequenciesJson = null
+
+/** GET /api/frequencies.json — per-US-airport TWR/GND/ATIS/CTAF/etc. */
+export async function frequenciesData() {
+  if (frequenciesJson) return frequenciesJson
+  const jsonFile = path.join(cacheDir, 'us-frequencies.json')
+  if (fs.existsSync(jsonFile)) {
+    frequenciesJson = fs.readFileSync(jsonFile, 'utf8')
+    return frequenciesJson
+  }
+  const f = path.join(cacheDir, 'frequencies.csv')
+  let csv
+  if (fs.existsSync(f)) csv = fs.readFileSync(f, 'utf8')
+  else {
+    const res = await fetch(`${OA_BASE}/airport-frequencies.csv`)
+    if (!res.ok) throw new Error(`airport-frequencies.csv: ${res.status}`)
+    csv = await res.text()
+    fs.writeFileSync(f, csv)
+  }
+  const usIdents = new Set(JSON.parse(await airportsData()).map((a) => a.i))
+  frequenciesJson = JSON.stringify(buildUsFrequencies(csv, usIdents))
+  fs.writeFileSync(jsonFile, frequenciesJson)
+  return frequenciesJson
+}
+
 // ---- NEXRAD composite tiles (Phase 5 §11, FIS-B presentation) ----
 
 const nexradCache = new Map() // key → { at: ms, buf: Buffer }
@@ -336,6 +363,16 @@ export async function route(url, res) {
         'Access-Control-Allow-Origin': '*',
       })
       res.end(buf)
+      return true
+    }
+    if (url === '/api/frequencies.json') {
+      const json = await frequenciesData()
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=86400',
+        'Access-Control-Allow-Origin': '*',
+      })
+      res.end(json)
       return true
     }
     if (url === '/api/airports.json') {
