@@ -54,12 +54,29 @@ describe('VOR CDI', () => {
   })
 
   it('full-scale deflection clamps at ±10°, north/south of an east/west course', () => {
+    // Needle convention: aircraft NORTH (left) of the eastbound course →
+    // course to the right → POSITIVE deflection (matches localizer).
     const north: LatLon = { lat: 1, lon: 0 }
     const south: LatLon = { lat: -1, lon: 0 }
     const n = vorCdi(STATION, 90, north)
     const s = vorCdi(STATION, 90, south)
-    expect(n.deflectionDeg).toBeCloseTo(-VOR_FULL_SCALE_DEG, 6)
-    expect(s.deflectionDeg).toBeCloseTo(VOR_FULL_SCALE_DEG, 6)
+    expect(n.deflectionDeg).toBeCloseTo(VOR_FULL_SCALE_DEG, 6)
+    expect(s.deflectionDeg).toBeCloseTo(-VOR_FULL_SCALE_DEG, 6)
+  })
+
+  it('needle sign is consistent across TO and FROM (round-4 review finding)', () => {
+    // Aircraft slightly EAST (right) of a northbound OBS-360 course, both
+    // sides of the station: needle must read NEGATIVE (course to the left)
+    // in both cases; the AP feed (−needle) is then positive = right of
+    // course per AutopilotInputs.navDeviation on both sides.
+    const inboundSide: LatLon = { lat: -1, lon: 0.02 } // south of station → TO
+    const outboundSide: LatLon = { lat: 1, lon: 0.02 } // north of station → FROM
+    const to = vorCdi(STATION, 0, inboundSide)
+    const from = vorCdi(STATION, 0, outboundSide)
+    expect(to.toFrom).toBe('TO')
+    expect(from.toFrom).toBe('FROM')
+    expect(to.deflectionDeg).toBeLessThan(0)
+    expect(from.deflectionDeg).toBeLessThan(0)
   })
 
   it('TO/FROM flips crossing the station on a north/south course', () => {

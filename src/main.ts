@@ -523,7 +523,11 @@ function computeTunedNav(aircraftLL: { lat: number; lon: number }, altitudeFt: n
   const vor = findTunedVor(nearbyNavaids, activeMhz)
   if (vor) {
     const r = vorCdiFraction(vor, radios.obs1Deg, aircraftLL)
-    return { source: 'VOR', identifier: vor.i, deflectionFraction: r.deflectionFraction, toFrom: r.toFrom, hasGlideslope: false }
+    return {
+      source: 'VOR', identifier: vor.i, deflectionFraction: r.deflectionFraction,
+      toFrom: r.toFrom, hasGlideslope: false,
+      stationRangeM: distanceM(aircraftLL, { lat: vor.la, lon: vor.lo }),
+    }
   }
   return NO_NAV_RESULT
 }
@@ -583,12 +587,20 @@ function advanceFrame(elapsed: number, now: number): void {
     glideslopeDeviationForAp = tunedNav.hasGlideslope ? tunedNav.glideslopeFraction ?? 0 : 0
     navRangeForAp = tunedNav.source === 'LOC' ? tunedNav.stationRangeM : undefined
   } else if (apTargets.lateralMode === 'NAV') {
-    navDeviationForAp = gpsCdi ? gpsCdi.deflectionFraction : tunedNav.source === 'VOR' ? tunedNav.deflectionFraction : 0
+    // GPS CDI is already in the AP's aircraft-offset convention (positive =
+    // right of course, fixed-width scale). VOR is a NEEDLE deflection like
+    // LOC (positive = course to the right) → negate, and pass range since
+    // it's an angular source (round-4 review finding).
+    navDeviationForAp = gpsCdi ? gpsCdi.deflectionFraction : tunedNav.source === 'VOR' ? -tunedNav.deflectionFraction : 0
+    navRangeForAp = !gpsCdi && tunedNav.source === 'VOR' ? tunedNav.stationRangeM : undefined
   }
   const pfdCdi: PfdInput['cdi'] = tunedNav.source
     ? { source: tunedNav.source, deflectionFraction: tunedNav.deflectionFraction, toFrom: tunedNav.toFrom, identifier: tunedNav.identifier }
     : gpsCdi
-      ? { source: 'GPS', deflectionFraction: gpsCdi.deflectionFraction }
+      ? // GPS fraction is aircraft-offset (positive = right of course); the
+        // needle is fly-toward (positive = course to the right) → negate for
+        // display, matching how VOR/LOC already arrive in needle convention.
+        { source: 'GPS', deflectionFraction: -gpsCdi.deflectionFraction }
       : undefined
 
   let remaining = elapsed

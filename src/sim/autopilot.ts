@@ -316,6 +316,16 @@ export const CAPTURE_FRACTION = 0.5
  *  heading/course-error sweep (see fix report) — high enough to correct a
  *  large deviation with real authority, capped low enough to not
  *  re-introduce large-angle overshoot. */
+/** Reference range for angular-deviation normalization (see `navRangeM`'s
+ *  doc): loop gains are tuned at this range; the factor freezes physical
+ *  loop gain there for all ranges. Shared by the localizer tracking law and
+ *  the GS pitch law (the GS antenna sits at the same threshold). */
+export const NAV_REF_RANGE_M = 8000
+
+function navRangeFactor(inputs: AutopilotInputs): number {
+  return inputs.navRangeM !== undefined ? clamp(inputs.navRangeM / NAV_REF_RANGE_M, 0, 2.5) : 1
+}
+
 export const NAV_INTERCEPT_GAIN_K_DEG = 25
 
 /** Cap on the intercept-angle bias `NAV_INTERCEPT_GAIN_K_DEG` can command —
@@ -572,9 +582,7 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       // right at the station attenuates toward 0 as range→0 instead of
       // slamming the law. Fixed-width sources (GPS CDI) omit `navRangeM`
       // and keep factor 1 — their fraction is already physically uniform.
-      const NAV_REF_RANGE_M = 8000
-      const rangeFactor =
-        inputs.navRangeM !== undefined ? clamp(inputs.navRangeM / NAV_REF_RANGE_M, 0, 2.5) : 1
+      const rangeFactor = navRangeFactor(inputs)
       const rawEffectiveDeviation = sign * inputs.navDeviation * rangeFactor
       // First tracking step: seed the P-term filter in the SAME (range-
       // scaled) domain the loop closes on — the capture-block seed uses the
@@ -710,7 +718,15 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
     } else {
       // Positive deviation = above glidepath -> need to pitch down, hence
       // the negated error.
-      targetPitchDeg = clamp(pidUpdate(state.gsPitch, -inputs.glideslopeDeviation, dt, 6, 0.5, 1, 1), -MAX_PITCH_CMD_DEG, MAX_PITCH_CMD_DEG)
+      // Range-normalized like the lateral law (§ same angular-beam physics)
+      // + integrator authority raised 0.5°→3° (ki·iMax): a 15 kt tailwind
+      // needs a steeper path whose steady pitch offset the old 0.5° could
+      // never null — the narrowing beam then amplified the standoff to
+      // 0.53 fraction near DH (reviewer finding, now a regression test).
+      targetPitchDeg = clamp(
+        pidUpdate(state.gsPitch, -inputs.glideslopeDeviation * navRangeFactor(inputs), dt, 6, 0.5, 1, 6),
+        -MAX_PITCH_CMD_DEG, MAX_PITCH_CMD_DEG,
+      )
       trimEligible = true
     }
   }

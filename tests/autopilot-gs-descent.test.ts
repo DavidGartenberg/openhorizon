@@ -152,6 +152,26 @@ describe('coupled GS-descent: instant capture with stale vector bug (reviewer re
   })
 })
 
+describe('coupled GS-descent: 15 kt tailwind (GS-axis authority regression)', () => {
+  it('0° on-beam at 6 nm with a 15 kt tailwind holds |gs| ≤ 0.5 to 200 AGL', () => {
+    // Reviewer-found gap: higher ground speed needs a steeper descent path;
+    // the GS pitch integrator (was ki·iMax = 0.5°) could not null the
+    // standoff and the narrowing angular beam amplified it to 0.527-0.533
+    // near DH. Fixed by range-normalizing the GS deviation + raising
+    // integrator authority.
+    const ac = trimmedOnGlidepath(COURSE_DEG, 6)
+    const fromRad = (((COURSE_DEG + 180) % 360) + 180) % 360 * (Math.PI / 180) // wind FROM the reciprocal
+    ac.windNed.x = Math.cos((COURSE_DEG * Math.PI) / 180) * 15 * KT
+    ac.windNed.y = Math.sin((COURSE_DEG * Math.PI) / 180) * 15 * KT // blowing TOWARD the runway = tailwind
+    void fromRad
+    const r = flyApproach(ac, COURSE_DEG, 320)
+    expect(r.captured).toBe(true)
+    expect(r.reachedDh).toBe(true)
+    expect(r.worstLocAfterCapture).toBeLessThanOrEqual(0.5)
+    expect(r.worstGsAfter30s).toBeLessThanOrEqual(0.5)
+  })
+})
+
 describe('coupled GS-descent: on-beam control cases (range-instability regression)', () => {
   for (const [errDeg, distNm] of [[0, 6], [20, 6], [20, 8]] as const) {
     it(`${errDeg}° heading error at ${distNm} nm stays within half-scale to 200 AGL`, () => {

@@ -111,18 +111,24 @@ export interface CdiResult {
  * Convention: the "radial" is the bearing FROM the station TO the aircraft.
  * If the radial is within ±90° of the selected OBS course, the aircraft is
  * on the "FROM" side (flying the selected course takes you away from the
- * station) and deflection is the raw angular offset from the course. Beyond
- * ±90° the aircraft is on the "TO" side, and the same offset is measured
- * against the reciprocal course. Right at the ±90° boundary the needle
- * flips sign discontinuously between the two sides (both are clamped to
- * full-scale there) — this mirrors the real "cone of ambiguity" edge
- * behavior of VOR receivers abeam the station, not a bug in this model.
+ * station); beyond ±90° it is on the "TO" side, measured against the
+ * reciprocal course. Right at the ±90° boundary the needle flips sign
+ * discontinuously between the two sides (both are clamped to full-scale
+ * there) — this mirrors the real "cone of ambiguity" edge behavior of VOR
+ * receivers abeam the station, not a bug in this model.
+ *
+ * `deflectionDeg` is the NEEDLE deflection (fly-toward): positive = the
+ * selected course lies to the aircraft's RIGHT (aircraft left of course) —
+ * the SAME sign on both TO and FROM sides, matching `localizerDeflection`'s
+ * convention. (A prior revision returned the aircraft-offset sign on the
+ * FROM side and the needle sign on the TO side — an AP tracking TO a
+ * station steered away from the course; round-4 review finding.)
  */
 export function vorCdi(station: LatLon, obsDeg: number, aircraft: LatLon, fullScaleDeg = VOR_FULL_SCALE_DEG): CdiResult {
   const radial = bearingDeg(station, aircraft)
   const diff = angDiff(radial, obsDeg)
   const toFrom: ToFrom = Math.abs(diff) <= 90 ? 'FROM' : 'TO'
-  const raw = toFrom === 'FROM' ? diff : angDiff(diff, 180)
+  const raw = toFrom === 'FROM' ? -diff : angDiff(diff, 180)
   return { deflectionDeg: clamp(raw, -fullScaleDeg, fullScaleDeg), toFrom }
 }
 
