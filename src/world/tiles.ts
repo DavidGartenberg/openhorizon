@@ -82,6 +82,7 @@ const TERRAIN_VERT = /* glsl */ `
 const TERRAIN_FRAG = /* glsl */ `
   uniform vec3 uSunDir;
   uniform float uDayness;
+  uniform float uFogDensity;
   varying vec3 vColor;
   varying vec3 vNormal;
   varying float vDist;
@@ -89,7 +90,7 @@ const TERRAIN_FRAG = /* glsl */ `
     float ndl = max(dot(normalize(vNormal), normalize(uSunDir)), 0.0);
     vec3 lit = vColor * (0.08 + 0.30 * uDayness + 0.85 * uDayness * ndl);
     vec3 haze = mix(vec3(0.02, 0.03, 0.05), vec3(0.63, 0.71, 0.82), uDayness);
-    float fog = 1.0 - exp(-vDist * 9e-6);
+    float fog = 1.0 - exp(-vDist * uFogDensity);
     gl_FragColor = vec4(mix(lit, haze, fog * 0.85), 1.0);
   }
 `
@@ -111,7 +112,11 @@ export class TileManager {
     private readonly runwaysInBounds: (latS: number, latN: number, lonW: number, lonE: number) => RunwayFlatten[],
   ) {
     this.material = new THREE.ShaderMaterial({
-      uniforms: { uSunDir: { value: new THREE.Vector3(0, 1, 0) }, uDayness: { value: 1 } },
+      uniforms: {
+        uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+        uDayness: { value: 1 },
+        uFogDensity: { value: 9e-6 },
+      },
       vertexShader: TERRAIN_VERT,
       fragmentShader: TERRAIN_FRAG,
     })
@@ -125,6 +130,12 @@ export class TileManager {
   setLight(sunDir: THREE.Vector3, dayness: number): void {
     ;(this.material.uniforms.uSunDir!.value as THREE.Vector3).copy(sunDir)
     this.material.uniforms.uDayness!.value = dayness
+  }
+
+  /** Meteorological visibility → exponential fog (95% obscuration at the
+   *  visibility distance). "10SM" is a report cap, treated as ~45 SM. */
+  setVisibilityM(visM: number): void {
+    this.material.uniforms.uFogDensity!.value = Math.min(Math.max(3 / Math.max(visM, 400), 4e-6), 8e-3)
   }
 
   /** Call regularly with the aircraft position (frame-local NED meters). */

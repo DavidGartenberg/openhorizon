@@ -2,7 +2,9 @@ import { FixedTimestepLoop, type SimRate } from './sim/loop'
 import { Aircraft } from './sim/aircraft'
 import { WindModel } from './sim/wind'
 import { parseMetar } from './sim/weather/metar'
-import { blendWeather, type StationWeather } from './sim/weather/weather'
+import { blendWeather, type StationWeather, type BlendedWeather } from './sim/weather/weather'
+import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-model'
+import { Clouds } from './render/clouds'
 import { trim } from './sim/trim'
 import { FT, KT, isa, kcasFromKias } from './sim/atmosphere'
 import { C172S } from './sim/aircraft/c172s'
@@ -44,6 +46,7 @@ const { renderer, scene, camera } = createScene(app)
 const input = new Input(renderer.domElement)
 const sky = new SkyDome(scene)
 const ocean = new Ocean(scene)
+const clouds = new Clouds(scene)
 const hud = new Hud()
 const loop = new FixedTimestepLoop(120)
 
@@ -476,9 +479,20 @@ function pollControls(dt: number): void {
 let liveWeatherOn = true
 let wxStations: StationWeather[] = []
 let wxDesc = ''
+let wxSlabs: CloudSlab[] = []
+let wxBlended: BlendedWeather | null = null
 let lastWxFetchAt = -Infinity
 let lastWxFetchLL = { lat: 0, lon: 0 }
 let lastWxApplyAt = -Infinity
+/** Cumulative floating-origin shift (render→world grid), for stable clouds. */
+const worldShift = { e: 0, n: 0 }
+
+// In-cloud whiteout overlay: opacity IS `inCloudFactor` of the same slabs
+// the renderer draws — one weather state for physics, visuals, and HUD (§1).
+const whiteout = document.createElement('div')
+whiteout.style.cssText =
+  'position:fixed;inset:0;pointer-events:none;z-index:5;opacity:0;background:#c8ccd2;transition:opacity 120ms linear'
+document.body.appendChild(whiteout)
 
 function updateLiveWeather(lat: number, lon: number, now: number): void {
   if (!liveWeatherOn) return
@@ -509,16 +523,21 @@ function updateLiveWeather(lat: number, lon: number, now: number): void {
   }
   if (now - lastWxApplyAt > 5000 && wxStations.length > 0) {
     lastWxApplyAt = now
-    const b = blendWeather(wxStations, lat, lon)
-    if (b) {
-      wind.setSteady(b.windDirDeg, b.windKt, b.gustKt)
-      wind.intensity = Math.min(Math.max((b.gustKt - b.windKt) / 8, 0), 2)
-      aircraft.isaTempOffsetC = b.isaTempOffsetC
-      const cl = b.clouds[0] ? ` ${b.clouds[0].cover}${String(Math.round(b.clouds[0].baseFt / 100)).padStart(3, '0')}` : ''
-      wxDesc = `${b.nearestStation} ${String(b.windDirDeg).padStart(3, '0')}@${Math.round(b.windKt)}` +
-        `${b.gustKt > b.windKt + 3 ? `G${Math.round(b.gustKt)}` : ''} ${b.visibilitySm}SM${cl} ISA${b.isaTempOffsetC >= 0 ? '+' : ''}${b.isaTempOffsetC.toFixed(0)}`
-    }
+    applyBlendedWeather(blendWeather(wxStations, lat, lon))
   }
+}
+
+function applyBlendedWeather(b: BlendedWeather | null): void {
+  wxBlended = b
+  if (!b) return
+  wxSlabs = cloudSlabs(b.clouds, b.stationElevFt)
+  wind.setSteady(b.windDirDeg, b.windKt, b.gustKt)
+  wind.intensity = Math.min(Math.max((b.gustKt - b.windKt) / 8, 0), 2)
+  aircraft.isaTempOffsetC = b.isaTempOffsetC
+  tiles.setVisibilityM((b.visibilitySm >= 10 ? 45 : b.visibilitySm) * 1609)
+  const cl = b.clouds[0] ? ` ${b.clouds[0].cover}${String(Math.round(b.clouds[0].baseFt / 100)).padStart(3, '0')}` : ''
+  wxDesc = `${b.nearestStation} ${String(b.windDirDeg).padStart(3, '0')}@${Math.round(b.windKt)}` +
+    `${b.gustKt > b.windKt + 3 ? `G${Math.round(b.gustKt)}` : ''} ${b.visibilitySm}SM${cl} ISA${b.isaTempOffsetC >= 0 ? '+' : ''}${b.isaTempOffsetC.toFixed(0)}`
 }
 
 function rebaseIfNeeded(): void {
@@ -533,6 +552,9 @@ function rebaseIfNeeded(): void {
   camera.position.x -= e
   camera.position.z += n
   chase.shiftWorld(-e, n)
+  worldShift.e += e
+  worldShift.n += n
+  clouds.onRebase()
 }
 
 /** Verification-only wings-leveler/coordinator (mirrors the headless test
@@ -909,6 +931,10 @@ function advanceFrame(elapsed: number, now: number): void {
   const dayness = Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1)
   ocean.update(now / 1000, sunDir, dayness)
   tiles.setLight(sunDir, dayness)
+  clouds.update(wxSlabs, camera.position, worldShift.e, worldShift.n, dayness)
+  const obscuration = inCloudFactor(wxSlabs, aircraft.data.altitudeFt)
+  whiteout.style.opacity = String(obscuration)
+  whiteout.style.background = dayness > 0.4 ? '#c8ccd2' : '#14161a'
 
   hud.update(
     {
@@ -1073,10 +1099,28 @@ Object.assign(window as unknown as Record<string, unknown>, {
     // Manual weather: live METAR application stops so it can't overwrite.
     liveWeatherOn = false
     wxDesc = ''
+    wxStations = []
+    wxSlabs = []
+    wxBlended = null
     aircraft.isaTempOffsetC = 0
     wind.setSteady(dirDeg, kt)
   },
-  __ohWx: () => ({ on: liveWeatherOn, desc: wxDesc, stations: wxStations.length, isaOffsetC: aircraft.isaTempOffsetC }),
+  __ohWx: () => ({
+    on: liveWeatherOn, desc: wxDesc, stations: wxStations.length,
+    isaOffsetC: aircraft.isaTempOffsetC, slabs: wxSlabs,
+    inCloud: inCloudFactor(wxSlabs, aircraft.data.altitudeFt),
+    blended: wxBlended,
+  }),
+  /** Inject a synthetic METAR at the aircraft's position (manual weather —
+   *  live fetching stops). Verification + future manual-weather UI both
+   *  ride the exact same blend/apply path as live data. */
+  __ohSetWx: (raw: string) => {
+    liveWeatherOn = false
+    const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+    const elevFt = (aircraft.groundElevAt?.(aircraft.posNed.x, aircraft.posNed.y) ?? 0) / 0.3048
+    wxStations = [{ metar: parseMetar(raw), lat: ll.lat, lon: ll.lon, elevFt }]
+    applyBlendedWeather(blendWeather(wxStations, ll.lat, ll.lon))
+  },
   __ohLiveWx: (on: boolean) => {
     liveWeatherOn = on
     if (on) lastWxFetchAt = -Infinity

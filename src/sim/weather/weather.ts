@@ -34,6 +34,8 @@ export interface BlendedWeather {
   isaTempOffsetC: number
   nearestStation: string
   nearestDistanceM: number
+  /** Elevation of the nearest station, ft — cloud bases are AGL there. */
+  stationElevFt: number
 }
 
 export function blendWeather(
@@ -103,5 +105,6 @@ export function blendWeather(
     isaTempOffsetC: offW > 0 ? offSum / offW : 0,
     nearestStation: near.station,
     nearestDistanceM: top[0]!.d,
+    stationElevFt: top[0]!.s.elevFt ?? 0,
   }
 }
