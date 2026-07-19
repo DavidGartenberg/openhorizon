@@ -376,3 +376,15 @@ browser-verified end-to-end. Verified this session via scripted flights
   Browser-verified full KPAO departure exchange on real 135.275/125.0/
   118.6. Suite 356/356. NEXT: 6d AI traffic, 6e integration, 6f IFR +
   acceptance flights (see docs/plans/phase-6.md).
+
+- **Phase 6 slices a/b/d/e (2026-07-19): ATC + AI traffic pure cores** —
+  comms bus w/ tuned-freq audibility, frequencies.csv pipeline, live-wx
+  ATIS + wind-based active runway, ground readbacks, strip-based tower,
+  AI pattern pilots flying through the same tower/bus as the player.
+  Sequencing bug caught by the two-plane radio log: distance-sorted queue
+  double-cleared the runway (downwind-abeam closer than base) → FIFO
+  sequence numbers, go-arounds rejoin at the back; test asserts one
+  clearance at a time. Suite 361/361. NEXT: slice 6c (transcript window,
+  readback menu, speechSynthesis voices + WebAudio radio filter, main.ts
+  wiring at the nearest towered field, browser KPAO flow), then 6f (IFR
+  CRAFT + handoffs, §24 acceptance flights) per docs/plans/phase-6.md.
