@@ -322,3 +322,11 @@ browser-verified end-to-end. Verified this session via scripted flights
 - Input is processed after the physics advance within a frame, so a pause
   keypress takes effect one frame late (~8 ms at 120 Hz). Harmless; revisit if
   input-to-sim latency ever matters for control feel (Phase 1).
+
+- **Phase 5 opening verification (2026-07-19): browser coupled ILS PASSED** —
+  KSFO 28R via real app wiring (__ohTune 111.7/__ohApMaster/__ohApMode),
+  15 kt crosswind: worst loc 0.105, GS 0.281, to 200 AGL. Found+fixed en
+  route: ilsRefFromRunwayThreshold computed the RECIPROCAL course (only the
+  app path used it); KSFO 28R/28L freqs swapped vs published; crosswind +
+  instant-capture diverged until tracking steers ground TRACK (new
+  trackDeg input; crab falls out physically). Suite 317/317.

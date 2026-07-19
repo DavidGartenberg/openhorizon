@@ -98,6 +98,13 @@ export interface AutopilotInputs {
    *  law goes unstable inside ~5-7 km (confirmed with a 0°-error coupled
    *  GS-descent control case — not an intercept-geometry problem). */
   navRangeM?: number
+  /** Ground-track direction, deg true. When provided, localizer TRACKING
+   *  steers the TRACK onto the course instead of the heading — wind drift
+   *  becomes transparent (the loop's output is a track command; the
+   *  aircraft's crab angle falls out physically instead of needing the
+   *  integrator to discover ~12° of crab over minutes — the crosswind
+   *  instant-capture case diverged without this). Falls back to heading. */
+  trackDeg?: number
 }
 
 // ---- output / state ----
@@ -633,7 +640,10 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       state.navTrackInterceptOffsetDeg = rateLimit(state.navTrackInterceptOffsetDeg, rawInterceptOffsetDeg, 3, dt)
       const interceptOffsetDeg = state.navTrackInterceptOffsetDeg
       const desiredHeadingDeg = (inputs.headingBugDeg + interceptOffsetDeg + 360) % 360
-      targetBankDeg = clamp(2.0 * headingErrorDeg(desiredHeadingDeg, inputs.headingDeg), -MAX_BANK_DEG, MAX_BANK_DEG)
+      // Steer the ground TRACK (when available) onto course+intercept —
+      // see `trackDeg`'s doc: crab falls out physically under wind.
+      const refDeg = inputs.trackDeg ?? inputs.headingDeg
+      targetBankDeg = clamp(2.0 * headingErrorDeg(desiredHeadingDeg, refDeg), -MAX_BANK_DEG, MAX_BANK_DEG)
     }
   }
   state.fdBankDeg = targetBankDeg

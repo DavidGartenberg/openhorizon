@@ -45,27 +45,29 @@ describe('vorCdiFraction', () => {
 })
 
 describe('ilsRefFromRunwayThreshold + localizerFraction/glideslopeFraction', () => {
-  // A north-south runway: threshold at the south end, opposite end 2nm north
-  // — landing course (from opposite toward threshold) is 180 (southbound).
+  // Runway 36: threshold at the SOUTH end (the end you cross landing
+  // northbound), far end 2 nm north. Front course = threshold→far ≈ 360.
+  // (A prior revision asserted the reciprocal — bearing(far→threshold) —
+  // which fed the AP a 180°-wrong course datum in the app; caught by the
+  // Phase-5 opening browser verification.)
   const t = {
     thresholdLat: 37.6, thresholdLon: -122.0, thresholdElevFt: 13,
     oppositeLat: 37.637, oppositeLon: -122.0, // ~2nm north
   }
 
-  it('builds an inbound course pointing from the far end to the threshold', () => {
+  it('builds the front course flown from the threshold toward the far end', () => {
     const ils = ilsRefFromRunwayThreshold(t)
-    expect(ils.courseDeg).toBeCloseTo(180, 0)
+    expect(((ils.courseDeg % 360) + 360) % 360).toBeCloseTo(0, 0)
     expect(ils.gsAngleDeg).toBeUndefined() // defaults inside navaids.ts, not stamped here
   })
 
-  it('reads zero deflection exactly on the extended centerline/glidepath', () => {
+  it('reads zero deflection on the approach side of the extended centerline/glidepath', () => {
     const ils = ilsRefFromRunwayThreshold(t)
-    const onCenterline: LatLon = { lat: 37.62, lon: -122.0 }
-    expect(localizerFraction(ils, onCenterline).deflectionFraction).toBeCloseTo(0, 5)
-    // 3nm due north of the threshold (along the inbound course) at the
-    // standard 3-degree glidepath altitude for that distance.
+    // Approach side for a northbound course = SOUTH of the threshold.
     const metersPerDegLat = 111_319.5
-    const point3nm: LatLon = { lat: t.thresholdLat + (3 * 1852) / metersPerDegLat, lon: -122.0 }
+    const onCenterline: LatLon = { lat: 37.58, lon: -122.0 }
+    expect(localizerFraction(ils, onCenterline).deflectionFraction).toBeCloseTo(0, 5)
+    const point3nm: LatLon = { lat: t.thresholdLat - (3 * 1852) / metersPerDegLat, lon: -122.0 }
     const distFt = (3 * 1852) / 0.3048
     const altFt = t.thresholdElevFt + distFt * Math.tan((3 * Math.PI) / 180)
     expect(glideslopeFraction(ils, point3nm, altFt)).toBeCloseTo(0, 1)
@@ -73,8 +75,9 @@ describe('ilsRefFromRunwayThreshold + localizerFraction/glideslopeFraction', () 
 })
 
 describe('findKnownIls (stopgap ILS-frequency table)', () => {
-  it('finds KSFO 28R at its published frequency', () => {
-    expect(findKnownIls('KSFO', 109.55)?.runway).toBe('28R')
+  it('finds KSFO 28R/28L at their published frequencies (IGWQ 111.7 / IBRG 109.55)', () => {
+    expect(findKnownIls('KSFO', 111.7)?.runway).toBe('28R')
+    expect(findKnownIls('KSFO', 109.55)?.runway).toBe('28L')
   })
 
   it('is honest about airports/frequencies not in the table', () => {

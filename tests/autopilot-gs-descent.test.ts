@@ -94,6 +94,7 @@ function flyApproach(ac: Aircraft, bugDeg: number, maxSeconds: number): RunResul
     inputs.headingDeg = ac.data.headingDeg
     inputs.rollDeg = ac.data.rollDeg
     inputs.pitchDeg = ac.data.pitchDeg
+    inputs.trackDeg = ac.data.trackDeg // mirrors main.ts wiring
     inputs.navDeviation = locDev
     inputs.glideslopeDeviation = gsDev
     inputs.navRangeM = Math.hypot(ac.posNed.x, ac.posNed.y)
@@ -123,6 +124,21 @@ function flyApproach(ac: Aircraft, bugDeg: number, maxSeconds: number): RunResul
 }
 
 describe('coupled GS-descent: instant capture with stale vector bug (reviewer repro)', () => {
+  it('on-beam instant capture + 15 kt crosswind: track steering holds the crab', () => {
+    // Diverged to full-scale pre-track-steering: the range-scaled P under-
+    // commands near the threshold and the integral can't discover ~12° of
+    // steady crab within a 2-minute approach. Steering ground track makes
+    // wind transparent (worst 0.104 in the discriminator run).
+    const ac = trimmedOnGlidepath(COURSE_DEG, 3)
+    const toRad = ((28 + 180) % 360) * (Math.PI / 180)
+    ac.windNed.x = Math.cos(toRad) * 15 * KT
+    ac.windNed.y = Math.sin(toRad) * 15 * KT
+    const r = flyApproach(ac, COURSE_DEG, 250)
+    expect(r.captured).toBe(true)
+    expect(r.reachedDh).toBe(true)
+    expect(r.worstLocAfterCapture).toBeLessThanOrEqual(0.5)
+  })
+
   it('APR engaged on-beam with the bug still 30° off: course pin recovers it', () => {
     // stepAutopilot arms AND captures in one step here; the edge-triggered
     // slew never fired and the app diverged (|loc|=1.0 by t=24 s). The

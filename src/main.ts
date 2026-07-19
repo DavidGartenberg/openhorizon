@@ -616,6 +616,7 @@ function advanceFrame(elapsed: number, now: number): void {
         navDeviation: navDeviationForAp,
         glideslopeDeviation: glideslopeDeviationForAp,
         navRangeM: navRangeForAp,
+        trackDeg: aircraft.data.trackDeg,
       })
       // While localizer TRACKING is active, the heading bug is this AP's
       // course datum — pin it to the front course continuously (a real
@@ -973,6 +974,11 @@ Object.assign(window as unknown as Record<string, unknown>, {
     if (targets) Object.assign(apTargets, targets)
   },
   __ohApState: () => ({ ...apState }),
+  /** Verification-only AP master engage (mirrors the physical `sw_apMaster`
+   *  switch path — same hook pattern as `__ohApMode`). */
+  __ohApMaster: (on: boolean) => {
+    systemsControls.apMaster = on
+  },
   /** Switch the MFD's active page (no physical softkey wiring this task —
    *  the softkey regions remain functionally inert per `mfd.ts`'s own doc
    *  comment, unchanged from Phase 3). Defaults to 'map' at boot so the

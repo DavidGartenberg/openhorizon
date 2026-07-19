@@ -37,6 +37,8 @@ export interface FlightData {
   kcas: number
   ktas: number
   groundSpeedKt: number
+  /** Ground-track direction, deg true; equals heading below ~3 kt GS. */
+  trackDeg: number
   altitudeFt: number
   aglFt: number
   verticalSpeedFpm: number
@@ -95,7 +97,7 @@ export class Aircraft {
   }
 
   readonly data: FlightData = {
-    kias: 0, kcas: 0, ktas: 0, groundSpeedKt: 0, altitudeFt: 0, aglFt: 0,
+    kias: 0, kcas: 0, ktas: 0, groundSpeedKt: 0, trackDeg: 0, altitudeFt: 0, aglFt: 0,
     verticalSpeedFpm: 0, headingDeg: 0, pitchDeg: 0, rollDeg: 0,
     alphaDeg: 0, betaDeg: 0, rpm: 0, fuelFlowGph: 0, loadFactorG: 1,
     stallFraction: 0, onGround: false, flapsDeg: 0, shaftPowerW: 0, thrustN: 0,
@@ -279,6 +281,10 @@ export class Aircraft {
     d.kcas = kcas
     d.kias = Math.max(kiasFromKcas(kcas, this.flapsDeg), 0)
     d.groundSpeedKt = Math.hypot(this.velNed.x, this.velNed.y) / KT
+    d.trackDeg =
+      d.groundSpeedKt > 3
+        ? ((Math.atan2(this.velNed.y, this.velNed.x) * 180) / Math.PI + 360) % 360
+        : d.headingDeg
     d.altitudeFt = -this.posNed.z / FT
     d.verticalSpeedFpm = (-this.velNed.z / FT) * 60
     qtoEuler(this.euler, this.quat)
@@ -312,6 +318,11 @@ export class Aircraft {
     )
     this.prop.omegaRadS = (rpm * Math.PI) / 30
     this.alphaPrev = alphaRad
+    // Stamp heading/track into derived data immediately — consumers (AP
+    // track steering) otherwise see one stale tick of trackDeg=0 after a
+    // teleport-spawn, commanding a full-deflection transient.
+    this.data.headingDeg = ((headingRad * 180) / Math.PI + 360) % 360
+    this.data.trackDeg = this.data.headingDeg
     this.alphaDotFilt = 0
   }
 }

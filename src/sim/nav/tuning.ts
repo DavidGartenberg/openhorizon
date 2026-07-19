@@ -90,7 +90,11 @@ export interface RunwayThresholdRef {
  *  `IlsRef.gsAntenna`'s own documented simplification in `navaids.ts`) and
  *  the glidepath angle defaults to the standard 3.0°. */
 export function ilsRefFromRunwayThreshold(t: RunwayThresholdRef, gsAngleDeg?: number): IlsRef {
-  const courseDeg = bearingDeg({ lat: t.oppositeLat, lon: t.oppositeLon }, { lat: t.thresholdLat, lon: t.thresholdLon })
+  // Front course = the direction FLOWN: from the approach threshold toward
+  // the far end. (Was inverted — bearing(opposite→threshold) — producing a
+  // reciprocal course datum; caught by the Phase-5 opening browser
+  // verification, which is the only path that exercises this builder.)
+  const courseDeg = bearingDeg({ lat: t.thresholdLat, lon: t.thresholdLon }, { lat: t.oppositeLat, lon: t.oppositeLon })
   return {
     threshold: { lat: t.thresholdLat, lon: t.thresholdLon },
     courseDeg,
@@ -136,8 +140,10 @@ export interface KnownIlsEntry {
  *  per this project's binding "no fabricated data" rule; only re-add if
  *  confirmed against a primary FAA source. */
 export const KNOWN_ILS_FREQUENCIES: readonly KnownIlsEntry[] = [
-  { icao: 'KSFO', runway: '28R', freqMhz: 109.55 },
-  { icao: 'KSFO', runway: '28L', freqMhz: 111.7 },
+  // Published FAA frequencies: ILS 28R = 111.7 (IGWQ), ILS 28L = 109.55
+  // (IBRG). A prior revision had these two swapped.
+  { icao: 'KSFO', runway: '28R', freqMhz: 111.7 },
+  { icao: 'KSFO', runway: '28L', freqMhz: 109.55 },
 ]
 
 /** Which runway (if any) a tuned NAV frequency at `icao` corresponds to,
