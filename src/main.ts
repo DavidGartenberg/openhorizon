@@ -7,6 +7,7 @@ import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-
 import { Clouds } from './render/clouds'
 import { NexradField } from './world/nexrad'
 import { CommsBus, isAudible, type Transmission } from './sim/atc/comms'
+import { AiPatternPilot } from './sim/traffic/ai-pilot'
 import { buildAtis } from './sim/atc/atis'
 import { TowerController, pilotPhrase, type PilotRequestKind, type TrafficView } from './sim/atc/tower'
 import { GroundController } from './sim/atc/ground'
@@ -577,6 +578,9 @@ interface ActiveAtc {
 }
 let activeAtc: ActiveAtc | null = null
 let atisPlayedFor = ''
+/** AI pattern traffic at the active ATC field (Phase 6d/6e wiring). */
+let aiPilots: AiPatternPilot[] = []
+let aiMeshes: ReturnType<typeof buildC172>[] = []
 let lastAtcScanAt = -Infinity
 let lastTowerTickAt = -Infinity
 let atcMenuOpen = false
@@ -680,8 +684,36 @@ function scanAtc(lat: number, lon: number, now: number): void {
         atis, twrF, gndF, atisF,
       }
       atisPlayedFor = ''
+      // Rebuild AI pattern traffic for the new field's active runway end.
+      for (const m of aiMeshes) scene.remove(m.group)
+      aiMeshes = []
+      aiPilots = []
+      const act = atis.activeRunway
+      const rw = nearest.r.find((r) => r.li === act || r.hi === act)
+      if (rw) {
+        const fromHigh = rw.hi === act
+        const thr = fromHigh ? { lat: rw.la2, lon: rw.lo2, e: rw.e2 } : { lat: rw.la1, lon: rw.lo1, e: rw.e1 }
+        const far = fromHigh ? { lat: rw.la1, lon: rw.lo1 } : { lat: rw.la2, lon: rw.lo2 }
+        const patternRwy = {
+          thrLat: thr.lat, thrLon: thr.lon,
+          headingDeg: bearingDeg({ lat: thr.lat, lon: thr.lon }, far),
+          elevFt: thr.e,
+        }
+        for (const [cs, delay] of [['N77GA', 25], ['N42PK', 210]] as const) {
+          aiPilots.push(new AiPatternPilot({
+            callsign: cs, runway: patternRwy, runwayIdent: act,
+            tower: activeAtc.tower, bus: comms, freqMhz: twrF, startDelayS: loop.simTime + delay,
+          }))
+          const m = buildC172()
+          scene.add(m.group)
+          aiMeshes.push(m)
+        }
+      }
     } else if (!nearest) {
       activeAtc = null
+      for (const m of aiMeshes) scene.remove(m.group)
+      aiMeshes = []
+      aiPilots = []
     }
   }
   if (activeAtc) {
@@ -1100,6 +1132,16 @@ function advanceFrame(elapsed: number, now: number): void {
   updateRadar(ll.lat, ll.lon, now)
   scanAtc(ll.lat, ll.lon, now)
   if (atcMenuOpen) renderAtcMenu()
+  for (let i = 0; i < aiPilots.length; i++) {
+    const p = aiPilots[i]!
+    p.step(Math.min(elapsed, 0.25), loop.simTime)
+    const m = aiMeshes[i]!
+    const lp = frame.toLocal(p.plane.lat, p.plane.lon)
+    m.group.position.set(lp.e, p.plane.altFt * 0.3048, -lp.n)
+    m.group.rotation.order = 'YXZ'
+    m.group.rotation.y = (-p.plane.headingDeg * Math.PI) / 180
+    updateProp(m, p.phase === 'pattern' ? 2400 : 800, elapsed)
+  }
 
   // Phase 4 Task 5 wiring: in-airspace detection, once per rendered frame
   // (airspace shelves are large relative to per-tick aircraft motion — the

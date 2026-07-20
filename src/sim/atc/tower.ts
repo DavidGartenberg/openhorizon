@@ -84,9 +84,16 @@ export class TowerController {
       .sort((a, b) => a.seq - b.seq)
   }
 
-  private runwayOccupied(): boolean {
+  /** Runway blocked by traffic other than `exceptCallsign` (a pilot's own
+   *  fresh takeoff clearance must not block their repeat request — found
+   *  live at KPAO: "hold short, runway occupied" to the aircraft that had
+   *  just been cleared). */
+  private runwayOccupied(exceptCallsign?: string): boolean {
     return [...this.strips.values()].some(
-      (s) => (s.phase === 'landed' || s.phase === 'clearedTakeoff') && s.view.onGround && s.view.distanceM < 1500,
+      (s) =>
+        s.callsign !== exceptCallsign &&
+        (s.phase === 'landed' || s.phase === 'clearedTakeoff') &&
+        s.view.onGround && s.view.distanceM < 1500,
     )
   }
 
@@ -100,7 +107,7 @@ export class TowerController {
     switch (kind) {
       case 'readyTakeoff': {
         const final = this.arrivalQueue().find((a) => a.callsign !== callsign && a.view.distanceM < FINAL_CONFLICT_M)
-        if (final || this.runwayOccupied()) {
+        if (final || this.runwayOccupied(callsign)) {
           s.phase = 'holdingShort'
           return [this.say(`${callsign}, hold short runway ${rwy}, ${final ? 'traffic on final' : 'runway occupied'}`, atSimS)]
         }

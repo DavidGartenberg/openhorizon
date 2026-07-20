@@ -388,3 +388,14 @@ browser-verified end-to-end. Verified this session via scripted flights
   readback menu, speechSynthesis voices + WebAudio radio filter, main.ts
   wiring at the nearest towered field, browser KPAO flow), then 6f (IFR
   CRAFT + handoffs, §24 acceptance flights) per docs/plans/phase-6.md.
+
+- **Phase 6 slice 6c (2026-07-19): ATC voice/UI live at KPAO** — transcript
+  window + T-menu (numbered requests, readbacks), speechSynthesis voices
+  w/ squelch clicks (Web Speech cannot route through WebAudio band-pass —
+  recorded platform limitation), COM1 audibility gating verified live
+  (wrong-frequency call went unanswered; correct 118.6 call cleared).
+  Real KPAO freqs (TWR 118.6/ATIS 135.275), ATIS from live fog (220@4
+  0.75SM OVC003 → runway 13), AI N77GA cleared and flying the pattern.
+  Tower self-conflict fix: own fresh takeoff clearance no longer blocks a
+  repeat request. Suite 361/361. NEXT: 6f — IFR CRAFT + handoffs + the two
+  §24 acceptance flights, then close Phase 6.
