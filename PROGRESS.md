@@ -23,7 +23,26 @@ Node; add `~/.local/node/bin` to PATH).
 | 4 — Nav & autopilot | ✅ done | radio nav, GPS/FPL, GFC700, CIFP, airspace; coupled-ILS acceptance passed after 4-round AP fix |
 | 5 — Weather & sky | ✅ done | live METAR wx, clouds/whiteout, altimetry, FIS-B NEXRAD, scattering sky+stars, NLCD land cover |
 | 6 — ATC & AI traffic | ✅ done | live-freq tower/ground/ATIS, voices, AI pattern traffic, IFR CRAFT+handoffs; deviations recorded |
-| 7–10 | not started | Phase 7 (TCAS & TAWS) next |
+| 7 — TCAS & TAWS | ✅ done | tau/GPWS cores + scripted tests; live Tahoe escalation + KPAO TA; two spawn bugs found+fixed |
+| 8–10 | not started | Phase 8 (recorder/logbook/training) next |
+
+## Phase 7 — acceptance (2026-07-19)
+
+All §24 criteria met. Scripted suites: TCAS (7 tests — head-on TA/RA at
+exact published tau ±1 s, RA sense, DMOD slow overtake, ZTHR gate, TA-only
+C172 TAS mode; hysteresis bug promoting RAs 5 s early via the TA's widened
+gate caught and fixed) and TAWS (7 tests — modes 1-6 + look-ahead; a full
+normal ILS produces exactly ['FIVE HUNDRED']). Wired live (0.5 s cadence):
+AI traffic → TCAS, terrain/GS/runway context → TAWS, aurals via speech,
+HUD safety line, MFD traffic diamonds with relative-altitude tags.
+In-sim: **Tahoe** — level 7,100 ft westbound at the Sierra crest: △ TERRAIN
+AHEAD (t=158) → ⛰ TERRAIN AHEAD, PULL UP (t=172), escape clean. **KPAO** —
+AP-steered intercept of the pattern AI: ⚠ TRAFFIC, TRAFFIC at t=170.
+Two real bugs found by these runs and fixed with comments citing them:
+onFinal spawns converted 70 KIAS→TAS at sea-level density (stall-mush at
+Tahoe's 7,100 ft); applyTrimState set GROUND velocity to the requested TAS
+(10 kt tailwind spawned 10 kt slow through the air — trim is an airmass
+condition, wind now added). Suite 378/378.
 
 ## Phase 6 — acceptance (2026-07-19)
 

@@ -259,6 +259,9 @@ export interface MfdMapInput {
   /** Age of the radar picture, minutes — stamped on the map (the datalink
    *  picture lags reality; §11). null/omitted = no radar data yet. */
   radarAgeMin?: number | null
+  /** TCAS/TAS traffic (offsets from aircraft, meters): standard symbology —
+   *  hollow diamond, amber circle when alerted; ±relative altitude tag. */
+  trafficDots?: readonly { dNorthM: number; dEastM: number; relAltFt: number; alerted: boolean }[]
 }
 
 // ============================================================================
@@ -658,6 +661,38 @@ function drawMapPage(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
     ctx.font = `${Math.round(h * 0.032)}px monospace`
     ctx.textAlign = 'right'
     ctx.fillText(`FIS-B ${map.radarAgeMin} MIN`, x + w - w * 0.015, y + h * 0.045)
+  }
+
+  // TCAS traffic symbols (§14): above radar, below airspace/rings.
+  if (map.trafficDots) {
+    for (const t of map.trafficDots) {
+      const dist = Math.hypot(t.dNorthM, t.dEastM)
+      if (dist > map.rangeM * 1.05) continue
+      const angleDeg = map.trackUp
+        ? (Math.atan2(t.dEastM, t.dNorthM) * 180) / Math.PI - map.headingDeg
+        : (Math.atan2(t.dEastM, t.dNorthM) * 180) / Math.PI
+      const aRad = (angleDeg * Math.PI) / 180
+      const dPx = (dist / map.rangeM) * radiusPx
+      const px = cx + dPx * Math.sin(aRad)
+      const py = cy - dPx * Math.cos(aRad)
+      const r = h * 0.012
+      ctx.strokeStyle = t.alerted ? COLORS.yellow : COLORS.white
+      ctx.fillStyle = t.alerted ? COLORS.yellow : 'transparent'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.moveTo(px, py - r)
+      ctx.lineTo(px + r, py)
+      ctx.lineTo(px, py + r)
+      ctx.lineTo(px - r, py)
+      ctx.closePath()
+      if (t.alerted) ctx.fill()
+      ctx.stroke()
+      ctx.fillStyle = t.alerted ? COLORS.yellow : COLORS.white
+      ctx.font = `${Math.round(h * 0.024)}px monospace`
+      ctx.textAlign = 'left'
+      const rel = Math.round(t.relAltFt / 100)
+      ctx.fillText(`${rel >= 0 ? '+' : ''}${rel}`, px + r + 2, py + r)
+    }
   }
 
   // Airspace boundaries (Class B/C/D/E-surface + SUA), drawn above terrain

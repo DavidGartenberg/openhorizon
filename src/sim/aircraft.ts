@@ -328,6 +328,16 @@ export class Aircraft {
     )
     this.prop.omegaRadS = (rpm * Math.PI) / 30
     this.alphaPrev = alphaRad
+    // Trim is an AIRMASS condition: the requested TAS is air-relative, so
+    // ground velocity = air velocity + wind. Without this, spawning into a
+    // 10 kt tailwind put the aircraft 10 kt slow through the air and it
+    // mushed on AP engage (found by the Phase-7 KPAO acceptance run).
+    if (this.windNed.x !== 0 || this.windNed.y !== 0 || this.windNed.z !== 0) {
+      qrotateInv(this.windBody, this.quat, this.windNed)
+      this.velBody.x += this.windBody.x
+      this.velBody.y += this.windBody.y
+      this.velBody.z += this.windBody.z
+    }
     // Stamp heading/track into derived data immediately — consumers (AP
     // track steering) otherwise see one stale tick of trackDeg=0 after a
     // teleport-spawn, commanding a full-deflection transient.

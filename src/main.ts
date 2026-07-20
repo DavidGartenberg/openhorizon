@@ -8,6 +8,8 @@ import { Clouds } from './render/clouds'
 import { NexradField } from './world/nexrad'
 import { CommsBus, isAudible, type Transmission } from './sim/atc/comms'
 import { AiPatternPilot } from './sim/traffic/ai-pilot'
+import { TcasComputer } from './sim/tcas'
+import { TawsComputer } from './sim/taws'
 import { buildAtis } from './sim/atc/atis'
 import { TowerController, pilotPhrase, type PilotRequestKind, type TrafficView } from './sim/atc/tower'
 import { GroundController } from './sim/atc/ground'
@@ -290,7 +292,11 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
     const n = p.n - Math.cos(hRad) * distM
     const e = p.e - Math.sin(hRad) * distM
     const altM = thr.e * FT + 275
-    const tas = kcasFromKias(70, 0) * KT
+    // TAS from 70 KIAS at the FIELD's density, flaps-10 calibration — a
+    // sea-level conversion spawned ~8 kt slow at Tahoe (7,100 ft) and the
+    // aircraft stalled into a mush on AP engage (found by the Phase-7
+    // Tahoe TAWS acceptance run).
+    const tas = kcasFromKias(70, 10) * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
     const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg: 10, gammaRad: -0.052 })
     aircraft.flapsDeg = 10
     aircraft.controls.flapsIndex = 1
@@ -580,6 +586,87 @@ let activeAtc: ActiveAtc | null = null
 let atisPlayedFor = ''
 /** AI pattern traffic at the active ATC field (Phase 6d/6e wiring). */
 let aiPilots: AiPatternPilot[] = []
+
+// ---- Phase 7c: TCAS (TAS presentation) + TAWS wiring ----
+const tcas = new TcasComputer({ taOnly: true })
+const taws = new TawsComputer()
+let lastSafetyAt = -Infinity
+let liftoffSimS: number | null = null
+let safetyLine = ''
+let trafficDots: Array<{ dNorthM: number; dEastM: number; relAltFt: number; alerted: boolean }> = []
+
+/** Non-radio cockpit annunciation (TCAS/TAWS aurals) — spoken urgently,
+ *  never logged to the comms transcript (they aren't transmissions). */
+function annunciate(text: string): void {
+  try {
+    const u = new SpeechSynthesisUtterance(text.toLowerCase())
+    u.rate = 1.25
+    u.pitch = 0.9
+    window.speechSynthesis.speak(u)
+  } catch {
+    // no speech available — HUD/PFD annunciation still shows it
+  }
+}
+
+function updateSafety(now: number): void {
+  if (now - lastSafetyAt < 500) return
+  lastSafetyAt = now
+  const d = aircraft.data
+  if (d.onGround) liftoffSimS = null
+  else if (liftoffSimS === null) liftoffSimS = loop.simTime
+
+  const pos = aircraft.posNed
+  const mLat = 111_320
+  const ll0 = frame.fromLocal(pos.x, pos.y)
+  const mLon = mLat * Math.cos((ll0.lat * Math.PI) / 180)
+  const trackRad = (d.trackDeg * Math.PI) / 180
+  const gsMs = d.groundSpeedKt * KT
+  const ownVn = Math.cos(trackRad) * gsMs
+  const ownVe = Math.sin(trackRad) * gsMs
+
+  // TCAS from airborne AI traffic.
+  const tracks = aiPilots
+    .filter((p) => p.phase === 'pattern' && !p.onGround)
+    .map((p) => {
+      const hRad = (p.plane.headingDeg * Math.PI) / 180
+      const v = p.plane.gsKt * KT
+      return {
+        id: 'AI', relNorthM: (p.plane.lat - ll0.lat) * mLat, relEastM: (p.plane.lon - ll0.lon) * mLon,
+        relVnMs: Math.cos(hRad) * v - ownVn, relVeMs: Math.sin(hRad) * v - ownVe,
+        altFt: p.plane.altFt, vsFpm: 0,
+      }
+    })
+  const tc = tcas.step(0.5, { altFt: d.altitudeFt, aglFt: d.aglFt, vsFpm: d.verticalSpeedFpm }, tracks)
+  trafficDots = tc.tracks.map((t) => ({
+    dNorthM: 0, dEastM: 0, relAltFt: t.relAltFt, alerted: t.level === 'TA' || t.level === 'RA',
+  }))
+  // Fill dot offsets from the same track list (index-aligned).
+  tracks.forEach((t, i) => {
+    trafficDots[i]!.dNorthM = t.relNorthM
+    trafficDots[i]!.dEastM = t.relEastM
+  })
+  if (tc.newAural && tc.aural) annunciate(tc.aural)
+
+  // TAWS.
+  const nav = computeTunedNav(ll0, d.altitudeFt)
+  const tw = taws.step(0.5, {
+    aglFt: d.aglFt, altFt: d.altitudeFt, vsFpm: d.verticalSpeedFpm, gsKt: d.groundSpeedKt,
+    headingDeg: d.headingDeg, rollDeg: d.rollDeg, flapsDeg: d.flapsDeg,
+    sinceTakeoffS: liftoffSimS === null ? Infinity : loop.simTime - liftoffSimS,
+    terrainAheadFt: (la) => {
+      const elevM = aircraft.groundElevAt?.(pos.x + Math.cos(trackRad) * gsMs * la, pos.y + Math.sin(trackRad) * gsMs * la) ?? 0
+      return elevM / 0.3048
+    },
+    nearRunwayFinal: d.aglFt < 1800 && airports.near(ll0.lat, ll0.lon, 4 * 1852).length > 0,
+    gsDeviation: nav.hasGlideslope ? nav.glideslopeFraction ?? null : null,
+  })
+  if (tw.newAural && tw.aural) annunciate(tw.aural)
+
+  const parts: string[] = []
+  if (tc.level === 'TA' || tc.level === 'RA') parts.push(`⚠ ${tc.aural}`)
+  if (tw.level !== 'NONE' && tw.aural) parts.push(`${tw.level === 'WARNING' ? '⛰' : '△'} ${tw.aural}`)
+  safetyLine = parts.join('  ')
+}
 let aiMeshes: ReturnType<typeof buildC172>[] = []
 let lastAtcScanAt = -Infinity
 let lastTowerTickAt = -Infinity
@@ -1131,6 +1218,7 @@ function advanceFrame(elapsed: number, now: number): void {
   updateLiveWeather(ll.lat, ll.lon, now)
   updateRadar(ll.lat, ll.lon, now)
   scanAtc(ll.lat, ll.lon, now)
+  updateSafety(now)
   if (atcMenuOpen) renderAtcMenu()
   for (let i = 0; i < aiPilots.length; i++) {
     const p = aiPilots[i]!
@@ -1271,6 +1359,7 @@ function advanceFrame(elapsed: number, now: number): void {
         airspace: currentAirspace,
         aircraftAglFt: d.aglFt,
         radarCells: nexradMfdCells,
+        trafficDots,
         radarAgeMin: nexrad.ageMin(now),
       } : undefined,
     },
@@ -1296,6 +1385,7 @@ function advanceFrame(elapsed: number, now: number): void {
       cameraMode,
       tilesReady: tiles.readyCount,
       wx: wxDesc || undefined,
+      safety: safetyLine || undefined,
       spawnDesc,
       lat: ll.lat,
       lon: ll.lon,
@@ -1419,6 +1509,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     if (targets) Object.assign(apTargets, targets)
   },
   __ohApState: () => ({ ...apState }),
+  __ohSafety: () => ({ safetyLine, dots: trafficDots }),
   /** Verification-only AP master engage (mirrors the physical `sw_apMaster`
    *  switch path — same hook pattern as `__ohApMode`). */
   __ohApMaster: (on: boolean) => {
