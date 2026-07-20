@@ -313,9 +313,43 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
   airports.updateVisuals(frame.anchor.lat, frame.anchor.lon)
 }
 
+// ---- Phase 8d: landing challenges (§21) — three real hard strips,
+// launched from the search box, scored by the landing analyzer. ----
+const CHALLENGES: Record<string, { icao: string; rwy: string; name: string }> = {
+  CATALINA: { icao: 'KAVX', rwy: '22', name: 'Catalina cliff runway' },
+  ASPEN: { icao: 'KASE', rwy: '15', name: 'Aspen valley approach' },
+  TAHOE: { icao: 'KTVL', rwy: '18', name: 'Lake Tahoe density altitude' },
+}
+let challengeActive: string | null = null
+let challengeBest: Record<string, number> = {}
+try {
+  challengeBest = JSON.parse(localStorage.getItem('oh-challenges') ?? '{}') as Record<string, number>
+} catch {
+  challengeBest = {}
+}
+
+/** 0-100: start at 100, lose points for sink beyond smooth, centerline
+ *  offset, and missing the 300 m touchdown zone. Documented, simple. */
+function challengeScore(a: { touchdownVsFpm: number; pastThresholdM: number; centerlineOffsetM: number }): number {
+  let s = 100
+  s -= Math.max(-a.touchdownVsFpm - 200, 0) / 8
+  s -= Math.abs(a.centerlineOffsetM) / 2
+  s -= Math.abs(a.pastThresholdM - 300) / 15
+  return Math.max(Math.round(s), 0)
+}
+
 function handleSearch(query: string): void {
   const parts = query.trim().toUpperCase().split(/\s+/)
   if (parts.length === 0 || !parts[0]) return
+  if (parts[0] === 'CHALLENGE' && parts[1] && CHALLENGES[parts[1]]) {
+    const ch = CHALLENGES[parts[1]]!
+    const ap = airports.find(ch.icao)
+    if (ap) {
+      challengeActive = parts[1]
+      spawnAtAirport(ap, ch.rwy, true)
+    }
+    return
+  }
   const onFinal = parts[parts.length - 1] === 'FINAL'
   const rwy = parts.length > 1 && parts[1] !== 'FINAL' ? parts[1] : undefined
   const ap = airports.find(parts[0])
@@ -661,6 +695,18 @@ function updateRecorder(ll: { lat: number; lon: number }): void {
           durationMin: Math.max(Math.round((loop.simTime - flightStartSimS) / 60), 1),
           touchdownFpm: Math.round(a.touchdownVsFpm), grade: a.grade,
         })
+        if (challengeActive) {
+          const score = challengeScore(a)
+          const prev = challengeBest[challengeActive] ?? 0
+          debriefLine += ` · ${challengeActive} SCORE ${score}${score > prev ? ' — NEW BEST' : ` (best ${prev})`}`
+          if (score > prev) {
+            challengeBest[challengeActive] = score
+            try {
+              localStorage.setItem('oh-challenges', JSON.stringify(challengeBest))
+            } catch { /* session-only */ }
+          }
+          challengeActive = null
+        }
         try {
           localStorage.setItem('oh-logbook', JSON.stringify(logbook.slice(-200)))
         } catch { /* session-only */ }
@@ -1597,6 +1643,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohSafety: () => ({ safetyLine, dots: trafficDots }),
   __ohDebrief: () => ({ debriefLine, samples: recorder.samples.length }),
   __ohLogbook: () => logbook,
+  __ohChallenges: () => ({ best: challengeBest, active: challengeActive, list: Object.keys(CHALLENGES) }),
   /** Verification-only AP master engage (mirrors the physical `sw_apMaster`
    *  switch path — same hook pattern as `__ohApMode`). */
   __ohApMaster: (on: boolean) => {

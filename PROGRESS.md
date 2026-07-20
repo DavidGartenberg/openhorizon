@@ -24,7 +24,19 @@ Node; add `~/.local/node/bin` to PATH).
 | 5 — Weather & sky | ✅ done | live METAR wx, clouds/whiteout, altimetry, FIS-B NEXRAD, scattering sky+stars, NLCD land cover |
 | 6 — ATC & AI traffic | ✅ done | live-freq tower/ground/ATIS, voices, AI pattern traffic, IFR CRAFT+handoffs; deviations recorded |
 | 7 — TCAS & TAWS | ✅ done | tau/GPWS cores + scripted tests; live Tahoe escalation + KPAO TA; two spawn bugs found+fixed |
-| 8–10 | not started | Phase 8 (recorder/logbook/training) next |
+| 8 — Recorder/logbook/training | ✅ done | 10 Hz recorder, honest landing debrief, ACS grader, persistent logbook, landing challenges |
+| 9–10 | not started | Phase 9 (sound/polish/perf + §27 flight) next |
+
+## Phase 8 — close (2026-07-20)
+
+8a-8d done (evidence in the appended step notes): recorder/analyzer/grader
+cores TDD'd; auto-debrief + localStorage logbook verified across reload;
+landing challenges (Catalina/Aspen/Tahoe) launch from the search box and
+score via the same analyzer — a deliberately off-course approach at KAVX
+scored an honest 0. Deviations recorded: debrief is a HUD line (overlay UI
+→ Phase 9 polish); training curriculum beyond the steep-turn grader, bush
+trips/discovery tours → roadmap; challenge par values are simple documented
+formulas, not calibrated pars; IndexedDB→localStorage. Suite 384/384.
 
 ## Phase 7 — acceptance (2026-07-19)
 
