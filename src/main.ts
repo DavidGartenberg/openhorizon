@@ -10,6 +10,7 @@ import { CommsBus, isAudible, type Transmission } from './sim/atc/comms'
 import { AiPatternPilot } from './sim/traffic/ai-pilot'
 import { TcasComputer } from './sim/tcas'
 import { TawsComputer } from './sim/taws'
+import { FlightRecorder, analyzeLanding, type RunwayRef } from './sim/recorder'
 import { buildAtis } from './sim/atc/atis'
 import { TowerController, pilotPhrase, type PilotRequestKind, type TrafficView } from './sim/atc/tower'
 import { GroundController } from './sim/atc/ground'
@@ -586,6 +587,89 @@ let activeAtc: ActiveAtc | null = null
 let atisPlayedFor = ''
 /** AI pattern traffic at the active ATC field (Phase 6d/6e wiring). */
 let aiPilots: AiPatternPilot[] = []
+
+// ---- Phase 8c: flight recorder + auto-debrief + logbook (§18/§19) ----
+const recorder = new FlightRecorder()
+let lastOnGround = true
+let flightStartSimS: number | null = null
+let flightFrom = ''
+let debriefLine = ''
+interface LogEntry {
+  date: string; from: string; to: string; durationMin: number
+  touchdownFpm: number; grade: string
+}
+let logbook: LogEntry[] = []
+try {
+  logbook = JSON.parse(localStorage.getItem('oh-logbook') ?? '[]') as LogEntry[]
+} catch {
+  logbook = [] // storage unavailable → session-only, never blocks the sim
+}
+
+function nearestRunwayRef(lat: number, lon: number, touchdownHdgDeg: number): { ref: RunwayRef; icao: string } | null {
+  const ap = airports.near(lat, lon, 6000)[0]
+  if (!ap || ap.r.length === 0) return null
+  let best: RunwayRef | null = null
+  let bestD = Infinity
+  const mLat = 111_320
+  for (const r of ap.r) {
+    for (const end of [
+      { la: r.la1, lo: r.lo1, e: r.e1, far: { la: r.la2, lo: r.lo2 } },
+      { la: r.la2, lo: r.lo2, e: r.e2, far: { la: r.la1, lo: r.lo1 } },
+    ]) {
+      // The threshold LANDED ON is the end whose course matches the
+      // touchdown heading — nearest-end alone picked the far end after a
+      // mid-runway rollout (negative past-threshold in the first debrief).
+      const hdg = bearingDeg({ lat: end.la, lon: end.lo }, { lat: end.far.la, lon: end.far.lo })
+      let dh = Math.abs(hdg - touchdownHdgDeg) % 360
+      if (dh > 180) dh = 360 - dh
+      if (dh > 90) continue
+      const d = Math.hypot((end.la - lat) * mLat, (end.lo - lon) * mLat * Math.cos((lat * Math.PI) / 180))
+      if (d < bestD) {
+        bestD = d
+        best = { thrLat: end.la, thrLon: end.lo, elevFt: end.e, headingDeg: hdg }
+      }
+    }
+  }
+  return best ? { ref: best, icao: ap.i } : null
+}
+
+function updateRecorder(ll: { lat: number; lon: number }): void {
+  const d = aircraft.data
+  recorder.record(loop.simTime, {
+    t: loop.simTime, lat: ll.lat, lon: ll.lon, altFt: d.altitudeFt, iasKt: d.kias,
+    vsFpm: d.verticalSpeedFpm, headingDeg: d.headingDeg, pitchDeg: d.pitchDeg,
+    rollDeg: d.rollDeg, aglFt: d.aglFt, onGround: d.onGround,
+  })
+  if (lastOnGround && !d.onGround) {
+    flightStartSimS = loop.simTime
+    // The field actually departed — NOT the ATC facility (which is the
+    // nearest TOWERED airport and logged 'KSFO' for a KHAF departure).
+    flightFrom = airports.near(ll.lat, ll.lon, 5000)[0]?.i ?? spawnDesc.split(' ')[0] ?? '?'
+    debriefLine = ''
+  }
+  if (!lastOnGround && d.onGround && flightStartSimS !== null && !aircraft.crashed) {
+    const near = nearestRunwayRef(ll.lat, ll.lon, aircraft.data.headingDeg)
+    if (near) {
+      const a = analyzeLanding(recorder.samples, near.ref)
+      if (a) {
+        const side = a.centerlineOffsetM >= 0 ? 'R' : 'L'
+        debriefLine =
+          `LANDED ${near.icao}: ${Math.round(-a.touchdownVsFpm)} fpm (${a.grade}) · ` +
+          `${Math.round(a.pastThresholdM)} m past thr · ${side}${Math.abs(a.centerlineOffsetM).toFixed(0)} m of CL`
+        logbook.push({
+          date: new Date().toISOString().slice(0, 10), from: flightFrom, to: near.icao,
+          durationMin: Math.max(Math.round((loop.simTime - flightStartSimS) / 60), 1),
+          touchdownFpm: Math.round(a.touchdownVsFpm), grade: a.grade,
+        })
+        try {
+          localStorage.setItem('oh-logbook', JSON.stringify(logbook.slice(-200)))
+        } catch { /* session-only */ }
+      }
+    }
+    flightStartSimS = null
+  }
+  lastOnGround = d.onGround
+}
 
 // ---- Phase 7c: TCAS (TAS presentation) + TAWS wiring ----
 const tcas = new TcasComputer({ taOnly: true })
@@ -1219,6 +1303,7 @@ function advanceFrame(elapsed: number, now: number): void {
   updateRadar(ll.lat, ll.lon, now)
   scanAtc(ll.lat, ll.lon, now)
   updateSafety(now)
+  updateRecorder(ll)
   if (atcMenuOpen) renderAtcMenu()
   for (let i = 0; i < aiPilots.length; i++) {
     const p = aiPilots[i]!
@@ -1385,7 +1470,7 @@ function advanceFrame(elapsed: number, now: number): void {
       cameraMode,
       tilesReady: tiles.readyCount,
       wx: wxDesc || undefined,
-      safety: safetyLine || undefined,
+      safety: safetyLine || debriefLine || undefined,
       spawnDesc,
       lat: ll.lat,
       lon: ll.lon,
@@ -1510,6 +1595,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
   },
   __ohApState: () => ({ ...apState }),
   __ohSafety: () => ({ safetyLine, dots: trafficDots }),
+  __ohDebrief: () => ({ debriefLine, samples: recorder.samples.length }),
+  __ohLogbook: () => logbook,
   /** Verification-only AP master engage (mirrors the physical `sw_apMaster`
    *  switch path — same hook pattern as `__ohApMode`). */
   __ohApMaster: (on: boolean) => {

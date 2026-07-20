@@ -442,3 +442,15 @@ browser-verified end-to-end. Verified this session via scripted flights
   Tower self-conflict fix: own fresh takeoff clearance no longer blocks a
   repeat request. Suite 361/361. NEXT: 6f — IFR CRAFT + handoffs + the two
   §24 acceptance flights, then close Phase 6.
+
+- **Phase 8a-8c (2026-07-20): recorder, debrief, ACS grader, logbook** —
+  10 Hz recorder ring; landing analyzer (touchdown fpm/threshold/centerline/
+  grade) consuming ONLY recorded samples; ACS steep-turn grader (±100 ft/
+  ±10 kt/45°±5); auto-debrief on touchdown to HUD + logbook persisted in
+  localStorage (IndexedDB→localStorage recorded deviation) with reload-
+  survival verified live (KHAF landing: 297 fpm smooth; a drifted scripted
+  approach was honestly reported short-right — the debrief tells the truth
+  about bad flying). Two wiring fixes: departure field = nearest airport
+  (was the ATC facility), threshold = course-matched end (was nearest end
+  after rollout). Suite 384/384. NEXT: 8d landing challenges + debrief/
+  logbook overlay UI, then Phase 9.
