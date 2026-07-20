@@ -22,7 +22,31 @@ Node; add `~/.local/node/bin` to PATH).
 | 3 — Cockpit & systems | ✅ done | G1000 PFD/MFD, full systems sim, 3D cockpit, cold-and-dark verified |
 | 4 — Nav & autopilot | ✅ done | radio nav, GPS/FPL, GFC700, CIFP, airspace; coupled-ILS acceptance passed after 4-round AP fix |
 | 5 — Weather & sky | ✅ done | live METAR wx, clouds/whiteout, altimetry, FIS-B NEXRAD, scattering sky+stars, NLCD land cover |
-| 6–10 | not started | Phase 6 (ATC & AI traffic) next |
+| 6 — ATC & AI traffic | ✅ done | live-freq tower/ground/ATIS, voices, AI pattern traffic, IFR CRAFT+handoffs; deviations recorded |
+| 7–10 | not started | Phase 7 (TCAS & TAWS) next |
+
+## Phase 6 — acceptance (2026-07-19)
+
+Both §24 criteria evidenced (details in the step notes appended at the end
+of this file): **VFR KPAO→KSQL full-phraseology** — headless ordered-log
+test (taxi/readback/takeoff at KPAO 118.6/125.0 → inbound/number-2/cleared
+at KSQL 119.0, frequency discipline asserted) + the live-browser KPAO half
+(real freqs, live-fog ATIS choosing runway 13, AI N77GA cleared in the
+pattern, wrong-frequency call honestly unanswered — screenshots in
+transcript). **IFR KSFO→KLAX** — CRAFT clearance (all five elements,
+reserved squawks avoided) + ordered center handoffs to SoCal Approach +
+once-only ILS 24R approach clearance, tested. Suite 364/364.
+
+Phase 6 deviations (recorded, § references):
+- Airline schedules/jet performance classes (§13) not built — AI traffic
+  is GA pattern aircraft at the active towered field. Hub banks → roadmap.
+- Untowered CTAF self-announce (§12.1) not wired — towered fields only.
+- IFR is headless-core + tested; the cockpit menu exposure for filing/
+  flying it end-to-end in-app lands with Phase 8's fuller UI.
+- Web Speech cannot route through WebAudio: voices get squelch clicks, not
+  the §12.3 band-pass (platform limitation; server-side TTS → roadmap).
+- ARTCC center frequencies are representative and flagged `approx` (no
+  free ARTCC boundary/frequency dataset in the pipeline; §28).
 
 ## Phase 5 — acceptance (2026-07-19)
 
