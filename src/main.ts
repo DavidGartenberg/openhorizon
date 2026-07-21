@@ -29,6 +29,7 @@ import { buildC172, updateProp } from './render/aircraft-mesh'
 import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
 import type { PfdInput } from './cockpit/pfd'
 import { Input } from './input/input'
+import { EngineSound } from './audio/engine-sound'
 import { Hud } from './ui/hud'
 import { WorldFrame, TileManager } from './world/tiles'
 import { Airports, type AirportData, type RunwayData } from './world/airports'
@@ -53,6 +54,11 @@ if (!app) throw new Error('missing #app element')
 
 const { renderer, scene, camera } = createScene(app)
 const input = new Input(renderer.domElement)
+const engineSound = new EngineSound()
+// Browsers gate audio behind a user gesture; unlock() is idempotent so the
+// listeners stay attached (they also resume a tab-suspended context).
+window.addEventListener('pointerdown', () => engineSound.unlock())
+window.addEventListener('keydown', () => engineSound.unlock())
 const sky = new SkyDome(scene)
 const ocean = new Ocean(scene)
 const clouds = new Clouds(scene)
@@ -429,6 +435,7 @@ function handleDiscreteKeys(): void {
     }
   }
   if (input.wasPressed('KeyX')) assistOn = !assistOn
+  if (input.wasPressed('KeyM')) engineSound.muted = !engineSound.muted
   if (input.wasPressed('KeyC')) {
     cameraMode =
       cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'free' : cameraMode === 'free' ? 'cockpit' : 'chase'
@@ -1376,6 +1383,21 @@ function advanceFrame(elapsed: number, now: number): void {
   mesh.group.rotation.z = (-d.rollDeg * Math.PI) / 180
   updateProp(mesh, d.rpm, elapsed)
 
+  engineSound.update({
+    rpm: d.rpm,
+    powerFrac: Math.min(Math.max(d.shaftPowerW / C172S.ratedPowerW, 0), 1),
+    iasKt: d.kias,
+    gsKt: d.groundSpeedKt,
+    onGround: d.onGround,
+    // sigmoid stallFraction hits 0.08 ~2.8° below the stall peak — the AoA
+    // vane's 5-8 kt early warning, tracking flap config for free. alphaDeg>0
+    // because stallFraction is max(positive, negative-stall) and the vane
+    // only lifts at high positive AoA (found in-browser: a hard push at 70 kt
+    // fired the horn off the negative branch).
+    stallWarn: d.stallFraction > 0.08 && d.alphaDeg > 0 && !d.onGround && d.kias > 40 && !aircraft.crashed,
+    engineRunning: aircraft.engineRunning,
+  })
+
   if (cameraMode === 'chase') chase.update(elapsed, mesh.group.position, (d.headingDeg * Math.PI) / 180)
   else if (cameraMode === 'orbit') orbit.update(input, mesh.group.position)
   else if (cameraMode === 'cockpit') {
@@ -1641,6 +1663,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   },
   __ohApState: () => ({ ...apState }),
   __ohSafety: () => ({ safetyLine, dots: trafficDots }),
+  __ohAudio: () => ({ unlocked: engineSound.unlocked, muted: engineSound.muted, ...engineSound.inspect() }),
   __ohDebrief: () => ({ debriefLine, samples: recorder.samples.length }),
   __ohLogbook: () => logbook,
   __ohChallenges: () => ({ best: challengeBest, active: challengeActive, list: Object.keys(CHALLENGES) }),

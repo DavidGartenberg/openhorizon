@@ -25,7 +25,24 @@ Node; add `~/.local/node/bin` to PATH).
 | 6 — ATC & AI traffic | ✅ done | live-freq tower/ground/ATIS, voices, AI pattern traffic, IFR CRAFT+handoffs; deviations recorded |
 | 7 — TCAS & TAWS | ✅ done | tau/GPWS cores + scripted tests; live Tahoe escalation + KPAO TA; two spawn bugs found+fixed |
 | 8 — Recorder/logbook/training | ✅ done | 10 Hz recorder, honest landing debrief, ACS grader, persistent logbook, landing challenges |
-| 9–10 | not started | Phase 9 (sound/polish/perf + §27 flight) next |
+| 9 — Sound/polish/perf | 🔧 in progress | 9a sound core done; 9b save/load, 9c perf + §27 flight next |
+| 10 — Fleet (stretch) | not started | gated on §27 per §25 |
+
+## Phase 9a — sound core (2026-07-20)
+
+`src/audio/engine-sound.ts`: sample-free WebAudio synth — 4-cyl firing
+fundamental (RPM/60×2: verified 25.6 Hz at 767 rpm idle, 79.4 Hz at 2382
+rpm full throttle), gain/lowpass tracking shaft power, IAS² slipstream,
+ground-roll rumble, touchdown thump one-shot, stall horn keyed to the aero
+model's stallFraction (trips at AoA 13.7° ≈ 2.8° before the stall peak —
+the vane's 5-8 kt margin — verified by a rate-limited decel in-browser;
+silences on recovery). Gesture unlock + M mute (toggle verified; CDP `key`
+events don't reach the page in this harness — synthetic KeyboardEvent used,
+input path is the same). **Bug found in-browser:** first horn gate used raw
+`stallFraction`, which is max(positive, *negative*) stall — a hard push at
+70 kt fired the horn from the negative branch; real vane is positive-AoA
+only → added `alphaDeg > 0` gate. Honest limit: automation verifies the
+node graph (`__ohAudio`), not audibility — the ear check is the user's.
 
 ## Phase 8 — close (2026-07-20)
 
