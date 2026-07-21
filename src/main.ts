@@ -344,9 +344,94 @@ function challengeScore(a: { touchdownVsFpm: number; pastThresholdM: number; cen
   return Math.max(Math.round(s), 0)
 }
 
+// ---- Phase 9b: save/load snapshot (§17 subset) + payload loading ----
+// A snapshot restores a *trimmed* flight state (position/alt/hdg/speed/
+// config/fuel/clock), not mid-maneuver rates — documented deviation; the
+// full 6-DOF state doesn't survive a floating-origin rebase honestly.
+interface Snapshot {
+  v: 1
+  lat: number; lon: number; altFt: number; hdgDeg: number; kias: number
+  flapsIndex: number; fuelKg: number; payloadKg: number
+  simMs: number; onGround: boolean; spawn: string
+}
+
+let toastLine = ''
+let toastUntil = 0
+function toast(msg: string): void {
+  toastLine = msg
+  toastUntil = performance.now() + 6000
+}
+
+function saveSnapshot(): void {
+  const d = aircraft.data
+  const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+  const snap: Snapshot = {
+    v: 1, lat: ll.lat, lon: ll.lon, altFt: d.altitudeFt, hdgDeg: d.headingDeg,
+    kias: d.kias, flapsIndex: aircraft.controls.flapsIndex, fuelKg: aircraft.fuelKg,
+    payloadKg: aircraft.payloadKg,
+    simMs: baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000,
+    onGround: d.onGround, spawn: spawnDesc,
+  }
+  localStorage.setItem('oh-save', JSON.stringify(snap))
+  toast(`SAVED — ${snap.spawn || 'airborne'} ${Math.round(snap.altFt)} ft`)
+}
+
+function loadSnapshot(): boolean {
+  let snap: Snapshot | null = null
+  try {
+    snap = JSON.parse(localStorage.getItem('oh-save') ?? 'null') as Snapshot | null
+  } catch { /* corrupt save — treat as absent */ }
+  if (!snap || snap.v !== 1) {
+    toast('NO SAVE')
+    return false
+  }
+  aircraft.payloadKg = snap.payloadKg
+  if (snap.onGround) {
+    // Ground saves restore to the saved runway's spawn point (the exact
+    // ramp spot isn't part of the trimmed-state contract).
+    const parts = snap.spawn.split(' ')
+    const ap = airports.find(parts[0] || 'KHAF')
+    if (!ap) { toast('SAVE AIRPORT UNKNOWN'); return false }
+    spawnAtAirport(ap, parts[1])
+  } else {
+    aircraft.crashed = false
+    resetSystemsState()
+    frame.anchor = { lat: snap.lat, lon: snap.lon }
+    tiles.onRebase()
+    airports.positionAll()
+    const altM = snap.altFt * FT
+    const flapsDeg = [0, 10, 20, 30][snap.flapsIndex] ?? 0
+    aircraft.fuelKg = snap.fuelKg // before trim: mass affects the solve
+    const tas = kcasFromKias(Math.max(snap.kias, 55), flapsDeg) * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
+    const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg, gammaRad: 0 })
+    aircraft.flapsDeg = flapsDeg
+    aircraft.controls.flapsIndex = snap.flapsIndex
+    aircraft.applyTrimState(tas, t.alphaRad, altM, (snap.hdgDeg * Math.PI) / 180, t.gammaRad, t.elevatorRad, t.throttle, t.rpm)
+    parkingBrake = false
+    spawnDesc = snap.spawn
+    tiles.update(aircraft.posNed.x, aircraft.posNed.y)
+    airports.updateVisuals(frame.anchor.lat, frame.anchor.lon)
+  }
+  aircraft.fuelKg = snap.fuelKg
+  scrubSeconds = (snap.simMs - baseDate.getTime()) / 1000 - loop.simTime
+  toast(`LOADED — ${snap.spawn || 'airborne'} ${Math.round(snap.altFt)} ft`)
+  return true
+}
+
 function handleSearch(query: string): void {
   const parts = query.trim().toUpperCase().split(/\s+/)
   if (parts.length === 0 || !parts[0]) return
+  if (parts[0] === 'WEIGHT' && parts[1]) {
+    // `weight 400` — payload (pilot+pax+bags) in lb. Envelope plot is
+    // deferred (PROGRESS deviation); gross/limit shown honestly.
+    const lb = Number(parts[1])
+    if (Number.isFinite(lb)) {
+      aircraft.payloadKg = Math.min(Math.max(lb / 2.2046, 0), 500)
+      const grossLb = aircraft.massKg * 2.2046
+      toast(`PAYLOAD ${Math.round(aircraft.payloadKg * 2.2046)} lb — GROSS ${Math.round(grossLb)} lb${grossLb > 2558 ? ' — OVER MAX RAMP 2558' : ''}`)
+    }
+    return
+  }
   if (parts[0] === 'CHALLENGE' && parts[1] && CHALLENGES[parts[1]]) {
     const ch = CHALLENGES[parts[1]]!
     const ap = airports.find(ch.icao)
@@ -436,6 +521,8 @@ function handleDiscreteKeys(): void {
   }
   if (input.wasPressed('KeyX')) assistOn = !assistOn
   if (input.wasPressed('KeyM')) engineSound.muted = !engineSound.muted
+  if (input.wasPressed('KeyO')) saveSnapshot()
+  if (input.wasPressed('KeyP')) loadSnapshot()
   if (input.wasPressed('KeyC')) {
     cameraMode =
       cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'free' : cameraMode === 'free' ? 'cockpit' : 'chase'
@@ -1538,7 +1625,7 @@ function advanceFrame(elapsed: number, now: number): void {
       cameraMode,
       tilesReady: tiles.readyCount,
       wx: wxDesc || undefined,
-      safety: safetyLine || debriefLine || undefined,
+      safety: (performance.now() < toastUntil ? toastLine : '') || safetyLine || debriefLine || undefined,
       spawnDesc,
       lat: ll.lat,
       lon: ll.lon,
@@ -1664,6 +1751,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohApState: () => ({ ...apState }),
   __ohSafety: () => ({ safetyLine, dots: trafficDots }),
   __ohAudio: () => ({ unlocked: engineSound.unlocked, muted: engineSound.muted, ...engineSound.inspect() }),
+  __ohSave: () => { saveSnapshot(); return localStorage.getItem('oh-save') },
+  __ohLoad: () => loadSnapshot(),
   __ohDebrief: () => ({ debriefLine, samples: recorder.samples.length }),
   __ohLogbook: () => logbook,
   __ohChallenges: () => ({ best: challengeBest, active: challengeActive, list: Object.keys(CHALLENGES) }),

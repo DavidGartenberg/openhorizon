@@ -25,7 +25,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 6 — ATC & AI traffic | ✅ done | live-freq tower/ground/ATIS, voices, AI pattern traffic, IFR CRAFT+handoffs; deviations recorded |
 | 7 — TCAS & TAWS | ✅ done | tau/GPWS cores + scripted tests; live Tahoe escalation + KPAO TA; two spawn bugs found+fixed |
 | 8 — Recorder/logbook/training | ✅ done | 10 Hz recorder, honest landing debrief, ACS grader, persistent logbook, landing challenges |
-| 9 — Sound/polish/perf | 🔧 in progress | 9a sound core done; 9b save/load, 9c perf + §27 flight next |
+| 9 — Sound/polish/perf | 🔧 in progress | 9a sound + 9b save/load done; 9c perf + §27 flight next |
 | 10 — Fleet (stretch) | not started | gated on §27 per §25 |
 
 ## Phase 9a — sound core (2026-07-20)
@@ -43,6 +43,20 @@ input path is the same). **Bug found in-browser:** first horn gate used raw
 70 kt fired the horn from the negative branch; real vane is positive-AoA
 only → added `alphaDeg > 0` gate. Honest limit: automation verifies the
 node graph (`__ohAudio`), not audibility — the ear check is the user's.
+
+## Phase 9b — save/load + payload (2026-07-21)
+
+O saves, P loads (`oh-save` in localStorage; `__ohSave/__ohLoad` hooks;
+6 s HUD toast). Verified across a full page reload: airborne save at 955
+ft/hdg 313/64.6 KIAS/payload 158.76 kg restored to 956 ft/312/64.7 kt
+airborne on trim with payload bit-exact, fuel continuing from the saved
+quantity, and the sim clock resumed (18:10:35Z on the HUD). Ground save
+restores to the saved runway spawn point. `weight <lb>` search command
+sets payload with honest gross/max-ramp warning. **Documented deviation
+(§17):** a snapshot restores a *trimmed* state (position/alt/hdg/speed/
+config/fuel/clock), not mid-maneuver 6-DOF rates; ground saves restore
+the runway spawn, not the exact ramp spot. W&B envelope plot deferred —
+payload entry + gross readout only.
 
 ## Phase 8 — close (2026-07-20)
 

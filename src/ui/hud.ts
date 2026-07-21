@@ -93,7 +93,7 @@ export class Hud {
       `${stats.wx ? ` · wx ${stats.wx}` : ''}${stats.safety ? `\n${stats.safety}` : ''}\n` +
       `${this.fps.toFixed(0)} fps · sim ${formatUTC(stats.simDate)} [${rate}] · cam ${stats.cameraMode}\n` +
       `↑↓←→ fly · A/D rudder · W/S throttle · F/G flaps · ,/. trim · B brakes\n` +
-      `/ airport search · C camera · R reset · Space pause · 1/2/3 rate · [ ] time · M mute`
+      `/ airport search · C camera · R reset · Space pause · 1/2/3 rate · [ ] time · M mute · O/P save/load`
   }
 }
 
