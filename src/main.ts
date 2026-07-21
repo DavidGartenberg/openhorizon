@@ -312,6 +312,17 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
     aircraft.posNed.y = e
   }
   aircraft.controls.brakeLeft = aircraft.controls.brakeRight = 0
+  if (!onFinal) {
+    // Ground spawns start with a clean cockpit: stale trim/flaps/throttle
+    // from a previous flight made a KSFO 1L takeoff refuse to rotate at 65
+    // KIAS (found by the §27 flight; KeyR always did this — search-box and
+    // hook spawns must too). applyTrimState covers the onFinal branch.
+    aircraft.controls.throttle = 0
+    aircraft.controls.trim = 0
+    aircraft.controls.flapsIndex = 0
+    aircraft.controls.pitch = aircraft.controls.roll = aircraft.controls.yaw = 0
+    aircraft.flapsDeg = 0
+  }
   parkingBrake = !onFinal // hold position on ground spawns until power-up
   setDaytimeAt(ap.lo)
   spawnDesc = `${ap.i} ${rwyIdent ?? ''}${onFinal ? ' final' : ''}`.trim()
@@ -1048,6 +1059,10 @@ function atcMenuItems(): AtcMenuItem[] {
   const view = playerAtcView()
   const items: AtcMenuItem[] = []
   const sendPilot = (kind: PilotRequestKind, freq: number, handle: () => Transmission[]) => {
+    // The menu action includes the tune — a real pilot tunes, then keys up.
+    // (Found by the §27 flight: both calls went out on the boot default
+    // 118.00 and no controller ever heard them.)
+    radios.com1.activeMhz = freq
     comms.transmit({ freqMhz: radios.com1.activeMhz, from: CALLSIGN, text: pilotPhrase(CALLSIGN, kind, a.atis.activeRunway), atSimS: loop.simTime })
     if (isAudible(freq, radios.com1.activeMhz)) {
       const replies = handle()
@@ -1058,6 +1073,7 @@ function atcMenuItems(): AtcMenuItem[] {
     items.push({
       label: 'Read back taxi clearance',
       run: () => {
+        radios.com1.activeMhz = a.gndF // readback goes to whoever issued it
         comms.transmit({
           freqMhz: radios.com1.activeMhz, from: CALLSIGN,
           text: `runway ${a.atis.activeRunway}, taxi via the parallel, hold short ${a.atis.activeRunway}, ${CALLSIGN}`,
@@ -1793,6 +1809,14 @@ Object.assign(window as unknown as Record<string, unknown>, {
   },
   __ohHold: (on: boolean) => {
     holdWingsLevel = on
+  },
+  /** Verification-only sim-rate control (mirrors Space/1/2/3). Synthetic
+   *  keyboard events are only polled on real rAF frames, which automation
+   *  suspends — scripted flights need a synchronous pause between tool
+   *  calls or the plane flies unattended on stale targets (found by the
+   *  §27 flight). */
+  __ohRate: (r: 0 | 1 | 2 | 4) => {
+    loop.setRate(r)
   },
   __ohCtl: (c: Record<string, number> | null) => {
     ctlOverride = c === null ? null : { ...(ctlOverride ?? {}), ...c }

@@ -25,7 +25,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 6 — ATC & AI traffic | ✅ done | live-freq tower/ground/ATIS, voices, AI pattern traffic, IFR CRAFT+handoffs; deviations recorded |
 | 7 — TCAS & TAWS | ✅ done | tau/GPWS cores + scripted tests; live Tahoe escalation + KPAO TA; two spawn bugs found+fixed |
 | 8 — Recorder/logbook/training | ✅ done | 10 Hz recorder, honest landing debrief, ACS grader, persistent logbook, landing challenges |
-| 9 — Sound/polish/perf | 🔧 in progress | 9a sound + 9b save/load done; 9c perf + §27 flight next |
+| 9 — Sound/polish/perf | ✅ done | sound core, save/load, perf gate, §27 flight flown at KSFO |
 | 10 — Fleet (stretch) | not started | gated on §27 per §25 |
 
 ## Phase 9a — sound core (2026-07-20)
@@ -57,6 +57,46 @@ sets payload with honest gross/max-ramp warning. **Documented deviation
 config/fuel/clock), not mid-maneuver 6-DOF rates; ground saves restore
 the runway spawn, not the exact ramp spot. W&B envelope plot deferred —
 payload entry + gross readout only.
+
+## Phase 9c — performance gate + the §27 flight (2026-07-21)
+
+**Perf (§23):** headless full-frame cost (physics+logic+`renderer.render`,
+via 180 timed `__ohStep(1/60)` calls) at KSFO 28R with 219 tiles: mean
+8.3 ms, p95 17.7; with AI traffic + live wx + safety layer: p50 10.1 ms,
+max 15.2 — every frame inside the 16.7 ms/60 fps budget. Sustained
+on-glass fps can't be measured under automation (rAF suspended); the live
+HUD read 60 fps in this session's visible-boot screenshots, matching
+Phase 0's 61 fps. Honest limit recorded.
+
+**§27 definition-of-done flight** (one boot, KSFO, today's live weather —
+ATIS picked 1L by the real wind): taxi clearance + readback ("readback
+correct", Ground 121.80) → held short while a real AI arrival landed
+("N42PK, cleared to land"; tower said "hold short, traffic on final" until
+the runway freed — correct sequencing, initially misread as a bug) →
+"cleared for takeoff" (Tower 120.50) → bay-side right pattern at 900 ft
+among AI traffic (2 TCAS targets; TAWS checked every leg and stayed
+quiet) → "number 2, follow the traffic ahead, report final" → "cleared to
+land" → touchdown and full stop on 1L. Debrief: **"LANDED KSFO: 240 fpm
+(smooth) · 1228 m past thr · R22 m of CL"** — honestly long (the harness
+pilot's descent law lacked glidepath feed-forward and arrived high; the
+analyzer said so). Logbook entry (KSFO→KSFO, 9 min, smooth) survives a
+full page reload — the airplane remembers.
+
+**Sim bugs found and fixed by the flight:** ATC menu transmitted on
+whatever COM1 held instead of tuning the labeled frequency (calls went to
+118.00 and no controller heard); ground spawns kept the previous flight's
+trim/flaps/throttle (a KSFO 1L takeoff refused to rotate at 65 KIAS on
+stale nose-down trim; KeyR always reset these — search-box/hook spawns now
+do too); added `__ohRate` (synthetic Space is only polled on real rAF
+frames, so scripted pauses landed out of phase and the plane flew
+unattended between tool calls — two CFITs traced to this).
+
+**Known polish items (recorded, not fixed):** TAWS mode-5 "GLIDESLOPE"
+line on a KPAO downwind (a receivable KSJC/KSFO ILS GS while low is
+arguably in-envelope but reads spurious at a no-ILS field); one "SINK
+RATE" while parked (ground inhibition gap); crashed arrivals leave AI
+planes parked on the runway visual-only; failures menu UI still hook-only
+(`__ohFail`); PAPI/night-emissive/overlay-UI deferrals stand.
 
 ## Phase 8 — close (2026-07-20)
 
