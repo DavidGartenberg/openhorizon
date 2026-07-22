@@ -14,6 +14,10 @@ export interface GearLeg {
   k: number // strut spring N/m
   c: number // strut damping N·s/m
   steerMaxRad: number // 0 = castoring/fixed
+  /** Strut normal-force cap, N (numeric spike guard). Default 40 kN — the
+   *  C172 value; transport-category legs MUST override or the airplane
+   *  collapses through its own gear (found by the 737 browser landing). */
+  maxNormalN?: number
 }
 
 import type { JetParams } from '../turbofan'

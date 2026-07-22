@@ -27,7 +27,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 8 — Recorder/logbook/training | ✅ done | 10 Hz recorder, honest landing debrief, ACS grader, persistent logbook, landing challenges |
 | 9 — Sound/polish/perf | ✅ done | sound core, save/load, perf gate, §27 flight flown at KSFO |
 | 10 — Fleet (absorbed) | ✅ → Phase 11 | absorbed by the approved Phases 11–15 mega-plan |
-| 11 — Fleet core | 🔧 11a–11f done | params threading, carb ice/hand-prop, J-3 Cub, turbofan, jet plumbing, 737-800; 11g UX in progress |
+| 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -58,6 +58,43 @@ sets payload with honest gross/max-ramp warning. **Documented deviation
 config/fuel/clock), not mid-maneuver 6-DOF rates; ground saves restore
 the runway spawn, not the exact ramp spot. W&B envelope plot deferred —
 payload entry + gross readout only.
+
+## Phase 11 — Fleet core close (2026-07-22)
+
+11a–11g complete (per-slice evidence in the commit messages). Three
+Tier-A aircraft, each with its own validation table beside the untouched
+C172 POH rows (suite totals: 424 tests, validate 23 = 10 C172 + 7 Cub +
+6 737): params threading with the silent-default trap killed; carb ice /
+hand-prop / pitot-cal / taildragger-rest piston extensions; the J-3 Cub
+with EMERGENT ground-loop physics; the CFM56 turbofan; jet/retract/Mach
+plumbing proven on a synthetic jet first; the 737-800 (trimmable-stab
+authority modeled after full-aft came up 0.7° short of the stall break);
+fleet UX (FLY verbs, per-aircraft arcs/EIS/HUD/sound/meshes, U/H/K keys).
+
+**Browser acceptance.** Cub at KHAF under real coastal fog (temp/dewpoint
+spread 0 °C): FLY swap, three-point rest 8.8°, mags-cut windmill-down +
+hand-prop restart, takeoff 46.5 kt, climb 364 fpm — and the carb-ice
+model accreted for real at glide power (intake factor 0.935), carb heat
+clearing it (0.9 heat penalty). 737 at KSFO: GFC700 flew the coupled
+approach at transport inertia (the flagged gain risk did NOT materialize
+— VS ±100 fpm hunting, no divergence); gear-up at 465 ft drew "TOO LOW,
+GEAR" at 286 ft; relatched gear; touchdown firm 349 fpm, 842 m past
+threshold, R49 m of centerline (runway edge — the debrief said so),
+rolled to a stop. **Bug found by that landing:** the gear normal-force
+clamp was hardcoded at the C172's 40 kN — a 59-tonne 737 collapsed
+through its own gear; now per-leg `maxNormalN` (default bit-exact).
+Parked-737 idle-thrust-vs-brakes verified stationary over 20 s.
+
+**Honest notes:** FIFTY…TEN callout cadence is proven in the headless
+b738 suite; the browser scripts sample the safety line on a 0.5-s
+real-time cadence and can miss individual words (harness artifact, not a
+sim gap). One post-run anomaly (a stopped 737 later found rolling at 97
+kt after unattended throttled frames with stale override state) is the
+documented between-calls harness hazard, not reproducible from a clean
+boot. Deviations carried from the plan: no MCP/CDU/FMC UI, G1000-style
+PFD with an honest jet EIS (N1/FF; piston gauges omitted, not faked), no
+autothrottle servo, no spoilers, no CLB derate, hand-prop is a key
+action, 737/Cub pitot cal absent → IAS=CAS.
 
 ## Phase 9c — performance gate + the §27 flight (2026-07-21)
 

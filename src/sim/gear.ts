@@ -92,7 +92,9 @@ export function computeGear(inp: GearInput, out: GearOutput, P: AircraftParams =
     // Strut normal force (spring-damper along NED z, pushes up = -z).
     const compressionRate = contactVelNed.z
     let normal = g.k * pen + g.c * compressionRate
-    normal = clamp(normal, 0, 40_000)
+    // Per-leg cap (11g): default 40 kN is the C172 value, bit-exact for the
+    // existing fleet; transport legs override (a 737 needs ~590 kN static).
+    normal = clamp(normal, 0, g.maxNormalN ?? 40_000)
     if (normal <= 0) continue
 
     // Wheel heading in the ground plane: body-x projected, plus steering.

@@ -108,9 +108,9 @@ export const B738: AircraftParams = {
 
   // ---- gear: wheelbase 15.6 m, track 5.72 m; CG just ahead of mains ----
   gear: {
-    nose: { x: 14.6, y: 0, z: 2.84, k: 2.4e6, c: 1.8e5, steerMaxRad: 0.6 },
-    mainL: { x: -1.0, y: -2.86, z: 2.9, k: 6.2e6, c: 4.2e5, steerMaxRad: 0 },
-    mainR: { x: -1.0, y: 2.86, z: 2.9, k: 6.2e6, c: 4.2e5, steerMaxRad: 0 },
+    nose: { x: 14.6, y: 0, z: 2.84, k: 2.4e6, c: 1.8e5, steerMaxRad: 0.6, maxNormalN: 5e5 },
+    mainL: { x: -1.0, y: -2.86, z: 2.9, k: 6.2e6, c: 4.2e5, steerMaxRad: 0, maxNormalN: 1.4e6 },
+    mainR: { x: -1.0, y: 2.86, z: 2.9, k: 6.2e6, c: 4.2e5, steerMaxRad: 0, maxNormalN: 1.4e6 },
   },
   rollingResistance: 0.014,
   brakeMu: 0.45,

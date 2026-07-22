@@ -38,9 +38,9 @@ const SYNTH_JET: AircraftParams = {
   machModel: { mdd: 0.82, dragRiseK: 18 },
   gearRetractable: { transitS: 8, dCdExtended: 0.02 },
   gear: {
-    nose: { x: 15.0, y: 0, z: 2.8, k: 2.2e6, c: 1.6e5, steerMaxRad: 0.6 },
-    mainL: { x: -1.2, y: -3.4, z: 2.9, k: 5.5e6, c: 3.5e5, steerMaxRad: 0 },
-    mainR: { x: -1.2, y: 3.4, z: 2.9, k: 5.5e6, c: 3.5e5, steerMaxRad: 0 },
+    nose: { x: 15.0, y: 0, z: 2.8, k: 2.2e6, c: 1.6e5, steerMaxRad: 0.6, maxNormalN: 5e5 },
+    mainL: { x: -1.2, y: -3.4, z: 2.9, k: 5.5e6, c: 3.5e5, steerMaxRad: 0, maxNormalN: 1.4e6 },
+    mainR: { x: -1.2, y: 3.4, z: 2.9, k: 5.5e6, c: 3.5e5, steerMaxRad: 0, maxNormalN: 1.4e6 },
   },
   rollingResistance: 0.015, brakeMu: 0.45, tireCorneringPerRad: 8, tireLatMuCap: 0.8,
   vSpeeds: { vs0: 108, vs1: 125, vx: 165, vy: 175, vfe10: 250, vfe30: 175, va: 270, vno: 320, vne: 340, glide: 210 },
