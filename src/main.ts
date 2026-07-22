@@ -30,6 +30,7 @@ import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
 import { B738 } from './sim/aircraft/b738'
 import { makeCarbIceState, stepCarbIce, carbIcePowerFactor } from './sim/systems/carb-ice'
+import { loadAircraftTypes, aircraftTypesLoaded, aircraftTypeCount, typeInfo, parseDesc } from './world/aircraft-types'
 import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
 import type { PfdInput } from './cockpit/pfd'
 import { Input } from './input/input'
@@ -129,6 +130,8 @@ const fleetKey = ((): string => {
   }
 })()
 const FLEET_ACTIVE = FLEET[fleetKey]!
+
+loadAircraftTypes() // Phase 12a: Doc-8643 registry (traffic typing)
 
 const aircraft = new Aircraft(FLEET_ACTIVE.params)
 aircraft.groundElevAt = (n, e) => {
@@ -1871,6 +1874,11 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohSafety: () => ({ safetyLine, dots: trafficDots }),
   __ohAudio: () => ({ unlocked: engineSound.unlocked, muted: engineSound.muted, ...engineSound.inspect() }),
   /** Fleet verification hooks (11g) — mirror the U/H/K keys + inspection. */
+  __ohTypes: (designator?: string) => ({
+    loaded: aircraftTypesLoaded(),
+    count: aircraftTypeCount(),
+    ...(designator ? { info: typeInfo(designator), parsed: parseDesc(typeInfo(designator).desc) } : {}),
+  }),
   __ohFleet: () => ({ key: fleetKey, label: FLEET_ACTIVE.label, jet: !!aircraft.P.jet, n1: aircraft.data.n1Pct, gearPos: aircraft.gearPos, gearCmd: aircraft.gearDownCommanded }),
   __ohGearCmd: (down: boolean) => { if (aircraft.P.gearRetractable) aircraft.gearDownCommanded = down },
   __ohCarbHeat: (on: boolean) => { carbHeatOn = on },

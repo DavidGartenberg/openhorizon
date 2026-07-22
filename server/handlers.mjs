@@ -7,9 +7,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { buildUsAirports, buildUsNavaids, buildCifpProcedures, buildUsAirspace, buildUsFrequencies } from './parse.mjs'
+import { buildUsAirports, buildUsNavaids, buildCifpProcedures, buildUsAirspace, buildUsFrequencies, buildAircraftTypes } from './parse.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
+/** Vendored offline fallbacks committed with the repo (Phase 12a). */
+const seedDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache-seed')
 fs.mkdirSync(path.join(cacheDir, 'terrain'), { recursive: true })
 
 const TERRAIN_BASE = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium'
@@ -53,6 +55,45 @@ export async function airportsData() {
   airportsJson = JSON.stringify(buildUsAirports(airports, runways))
   fs.writeFileSync(jsonFile, airportsJson)
   return airportsJson
+}
+
+// ---- ICAO aircraft-type designators (Phase 12a) ----
+// Sources (community mirrors of ICAO Doc 8643 — recorded deviation: may
+// lag ICAO revisions): desc/wtc from the tar1090-db ADS-B ecosystem table,
+// names best-effort from the rikgale ICAOList CSV. A vendored seed
+// (server/cache-seed/aircraft-types.json) makes the endpoint work offline.
+const TYPES_URL = 'https://raw.githubusercontent.com/wiedehopf/tar1090-db/master/icao_aircraft_types.json'
+const TYPE_NAMES_URL = 'https://raw.githubusercontent.com/rikgale/ICAOList/main/ICAOList.csv'
+let aircraftTypesJson = null
+
+export async function aircraftTypesData() {
+  if (aircraftTypesJson) return aircraftTypesJson
+  const jsonFile = path.join(cacheDir, 'aircraft-types.json')
+  if (fs.existsSync(jsonFile)) {
+    aircraftTypesJson = fs.readFileSync(jsonFile, 'utf8')
+    return aircraftTypesJson
+  }
+  try {
+    const typesRes = await fetch(TYPES_URL)
+    if (!typesRes.ok) throw new Error(`types: ${typesRes.status}`)
+    const typesText = await typesRes.text()
+    let namesText = null
+    try {
+      const namesRes = await fetch(TYPE_NAMES_URL)
+      if (namesRes.ok) namesText = await namesRes.text()
+    } catch { /* names are best-effort */ }
+    aircraftTypesJson = JSON.stringify(buildAircraftTypes(typesText, namesText))
+    fs.writeFileSync(jsonFile, aircraftTypesJson)
+    return aircraftTypesJson
+  } catch (err) {
+    // Offline / mirror down: the vendored seed is the honest fallback.
+    const seed = path.join(seedDir, 'aircraft-types.json')
+    if (fs.existsSync(seed)) {
+      aircraftTypesJson = fs.readFileSync(seed, 'utf8')
+      return aircraftTypesJson
+    }
+    throw err
+  }
 }
 
 let navaidsJson = null
@@ -365,8 +406,8 @@ export async function route(url, res) {
       res.end(buf)
       return true
     }
-    if (url === '/api/frequencies.json') {
-      const json = await frequenciesData()
+    if (url === '/api/aircraft-types.json') {
+      const json = await aircraftTypesData()
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Cache-Control': 'public, max-age=86400',

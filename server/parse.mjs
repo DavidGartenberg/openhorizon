@@ -757,3 +757,38 @@ export function buildUsFrequencies(frequenciesCsv, usIdentSet) {
   }
   return out
 }
+
+/**
+ * ICAO Doc-8643 type designators (Phase 12a): merge the ADS-B ecosystem's
+ * desc/wtc table (tar1090-db mirror: { DES: { desc: 'L2J', wtc: 'M' } })
+ * with the community name list (rikgale ICAOList CSV) into a compact map
+ * { DES: [desc, wtc, name] }. Names are best-effort — absent means empty
+ * string, never an invented name. Types JSON is required; unparseable
+ * input throws so the endpoint 502s instead of serving junk.
+ */
+export function buildAircraftTypes(typesJsonText, namesCsvText) {
+  const types = JSON.parse(typesJsonText)
+  if (typeof types !== 'object' || types === null || Array.isArray(types)) {
+    throw new Error('aircraft types: expected an object keyed by designator')
+  }
+  const names = new Map()
+  if (namesCsvText) {
+    const { idx, rows } = parseCsv(namesCsvText)
+    const dCol = idx['Aircraft TypeDesignator']
+    const mCol = idx['MANUFACTURER, Model']
+    if (dCol !== undefined && mCol !== undefined) {
+      for (const r of rows) {
+        const d = (r[dCol] ?? '').trim().toUpperCase()
+        if (d && !names.has(d)) names.set(d, (r[mCol] ?? '').trim())
+      }
+    }
+  }
+  const out = {}
+  for (const [dRaw, v] of Object.entries(types)) {
+    const d = dRaw.trim().toUpperCase()
+    if (!d || !v || typeof v.desc !== 'string') continue
+    if (out[d]) continue // first entry wins on trim/case collisions
+    out[d] = [v.desc, typeof v.wtc === 'string' ? v.wtc : '-', names.get(d) ?? '']
+  }
+  return out
+}
