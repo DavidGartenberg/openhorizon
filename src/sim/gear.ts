@@ -4,10 +4,9 @@
  * cornering forces, nosewheel steering, differential braking.
  */
 import { C172S } from './aircraft/c172s'
+import type { AircraftParams, GearLeg } from './aircraft/params'
 import type { V3, Q4 } from '../math/vec'
 import { v3, v3set, v3add, v3cross, qrotate, qrotateInv, clamp } from '../math/vec'
-
-const P = C172S
 
 export interface GearInput {
   posNed: V3 // CG position (z down, ground at z = 0... altitude = -z)
@@ -29,11 +28,25 @@ export interface GearOutput {
   maxCompressionM: number
 }
 
-const LEGS = [
-  { def: P.gear.nose, brake: 'none' as const },
-  { def: P.gear.mainL, brake: 'left' as const },
-  { def: P.gear.mainR, brake: 'right' as const },
-]
+type LegSpec = { def: GearLeg; brake: 'none' | 'left' | 'right' }
+
+/** Per-aircraft leg list, built once per params object (no per-frame alloc).
+ *  Tricycle uses `gear.nose`; a taildragger's third wheel is `gear.tail` —
+ *  same strut/tire math, the handling difference (ground-loop divergence)
+ *  emerges from the mains sitting AHEAD of the CG. */
+const legsCache = new WeakMap<AircraftParams, LegSpec[]>()
+function legsFor(P: AircraftParams): LegSpec[] {
+  let legs = legsCache.get(P)
+  if (!legs) {
+    legs = []
+    const third = P.gear.nose ?? P.gear.tail
+    if (third) legs.push({ def: third, brake: 'none' })
+    legs.push({ def: P.gear.mainL, brake: 'left' })
+    legs.push({ def: P.gear.mainR, brake: 'right' })
+    legsCache.set(P, legs)
+  }
+  return legs
+}
 
 // scratch
 const rBody = v3()
@@ -46,13 +59,13 @@ const fBody = v3()
 const mBody = v3()
 const scratch = v3()
 
-export function computeGear(inp: GearInput, out: GearOutput): GearOutput {
+export function computeGear(inp: GearInput, out: GearOutput, P: AircraftParams = C172S): GearOutput {
   v3set(out.force, 0, 0, 0)
   v3set(out.moment, 0, 0, 0)
   out.onGround = false
   out.maxCompressionM = 0
 
-  for (const leg of LEGS) {
+  for (const leg of legsFor(P)) {
     const g = leg.def
     v3set(rBody, g.x, g.y, g.z)
     qrotate(rNed, inp.quat, rBody)

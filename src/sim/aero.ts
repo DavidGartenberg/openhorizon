@@ -6,6 +6,7 @@
  * moments (N·m).
  */
 import { C172S, flapInterp } from './aircraft/c172s'
+import type { AircraftParams } from './aircraft/params'
 import type { V3 } from '../math/vec'
 import { v3set, clamp } from '../math/vec'
 
@@ -36,15 +37,13 @@ export interface AeroOutput {
   stallFraction: number // 0 = attached, 1 = fully stalled
 }
 
-const P = C172S
-const K_INDUCED = 1 / (Math.PI * P.oswald * P.aspectRatio)
-const DISK_AREA = (Math.PI * P.propDiameterM * P.propDiameterM) / 4
-
 function sigmoid(x: number): number {
   return 1 / (1 + Math.exp(-x))
 }
 
-export function computeAero(inp: AeroInput, out: AeroOutput): AeroOutput {
+export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams = C172S): AeroOutput {
+  const kInduced = 1 / (Math.PI * P.oswald * P.aspectRatio)
+  const diskArea = (Math.PI * P.propDiameterM * P.propDiameterM) / 4
   const V = Math.max(inp.vAir, 1)
   const qbar = 0.5 * inp.rho * V * V
   const qS = qbar * P.wingAreaM2
@@ -60,14 +59,14 @@ export function computeAero(inp: AeroInput, out: AeroOutput): AeroOutput {
 
   // Propwash raises dynamic pressure at the tail (elevator/rudder authority
   // and pitch damping grow with power at low speed).
-  const dqProp = Math.max(inp.thrustN, 0) / (2 * DISK_AREA)
+  const dqProp = Math.max(inp.thrustN, 0) / (2 * diskArea)
   const tailQFactor = clamp((qbar + P.propwashTailFactor * dqProp) / qbar, 1, 2.5)
 
   // Flap increments.
-  const dCl0 = flapInterp(P.flapDCl0, inp.flapsDeg)
-  const dClMax = flapInterp(P.flapDClMax, inp.flapsDeg)
-  const dCd = flapInterp(P.flapDCd, inp.flapsDeg)
-  const dCm = flapInterp(P.flapDCm, inp.flapsDeg)
+  const dCl0 = flapInterp(P.flapDCl0, inp.flapsDeg, P.flapDetentsDeg)
+  const dClMax = flapInterp(P.flapDClMax, inp.flapsDeg, P.flapDetentsDeg)
+  const dCd = flapInterp(P.flapDCd, inp.flapsDeg, P.flapDetentsDeg)
+  const dCm = flapInterp(P.flapDCm, inp.flapsDeg, P.flapDetentsDeg)
 
   // ---- lift: linear → parabolic cap peaking at CLmax → post-stall drop ----
   // The parabola is tangent to the lift line at αs−δ and peaks CLmax at αs+δ,
@@ -97,7 +96,7 @@ export function computeAero(inp: AeroInput, out: AeroOutput): AeroOutput {
   // Ground effect: induced drag falls near the surface (McCormick).
   const h16b = (16 * Math.max(inp.heightAglM, 0.1)) / P.spanM
   const geFactor = (h16b * h16b) / (1 + h16b * h16b)
-  const cdAttached = P.cd0 + dCd + K_INDUCED * cl * cl * geFactor
+  const cdAttached = P.cd0 + dCd + kInduced * cl * cl * geFactor
   const cdStalled = P.cd0 + dCd + P.postStallCd * Math.sin(alpha) * Math.sin(alpha)
   const cd = (1 - stall) * cdAttached + stall * cdStalled + P.cdBeta * beta * beta
 

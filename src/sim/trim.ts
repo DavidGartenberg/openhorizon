@@ -6,12 +6,10 @@
  * trim assumed neutral (symmetric flight).
  */
 import { C172S, flapInterp } from './aircraft/c172s'
+import type { AircraftParams } from './aircraft/params'
 import { computeAero, makeAeroOutput, type AeroInput } from './aero'
 import { propCt, propCp, engineBrakeTorque, equilibriumRpm } from './propulsion'
 import { isa, G } from './atmosphere'
-
-const P = C172S
-const D = P.propDiameterM
 
 export interface TrimResult {
   converged: boolean
@@ -33,6 +31,8 @@ export interface TrimSpec {
   /** Provide exactly one of gammaRad (solve throttle) or throttle (solve γ). */
   gammaRad?: number
   throttle?: number
+  /** Aircraft to trim (fleet, Phase 10a); defaults to the C172S. */
+  params?: AircraftParams
 }
 
 interface Propelled {
@@ -42,14 +42,15 @@ interface Propelled {
   powerW: number
 }
 
-function propAt(throttle: number, vAxial: number, rho: number): Propelled {
-  const rpm = equilibriumRpm(throttle, vAxial, rho)
+function propAt(throttle: number, vAxial: number, rho: number, P: AircraftParams): Propelled {
+  const D = P.propDiameterM
+  const rpm = equilibriumRpm(throttle, vAxial, rho, P)
   const n = rpm / 60
   const J = Math.max(vAxial, 0) / Math.max(n * D, 0.1)
-  const thrust = propCt(J) * rho * n * n * D ** 4
-  const torque = Math.max((propCp(J) / (2 * Math.PI)) * rho * n * n * D ** 5, 0)
+  const thrust = propCt(J, P.propCtTable) * rho * n * n * D ** 4
+  const torque = Math.max((propCp(J, P.propCpTable) / (2 * Math.PI)) * rho * n * n * D ** 5, 0)
   const omega = (rpm * Math.PI) / 30
-  const qEng = Math.max(engineBrakeTorque(throttle, rpm, rho), 0)
+  const qEng = Math.max(engineBrakeTorque(throttle, rpm, rho, P), 0)
   return { thrustN: thrust, torqueNm: torque, rpm, powerW: qEng * omega }
 }
 
@@ -63,17 +64,18 @@ function residuals(
   s: TrimSpec, alpha: number, elevator: number, throttle: number, gamma: number,
   aeroOut = makeAeroOutput(),
 ): { fx: number; fz: number; m: number; prop: Propelled } {
+  const P = s.params ?? C172S
   const air = isa(s.altM)
   const rho = air.densityKgM3
   const W = s.massKg * G
-  const prop = propAt(throttle, s.tasMs * Math.cos(alpha), rho)
+  const prop = propAt(throttle, s.tasMs * Math.cos(alpha), rho, P)
 
   const ai: AeroInput = {
     rho, vAir: s.tasMs, alpha, beta: 0, alphaDot: 0, p: 0, q: 0, r: 0,
     elevatorRad: elevator, aileronRad: 0, rudderRad: 0, flapsDeg: s.flapsDeg,
     thrustN: prop.thrustN, propTorqueNm: prop.torqueNm, heightAglM: 1000,
   }
-  computeAero(ai, aeroOut)
+  computeAero(ai, aeroOut, P)
   const qS = 0.5 * rho * s.tasMs * s.tasMs * P.wingAreaM2
   const Lift = qS * aeroOut.cl
   const Drag = qS * aeroOut.cd
@@ -86,6 +88,7 @@ function residuals(
 }
 
 export function trim(spec: TrimSpec): TrimResult {
+  const P = spec.params ?? C172S
   const solveThrottle = spec.gammaRad !== undefined
   let alpha = 0.03
   let elevator = 0
@@ -168,9 +171,9 @@ export function trim(spec: TrimSpec): TrimResult {
 }
 
 /** Stall CAS (m/s) implied by CLmax at a load — analytic helper for tests. */
-export function stallTasMs(massKg: number, altM: number, flapsDeg: number): number {
-  const clMax = P.clMaxClean + flapInterp(P.flapDClMax, flapsDeg)
-  const cl0f = P.cl0 + flapInterp(P.flapDCl0, flapsDeg)
+export function stallTasMs(massKg: number, altM: number, flapsDeg: number, P: AircraftParams = C172S): number {
+  const clMax = P.clMaxClean + flapInterp(P.flapDClMax, flapsDeg, P.flapDetentsDeg)
+  const cl0f = P.cl0 + flapInterp(P.flapDCl0, flapsDeg, P.flapDetentsDeg)
   void cl0f
   const rho = isa(altM).densityKgM3
   return Math.sqrt((2 * massKg * G) / (rho * P.wingAreaM2 * clMax))

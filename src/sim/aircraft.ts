@@ -5,6 +5,7 @@
  * Zero heap allocation in step() — all scratch preallocated.
  */
 import { C172S } from './aircraft/c172s'
+import type { AircraftParams } from './aircraft/params'
 import { computeAero, makeAeroOutput, type AeroInput } from './aero'
 import { stepPropulsion, makePropulsionState, type PropulsionState } from './propulsion'
 import { computeGear, makeGearOutput, type GearInput } from './gear'
@@ -13,8 +14,6 @@ import {
   v3, q4, v3set, v3copy, v3cross, qrotate, qrotateInv, qintegrate, qfromEuler,
   qtoEuler, clamp, type Euler,
 } from '../math/vec'
-
-const P = C172S
 
 export interface Controls {
   /** Stick/yoke: +1 = full aft (nose up), -1 = full forward. */
@@ -58,15 +57,25 @@ export interface FlightData {
 }
 
 export class Aircraft {
+  /** Which airplane this body is (Phase 10a fleet): all physics modules read
+   *  through these params. Defaults to the C172S — every existing caller and
+   *  test constructs `new Aircraft()` and gets bit-identical behavior. */
+  readonly P: AircraftParams
+
   // ---- state ----
   readonly posNed = v3() // m, z down (altitude = -z)
   readonly velBody = v3() // u, v, w m/s
   readonly quat = q4() // body→NED
   readonly rates = v3() // p, q, r rad/s
   readonly prop: PropulsionState = makePropulsionState()
-  fuelKg: number = P.fuelCapacityKg
+  fuelKg: number
   payloadKg = 250 // pilot + pax + bags (W&B UI in Phase 8)
   flapsDeg = 0
+
+  constructor(params: AircraftParams = C172S) {
+    this.P = params
+    this.fuelKg = params.fuelCapacityKg
+  }
 
   readonly controls: Controls = {
     pitch: 0, roll: 0, yaw: 0, throttle: 0, mixture: 1,
@@ -135,13 +144,13 @@ export class Aircraft {
   private alphaDotFilt = 0
 
   get massKg(): number {
-    return P.emptyMassKg + this.fuelKg + this.payloadKg
+    return this.P.emptyMassKg + this.fuelKg + this.payloadKg
   }
 
   /** Place the aircraft on the ground at rest, heading ψ (rad). */
   spawnOnGround(north: number, east: number, headingRad: number, groundElevM = 0): void {
     qfromEuler(this.quat, headingRad, 0.03, 0)
-    v3set(this.posNed, north, east, -(groundElevM + P.gear.mainL.z - 0.07))
+    v3set(this.posNed, north, east, -(groundElevM + this.P.gear.mainL.z - 0.07))
     v3set(this.velBody, 0, 0, 0)
     v3set(this.rates, 0, 0, 0)
     this.prop.omegaRadS = (700 * Math.PI) / 30
@@ -162,9 +171,9 @@ export class Aircraft {
     }
     const rho = this.air.densityKgM3
 
-    // Flap actuator.
-    const flapTarget = P.flapDetentsDeg[clamp(c.flapsIndex, 0, 3)]!
-    const dFlap = clamp(flapTarget - this.flapsDeg, -P.flapRateDegS * dt, P.flapRateDegS * dt)
+    // Flap actuator. Detent count is per-aircraft (Cub has one, 737 six).
+    const flapTarget = this.P.flapDetentsDeg[clamp(c.flapsIndex, 0, this.P.flapDetentsDeg.length - 1)]!
+    const dFlap = clamp(flapTarget - this.flapsDeg, -this.P.flapRateDegS * dt, this.P.flapRateDegS * dt)
     this.flapsDeg += dFlap
 
     // Air-relative velocity in body frame.
@@ -185,9 +194,13 @@ export class Aircraft {
     this.alphaPrev = alpha
 
     // ---- propulsion ----
+    // Params passed EXPLICITLY here and below: the modules' defaulted
+    // C172S args exist for external callers/tests — if the 6-DOF relied on
+    // the default, every fleet member would silently fly a C172 (§1).
     stepPropulsion(
       this.prop, dt, c.throttle, c.mixture, rho,
       Math.max(this.vAirBody.x, 0), this.fuelKg > 0.5 && this.engineRunning,
+      this.P,
     )
     this.fuelKg = Math.max(this.fuelKg - this.prop.fuelFlowKgS * dt, 0)
 
@@ -201,19 +214,19 @@ export class Aircraft {
     ai.p = this.rates.x
     ai.q = this.rates.y
     ai.r = this.rates.z
-    ai.elevatorRad = clamp(-c.pitch * P.elevatorMaxRad - c.trim * P.trimMaxRad, -P.elevatorMaxRad, P.elevatorMaxRad)
-    ai.aileronRad = c.roll * P.aileronMaxRad
+    ai.elevatorRad = clamp(-c.pitch * this.P.elevatorMaxRad - c.trim * this.P.trimMaxRad, -this.P.elevatorMaxRad, this.P.elevatorMaxRad)
+    ai.aileronRad = c.roll * this.P.aileronMaxRad
     // Convention bridge: +input = right pedal = nose right. The aero
     // derivatives use Roskam's +δr = trailing-edge-left (nose left), so the
     // aerodynamic rudder angle is the negative of the pilot input.
-    ai.rudderRad = -c.yaw * P.rudderMaxRad
+    ai.rudderRad = -c.yaw * this.P.rudderMaxRad
     ai.flapsDeg = this.flapsDeg
     ai.thrustN = this.prop.thrustN
     ai.propTorqueNm = this.prop.torqueNm
     const groundElev = this.safeGroundElev(this.posNed.x, this.posNed.y)
     ai.heightAglM = altM - groundElev
     this.data.aglFt = ai.heightAglM / FT
-    computeAero(ai, this.aeroOut)
+    computeAero(ai, this.aeroOut, this.P)
 
     v3copy(this.force, this.aeroOut.force)
     this.force.x += this.prop.thrustN
@@ -224,7 +237,7 @@ export class Aircraft {
     this.gearIn.rudder = c.yaw
     this.gearIn.brakeLeft = c.brakeLeft
     this.gearIn.brakeRight = c.brakeRight
-    computeGear(this.gearIn, this.gearOut)
+    computeGear(this.gearIn, this.gearOut, this.P)
     this.force.x += this.gearOut.force.x
     this.force.y += this.gearOut.force.y
     this.force.z += this.gearOut.force.z
@@ -245,10 +258,10 @@ export class Aircraft {
     this.velBody.y += ((this.force.y + this.gravBody.y) / m - this.coriolis.y) * dt
     this.velBody.z += ((this.force.z + this.gravBody.z) / m - this.coriolis.z) * dt
 
-    const massRatio = m / P.mtowKg
-    const ixx = P.inertiaMtow.ixx * massRatio
-    const iyy = P.inertiaMtow.iyy * massRatio
-    const izz = P.inertiaMtow.izz * massRatio
+    const massRatio = m / this.P.mtowKg
+    const ixx = this.P.inertiaMtow.ixx * massRatio
+    const iyy = this.P.inertiaMtow.iyy * massRatio
+    const izz = this.P.inertiaMtow.izz * massRatio
     const { x: p, y: q, z: r } = this.rates
     this.rates.x += ((this.moment.x - (izz - iyy) * q * r) / ixx) * dt
     this.rates.y += ((this.moment.y - (ixx - izz) * p * r) / iyy) * dt
@@ -322,9 +335,9 @@ export class Aircraft {
     v3set(this.posNed, 0, 0, -altM)
     v3set(this.rates, 0, 0, 0)
     this.controls.throttle = throttle
-    this.controls.trim = clamp(-elevatorTrimRad / P.trimMaxRad, -1, 1)
+    this.controls.trim = clamp(-elevatorTrimRad / this.P.trimMaxRad, -1, 1)
     this.controls.pitch = clamp(
-      -(elevatorTrimRad + this.controls.trim * P.trimMaxRad) / P.elevatorMaxRad, -1, 1,
+      -(elevatorTrimRad + this.controls.trim * this.P.trimMaxRad) / this.P.elevatorMaxRad, -1, 1,
     )
     this.prop.omegaRadS = (rpm * Math.PI) / 30
     this.alphaPrev = alphaRad

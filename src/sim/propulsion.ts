@@ -10,40 +10,12 @@
  * windmilling glide drag are all set by these two tables.
  */
 import { C172S } from './aircraft/c172s'
+import type { AircraftParams } from './aircraft/params'
 import { RHO0 } from './atmosphere'
 
-const P = C172S
-const D = P.propDiameterM
-const D4 = D ** 4
-const D5 = D ** 5
+type PropTable = ReadonlyArray<readonly [number, number]>
 
-// J → Ct (thrust coefficient). Windmilling branch reaches the drag of a
-// ~0.1·disk-area equivalent plate (≈ ΔCD 0.018 on wing area at glide speed).
-const CT_TABLE: Array<[number, number]> = [
-  [0.0, 0.098],
-  [0.26, 0.082],
-  [0.47, 0.0684],
-  [0.6, 0.0575],
-  [0.72, 0.052],
-  [0.78, 0.0418],
-  [1.0, 0.012],
-  [1.07, 0.0],
-  [1.17, -0.056],
-  [1.4, -0.135],
-]
-
-// J → Cp (power coefficient); negative = airstream drives the prop.
-const CP_TABLE: Array<[number, number]> = [
-  [0.0, 0.059],
-  [0.26, 0.0538],
-  [0.747, 0.0448],
-  [0.95, 0.04],
-  [1.05, 0.02],
-  [1.15, -0.005],
-  [1.3, -0.045],
-]
-
-function interp(table: Array<[number, number]>, x: number): number {
+function interp(table: PropTable, x: number): number {
   const first = table[0]!
   const last = table[table.length - 1]!
   if (x <= first[0]) return first[1]
@@ -60,8 +32,8 @@ function interp(table: Array<[number, number]>, x: number): number {
   return last[1]
 }
 
-export const propCt = (J: number): number => interp(CT_TABLE, J)
-export const propCp = (J: number): number => interp(CP_TABLE, J)
+export const propCt = (J: number, table: PropTable = C172S.propCtTable): number => interp(table, J)
+export const propCp = (J: number, table: PropTable = C172S.propCpTable): number => interp(table, J)
 
 export interface PropulsionState {
   omegaRadS: number
@@ -102,7 +74,7 @@ function mixturePowerFactor(mixture: number): number {
  * and above that a closed-throttle engine brakes (pumping losses) — that
  * resistance is what the windmilling-drag branch of Cp works against.
  */
-export function engineBrakeTorque(throttle: number, rpm: number, rho: number): number {
+export function engineBrakeTorque(throttle: number, rpm: number, rho: number, P: AircraftParams = C172S): number {
   const qFull = (P.ratedPowerW / P.ratedRadS) * densityPowerFactor(rho)
   const thr = Math.min(Math.max(throttle, 0), 1)
   const idleGov = Math.min(Math.max((950 - rpm) / 200, 0), 1)
@@ -120,22 +92,24 @@ export function stepPropulsion(
   rho: number,
   vAxialMs: number,
   fuelAvailable: boolean,
+  P: AircraftParams = C172S,
 ): void {
+  const D = P.propDiameterM
   const omega = Math.max(st.omegaRadS, 5)
   const n = omega / (2 * Math.PI)
   const J = Math.max(vAxialMs, 0) / Math.max(n * D, 0.1)
 
   const power = fuelAvailable ? mixturePowerFactor(mixture) : 0
-  const qEngine = engineBrakeTorque(throttle, st.rpm, rho) * (power > 0 ? power : 0)
+  const qEngine = engineBrakeTorque(throttle, st.rpm, rho, P) * (power > 0 ? power : 0)
     - (fuelAvailable ? 0 : 6 + 0.04 * omega) // dead-engine friction
 
-  const cq = propCp(J) / (2 * Math.PI)
-  const qProp = cq * rho * n * n * D5
+  const cq = propCp(J, P.propCpTable) / (2 * Math.PI)
+  const qProp = cq * rho * n * n * D ** 5
 
   st.omegaRadS = Math.max(omega + ((qEngine - qProp) / P.rotInertiaKgM2) * dt, 0)
   st.rpm = (st.omegaRadS * 30) / Math.PI
 
-  st.thrustN = propCt(J) * rho * n * n * D4
+  st.thrustN = propCt(J, P.propCtTable) * rho * n * n * D ** 4
   st.torqueNm = Math.max(qProp, 0)
   st.shaftPowerW = Math.max(qEngine, 0) * st.omegaRadS
   st.fuelFlowKgS =
@@ -145,15 +119,16 @@ export function stepPropulsion(
 }
 
 /** Steady-state RPM for throttle/speed/density (bisection on torque balance). */
-export function equilibriumRpm(throttle: number, vAxialMs: number, rho: number): number {
+export function equilibriumRpm(throttle: number, vAxialMs: number, rho: number, P: AircraftParams = C172S): number {
+  const D = P.propDiameterM
   let lo = 300
   let hi = 3200
   for (let i = 0; i < 60; i++) {
     const rpm = (lo + hi) / 2
     const n = rpm / 60
     const J = Math.max(vAxialMs, 0) / Math.max(n * D, 0.1)
-    const qEngine = engineBrakeTorque(throttle, rpm, rho)
-    const qProp = (propCp(J) / (2 * Math.PI)) * rho * n * n * D5
+    const qEngine = engineBrakeTorque(throttle, rpm, rho, P)
+    const qProp = (propCp(J, P.propCpTable) / (2 * Math.PI)) * rho * n * n * D ** 5
     if (qEngine - qProp > 0) lo = rpm
     else hi = rpm
   }

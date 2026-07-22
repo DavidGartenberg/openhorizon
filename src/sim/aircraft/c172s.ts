@@ -5,7 +5,9 @@
  * §5.6 POH validation table. Units SI, angles rad, derivatives per rad.
  */
 
-export const C172S = {
+import type { AircraftParams } from './params'
+
+export const C172S: AircraftParams = {
   // ---- geometry ----
   wingAreaM2: 16.165, // 174 ft²
   spanM: 11.0, // 36.1 ft
@@ -80,9 +82,34 @@ export const C172S = {
   ratedRadS: 282.74, // 2700 RPM
   redlineRpm: 2700,
   idleTorqueFraction: 0.11, // idle circuit holds ~700 RPM static
-  propDiameterM: 1.93, // 76 in — Ct/Cp point tables live in propulsion.ts
+  propDiameterM: 1.93, // 76 in
   rotInertiaKgM2: 1.6, // prop + engine rotating assembly
   bsfcKgPerWs: 7.27e-8, // 0.43 lb/hp/hr
+
+  // J → Ct / J → Cp piecewise tables (point-tuned so the §5.6 POH table
+  // passes; moved verbatim from propulsion.ts in the 10a fleet refactor).
+  // Windmilling Ct branch reaches ~0.1·disk-area equivalent plate drag.
+  propCtTable: [
+    [0.0, 0.098],
+    [0.26, 0.082],
+    [0.47, 0.0684],
+    [0.6, 0.0575],
+    [0.72, 0.052],
+    [0.78, 0.0418],
+    [1.0, 0.012],
+    [1.07, 0.0],
+    [1.17, -0.056],
+    [1.4, -0.135],
+  ],
+  propCpTable: [
+    [0.0, 0.059],
+    [0.26, 0.0538],
+    [0.747, 0.0448],
+    [0.95, 0.04],
+    [1.05, 0.02],
+    [1.15, -0.005],
+    [1.3, -0.045],
+  ],
 
   // propwash: fraction of disk-loading Δq reaching the tail
   propwashTailFactor: 0.7,
@@ -102,14 +129,18 @@ export const C172S = {
 
   // ---- reference speeds (KIAS, for UI/tests) ----
   vSpeeds: { vs0: 40, vs1: 48, vx: 62, vy: 74, vfe10: 110, vfe30: 85, va: 105, vno: 129, vne: 163, glide: 68 },
-} as const
+}
 
 export type C172SParams = typeof C172S
 
 /** Linear interpolation over the flap detent tables by current flap angle. */
-export function flapInterp(table: readonly number[], flapsDeg: number): number {
-  const detents = C172S.flapDetentsDeg
-  const f = Math.min(Math.max(flapsDeg, 0), 30)
+export function flapInterp(
+  table: readonly number[],
+  flapsDeg: number,
+  detents: readonly number[] = C172S.flapDetentsDeg,
+): number {
+  if (detents.length < 2) return table[0] ?? 0 // flapless aircraft
+  const f = Math.min(Math.max(flapsDeg, 0), detents[detents.length - 1]!)
   for (let i = 1; i < detents.length; i++) {
     if (f <= detents[i]!) {
       const t = (f - detents[i - 1]!) / (detents[i]! - detents[i - 1]!)
