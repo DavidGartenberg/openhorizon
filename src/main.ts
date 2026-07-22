@@ -31,6 +31,9 @@ import { J3CUB } from './sim/aircraft/j3cub'
 import { B738 } from './sim/aircraft/b738'
 import { makeCarbIceState, stepCarbIce, carbIcePowerFactor } from './sim/systems/carb-ice'
 import { loadAircraftTypes, aircraftTypesLoaded, aircraftTypeCount, typeInfo, parseDesc } from './world/aircraft-types'
+import * as THREE from 'three'
+import { archetypeFor } from './world/fleet-map'
+import { buildArchetype } from './render/fleet-mesh'
 import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
 import type { PfdInput } from './cockpit/pfd'
 import { Input } from './input/input'
@@ -1874,6 +1877,37 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohSafety: () => ({ safetyLine, dots: trafficDots }),
   __ohAudio: () => ({ unlocked: engineSound.unlocked, muted: engineSound.muted, ...engineSound.inspect() }),
   /** Fleet verification hooks (11g) — mirror the U/H/K keys + inspection. */
+  /** 12b visual check: line up archetype silhouettes beside the aircraft
+   *  (real designators through the real registry) for a screenshot. */
+  __ohMeshTest: (designators?: string[]) => {
+    const list = designators ?? ['C172', 'P28A', 'J3', 'BE58', 'PC12', 'DH8D', 'C130', 'GLF5', 'B738', 'B77W', 'A388', 'GLID', 'R44', 'ZZZZ']
+    // Grid ahead of the aircraft along its heading so the chase camera
+    // frames it: 4 columns x rows, 100 m spacing, starting 180 m out.
+    const group = new THREE.Group()
+    const hRad = (aircraft.data.headingDeg * Math.PI) / 180
+    const fwd = { x: Math.sin(hRad), z: -Math.cos(hRad) } // render frame
+    const right = { x: -fwd.z, z: fwd.x }
+    for (let i = 0; i < list.length; i++) {
+      const des = list[i]!
+      const info = typeInfo(des)
+      const spec = archetypeFor(des, info.desc, info.wtc)
+      const m = buildArchetype(spec)
+      const col = (i % 4) - 1.5
+      const row = Math.floor(i / 4)
+      const ahead = 90 + row * 85
+      const side = col * 70
+      m.position.set(
+        mesh.group.position.x + fwd.x * ahead + right.x * side,
+        mesh.group.position.y + 3 + row * 2,
+        mesh.group.position.z + fwd.z * ahead + right.z * side,
+      )
+      m.rotation.y = -hRad // face the camera-ish (nose toward viewer)
+      group.add(m)
+    }
+    scene.add(group)
+    setTimeout(() => scene.remove(group), 120_000)
+    return { placed: list.length }
+  },
   __ohTypes: (designator?: string) => ({
     loaded: aircraftTypesLoaded(),
     count: aircraftTypeCount(),
