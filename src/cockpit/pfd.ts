@@ -131,6 +131,8 @@ export function pfdSoftkeyRegions(width: number, height: number): SoftkeyRegion[
 // ============================================================================
 
 export interface PfdInput {
+  /** Active aircraft's V-speed arcs (fleet, 11g). Absent = C172S. */
+  vSpeeds?: typeof C172S.vSpeeds
   // Airspeed
   iasKt: number
   /** kt/s, from `updateIasTrend` — positive = accelerating. */
@@ -220,7 +222,7 @@ const COLORS = {
 function drawAirspeedTape(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, data: PfdInput): void {
   const centerY = y + h / 2
   const pxPerKt = h / 60 // 60kt span visible on the tape, flagged layout assumption
-  const arcs = vSpeedArcs(C172S.vSpeeds)
+  const arcs = vSpeedArcs(data.vSpeeds ?? C172S.vSpeeds)
 
   ctx.save()
   ctx.beginPath()

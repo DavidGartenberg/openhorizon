@@ -22,6 +22,10 @@ export interface SoundState {
   onGround: boolean
   stallWarn: boolean
   engineRunning: boolean
+  /** Jet powerplant (11g): firing harmonics silent; broadband + whine
+   *  keyed to N1 instead. */
+  jet?: boolean
+  n1Pct?: number
 }
 
 export class EngineSound {
@@ -34,6 +38,10 @@ export class EngineSound {
   private windGain!: GainNode
   private windFilter!: BiquadFilterNode
   private rumbleGain!: GainNode
+  private jetFilter!: BiquadFilterNode
+  private jetGain!: GainNode
+  private whineOsc!: OscillatorNode
+  private whineGain!: GainNode
   private hornOsc!: OscillatorNode
   private hornGain!: GainNode
   private wasOnGround = true
@@ -102,6 +110,25 @@ export class EngineSound {
       this.rumbleGain.connect(this.master)
       this.windSource.start()
 
+      // Jet: broadband roar (bandpassed shared noise) + fan whine sine.
+      this.jetFilter = ctx.createBiquadFilter()
+      this.jetFilter.type = 'bandpass'
+      this.jetFilter.frequency.value = 600
+      this.jetFilter.Q.value = 0.5
+      this.jetGain = ctx.createGain()
+      this.jetGain.gain.value = 0
+      this.windSource.connect(this.jetFilter)
+      this.jetFilter.connect(this.jetGain)
+      this.jetGain.connect(this.master)
+      this.whineOsc = ctx.createOscillator()
+      this.whineOsc.type = 'sine'
+      this.whineOsc.frequency.value = 1200
+      this.whineGain = ctx.createGain()
+      this.whineGain.gain.value = 0
+      this.whineOsc.connect(this.whineGain)
+      this.whineGain.connect(this.master)
+      this.whineOsc.start()
+
       // Stall horn.
       this.hornOsc = ctx.createOscillator()
       this.hornOsc.type = 'square'
@@ -123,14 +150,27 @@ export class EngineSound {
 
     this.master.gain.value = this.muted ? 0 : 0.5
 
-    const firingHz = Math.max((s.rpm / 60) * 2, 1)
-    this.engineOscs.forEach((osc, i) => {
-      const mult = [0.5, 1, 2, 3][i]!
-      ramp(osc.frequency, firingHz * mult, 0.05)
-    })
-    const engineLevel = s.engineRunning ? 0.1 + 0.5 * s.powerFrac : 0
-    ramp(this.engineGain.gain, engineLevel)
-    ramp(this.engineFilter.frequency, 300 + 1800 * s.powerFrac)
+    if (s.jet) {
+      // Jet voice: piston harmonics silent; N1² drives roar and whine.
+      ramp(this.engineGain.gain, 0)
+      const n1 = Math.min(Math.max((s.n1Pct ?? 0) / 100, 0), 1.04)
+      const roar = s.engineRunning ? 0.06 + 0.42 * n1 * n1 : 0
+      ramp(this.jetGain.gain, roar)
+      ramp(this.jetFilter.frequency, 300 + 2400 * n1 * n1)
+      ramp(this.whineOsc.frequency, 400 + 3200 * n1, 0.1)
+      ramp(this.whineGain.gain, s.engineRunning ? 0.015 + 0.05 * n1 : 0)
+    } else {
+      ramp(this.jetGain.gain, 0)
+      ramp(this.whineGain.gain, 0)
+      const firingHz = Math.max((s.rpm / 60) * 2, 1)
+      this.engineOscs.forEach((osc, i) => {
+        const mult = [0.5, 1, 2, 3][i]!
+        ramp(osc.frequency, firingHz * mult, 0.05)
+      })
+      const engineLevel = s.engineRunning ? 0.1 + 0.5 * s.powerFrac : 0
+      ramp(this.engineGain.gain, engineLevel)
+      ramp(this.engineFilter.frequency, 300 + 1800 * s.powerFrac)
+    }
 
     const windLevel = Math.min((s.iasKt / 140) ** 2 * 0.4, 0.4)
     ramp(this.windGain.gain, windLevel)
@@ -160,7 +200,7 @@ export class EngineSound {
      * HEAR — this exposes the node graph's live parameters instead). */
   }
 
-  inspect(): { state: string; engineHz: number; engineGain: number; windGain: number; horn: number } | null {
+  inspect(): { state: string; engineHz: number; engineGain: number; windGain: number; horn: number; jetGain: number; whineHz: number } | null {
     if (!this.ctx) return null
     return {
       state: this.ctx.state,
@@ -168,6 +208,8 @@ export class EngineSound {
       engineGain: this.engineGain.gain.value,
       windGain: this.windGain.gain.value,
       horn: this.hornGain.gain.value,
+      jetGain: this.jetGain.gain.value,
+      whineHz: this.whineOsc.frequency.value,
     }
   }
 }

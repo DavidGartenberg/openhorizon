@@ -12,6 +12,7 @@ export const C172S: AircraftParams = {
   // POH position-error calibration (same object the atmosphere module
   // defaults to — explicitly wired so the fleet path is bit-exact).
   pitotCal: C172_PITOT_CAL,
+  stallHorn: true, // AoA vane + horn
   // ---- geometry ----
   wingAreaM2: 16.165, // 174 ft²
   spanM: 11.0, // 36.1 ft

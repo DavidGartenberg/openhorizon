@@ -118,6 +118,9 @@ export interface AircraftParams {
   /** false = no electrical system (no battery/starter — hand-prop only).
    *  Absent means a normal electrical system. */
   electrical?: false
+  /** Aircraft has a stall-warning device (C172 vane+horn). The J-3 has
+   *  none and the 737's stick shaker is not a horn — absent = silent. */
+  stallHorn?: boolean
   /** Position-error calibration (KCAS→KIAS tables). Absent = no published
    *  table for this type: IAS = CAS, disclosed per tier notes. */
   pitotCal?: {

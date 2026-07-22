@@ -25,7 +25,11 @@ import { FlyCamera } from './render/camera'
 import { ChaseCamera } from './render/chase-camera'
 import { OrbitCamera } from './render/orbit-camera'
 import { CockpitCamera } from './render/cockpit-camera'
-import { buildC172, updateProp } from './render/aircraft-mesh'
+import { buildC172, buildCub, buildB738, updateProp } from './render/aircraft-mesh'
+import type { AircraftParams } from './sim/aircraft/params'
+import { J3CUB } from './sim/aircraft/j3cub'
+import { B738 } from './sim/aircraft/b738'
+import { makeCarbIceState, stepCarbIce, carbIcePowerFactor } from './sim/systems/carb-ice'
 import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
 import type { PfdInput } from './cockpit/pfd'
 import { Input } from './input/input'
@@ -102,12 +106,36 @@ async function loadProcedures(icao: string): Promise<unknown> {
   return json
 }
 
-const aircraft = new Aircraft()
+// ---- Fleet selection (Phase 11g): `FLY 172|CUB|737` in the search box.
+// Selection persists and takes effect via reload — an honest "respawn
+// required", not a live-swap of a flying airframe. ----
+const FLEET: Record<string, {
+  params: AircraftParams
+  label: string
+  build: () => ReturnType<typeof buildC172>
+  /** onFinal spawn config: approach CAS + flap detent/angle (+gear). */
+  final: { kias: number; flapsIndex: number; flapsDeg: number }
+}> = {
+  '172': { params: C172S, label: 'Cessna 172S', build: buildC172, final: { kias: 70, flapsIndex: 1, flapsDeg: 10 } },
+  CUB: { params: J3CUB, label: 'Piper J-3 Cub', build: buildCub, final: { kias: 50, flapsIndex: 0, flapsDeg: 0 } },
+  '737': { params: B738, label: 'Boeing 737-800', build: buildB738, final: { kias: 140, flapsIndex: 5, flapsDeg: 30 } },
+}
+const fleetKey = ((): string => {
+  try {
+    const k = localStorage.getItem('oh-aircraft') ?? '172'
+    return FLEET[k] ? k : '172'
+  } catch {
+    return '172'
+  }
+})()
+const FLEET_ACTIVE = FLEET[fleetKey]!
+
+const aircraft = new Aircraft(FLEET_ACTIVE.params)
 aircraft.groundElevAt = (n, e) => {
   const ll = frame.fromLocal(n, e)
   return airports.flattenElevation(tiles.elevationAt(ll.lat, ll.lon), ll.lat, ll.lon)
 }
-const mesh = buildC172()
+const mesh = FLEET_ACTIVE.build()
 scene.add(mesh.group)
 const cockpit = buildCockpit(mesh.group)
 const cockpitInteraction = new CockpitInteraction(camera)
@@ -140,6 +168,14 @@ const pitotSystem = new PitotStaticSystem()
 // of a second, hand-maintained "normal" state.
 const ENGINE_START_BOOT_RUNNING: EngineStartState = { status: 'running', rpm: 700, crankTimeS: 0 }
 const engineStartState: EngineStartState = { ...ENGINE_START_BOOT_RUNNING }
+
+// ---- Fleet systems state (11g) ----
+const carbIceState = makeCarbIceState()
+let carbHeatOn = false
+let handPropRequested = false
+/** Temp−dewpoint spread (°C) from the nearest METAR; large = dry air.
+ *  Feeds the carb-ice humidity factor; 12 (dry) until weather arrives. */
+let wxTempDewSpreadC = 12
 const engineTemps = makeEngineTemps()
 
 /** Cockpit switch/knob/selector state — mirrors how `aircraft.controls`
@@ -292,21 +328,25 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
     const elevM = aircraft.groundElevAt?.(spawnN, spawnE) ?? thr.e * FT
     aircraft.spawnOnGround(spawnN, spawnE, hRad, elevM)
   } else {
-    // 3 nm final at ~900 ft AGL, 70 KIAS, trimmed on a -3° path.
-    const distM = 3 * 1852
+    // Final-approach spawn at the ACTIVE aircraft's approach config (11g):
+    // 3 nm (5 nm for the jet) at a -3° path, gear down.
+    const fin = FLEET_ACTIVE.final
+    const distM = (aircraft.P.jet ? 5 : 3) * 1852
     const hRad = (hdg * Math.PI) / 180
     const p = frame.toLocal(thr.lat, thr.lon)
     const n = p.n - Math.cos(hRad) * distM
     const e = p.e - Math.sin(hRad) * distM
-    const altM = thr.e * FT + 275
-    // TAS from 70 KIAS at the FIELD's density, flaps-10 calibration — a
-    // sea-level conversion spawned ~8 kt slow at Tahoe (7,100 ft) and the
-    // aircraft stalled into a mush on AP engage (found by the Phase-7
-    // Tahoe TAWS acceptance run).
-    const tas = kcasFromKias(70, 10) * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
-    const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg: 10, gammaRad: -0.052 })
-    aircraft.flapsDeg = 10
-    aircraft.controls.flapsIndex = 1
+    const altM = thr.e * FT + distM * Math.tan(0.0524)
+    // TAS at the FIELD's density (a sea-level conversion spawned ~8 kt slow
+    // at Tahoe — Phase-7 finding). Per-aircraft pitot cal; none = IAS=CAS.
+    const kcas = aircraft.P.pitotCal ? kcasFromKias(fin.kias, fin.flapsDeg, aircraft.P.pitotCal) : fin.kias
+    const tas = kcas * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
+    const gearCd = aircraft.P.gearRetractable ? aircraft.P.gearRetractable.dCdExtended : 0
+    const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg: fin.flapsDeg, gammaRad: -0.052, params: aircraft.P, extraCd: gearCd })
+    aircraft.flapsDeg = fin.flapsDeg
+    aircraft.controls.flapsIndex = fin.flapsIndex
+    aircraft.gearDownCommanded = true
+    aircraft.gearPos = 1
     aircraft.applyTrimState(tas, t.alphaRad, altM, hRad, t.gammaRad, t.elevatorRad, t.throttle, t.rpm)
     aircraft.posNed.x = n
     aircraft.posNed.y = e
@@ -322,6 +362,8 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
     aircraft.controls.flapsIndex = 0
     aircraft.controls.pitch = aircraft.controls.roll = aircraft.controls.yaw = 0
     aircraft.flapsDeg = 0
+    aircraft.gearDownCommanded = true
+    aircraft.gearPos = 1
   }
   parkingBrake = !onFinal // hold position on ground spawns until power-up
   setDaytimeAt(ap.lo)
@@ -432,6 +474,16 @@ function loadSnapshot(): boolean {
 function handleSearch(query: string): void {
   const parts = query.trim().toUpperCase().split(/\s+/)
   if (parts.length === 0 || !parts[0]) return
+  if (parts[0] === 'FLY' && parts[1]) {
+    // Aircraft swap (11g): persist and reload — a respawn, honestly.
+    if (FLEET[parts[1]]) {
+      try { localStorage.setItem('oh-aircraft', parts[1]) } catch { /* private mode */ }
+      location.reload()
+    } else {
+      toast(`UNKNOWN AIRCRAFT — FLY ${Object.keys(FLEET).join(' | ')}`)
+    }
+    return
+  }
   if (parts[0] === 'WEIGHT' && parts[1]) {
     // `weight 400` — payload (pilot+pax+bags) in lb. Envelope plot is
     // deferred (PROGRESS deviation); gross/limit shown honestly.
@@ -534,6 +586,16 @@ function handleDiscreteKeys(): void {
   if (input.wasPressed('KeyM')) engineSound.muted = !engineSound.muted
   if (input.wasPressed('KeyO')) saveSnapshot()
   if (input.wasPressed('KeyP')) loadSnapshot()
+  // Fleet keys (11g): U gear (retractable only), H hand-prop, K carb heat.
+  if (input.wasPressed('KeyU') && aircraft.P.gearRetractable) {
+    aircraft.gearDownCommanded = !aircraft.gearDownCommanded
+    toast(aircraft.gearDownCommanded ? 'GEAR DOWN' : 'GEAR UP')
+  }
+  if (input.wasPressed('KeyH')) handPropRequested = true
+  if (input.wasPressed('KeyK') && aircraft.P.carburetor) {
+    carbHeatOn = !carbHeatOn
+    toast(carbHeatOn ? 'CARB HEAT ON' : 'CARB HEAT OFF')
+  }
   if (input.wasPressed('KeyC')) {
     cameraMode =
       cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'free' : cameraMode === 'free' ? 'cockpit' : 'chase'
@@ -700,6 +762,15 @@ function updateLiveWeather(lat: number, lon: number, now: number): void {
   if (now - lastWxApplyAt > 5000 && wxStations.length > 0) {
     lastWxApplyAt = now
     applyBlendedWeather(blendWeather(wxStations, lat, lon))
+    // Carb-ice humidity input (11g): nearest station's temp−dewpoint spread.
+    let best = Infinity
+    for (const s of wxStations) {
+      const dM = distanceM({ lat, lon }, { lat: s.lat, lon: s.lon })
+      if (dM < best && s.metar.tempC !== undefined && s.metar.dewpointC !== undefined) {
+        best = dM
+        wxTempDewSpreadC = Math.max(s.metar.tempC - s.metar.dewpointC, 0)
+      }
+    }
   }
 }
 
@@ -894,6 +965,8 @@ function updateSafety(now: number): void {
     },
     nearRunwayFinal: d.aglFt < 1800 && airports.near(ll0.lat, ll0.lon, 4 * 1852).length > 0,
     gsDeviation: nav.hasGlideslope ? nav.glideslopeFraction ?? null : null,
+    jetProfile: !!aircraft.P.jet,
+    gearDown: aircraft.gearDownCommanded && aircraft.gearPos >= 1,
   })
   if (tw.newAural && tw.aural) annunciate(tw.aural)
 
@@ -1431,8 +1504,25 @@ function advanceFrame(elapsed: number, now: number): void {
         hotEngine: false,
         floodedEngine: false,
         primed: false,
+        hasElectrical: aircraft.P.electrical !== false,
+        handPropPull: handPropRequested,
       })
+      handPropRequested = false // momentary — one compression stroke per press
       aircraft.engineRunning = engineStartState.status === 'running'
+      // Carb ice (11b/11g): carbureted engines only; injected/jet see 1.
+      if (aircraft.P.carburetor) {
+        const oatCNow = isa(Math.max(aircraft.data.altitudeFt, 0) * FT).temperatureK - 273.15 + aircraft.isaTempOffsetC
+        stepCarbIce(carbIceState, dt, {
+          carburetor: true,
+          carbHeatOn,
+          powerFrac: Math.min(Math.max(aircraft.data.shaftPowerW / aircraft.P.ratedPowerW, 0), 1),
+          oatC: oatCNow,
+          dewpointC: oatCNow - wxTempDewSpreadC,
+        })
+        aircraft.intakePowerFactor = carbIcePowerFactor(carbIceState, carbHeatOn)
+      } else {
+        aircraft.intakePowerFactor = 1
+      }
       stepElectrical(electricalState, dt, {
         masterBattery: systemsControls.masterBattery,
         masterAlternator: systemsControls.masterAlternator,
@@ -1441,7 +1531,7 @@ function advanceFrame(elapsed: number, now: number): void {
         engineRunning: aircraft.engineRunning,
       })
       const oatC = isa(Math.max(aircraft.data.altitudeFt, 0) * FT).temperatureK - 273.15
-      stepEngineTemps(engineTemps, dt, aircraft.data.rpm, C172S.redlineRpm, aircraft.engineRunning, oatC)
+      stepEngineTemps(engineTemps, dt, aircraft.data.rpm, aircraft.P.redlineRpm, aircraft.engineRunning, oatC)
     })
     remaining -= chunk
   }
@@ -1488,7 +1578,11 @@ function advanceFrame(elapsed: number, now: number): void {
 
   engineSound.update({
     rpm: d.rpm,
-    powerFrac: Math.min(Math.max(d.shaftPowerW / C172S.ratedPowerW, 0), 1),
+    powerFrac: aircraft.P.jet
+      ? Math.min(Math.max(d.n1Pct / 100, 0), 1)
+      : Math.min(Math.max(d.shaftPowerW / aircraft.P.ratedPowerW, 0), 1),
+    jet: !!aircraft.P.jet,
+    n1Pct: d.n1Pct,
     iasKt: d.kias,
     gsKt: d.groundSpeedKt,
     onGround: d.onGround,
@@ -1497,7 +1591,7 @@ function advanceFrame(elapsed: number, now: number): void {
     // because stallFraction is max(positive, negative-stall) and the vane
     // only lifts at high positive AoA (found in-browser: a hard push at 70 kt
     // fired the horn off the negative branch).
-    stallWarn: d.stallFraction > 0.08 && d.alphaDeg > 0 && !d.onGround && d.kias > 40 && !aircraft.crashed,
+    stallWarn: !!aircraft.P.stallHorn && d.stallFraction > 0.08 && d.alphaDeg > 0 && !d.onGround && d.kias > 40 && !aircraft.crashed,
     engineRunning: aircraft.engineRunning,
   })
 
@@ -1563,6 +1657,7 @@ function advanceFrame(elapsed: number, now: number): void {
   updateCockpitDisplays(
     cockpit,
     {
+      vSpeeds: aircraft.P.vSpeeds,
       iasKt: pitotReadings.iasKt,
       iasTrendKtPerS: 0,
       pitchDeg: d.pitchDeg,
@@ -1596,6 +1691,9 @@ function advanceFrame(elapsed: number, now: number): void {
       page: mfdPage,
       rpm: d.rpm,
       fuelFlowGph: d.fuelFlowGph,
+      n1Pct: aircraft.P.jet ? d.n1Pct : undefined,
+      ffKgH: aircraft.P.jet ? aircraft.prop.fuelFlowKgS * 3600 : undefined,
+      redlineRpm: aircraft.P.redlineRpm,
       mixture: aircraft.controls.mixture,
       engineTemps,
       fuelLeftKg: fuelState.leftKg,
@@ -1636,6 +1734,11 @@ function advanceFrame(elapsed: number, now: number): void {
       simDate,
       simRate: loop.getRate(),
       flight: aircraft.data,
+      aircraftLabel: FLEET_ACTIVE.label,
+      gear: aircraft.P.gearRetractable
+        ? aircraft.gearPos >= 1 ? 'DOWN' : aircraft.gearPos <= 0 ? 'UP' : 'TRANSIT'
+        : undefined,
+      ffKgH: aircraft.P.jet ? aircraft.prop.fuelFlowKgS * 3600 : undefined,
       throttlePct: aircraft.controls.throttle,
       trimPct: aircraft.controls.trim,
       cameraMode,
@@ -1767,6 +1870,18 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohApState: () => ({ ...apState }),
   __ohSafety: () => ({ safetyLine, dots: trafficDots }),
   __ohAudio: () => ({ unlocked: engineSound.unlocked, muted: engineSound.muted, ...engineSound.inspect() }),
+  /** Fleet verification hooks (11g) — mirror the U/H/K keys + inspection. */
+  __ohFleet: () => ({ key: fleetKey, label: FLEET_ACTIVE.label, jet: !!aircraft.P.jet, n1: aircraft.data.n1Pct, gearPos: aircraft.gearPos, gearCmd: aircraft.gearDownCommanded }),
+  __ohGearCmd: (down: boolean) => { if (aircraft.P.gearRetractable) aircraft.gearDownCommanded = down },
+  __ohCarbHeat: (on: boolean) => { carbHeatOn = on },
+  __ohHandProp: () => { handPropRequested = true },
+  __ohCarb: () => ({ ice: carbIceState.iceFraction, heat: carbHeatOn, intake: aircraft.intakePowerFactor, spreadC: wxTempDewSpreadC }),
+  __ohEngineCut: () => {
+    systemsControls.magneto = 'off'
+  },
+  __ohMags: (pos: 'off' | 'both') => {
+    systemsControls.magneto = pos
+  },
   __ohSave: () => { saveSnapshot(); return localStorage.getItem('oh-save') },
   __ohLoad: () => loadSnapshot(),
   __ohDebrief: () => ({ debriefLine, samples: recorder.samples.length }),

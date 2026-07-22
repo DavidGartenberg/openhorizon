@@ -312,6 +312,11 @@ export interface MfdInput {
   // EIS (always visible)
   rpm: number
   fuelFlowGph: number
+  /** Jet EIS (fleet, 11g): when n1Pct > 0 the EIS shows N1/FF-KG/H rows
+   *  and honestly OMITS the piston gauges (no fake oil/EGT on a jet). */
+  n1Pct?: number
+  ffKgH?: number
+  redlineRpm?: number
   /** Controls.mixture convention: 1 = full rich, 0 = idle cutoff. Feeds `egtC` directly. */
   mixture: number
   engineTemps: EngineTemps
@@ -401,7 +406,21 @@ function drawEis(ctx: CanvasRenderingContext2D, x: number, y: number, w: number,
   const rowH = h * 0.088
   let gy = y + h * 0.02
 
-  const { valueFrac: rpmFrac, redlineFrac } = rpmGaugeFractions(data.rpm, C172S.redlineRpm)
+  // Jet EIS: N1 + FF only — the piston gauges (RPM/oil/EGT) would be
+  // fabrications on a turbofan, so they are omitted, not faked (§1).
+  if (data.n1Pct !== undefined && data.n1Pct > 0) {
+    const n1Frac = barGaugeFraction(data.n1Pct, 0, 104)
+    drawBarGauge(ctx, gx, gy, gw, rowH, 'N1 %', data.n1Pct.toFixed(1), n1Frac, barGaugeFraction(100, 0, 104), n1Frac >= 100 / 104 ? COLORS.red : COLORS.green)
+    gy += rowH * 1.15
+    const ff = data.ffKgH ?? 0
+    drawBarGauge(ctx, gx, gy, gw, rowH, 'FF KG/H', ff.toFixed(0), barGaugeFraction(ff, 0, 6000), null, COLORS.cyan)
+    gy += rowH * 1.15
+    const fuelKg = data.fuelLeftKg + data.fuelRightKg
+    drawBarGauge(ctx, gx, gy, gw, rowH, 'FUEL KG', fuelKg.toFixed(0), barGaugeFraction(fuelKg, 0, 21000), null, COLORS.green)
+    return
+  }
+
+  const { valueFrac: rpmFrac, redlineFrac } = rpmGaugeFractions(data.rpm, data.redlineRpm ?? C172S.redlineRpm)
   drawBarGauge(ctx, gx, gy, gw, rowH, 'RPM', data.rpm.toFixed(0), rpmFrac, redlineFrac, rpmFrac >= redlineFrac ? COLORS.red : COLORS.green)
   gy += rowH * 1.15
 

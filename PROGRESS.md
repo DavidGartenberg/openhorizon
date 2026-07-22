@@ -26,7 +26,8 @@ Node; add `~/.local/node/bin` to PATH).
 | 7 — TCAS & TAWS | ✅ done | tau/GPWS cores + scripted tests; live Tahoe escalation + KPAO TA; two spawn bugs found+fixed |
 | 8 — Recorder/logbook/training | ✅ done | 10 Hz recorder, honest landing debrief, ACS grader, persistent logbook, landing challenges |
 | 9 — Sound/polish/perf | ✅ done | sound core, save/load, perf gate, §27 flight flown at KSFO |
-| 10 — Fleet (stretch) | not started | gated on §27 per §25 |
+| 10 — Fleet (absorbed) | ✅ → Phase 11 | absorbed by the approved Phases 11–15 mega-plan |
+| 11 — Fleet core | 🔧 11a–11f done | params threading, carb ice/hand-prop, J-3 Cub, turbofan, jet plumbing, 737-800; 11g UX in progress |
 
 ## Phase 9a — sound core (2026-07-20)
 

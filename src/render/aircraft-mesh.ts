@@ -108,11 +108,153 @@ export function buildC172(): AircraftMesh {
   placeBody(propDisc, 2.32, 0, -0.05)
   g.add(propDisc)
   // Two blade hints (visible when slow).
-  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.9, 0.04), DARK)
+  // Own material: updateProp animates blade opacity — on the SHARED DARK
+  // material that made every wheel ghost at cruise RPM (latent since
+  // Phase 1, fixed in the 11g fleet pass).
+  const blade = new THREE.Mesh(
+    new THREE.BoxGeometry(0.12, 1.9, 0.04),
+    new THREE.MeshStandardMaterial({ color: 0x1a1d20, roughness: 0.9, transparent: true }),
+  )
   placeBody(blade, 2.31, 0, -0.05)
   propDisc.userData.blade = blade
   g.add(blade)
 
+  return { group: g, propDisc }
+}
+
+const YELLOW = new THREE.MeshStandardMaterial({ color: 0xd9a916, roughness: 0.6 })
+const SILVER = new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.4, metalness: 0.35 })
+
+/** Piper J-3 Cub (11g): yellow taildragger, wheels at the physics gear. */
+export function buildCub(): AircraftMesh {
+  const g = new THREE.Group()
+  const add = (mesh: THREE.Mesh, x: number, y: number, z: number): THREE.Mesh => {
+    placeBody(mesh, x, y, z)
+    mesh.castShadow = true
+    g.add(mesh)
+    return mesh
+  }
+  // Slab-sided fuselage + rounded cowl.
+  add(new THREE.Mesh(new THREE.BoxGeometry(0.75, 1.05, 2.4), YELLOW), 0.2, 0, -0.2)
+  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.42, 3.0, 8), YELLOW)
+  tail.rotation.x = Math.PI / 2
+  add(tail, -2.4, 0, -0.3)
+  add(new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.68, 0.6), DARK), 1.45, 0, -0.12)
+  add(new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.5, 0.1), GLASS), 0.95, 0, -0.75)
+  // High wing + struts.
+  add(new THREE.Mesh(new THREE.BoxGeometry(10.74, 0.13, 1.6), YELLOW), 0.15, 0, -1.0)
+  for (const side of [-1, 1]) {
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.9, 6), YELLOW)
+    strut.rotation.z = side * 0.55
+    add(strut, 0.3, side * 1.2, -0.45)
+  }
+  // Empennage (the Cub's rounded fin rendered as a slab).
+  add(new THREE.Mesh(new THREE.BoxGeometry(2.9, 0.09, 1.0), YELLOW), -3.75, 0, -0.4)
+  add(new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.15, 1.05), YELLOW), -3.8, 0, -1.0)
+  // Gear at the physics contact points: mains forward, tiny tailwheel.
+  const wheelGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.12, 12)
+  for (const [x, y, z] of [
+    [0.25, -0.9, 1.25],
+    [0.25, 0.9, 1.25],
+  ] as const) {
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.85, 6), YELLOW)
+    add(strut, x, y, z - 0.5)
+    const wheel = new THREE.Mesh(wheelGeo, DARK)
+    wheel.rotation.z = Math.PI / 2
+    add(wheel, x, y, z - 0.2)
+  }
+  const tailWheel = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.06, 8), DARK)
+  tailWheel.rotation.z = Math.PI / 2
+  add(tailWheel, -4.11, 0, 0.52)
+  // Prop.
+  const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.25, 10), SILVER)
+  spinner.rotation.x = -Math.PI / 2
+  add(spinner, 2.0, 0, -0.1)
+  const propDisc = new THREE.Mesh(
+    new THREE.CircleGeometry(0.915, 24),
+    new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.18, side: THREE.DoubleSide }),
+  )
+  placeBody(propDisc, 2.02, 0, -0.1)
+  g.add(propDisc)
+  const blade = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 1.8, 0.035),
+    new THREE.MeshStandardMaterial({ color: 0x1a1d20, roughness: 0.9, transparent: true }),
+  )
+  placeBody(blade, 2.01, 0, -0.1)
+  propDisc.userData.blade = blade
+  g.add(blade)
+  return { group: g, propDisc }
+}
+
+/** Boeing 737-800 (11g): low-wing twin-jet, gear at the physics points.
+ *  The prop-disc slot carries an invisible disc so updateProp is a no-op
+ *  visually (jets have no prop) while the shared interface stays uniform. */
+export function buildB738(): AircraftMesh {
+  const g = new THREE.Group()
+  const add = (mesh: THREE.Mesh, x: number, y: number, z: number): THREE.Mesh => {
+    placeBody(mesh, x, y, z)
+    mesh.castShadow = true
+    g.add(mesh)
+    return mesh
+  }
+  // Fuselage tube + nose + tail cone.
+  const fuse = new THREE.Mesh(new THREE.CylinderGeometry(1.9, 1.9, 28, 16), WHITE)
+  fuse.rotation.x = Math.PI / 2
+  add(fuse, 1.0, 0, -0.6)
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(1.9, 4.4, 16), WHITE)
+  nose.rotation.x = -Math.PI / 2
+  add(nose, 17.2, 0, -0.6)
+  const tailCone = new THREE.Mesh(new THREE.ConeGeometry(1.9, 6.5, 16), WHITE)
+  tailCone.rotation.x = Math.PI / 2
+  add(tailCone, -16.2, 0, -0.6)
+  // Swept wing (two slabs rotated for sweep), engines, winglets.
+  for (const side of [-1, 1]) {
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(15.5, 0.35, 4.6), SILVER)
+    wing.rotation.y = side * 0.44 // ~25° sweep
+    add(wing, -1.2 - 2.0, side * 7.6, 0.3)
+    const winglet = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.4, 1.3), SILVER)
+    add(winglet, -4.6, side * 16.4, -0.9)
+    const eng = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 0.85, 4.2, 14), SILVER)
+    eng.rotation.x = Math.PI / 2
+    add(eng, 2.6, side * 5.4, 1.35)
+    const intake = new THREE.Mesh(new THREE.CylinderGeometry(1.08, 1.08, 0.4, 14), DARK)
+    intake.rotation.x = Math.PI / 2
+    add(intake, 4.8, side * 5.4, 1.35)
+  }
+  // Empennage: swept fin + stabs.
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.25, 6.2, 3.6), RED)
+  fin.rotation.x = -0.5 // sweep the slab back
+  add(fin, -15.0, 0, -3.4)
+  for (const side of [-1, 1]) {
+    const stab = new THREE.Mesh(new THREE.BoxGeometry(6.4, 0.18, 2.6), SILVER)
+    stab.rotation.y = side * 0.5
+    add(stab, -15.6, side * 3.4, -1.2)
+  }
+  // Gear at the physics contact points.
+  const wheelGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.4, 14)
+  for (const [x, y, z] of [
+    [14.6, 0, 2.84],
+    [-1.0, -2.86, 2.9],
+    [-1.0, 2.86, 2.9],
+  ] as const) {
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1.8, 8), SILVER)
+    add(strut, x, y, z - 1.0)
+    const wheel = new THREE.Mesh(wheelGeo, DARK)
+    wheel.rotation.z = Math.PI / 2
+    add(wheel, x, y, z - 0.5)
+  }
+  // Invisible prop-disc slot (interface uniformity; jets spin nothing).
+  const propDisc = new THREE.Mesh(
+    new THREE.CircleGeometry(0.01, 6),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 }),
+  )
+  const blade = new THREE.Mesh(
+    new THREE.BoxGeometry(0.01, 0.01, 0.01),
+    new THREE.MeshStandardMaterial({ transparent: true, opacity: 0 }), // own material — never mutate the shared DARK
+  )
+  propDisc.userData.blade = blade
+  g.add(propDisc)
+  g.add(blade)
   return { group: g, propDisc }
 }
 
