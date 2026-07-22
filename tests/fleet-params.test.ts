@@ -81,12 +81,10 @@ describe('fleet params threading (11a)', () => {
   })
 
   it('flap clamp follows the params detent count, not a hardcoded 0..3', () => {
-    const oneDetent = cloneParams()
-    ;(oneDetent as { flapDetentsDeg: number[] }).flapDetentsDeg = [0]
-    ;(oneDetent as { flapDCl0: number[] }).flapDCl0 = [0]
-    ;(oneDetent as { flapDClMax: number[] }).flapDClMax = [0]
-    ;(oneDetent as { flapDCd: number[] }).flapDCd = [0]
-    ;(oneDetent as { flapDCm: number[] }).flapDCm = [0]
+    const oneDetent: AircraftParams = {
+      ...cloneParams(),
+      flapDetentsDeg: [0], flapDCl0: [0], flapDClMax: [0], flapDCd: [0], flapDCm: [0],
+    }
     const ac = new Aircraft(oneDetent)
     ac.spawnOnGround(0, 0, 0, 0)
     ac.controls.flapsIndex = 3 // pilot mashes the lever on a flapless type

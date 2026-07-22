@@ -106,6 +106,40 @@ describe('engine start sequence', () => {
   })
 })
 
+describe('hand-prop / no-electrical start (Phase 11b — the Cub path)', () => {
+  it('a no-electrical engine ignores the starter but hand-props with mags hot', () => {
+    const st = makeEngineStartState()
+    const noElec = baseInputs({ masterBattery: false, hasElectrical: false, starterEngaged: true })
+    run(st, noElec, 5)
+    expect(st.status).toBe('stopped') // no starter motor exists
+
+    stepEngineStart(st, 0.1, { ...noElec, starterEngaged: false, handPropPull: true })
+    expect(st.status).toBe('running')
+    expect(st.rpm).toBeGreaterThan(400)
+  })
+
+  it('hand-propping with magnetos OFF does nothing (the prop just swings)', () => {
+    const st = makeEngineStartState()
+    const inp = baseInputs({ masterBattery: false, hasElectrical: false, magneto: 'off' as const, handPropPull: true })
+    for (let i = 0; i < 20; i++) stepEngineStart(st, 0.1, inp)
+    expect(st.status).toBe('stopped')
+    expect(st.rpm).toBe(0)
+  })
+
+  it('hand-propping with the wrong technique (throttle wide open, cold) fails', () => {
+    const st = makeEngineStartState()
+    const inp = baseInputs({ masterBattery: false, hasElectrical: false, throttleFrac: 1, handPropPull: true })
+    for (let i = 0; i < 20; i++) stepEngineStart(st, 0.1, inp)
+    expect(st.status).toBe('stopped')
+  })
+
+  it('electrical aircraft still start exactly as before (regression)', () => {
+    const st = makeEngineStartState()
+    run(st, baseInputs({ starterEngaged: true }), 5)
+    expect(st.status).toBe('running')
+  })
+})
+
 describe('mixture/EGT model', () => {
   it('has a genuine local peak somewhere in the middle of a rich-to-lean sweep', () => {
     const mixtures: number[] = []

@@ -98,6 +98,16 @@ export interface AircraftParams {
   propCpTable: ReadonlyArray<readonly [number, number]>
   /** Carbureted engine (carb-ice model applies); absent/false = injected. */
   carburetor?: boolean
+  /** false = no electrical system (no battery/starter — hand-prop only).
+   *  Absent means a normal electrical system. */
+  electrical?: false
+  /** Position-error calibration (KCAS→KIAS tables). Absent = no published
+   *  table for this type: IAS = CAS, disclosed per tier notes. */
+  pitotCal?: {
+    clean: ReadonlyArray<readonly [number, number]>
+    flap: ReadonlyArray<readonly [number, number]>
+    flapFullDeg: number
+  }
 
   propwashTailFactor: number
   pFactorCn: number

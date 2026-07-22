@@ -93,13 +93,15 @@ export function stepPropulsion(
   vAxialMs: number,
   fuelAvailable: boolean,
   P: AircraftParams = C172S,
+  /** Intake power multiplier (carb ice / carb heat, Phase 11b). 1 = clear. */
+  intakeFactor = 1,
 ): void {
   const D = P.propDiameterM
   const omega = Math.max(st.omegaRadS, 5)
   const n = omega / (2 * Math.PI)
   const J = Math.max(vAxialMs, 0) / Math.max(n * D, 0.1)
 
-  const power = fuelAvailable ? mixturePowerFactor(mixture) : 0
+  const power = fuelAvailable ? mixturePowerFactor(mixture) * intakeFactor : 0
   const qEngine = engineBrakeTorque(throttle, st.rpm, rho, P) * (power > 0 ? power : 0)
     - (fuelAvailable ? 0 : 6 + 0.04 * omega) // dead-engine friction
 

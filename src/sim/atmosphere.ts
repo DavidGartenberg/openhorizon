@@ -88,7 +88,7 @@ const CAL_FLAP30: Array<[kcas: number, kias: number]> = [
   [90, 90],
 ]
 
-function interp(table: Array<[number, number]>, x: number): number {
+function interp(table: ReadonlyArray<readonly [number, number]>, x: number): number {
   const first = table[0]!
   const last = table[table.length - 1]!
   if (x <= first[0]) return first[1] + (x - first[0])
@@ -101,20 +101,33 @@ function interp(table: Array<[number, number]>, x: number): number {
   return last[1]
 }
 
-export function kiasFromKcas(kcas: number, flapsDeg: number): number {
-  const clean = interp(CAL_CLEAN, kcas)
-  const flap = interp(CAL_FLAP30, kcas)
-  const f = Math.min(Math.max(flapsDeg / 30, 0), 1)
+/** Position-error calibration tables (KCAS→KIAS). These are the C172S POH
+ *  tables and remain this module's default so every existing caller is
+ *  bit-unchanged; fleet aircraft supply their own via `AircraftParams.
+ *  pitotCal` (Phase 11b) — or none, which honestly means IAS = CAS. */
+export interface PitotCal {
+  clean: ReadonlyArray<readonly [number, number]>
+  flap: ReadonlyArray<readonly [number, number]>
+  /** Flap angle at which the `flap` table fully applies (blend endpoint). */
+  flapFullDeg: number
+}
+
+export const C172_PITOT_CAL: PitotCal = { clean: CAL_CLEAN, flap: CAL_FLAP30, flapFullDeg: 30 }
+
+export function kiasFromKcas(kcas: number, flapsDeg: number, cal: PitotCal = C172_PITOT_CAL): number {
+  const clean = interp(cal.clean, kcas)
+  const flap = interp(cal.flap, kcas)
+  const f = Math.min(Math.max(flapsDeg / cal.flapFullDeg, 0), 1)
   return clean * (1 - f) + flap * f
 }
 
 /** Inverse: KIAS → KCAS (numeric, for tests/targets given in KIAS). */
-export function kcasFromKias(kias: number, flapsDeg: number): number {
+export function kcasFromKias(kias: number, flapsDeg: number, cal: PitotCal = C172_PITOT_CAL): number {
   let lo = kias - 5
   let hi = kias + 15
   for (let i = 0; i < 40; i++) {
     const mid = (lo + hi) / 2
-    if (kiasFromKcas(mid, flapsDeg) < kias) lo = mid
+    if (kiasFromKcas(mid, flapsDeg, cal) < kias) lo = mid
     else hi = mid
   }
   return (lo + hi) / 2

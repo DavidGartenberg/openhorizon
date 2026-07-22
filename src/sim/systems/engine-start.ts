@@ -57,6 +57,14 @@ export interface EngineStartInputs {
   floodedEngine: boolean
   /** Pilot primed/pumped the throttle before/during cranking. */
   primed: boolean
+  /** false = no electrical system at all (J-3 Cub): the starter input is
+   *  ignored (there is no starter motor) and `masterBattery` is not
+   *  required — magnetos are self-powered. Absent/true = normal. */
+  hasElectrical?: boolean
+  /** Momentary: the pilot swings the prop through one compression stroke
+   *  this step. With mags hot, fuel on, and the right technique the engine
+   *  catches immediately; otherwise the blade just swings through. */
+  handPropPull?: boolean
 }
 
 export interface EngineStartState {
@@ -94,7 +102,10 @@ function canCatch(inp: EngineStartInputs): boolean {
 }
 
 export function stepEngineStart(st: EngineStartState, dt: number, inp: EngineStartInputs): void {
-  const canRun = inp.masterBattery && inp.magneto !== 'off' && inp.fuelAvailable
+  const electrical = inp.hasElectrical !== false
+  // Magnetos are engine-driven — a battery is only needed for the STARTER.
+  // A running (or hand-propped) engine needs mags + fuel, nothing else.
+  const canRun = (electrical ? inp.masterBattery : true) && inp.magneto !== 'off' && inp.fuelAvailable
 
   if (!canRun) {
     st.status = 'stopped'
@@ -103,8 +114,19 @@ export function stepEngineStart(st: EngineStartState, dt: number, inp: EngineSta
     return
   }
 
+  // Hand-prop: one compression stroke. Right technique → catches on the
+  // spot; wrong technique → the blade swings through, nothing happens.
+  if (st.status === 'stopped' && inp.handPropPull) {
+    if (canCatch(inp)) {
+      st.status = 'running'
+      st.crankTimeS = 0
+      st.rpm = Math.max(equilibriumRpm(inp.throttleFrac, 0, RHO0) - magnetoDropRpm(inp.magneto), 0)
+    }
+    return
+  }
+
   if (st.status === 'stopped') {
-    if (inp.starterEngaged) {
+    if (inp.starterEngaged && electrical) {
       st.status = 'cranking'
       st.crankTimeS = 0
       st.rpm = CRANK_RPM

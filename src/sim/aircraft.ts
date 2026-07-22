@@ -103,6 +103,11 @@ export class Aircraft {
    *  to the engine this step, same mechanism as running the tank dry. */
   engineRunning = true
 
+  /** Intake power multiplier from the carb-ice model (Phase 11b), set by
+   *  the systems layer each frame. 1 (default) = clear venturi — injected
+   *  engines and all existing callers see identical behavior. */
+  intakePowerFactor = 1
+
   /** groundElevAt with a finite guard: a flaky terrain sample (NaN tile
    *  decode) must never reach aero (AGL/ground effect) or gear math —
    *  fall back to sea level, which is what a missing tile really means. */
@@ -147,10 +152,21 @@ export class Aircraft {
     return this.P.emptyMassKg + this.fuelKg + this.payloadKg
   }
 
-  /** Place the aircraft on the ground at rest, heading ψ (rad). */
+  /** Place the aircraft on the ground at rest, heading ψ (rad). A tricycle
+   *  sits at the tuned C172 attitude (bit-exact legacy path); a taildragger
+   *  rests three-point at the pitch where mains and tailwheel touch
+   *  together: tanθ = (z_main − z_tail)/(x_main − x_tail) in body frame. */
   spawnOnGround(north: number, east: number, headingRad: number, groundElevM = 0): void {
-    qfromEuler(this.quat, headingRad, 0.03, 0)
-    v3set(this.posNed, north, east, -(groundElevM + this.P.gear.mainL.z - 0.07))
+    const tail = this.P.gear.tail
+    let pitch = 0.03
+    let cgHeightM = this.P.gear.mainL.z - 0.07
+    if (tail) {
+      const main = this.P.gear.mainL
+      pitch = Math.atan2(main.z - tail.z, main.x - tail.x)
+      cgHeightM = main.z * Math.cos(pitch) - main.x * Math.sin(pitch) - 0.05
+    }
+    qfromEuler(this.quat, headingRad, pitch, 0)
+    v3set(this.posNed, north, east, -(groundElevM + cgHeightM))
     v3set(this.velBody, 0, 0, 0)
     v3set(this.rates, 0, 0, 0)
     this.prop.omegaRadS = (700 * Math.PI) / 30
@@ -200,7 +216,7 @@ export class Aircraft {
     stepPropulsion(
       this.prop, dt, c.throttle, c.mixture, rho,
       Math.max(this.vAirBody.x, 0), this.fuelKg > 0.5 && this.engineRunning,
-      this.P,
+      this.P, this.intakePowerFactor,
     )
     this.fuelKg = Math.max(this.fuelKg - this.prop.fuelFlowKgS * dt, 0)
 
@@ -302,7 +318,9 @@ export class Aircraft {
     const kcas = casFromTas(vAir, rho) / KT
     d.ktas = vAir / KT
     d.kcas = kcas
-    d.kias = Math.max(kiasFromKcas(kcas, this.flapsDeg), 0)
+    // Per-aircraft position error; no published table honestly means IAS=CAS
+    // (never borrow another type's pitot — §1).
+    d.kias = Math.max(this.P.pitotCal ? kiasFromKcas(kcas, this.flapsDeg, this.P.pitotCal) : kcas, 0)
     d.groundSpeedKt = Math.hypot(this.velNed.x, this.velNed.y) / KT
     d.trackDeg =
       d.groundSpeedKt > 3
