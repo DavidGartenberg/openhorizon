@@ -30,6 +30,10 @@ export interface AircraftParams {
    *  quadratic drag rise past the drag-divergence Mach. Absent = no Mach
    *  effects (piston fleet never gets near them). */
   machModel?: { mdd: number; dragRiseK: number }
+  /** true = pitch trim is a trimmable STABILIZER (jet transports): its
+   *  authority adds beyond the elevator's travel stops. Absent/false =
+   *  trim tab folded into the elevator limit (C172 behavior, bit-exact). */
+  trimIsStabilizer?: boolean
   // geometry
   wingAreaM2: number
   spanM: number

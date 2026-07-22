@@ -268,7 +268,12 @@ export class Aircraft {
     ai.p = this.rates.x
     ai.q = this.rates.y
     ai.r = this.rates.z
-    ai.elevatorRad = clamp(-c.pitch * this.P.elevatorMaxRad - c.trim * this.P.trimMaxRad, -this.P.elevatorMaxRad, this.P.elevatorMaxRad)
+    // Trim-tab aircraft: tab + elevator share the surface — total clamps to
+    // elevator travel (C172, bit-exact). Trimmable-stabilizer aircraft: the
+    // stab is its own surface; its authority adds beyond elevator stops.
+    ai.elevatorRad = this.P.trimIsStabilizer
+      ? clamp(-c.pitch * this.P.elevatorMaxRad, -this.P.elevatorMaxRad, this.P.elevatorMaxRad) - c.trim * this.P.trimMaxRad
+      : clamp(-c.pitch * this.P.elevatorMaxRad - c.trim * this.P.trimMaxRad, -this.P.elevatorMaxRad, this.P.elevatorMaxRad)
     ai.aileronRad = c.roll * this.P.aileronMaxRad
     // Convention bridge: +input = right pedal = nose right. The aero
     // derivatives use Roskam's +δr = trailing-edge-left (nose left), so the

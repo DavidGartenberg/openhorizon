@@ -25,6 +25,11 @@ export interface TawsInput {
   nearRunwayFinal: boolean
   /** ILS glideslope deviation fraction (fly-up negative), null when none. */
   gsDeviation: number | null
+  /** Jet GPWS profile (Phase 11f, 737): enables Mode-4A "TOO LOW, GEAR" and
+   *  the FIFTY…TEN short-final callouts. Absent = TAWS-B (C172) behavior. */
+  jetProfile?: boolean
+  /** Landing gear down-and-locked; only meaningful with jetProfile. */
+  gearDown?: boolean
 }
 
 export type TawsLevel = 'NONE' | 'CAUTION' | 'WARNING'
@@ -35,10 +40,15 @@ export interface TawsOutput {
   newAural: boolean
 }
 
+const JET_CALLOUT_GATES: ReadonlyArray<[number, string]> = [
+  [50, 'FIFTY'], [40, 'FORTY'], [30, 'THIRTY'], [20, 'TWENTY'], [10, 'TEN'],
+]
+
 export class TawsComputer {
   private lastAural: string | undefined
   private maxAglSinceTakeoff = 0
   private said500 = false
+  private calloutIdx = 0
 
   step(dt: number, inp: TawsInput): TawsOutput {
     void dt
@@ -85,6 +95,11 @@ export class TawsComputer {
     if (!inp.nearRunwayFinal && inp.aglFt < 245 && inp.gsKt > 60 && inp.flapsDeg < 10) {
       consider('CAUTION', 'TOO LOW, FLAPS')
     }
+    // Mode 4A (jet): gear up low and slow — deliberately NOT inhibited near
+    // the runway; a gear-up approach is exactly what this mode exists for.
+    if (inp.jetProfile && inp.gearDown === false && inp.aglFt < 500 && inp.gsKt > 60) {
+      consider('CAUTION', 'TOO LOW, GEAR')
+    }
 
     // ---- Mode 5: below the glideslope on approach ----
     if (inp.nearRunwayFinal && inp.gsDeviation !== null && inp.gsDeviation < -0.35 && inp.aglFt < 1000 && inp.aglFt > 150) {
@@ -101,6 +116,22 @@ export class TawsComputer {
       }
     }
     if (inp.aglFt > 900) this.said500 = false
+
+    // Jet short-final cadence: FIFTY, FORTY, THIRTY, TWENTY, TEN (once per
+    // descending crossing; rearmed climbing back through 200).
+    if (inp.jetProfile) {
+      if (inp.aglFt > 200) this.calloutIdx = 0
+      else if (inp.vsFpm < 0 && this.calloutIdx < JET_CALLOUT_GATES.length) {
+        const [gateFt, word] = JET_CALLOUT_GATES[this.calloutIdx]!
+        if (inp.aglFt <= gateFt) {
+          this.calloutIdx++
+          if (level === 'NONE') {
+            level = 'CAUTION'
+            aural = word
+          }
+        }
+      }
+    }
 
     const newAural = aural !== undefined && aural !== this.lastAural
     this.lastAural = aural
