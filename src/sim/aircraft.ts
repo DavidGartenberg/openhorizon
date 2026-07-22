@@ -8,6 +8,7 @@ import { C172S } from './aircraft/c172s'
 import type { AircraftParams } from './aircraft/params'
 import { computeAero, makeAeroOutput, type AeroInput } from './aero'
 import { stepPropulsion, makePropulsionState, type PropulsionState } from './propulsion'
+import { makeTurbofanState, stepTurbofan, windmillDragN, type TurbofanState } from './turbofan'
 import { computeGear, makeGearOutput, type GearInput } from './gear'
 import { isa, casFromTas, kiasFromKcas, G, KT, FT, R_AIR, type AirState } from './atmosphere'
 import {
@@ -54,6 +55,10 @@ export interface FlightData {
   flapsDeg: number
   shaftPowerW: number
   thrustN: number
+  /** Jet N1 % (0 for piston aircraft). */
+  n1Pct: number
+  /** Landing gear position, 1 = down/locked (fixed gear is always 1). */
+  gearPos: number
 }
 
 export class Aircraft {
@@ -72,9 +77,20 @@ export class Aircraft {
   payloadKg = 250 // pilot + pax + bags (W&B UI in Phase 8)
   flapsDeg = 0
 
+  /** Turbofan state when P.jet is present, else null (piston). */
+  readonly jetState: TurbofanState | null
+
+  /** Gear lever state (systems-layer field like engineRunning, NOT a
+   *  Controls axis — the AP/override paths must never retract the gear
+   *  by accident). Fixed-gear aircraft ignore it. */
+  gearDownCommanded = true
+  /** Actual gear position 0..1 (1 = down/locked). Fixed gear pins at 1. */
+  gearPos = 1
+
   constructor(params: AircraftParams = C172S) {
     this.P = params
     this.fuelKg = params.fuelCapacityKg
+    this.jetState = params.jet ? makeTurbofanState(params.jet) : null
   }
 
   readonly controls: Controls = {
@@ -121,6 +137,7 @@ export class Aircraft {
     verticalSpeedFpm: 0, headingDeg: 0, pitchDeg: 0, rollDeg: 0,
     alphaDeg: 0, betaDeg: 0, rpm: 0, fuelFlowGph: 0, loadFactorG: 1,
     stallFraction: 0, onGround: false, flapsDeg: 0, shaftPowerW: 0, thrustN: 0,
+    n1Pct: 0, gearPos: 1,
   }
 
   // ---- scratch (no allocation in step) ----
@@ -209,15 +226,36 @@ export class Aircraft {
     this.alphaDotFilt += clamp(alphaDotRaw - this.alphaDotFilt, -50 * dt, 50 * dt)
     this.alphaPrev = alpha
 
+    // ---- gear transit (Phase 11e; fixed gear pins at 1) ----
+    if (this.P.gearRetractable) {
+      const rate = dt / this.P.gearRetractable.transitS
+      this.gearPos = clamp(this.gearPos + (this.gearDownCommanded ? rate : -rate), 0, 1)
+    }
+
     // ---- propulsion ----
     // Params passed EXPLICITLY here and below: the modules' defaulted
     // C172S args exist for external callers/tests — if the 6-DOF relied on
     // the default, every fleet member would silently fly a C172 (§1).
-    stepPropulsion(
-      this.prop, dt, c.throttle, c.mixture, rho,
-      Math.max(this.vAirBody.x, 0), this.fuelKg > 0.5 && this.engineRunning,
-      this.P, this.intakePowerFactor,
-    )
+    let mach = 0
+    if (this.P.jet && this.jetState) {
+      // Jet path: turbofan drives the shared `prop` output struct so the
+      // force assembly / fuel / data plumbing below is powerplant-agnostic.
+      mach = vAir / this.air.speedOfSoundMs
+      const running = this.fuelKg > 0.5 && this.engineRunning
+      stepTurbofan(this.jetState, dt, c.throttle, rho, mach, running, this.P.jet)
+      this.prop.thrustN = running ? this.jetState.thrustN : -windmillDragN(rho, vAir, this.P.jet)
+      this.prop.torqueNm = 0
+      this.prop.fuelFlowKgS = this.jetState.fuelFlowKgS
+      this.prop.shaftPowerW = Math.max(this.jetState.thrustN * vAir, 0)
+      this.prop.rpm = 0
+      this.prop.omegaRadS = 0
+    } else {
+      stepPropulsion(
+        this.prop, dt, c.throttle, c.mixture, rho,
+        Math.max(this.vAirBody.x, 0), this.fuelKg > 0.5 && this.engineRunning,
+        this.P, this.intakePowerFactor,
+      )
+    }
     this.fuelKg = Math.max(this.fuelKg - this.prop.fuelFlowKgS * dt, 0)
 
     // ---- aero ----
@@ -239,6 +277,8 @@ export class Aircraft {
     ai.flapsDeg = this.flapsDeg
     ai.thrustN = this.prop.thrustN
     ai.propTorqueNm = this.prop.torqueNm
+    ai.mach = mach
+    ai.extraCd = this.P.gearRetractable ? this.P.gearRetractable.dCdExtended * this.gearPos : 0
     const groundElev = this.safeGroundElev(this.posNed.x, this.posNed.y)
     ai.heightAglM = altM - groundElev
     this.data.aglFt = ai.heightAglM / FT
@@ -250,16 +290,24 @@ export class Aircraft {
 
     // ---- gear ----
     qrotate(this.velNed, this.quat, this.velBody)
-    this.gearIn.rudder = c.yaw
-    this.gearIn.brakeLeft = c.brakeLeft
-    this.gearIn.brakeRight = c.brakeRight
-    computeGear(this.gearIn, this.gearOut, this.P)
-    this.force.x += this.gearOut.force.x
-    this.force.y += this.gearOut.force.y
-    this.force.z += this.gearOut.force.z
-    this.moment.x += this.gearOut.moment.x
-    this.moment.y += this.gearOut.moment.y
-    this.moment.z += this.gearOut.moment.z
+    if (this.gearPos > 0.95) {
+      this.gearIn.rudder = c.yaw
+      this.gearIn.brakeLeft = c.brakeLeft
+      this.gearIn.brakeRight = c.brakeRight
+      computeGear(this.gearIn, this.gearOut, this.P)
+      this.force.x += this.gearOut.force.x
+      this.force.y += this.gearOut.force.y
+      this.force.z += this.gearOut.force.z
+      this.moment.x += this.gearOut.moment.x
+      this.moment.y += this.gearOut.moment.y
+      this.moment.z += this.gearOut.moment.z
+    } else {
+      // Gear not down: no wheel forces. Surface contact gear-up is a crash
+      // (no belly-slide model — honest simplification, recorded).
+      this.gearOut.onGround = false
+      this.gearOut.maxCompressionM = 0
+      if (ai.heightAglM < 0.3) this.crashed = true
+    }
 
     // ---- gravity ----
     qrotateInv(this.gravBody, this.quat, v3set(this.windBody, 0, 0, m * G))
@@ -336,6 +384,8 @@ export class Aircraft {
     d.betaDeg = (beta * 180) / Math.PI
     d.rpm = this.prop.rpm
     d.fuelFlowGph = (this.prop.fuelFlowKgS / 2.72155) * 3600 // kg/s → USG/hr avgas
+    d.n1Pct = this.jetState ? this.jetState.n1Pct : 0
+    d.gearPos = this.gearPos
     d.stallFraction = this.aeroOut.stallFraction
     d.onGround = this.gearOut.onGround
     d.flapsDeg = this.flapsDeg
@@ -357,6 +407,8 @@ export class Aircraft {
     this.controls.pitch = clamp(
       -(elevatorTrimRad + this.controls.trim * this.P.trimMaxRad) / this.P.elevatorMaxRad, -1, 1,
     )
+    // For jets the trim solver's `rpm` slot carries N1 % — seed the spool.
+    if (this.jetState) this.jetState.n1Pct = rpm
     this.prop.omegaRadS = (rpm * Math.PI) / 30
     this.alphaPrev = alphaRad
     // Trim is an AIRMASS condition: the requested TAS is air-relative, so

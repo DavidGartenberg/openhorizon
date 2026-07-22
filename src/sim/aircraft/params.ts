@@ -16,7 +16,20 @@ export interface GearLeg {
   steerMaxRad: number // 0 = castoring/fixed
 }
 
+import type { JetParams } from '../turbofan'
+
 export interface AircraftParams {
+  /** Turbofan powerplant (Phase 11e). Present = jet: the piston/prop path
+   *  (torque, P-factor, RPM) is bypassed; thrust comes from turbofan.ts.
+   *  Jet aircraft should also set pFactorCn/propwashTailFactor to 0. */
+  jet?: JetParams
+  /** Retractable gear: transit time and the drag increment when extended.
+   *  Absent = fixed gear (always down, no extra drag term). */
+  gearRetractable?: { transitS: number; dCdExtended: number }
+  /** Compressibility (Phase 11e): Prandtl–Glauert lift-slope correction and
+   *  quadratic drag rise past the drag-divergence Mach. Absent = no Mach
+   *  effects (piston fleet never gets near them). */
+  machModel?: { mdd: number; dragRiseK: number }
   // geometry
   wingAreaM2: number
   spanM: number

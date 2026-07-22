@@ -9,6 +9,7 @@ import { C172S, flapInterp } from './aircraft/c172s'
 import type { AircraftParams } from './aircraft/params'
 import { computeAero, makeAeroOutput, type AeroInput } from './aero'
 import { propCt, propCp, engineBrakeTorque, equilibriumRpm } from './propulsion'
+import { thrustAvailableN } from './turbofan'
 import { isa, G } from './atmosphere'
 
 export interface TrimResult {
@@ -33,6 +34,8 @@ export interface TrimSpec {
   throttle?: number
   /** Aircraft to trim (fleet, Phase 10a); defaults to the C172S. */
   params?: AircraftParams
+  /** Extra parasite drag in the trim condition (extended gear). Default 0. */
+  extraCd?: number
 }
 
 interface Propelled {
@@ -40,6 +43,20 @@ interface Propelled {
   torqueNm: number
   rpm: number
   powerW: number
+}
+
+/** Jet steady state: spool settled at commanded N1; thrust = tMax·frac². */
+function jetAt(throttle: number, tasMs: number, rho: number, aMs: number, P: AircraftParams): Propelled {
+  const jet = P.jet!
+  const mach = tasMs / aMs
+  const frac = Math.min(Math.max(throttle, 0), 1)
+  const thrust = thrustAvailableN(rho, mach, jet) * Math.max(frac * frac, 0.025)
+  return {
+    thrustN: thrust,
+    torqueNm: 0,
+    rpm: jet.n1IdlePct + frac * (jet.n1MaxPct - jet.n1IdlePct),
+    powerW: thrust * tasMs,
+  }
 }
 
 function propAt(throttle: number, vAxial: number, rho: number, P: AircraftParams): Propelled {
@@ -68,12 +85,16 @@ function residuals(
   const air = isa(s.altM)
   const rho = air.densityKgM3
   const W = s.massKg * G
-  const prop = propAt(throttle, s.tasMs * Math.cos(alpha), rho, P)
+  const prop = P.jet
+    ? jetAt(throttle, s.tasMs, rho, air.speedOfSoundMs, P)
+    : propAt(throttle, s.tasMs * Math.cos(alpha), rho, P)
 
   const ai: AeroInput = {
     rho, vAir: s.tasMs, alpha, beta: 0, alphaDot: 0, p: 0, q: 0, r: 0,
     elevatorRad: elevator, aileronRad: 0, rudderRad: 0, flapsDeg: s.flapsDeg,
     thrustN: prop.thrustN, propTorqueNm: prop.torqueNm, heightAglM: 1000,
+    mach: P.machModel ? s.tasMs / air.speedOfSoundMs : 0,
+    extraCd: s.extraCd ?? 0,
   }
   computeAero(ai, aeroOut, P)
   const qS = 0.5 * rho * s.tasMs * s.tasMs * P.wingAreaM2

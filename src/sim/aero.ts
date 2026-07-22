@@ -27,6 +27,11 @@ export interface AeroInput {
   thrustN: number
   propTorqueNm: number
   heightAglM: number
+  /** Flight Mach number (Phase 11e). 0 (default) = incompressible — the
+   *  piston fleet passes 0 and sees bit-identical behavior. */
+  mach?: number
+  /** Extra parasite-drag increment (extended gear, Phase 11e). Default 0. */
+  extraCd?: number
 }
 
 export interface AeroOutput {
@@ -65,20 +70,30 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
   // Flap increments.
   const dCl0 = flapInterp(P.flapDCl0, inp.flapsDeg, P.flapDetentsDeg)
   const dClMax = flapInterp(P.flapDClMax, inp.flapsDeg, P.flapDetentsDeg)
-  const dCd = flapInterp(P.flapDCd, inp.flapsDeg, P.flapDetentsDeg)
+  const dCd = flapInterp(P.flapDCd, inp.flapsDeg, P.flapDetentsDeg) + (inp.extraCd ?? 0)
   const dCm = flapInterp(P.flapDCm, inp.flapsDeg, P.flapDetentsDeg)
+
+  // Compressibility (Phase 11e): Prandtl–Glauert lift-slope growth and the
+  // drag-divergence rise, only for aircraft that declare a machModel.
+  const mach = inp.mach ?? 0
+  const pg = P.machModel && mach > 0.3 ? 1 / Math.sqrt(Math.max(1 - mach * mach, 0.36)) : 1
+  const machDragRise =
+    P.machModel && mach > P.machModel.mdd
+      ? P.machModel.dragRiseK * (mach - P.machModel.mdd) * (mach - P.machModel.mdd)
+      : 0
 
   // ---- lift: linear → parabolic cap peaking at CLmax → post-stall drop ----
   // The parabola is tangent to the lift line at αs−δ and peaks CLmax at αs+δ,
   // so the 1-g stall happens exactly at the POH CLmax (§5.6 stall speeds).
+  const clAlphaEff = P.clAlpha * pg
   const cl0f = P.cl0 + dCl0
   const clMax = P.clMaxClean + dClMax
   const delta = 0.03 // rad, rounding half-width
-  const alphaS = (clMax - cl0f) / P.clAlpha
+  const alphaS = (clMax - cl0f) / clAlphaEff
   const alphaPeak = alphaS + delta
-  const aCoef = P.clAlpha / (4 * delta)
+  const aCoef = clAlphaEff / (4 * delta)
   let clAttached: number
-  if (alpha < alphaS - delta) clAttached = cl0f + P.clAlpha * alpha
+  if (alpha < alphaS - delta) clAttached = cl0f + clAlphaEff * alpha
   else clAttached = clMax - aCoef * (alpha - alphaPeak) * (alpha - alphaPeak)
   // Post-stall: blend to flat plate just past the peak (the break).
   const sPos = sigmoid((alpha - (alphaPeak + 0.02)) / 0.025)
@@ -96,8 +111,8 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
   // Ground effect: induced drag falls near the surface (McCormick).
   const h16b = (16 * Math.max(inp.heightAglM, 0.1)) / P.spanM
   const geFactor = (h16b * h16b) / (1 + h16b * h16b)
-  const cdAttached = P.cd0 + dCd + kInduced * cl * cl * geFactor
-  const cdStalled = P.cd0 + dCd + P.postStallCd * Math.sin(alpha) * Math.sin(alpha)
+  const cdAttached = P.cd0 + dCd + machDragRise + kInduced * cl * cl * geFactor
+  const cdStalled = P.cd0 + dCd + machDragRise + P.postStallCd * Math.sin(alpha) * Math.sin(alpha)
   const cd = (1 - stall) * cdAttached + stall * cdStalled + P.cdBeta * beta * beta
 
   // ---- side force ----
