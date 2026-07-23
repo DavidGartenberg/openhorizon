@@ -29,7 +29,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 10 — Fleet (absorbed) | ✅ → Phase 11 | absorbed by the approved Phases 11–15 mega-plan |
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
-| 13 — Graphics | 🔧 13a done | sun shadows + __ohPerf gate; imagery/night/PAPI/clouds next |
+| 13 — Graphics | 🔧 13a+detail done | shadows, FAA runway markings, procedural taxiway/terminal, signage; imagery next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -60,6 +60,25 @@ sets payload with honest gross/max-ramp warning. **Documented deviation
 config/fuel/clock), not mid-maneuver 6-DOF rates; ground saves restore
 the runway spawn, not the exact ramp spot. W&B envelope plot deferred —
 payload entry + gross readout only.
+
+## Phase 13a′ — airport surface detail (2026-07-22, user-requested)
+
+FAA-geometry runway markings from the real runway dimensions: threshold
+stripes by width class (4/6/8/12), painted runway numbers (canvas
+textures, reading toward the arriving pilot), aiming point at 1,000 ft
+(runways ≥4,200 ft), touchdown-zone bars at 500-ft stations (≥6,000 ft)
+— all merged into ONE white geometry per runway. Distance-remaining
+boards every 1,000 ft (both faces numbered for their own direction).
+Procedural parallel taxiway + three connectors with yellow centerlines,
+holding-position signs (white-on-red "LO-HI") and location signs
+(yellow-on-black) at each connector; apron + terminal/concourse/jet
+bridges/control tower at jet fields (≥7,000 ft), hangars + FBO at GA
+fields. **Recorded deviation:** taxiway/terminal layouts are PLAUSIBLE
+PROCEDURAL (OurAirports has no taxiway/building data); markings and
+distance boards follow real FAA geometry rules. Browser-verified at
+KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
+buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
+(sign/number canvases, cached by text). Suite 833 green.
 
 ## Phase 13a — sun shadows + perf gate (2026-07-22)
 

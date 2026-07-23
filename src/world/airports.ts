@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { FT } from '../sim/atmosphere'
 import { distanceM, bearingDeg, flattenForRunway, type LatLon } from '../math/geo'
 import type { WorldFrame, RunwayFlatten } from './tiles'
+import { buildRunwayMarkings, buildDistanceSigns, buildTaxiwayComplex, type RunwayLocal } from './airport-detail'
 
 export interface RunwayData {
   li: string
@@ -182,6 +183,25 @@ export class Airports {
         }
         dashes.renderOrder = 21
         group.add(dashes)
+      }
+      if (r.s === 0 && lenM >= 900) {
+        // 13a′: FAA markings + distance boards + (longest paved runway
+        // only) the procedural taxiway/apron/terminal complex.
+        const rl: RunwayLocal = {
+          lenM, widM,
+          liIdent: r.li, hiIdent: r.hi,
+          elevAt: (t) => elevAt(Math.max(-0.5, Math.min(0.5, t))) - elevM,
+        }
+        const detail = new THREE.Group()
+        detail.add(buildRunwayMarkings(rl))
+        detail.add(buildDistanceSigns(rl))
+        const isLongest = ap.r.every((o) => o.l <= r.l)
+        if (isLongest && lenM >= 1100) {
+          detail.add(buildTaxiwayComplex(rl, lenM >= 2130))
+        }
+        detail.rotation.y = -hdg
+        detail.position.set(cx, elevM + 0.02, -cy)
+        group.add(detail)
       }
       if (r.lt === 1) {
         // Edge lights every ~60 m both sides.
