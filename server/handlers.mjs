@@ -64,6 +64,21 @@ export async function airportsData() {
 // (server/cache-seed/aircraft-types.json) makes the endpoint work offline.
 const TYPES_URL = 'https://raw.githubusercontent.com/wiedehopf/tar1090-db/master/icao_aircraft_types.json'
 const TYPE_NAMES_URL = 'https://raw.githubusercontent.com/rikgale/ICAOList/main/ICAOList.csv'
+// ---- USGS satellite imagery (Phase 13b) ----
+// USGS National Map "USGSImageryOnly" tile service: public domain, US-only
+// (matches the sim's scope — recorded deviation). ArcGIS path order z/y/x.
+const IMAGERY_BASE = 'https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile'
+
+export async function imageryTile(z, x, y) {
+  const f = path.join(cacheDir, `im-${z}-${x}-${y}.jpg`)
+  if (fs.existsSync(f)) return fs.readFileSync(f)
+  const res = await fetch(`${IMAGERY_BASE}/${z}/${y}/${x}`)
+  if (!res.ok) throw new Error(`imagery ${z}/${x}/${y}: ${res.status}`)
+  const buf = Buffer.from(await res.arrayBuffer())
+  fs.writeFileSync(f, buf)
+  return buf
+}
+
 let aircraftTypesJson = null
 
 export async function aircraftTypesData() {
@@ -405,6 +420,19 @@ export async function route(url, res) {
       })
       res.end(buf)
       return true
+    }
+    {
+      const m = url.match(/^\/proxy\/imagery\/(\d+)\/(\d+)\/(\d+)$/)
+      if (m) {
+        const buf = await imageryTile(m[1], m[2], m[3])
+        res.writeHead(200, {
+          'Content-Type': 'image/jpeg',
+          'Cache-Control': 'public, max-age=2592000',
+          'Access-Control-Allow-Origin': '*',
+        })
+        res.end(buf)
+        return true
+      }
     }
     if (url === '/api/aircraft-types.json') {
       const json = await aircraftTypesData()
