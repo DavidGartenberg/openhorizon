@@ -28,6 +28,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 9 — Sound/polish/perf | ✅ done | sound core, save/load, perf gate, §27 flight flown at KSFO |
 | 10 — Fleet (absorbed) | ✅ → Phase 11 | absorbed by the approved Phases 11–15 mega-plan |
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
+| 12 — Every plane (data) | 🔧 12a–12c done | type registry (2,700 designators), archetype meshes, roster generator + 15 Tier-B flyables; 12d expansion next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -58,6 +59,39 @@ sets payload with honest gross/max-ramp warning. **Documented deviation
 config/fuel/clock), not mid-maneuver 6-DOF rates; ground saves restore
 the runway spawn, not the exact ramp spot. W&B envelope plot deferred —
 payload entry + gross readout only.
+
+## Phase 12c — Tier-B roster generator + 15 proving types (2026-07-22)
+
+`derive.ts` (spec → AircraftParams, the honesty ladder documented in its
+header: stall CALIBRATED from the published anchor, cruise/climb
+PREDICTED, handling INHERITED from class anchors — Tier B is
+performance-validated, NOT handling-validated). 15 proving types span
+every powerplant/gear/flap combo: P28A/SR22/C182/PA18/BE58 pistons,
+TBM9/B350/DHC6 turboprops, C25A/E75L/A320/B739/B763/B744 jets, AS21
+glider. Validation: 58 rows green (stall ±3 kt, prop cruise ±5%, jet
+cruise thrust-envelope [35–92%], climb ±20%, glide L/D ±20%, approach
+trim; glider approach honestly skipped — no spoilers modeled).
+
+**Modeling added by the slice (all params-gated, C172 path bit-exact):**
+turboprop flat-rating (`thermoMargin`, min(1, margin×GaggFerrar) — margin
+values calibrated to hold flat rating through the piston-shaped lapse,
+documented per type); an explicit GOVERNED-PROP model (`propGoverned`:
+governor pins redline, thrust = η(J)·P/V with a low-J efficiency ramp +
+momentum-theory static cap; the Ct/Cp-table hack could not coarsen pitch
+and either overspun the King Air 27% past redline or starved it at
+altitude — both found by probes); per-type η scale (`propEtaScale`).
+Constant-speed pistons (SR22/C182/BE58) use the governed model too. Bug
+found on the way: twin power was double-counted (specs were total,
+derive multiplies by count — the 894-hp Baron briefly had 1,200 hp).
+
+**Documented per-type tunings** (roster.ts comments): SR22/TBM9 cd0 from
+their cruise anchors; PA18 draggier than class; DHC6 both knobs (climb
+props + barn-door drag — cd0 0.085, η×1.22); B744 mdd 0.86 (its wing
+cruises AT M0.85; the M0.82 default is 737-class); P28A prop −10%.
+`FLY <designator>` flies any roster type (archetype silhouette as the
+ship — no detailed exterior, honest). Browser: TBM9 spawned on final in
+its own approach config, governor at 2000 rpm, rode the trim. Suite
+493+1skip; validate 81+1 (C172 10 / Cub 7 / 737 6 / roster 58).
 
 ## Phase 11 — Fleet core close (2026-07-22)
 

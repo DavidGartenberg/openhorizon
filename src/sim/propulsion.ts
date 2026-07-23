@@ -35,6 +35,21 @@ function interp(table: PropTable, x: number): number {
 export const propCt = (J: number, table: PropTable = C172S.propCtTable): number => interp(table, J)
 export const propCp = (J: number, table: PropTable = C172S.propCpTable): number => interp(table, J)
 
+/** Governed-prop thrust from shaft power: η ramps with true advance ratio
+ *  J = V/(nD) — props are inefficient at low J (η ≈ 0.65 in a Vy climb,
+ *  0.85 by cruise) — capped by momentum-theory static thrust
+ *  ~0.9·(2ρA·P²)^⅓. Shared by dynamics and the trim solver so both fly
+ *  the same model. */
+export function governedThrustN(shaftPowerW: number, vAxialMs: number, rho: number, dM: number, redlineRpm: number): number {
+  if (shaftPowerW <= 0) return 0
+  const v = Math.max(vAxialMs, 0.1)
+  const j = v / ((redlineRpm / 60) * dM)
+  const eta = Math.min(Math.max(0.4 + 0.5 * j, 0.45), 0.85)
+  const diskA = (Math.PI * dM * dM) / 4
+  const tStatic = 0.9 * Math.cbrt(2 * rho * diskA * shaftPowerW * shaftPowerW)
+  return Math.min((eta * shaftPowerW) / v, tStatic)
+}
+
 export interface PropulsionState {
   omegaRadS: number
   fuelFlowKgS: number
@@ -75,7 +90,12 @@ function mixturePowerFactor(mixture: number): number {
  * resistance is what the windmilling-drag branch of Cp works against.
  */
 export function engineBrakeTorque(throttle: number, rpm: number, rho: number, P: AircraftParams = C172S): number {
-  const qFull = (P.ratedPowerW / P.ratedRadS) * densityPowerFactor(rho)
+  // Flat-rated turboprops (12c): the core has thermoMargin× the flat
+  // rating, so full power holds until Gagg–Ferrar eats the margin.
+  const lapse = P.thermoMargin
+    ? Math.min(1, P.thermoMargin * densityPowerFactor(rho))
+    : densityPowerFactor(rho)
+  const qFull = (P.ratedPowerW / P.ratedRadS) * lapse
   const thr = Math.min(Math.max(throttle, 0), 1)
   const idleGov = Math.min(Math.max((950 - rpm) / 200, 0), 1)
   // Idle circuit tops up low throttle; full throttle delivers full torque.
@@ -97,6 +117,35 @@ export function stepPropulsion(
   intakeFactor = 1,
 ): void {
   const D = P.propDiameterM
+
+  // ---- Governed (constant-speed) prop (12c): the governor varies blade
+  // pitch to hold redline RPM and absorb whatever the engine delivers —
+  // Ct/Cp tables (fixed pitch by definition) cannot represent that.
+  // Thrust = η(J)·P/V with a low-advance-ratio efficiency ramp and a
+  // momentum-theory static cap. Documented simplifications: no prop
+  // lever (always redline when running), feathered drag when dead. ----
+  if (P.propGoverned) {
+    const power = fuelAvailable ? mixturePowerFactor(mixture) * intakeFactor : 0
+    const omegaRef = (P.redlineRpm * Math.PI) / 30
+    if (power > 0) {
+      st.omegaRadS = omegaRef
+      const qE = Math.max(engineBrakeTorque(throttle, P.redlineRpm, rho, P) * power, 0)
+      st.shaftPowerW = qE * omegaRef
+      st.thrustN = governedThrustN(st.shaftPowerW, vAxialMs, rho, D, P.redlineRpm) * (P.propEtaScale ?? 1)
+      st.torqueNm = qE
+      st.fuelFlowKgS = Math.max(st.shaftPowerW, 0.05 * P.ratedPowerW) * P.bsfcKgPerWs
+    } else {
+      // Dead engine: prop feathers — a small drag disc, spool winds down.
+      st.omegaRadS = Math.max(st.omegaRadS - 0.5 * omegaRef * dt, 0)
+      st.thrustN = -0.02 * 0.5 * rho * vAxialMs * vAxialMs * ((Math.PI * D * D) / 4)
+      st.torqueNm = 0
+      st.shaftPowerW = 0
+      st.fuelFlowKgS = 0
+    }
+    st.rpm = (st.omegaRadS * 30) / Math.PI
+    return
+  }
+
   const omega = Math.max(st.omegaRadS, 5)
   const n = omega / (2 * Math.PI)
   const J = Math.max(vAxialMs, 0) / Math.max(n * D, 0.1)
@@ -124,7 +173,9 @@ export function stepPropulsion(
 export function equilibriumRpm(throttle: number, vAxialMs: number, rho: number, P: AircraftParams = C172S): number {
   const D = P.propDiameterM
   let lo = 300
-  let hi = 3200
+  // Governed props can never balance above redline (the governor coarsens
+  // pitch); fixed-pitch keeps the legacy bracket bit-exactly.
+  let hi = P.propGoverned ? P.redlineRpm * 1.001 : 3200
   for (let i = 0; i < 60; i++) {
     const rpm = (lo + hi) / 2
     const n = rpm / 60

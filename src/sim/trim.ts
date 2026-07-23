@@ -8,7 +8,7 @@
 import { C172S, flapInterp } from './aircraft/c172s'
 import type { AircraftParams } from './aircraft/params'
 import { computeAero, makeAeroOutput, type AeroInput } from './aero'
-import { propCt, propCp, engineBrakeTorque, equilibriumRpm } from './propulsion'
+import { propCt, propCp, engineBrakeTorque, equilibriumRpm, governedThrustN } from './propulsion'
 import { thrustAvailableN } from './turbofan'
 import { isa, G } from './atmosphere'
 
@@ -61,6 +61,18 @@ function jetAt(throttle: number, tasMs: number, rho: number, aMs: number, P: Air
 
 function propAt(throttle: number, vAxial: number, rho: number, P: AircraftParams): Propelled {
   const D = P.propDiameterM
+  if (P.propGoverned) {
+    // Governor holds redline; thrust from the shared governed model.
+    const omegaRef = (P.redlineRpm * Math.PI) / 30
+    const qE = Math.max(engineBrakeTorque(throttle, P.redlineRpm, rho, P), 0)
+    const powerW = qE * omegaRef
+    return {
+      thrustN: governedThrustN(powerW, vAxial, rho, D, P.redlineRpm) * (P.propEtaScale ?? 1),
+      torqueNm: qE,
+      rpm: P.redlineRpm,
+      powerW,
+    }
+  }
   const rpm = equilibriumRpm(throttle, vAxial, rho, P)
   const n = rpm / 60
   const J = Math.max(vAxial, 0) / Math.max(n * D, 0.1)

@@ -33,7 +33,9 @@ import { makeCarbIceState, stepCarbIce, carbIcePowerFactor } from './sim/systems
 import { loadAircraftTypes, aircraftTypesLoaded, aircraftTypeCount, typeInfo, parseDesc } from './world/aircraft-types'
 import * as THREE from 'three'
 import { archetypeFor } from './world/fleet-map'
-import { buildArchetype } from './render/fleet-mesh'
+import { buildArchetype, buildArchetypeShip } from './render/fleet-mesh'
+import { ROSTER, rosterParams } from './sim/aircraft/roster'
+import type { ArchetypeSpec } from './world/fleet-map'
 import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
 import type { PfdInput } from './cockpit/pfd'
 import { Input } from './input/input'
@@ -124,15 +126,46 @@ const FLEET: Record<string, {
   CUB: { params: J3CUB, label: 'Piper J-3 Cub', build: buildCub, final: { kias: 50, flapsIndex: 0, flapsDeg: 0 } },
   '737': { params: B738, label: 'Boeing 737-800', build: buildB738, final: { kias: 140, flapsIndex: 5, flapsDeg: 30 } },
 }
+/** Archetype pick for a Tier-B roster entry (spec-exact sizes). */
+function rosterArchetype(entry: (typeof ROSTER)[number]): ArchetypeSpec {
+  const sp = entry.spec
+  const pp = sp.powerplant
+  const arch =
+    pp.kind === 'none' ? 'glider'
+    : pp.kind === 'jet' ? (sp.mtowKg > 120_000 ? 'widebody' : sp.mtowKg > 30_000 ? 'narrowbody' : 'bizjet')
+    : pp.kind === 'turboprop' ? (pp.count > 1 ? 'twin-turboprop' : 'single-turboprop')
+    : pp.count > 1 ? 'twin-piston'
+    : sp.gear.layout === 'taildragger' ? 'taildragger'
+    : 'ga-low-wing'
+  return { archetype: arch, spanM: sp.spanM, lengthM: sp.lengthM, engines: pp.kind === 'none' ? 0 : pp.count, quad: pp.kind === 'jet' && pp.count >= 4 }
+}
+
 const fleetKey = ((): string => {
   try {
     const k = localStorage.getItem('oh-aircraft') ?? '172'
-    return FLEET[k] ? k : '172'
+    if (FLEET[k]) return k
+    if (ROSTER.some((r) => r.spec.designator === k)) return k
+    return '172'
   } catch {
     return '172'
   }
 })()
-const FLEET_ACTIVE = FLEET[fleetKey]!
+const FLEET_ACTIVE = ((): (typeof FLEET)[string] => {
+  if (FLEET[fleetKey]) return FLEET[fleetKey]!
+  const entry = ROSTER.find((r) => r.spec.designator === fleetKey)!
+  const params = rosterParams(fleetKey)!
+  const lastIdx = entry.spec.flapDetentsDeg.length - 1
+  return {
+    params,
+    label: `${entry.spec.label} (Tier B)`,
+    build: () => buildArchetypeShip(rosterArchetype(entry)),
+    final: {
+      kias: entry.spec.vSpeeds.approachKcas,
+      flapsIndex: lastIdx,
+      flapsDeg: entry.spec.flapDetentsDeg[lastIdx]!,
+    },
+  }
+})()
 
 loadAircraftTypes() // Phase 12a: Doc-8643 registry (traffic typing)
 
@@ -482,11 +515,11 @@ function handleSearch(query: string): void {
   if (parts.length === 0 || !parts[0]) return
   if (parts[0] === 'FLY' && parts[1]) {
     // Aircraft swap (11g): persist and reload — a respawn, honestly.
-    if (FLEET[parts[1]]) {
+    if (FLEET[parts[1]] || ROSTER.some((r) => r.spec.designator === parts[1])) {
       try { localStorage.setItem('oh-aircraft', parts[1]) } catch { /* private mode */ }
       location.reload()
     } else {
-      toast(`UNKNOWN AIRCRAFT — FLY ${Object.keys(FLEET).join(' | ')}`)
+      toast(`UNKNOWN — FLY ${Object.keys(FLEET).join('|')} or ${ROSTER.map((r) => r.spec.designator).join('|')}`)
     }
     return
   }

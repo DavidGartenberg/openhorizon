@@ -12,6 +12,7 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import type { ArchetypeSpec } from '../world/fleet-map'
+import type { AircraftMesh } from './aircraft-mesh'
 
 const SHARED_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.12 })
 
@@ -200,4 +201,25 @@ export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
   }
   for (const p of parts) p.geo.dispose()
   return mesh
+}
+
+/** Wrap an archetype silhouette as a player-ship AircraftMesh (Tier-B
+ *  flyables use their traffic silhouette — honest: no detailed cockpit
+ *  exterior exists for them). The prop-disc slot is inert. */
+export function buildArchetypeShip(spec: ArchetypeSpec): AircraftMesh {
+  const g = new THREE.Group()
+  const body = buildArchetype(spec)
+  g.add(body)
+  const propDisc = new THREE.Mesh(
+    new THREE.CircleGeometry(0.01, 6),
+    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 }),
+  )
+  const blade = new THREE.Mesh(
+    new THREE.BoxGeometry(0.01, 0.01, 0.01),
+    new THREE.MeshStandardMaterial({ transparent: true, opacity: 0 }),
+  )
+  propDisc.userData.blade = blade
+  g.add(propDisc)
+  g.add(blade)
+  return { group: g, propDisc }
 }

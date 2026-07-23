@@ -117,6 +117,20 @@ export interface AircraftParams {
   /** J → Ct / J → Cp piecewise tables (moved from propulsion.ts in 10a). */
   propCtTable: ReadonlyArray<readonly [number, number]>
   propCpTable: ReadonlyArray<readonly [number, number]>
+  /** Constant-speed (governed) prop (12c): the governor pins RPM at
+   *  redline — equilibrium and dynamics clamp there instead of
+   *  overspeeding. Absent = fixed-pitch (C172 behavior, bit-exact).
+   *  Simplification (documented): no prop lever — governed RPM sags with
+   *  throttle instead of holding a set speed. */
+  propGoverned?: true
+  /** Governed-prop efficiency multiplier (per-type documented tuning —
+   *  big slow discs beat the class η ramp, stubby props miss it). */
+  propEtaScale?: number
+  /** Turboprop flat-rating (12c): available power = min(1, thermoMargin ×
+   *  GaggFerrar(ρ)) × rated — the thermodynamic margin that holds flat
+   *  rating to altitude (PT6 class ~2.1). Absent = pure Gagg–Ferrar
+   *  (normally-aspirated pistons, bit-exact legacy behavior). */
+  thermoMargin?: number
   /** Carbureted engine (carb-ice model applies); absent/false = injected. */
   carburetor?: boolean
   /** false = no electrical system (no battery/starter — hand-prop only).
