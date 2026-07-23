@@ -34,6 +34,7 @@ import { loadAircraftTypes, aircraftTypesLoaded, aircraftTypeCount, typeInfo, pa
 import * as THREE from 'three'
 import { archetypeFor } from './world/fleet-map'
 import { buildArchetype, buildArchetypeShip } from './render/fleet-mesh'
+import { ShadowCatcher } from './render/shadow-catcher'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
 import type { ArchetypeSpec } from './world/fleet-map'
 import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
@@ -175,6 +176,7 @@ aircraft.groundElevAt = (n, e) => {
   return airports.flattenElevation(tiles.elevationAt(ll.lat, ll.lon), ll.lat, ll.lon)
 }
 const mesh = FLEET_ACTIVE.build()
+const shadowCatcher = new ShadowCatcher(scene)
 scene.add(mesh.group)
 const cockpit = buildCockpit(mesh.group)
 const cockpitInteraction = new CockpitInteraction(camera)
@@ -1406,7 +1408,13 @@ let mfdPage: 'map' | 'lean' | 'fpl' = 'map'
  *  Bravo shelf" without needing its own polygon math. */
 let currentAirspace: AirspacePolygon[] = []
 
+// ---- §23 perf instrumentation (13a): full-frame cost ring + draw calls ----
+const perfRing = new Float32Array(180)
+let perfIdx = 0
+let perfCount = 0
+
 function advanceFrame(elapsed: number, now: number): void {
+  const perfT0 = performance.now()
   handleDiscreteKeys()
   pollControls(elapsed)
   if (ctlOverride) Object.assign(aircraft.controls, ctlOverride)
@@ -1759,6 +1767,12 @@ function advanceFrame(elapsed: number, now: number): void {
   )
 
   const simDate = new Date(baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000)
+  sky.setShadowTarget(mesh.group.position)
+  shadowCatcher.update(
+    mesh.group.position.x,
+    (aircraft.groundElevAt?.(pos.x, pos.y) ?? 0),
+    mesh.group.position.z,
+  )
   const sunDir = sky.update(simDate, ll.lat, ll.lon)
   const dayness = Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1)
   ocean.update(now / 1000, sunDir, dayness)
@@ -1793,6 +1807,9 @@ function advanceFrame(elapsed: number, now: number): void {
 
   renderer.render(scene, camera)
   input.endFrame()
+  perfRing[perfIdx] = performance.now() - perfT0
+  perfIdx = (perfIdx + 1) % perfRing.length
+  if (perfCount < perfRing.length) perfCount++
 }
 
 let lastRafAt = 0
@@ -1940,6 +1957,21 @@ Object.assign(window as unknown as Record<string, unknown>, {
     scene.add(group)
     setTimeout(() => scene.remove(group), 120_000)
     return { placed: list.length }
+  },
+  __ohPerf: () => {
+    const n = perfCount
+    const arr = Array.from(perfRing.slice(0, n)).sort((a, b) => a - b)
+    const at = (q: number) => (n ? +arr[Math.min(Math.floor(q * n), n - 1)]!.toFixed(2) : 0)
+    return {
+      frames: n,
+      p50: at(0.5),
+      p95: at(0.95),
+      max: n ? +arr[n - 1]!.toFixed(2) : 0,
+      drawCalls: renderer.info.render.calls,
+      triangles: renderer.info.render.triangles,
+      textures: renderer.info.memory.textures,
+      geometries: renderer.info.memory.geometries,
+    }
   },
   __ohTypes: (designator?: string) => ({
     loaded: aircraftTypesLoaded(),

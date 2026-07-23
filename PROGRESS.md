@@ -29,6 +29,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 10 — Fleet (absorbed) | ✅ → Phase 11 | absorbed by the approved Phases 11–15 mega-plan |
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
+| 13 — Graphics | 🔧 13a done | sun shadows + __ohPerf gate; imagery/night/PAPI/clouds next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -59,6 +60,23 @@ sets payload with honest gross/max-ramp warning. **Documented deviation
 config/fuel/clock), not mid-maneuver 6-DOF rates; ground saves restore
 the runway spawn, not the exact ramp spot. W&B envelope plot deferred —
 payload entry + gross readout only.
+
+## Phase 13a — sun shadows + perf gate (2026-07-22)
+
+renderer PCFSoft 2048 shadow map; the sun repositions 600 m sunward of a
+target tracked on the aircraft (directional lights use only direction —
+lighting unchanged) with a ±120 m ortho frustum, texel-snapped in the
+light plane against shimmer. Receivers: runway strips + a ShadowMaterial
+catcher pinned to terrain height under the aircraft (opaque pavement
+draws over it — no double-darkening). New `__ohPerf` hook (frame ring
+p50/p95/max + renderer.info). **Gate:** KSFO heavy scene baseline p50
+9.3 ms / 126 calls → after 4.3 ms / 128 calls — the shadow cost is
+smaller than run-to-run variance (both far inside 16.7 ms); p95 spikes
+in both runs are tile-upload frames. Screenshot: the C172's wing/
+fuselage shadow on the runway at low sun. **Deviations:** the terrain
+custom shader does NOT receive shadow maps (the catcher approximates —
+exact over flattened airport ground, approximate on slopes); cockpit
+self-shadowing not specifically tuned.
 
 ## Phase 12d — roster expansion to 120 flyable types (2026-07-22)
 

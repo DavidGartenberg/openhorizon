@@ -159,6 +159,7 @@ export class Airports {
       }
       stripGeo.computeVertexNormals()
       const strip = new THREE.Mesh(stripGeo, r.s === 0 ? ASPHALT : TURF)
+      strip.receiveShadow = true // 13a: pavement catches the sun shadow
       strip.rotation.x = -Math.PI / 2
       strip.rotation.z = -hdg
       strip.position.set(cx, elevM + 0.06, -cy)

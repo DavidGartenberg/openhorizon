@@ -134,7 +134,28 @@ export class SkyDome {
   /** Current sun elevation in degrees, for HUD/debug. */
   elevationDeg = 0
 
+  /** Shadow frustum half-extent (m): tight box around the aircraft. */
+  private static readonly SHADOW_HALF = 120
+  private readonly shadowTarget = new THREE.Vector3()
+
   constructor(scene: THREE.Scene) {
+    // 13a: the sun casts real shadows onto MeshStandardMaterial receivers
+    // (aircraft/runways/catcher). The custom terrain shader does NOT
+    // receive shadow maps — recorded deviation; the catcher approximates.
+    this.sunLight.castShadow = true
+    this.sunLight.shadow.mapSize.set(2048, 2048)
+    const half = SkyDome.SHADOW_HALF
+    const cam = this.sunLight.shadow.camera
+    cam.left = -half
+    cam.right = half
+    cam.top = half
+    cam.bottom = -half
+    cam.near = 50
+    cam.far = 1400
+    this.sunLight.shadow.bias = -0.0004
+    this.sunLight.shadow.normalBias = 0.5
+    scene.add(this.sunLight.target)
+
     this.material = new THREE.ShaderMaterial({
       uniforms: { uSunDir: { value: new THREE.Vector3(0, 1, 0) } },
       vertexShader: VERT,
@@ -157,7 +178,10 @@ export class SkyDome {
     this.sunDir.set(d.x, d.y, d.z)
 
     ;(this.material.uniforms.uSunDir!.value as THREE.Vector3).copy(this.sunDir)
-    this.sunLight.position.copy(this.sunDir).multiplyScalar(10_000)
+    // Directional lights use only direction; sit the light 600 m sunward of
+    // the tracked target so the shadow depth range stays tight.
+    this.sunLight.position.copy(this.shadowTarget).addScaledVector(this.sunDir, 600)
+    this.sunLight.target.position.copy(this.shadowTarget)
 
     // Ramp direct light through twilight (-6° civil twilight → +10° full day).
     const dayness = smoothstep(-6, 10, angles.elevationDeg)
@@ -167,7 +191,31 @@ export class SkyDome {
 
     return this.sunDir
   }
+
+  /** Track the shadow frustum on the aircraft, snapped to shadow-map
+   *  texels in the light's plane so the shadow doesn't shimmer as the
+   *  aircraft moves (standard cascaded-shadow trick, single cascade). */
+  setShadowTarget(worldPos: THREE.Vector3): void {
+    const texel = (2 * SkyDome.SHADOW_HALF) / 2048
+    // Build the light-plane basis (right/up ⊥ sunDir).
+    const up = Math.abs(this.sunDir.y) > 0.95 ? _X_AXIS : _Y_AXIS
+    _right.crossVectors(up, this.sunDir).normalize()
+    _up2.crossVectors(this.sunDir, _right)
+    const r = worldPos.dot(_right)
+    const u = worldPos.dot(_up2)
+    const rs = Math.round(r / texel) * texel
+    const us = Math.round(u / texel) * texel
+    this.shadowTarget
+      .copy(worldPos)
+      .addScaledVector(_right, rs - r)
+      .addScaledVector(_up2, us - u)
+  }
 }
+
+const _X_AXIS = new THREE.Vector3(1, 0, 0)
+const _Y_AXIS = new THREE.Vector3(0, 1, 0)
+const _right = new THREE.Vector3()
+const _up2 = new THREE.Vector3()
 
 function smoothstep(lo: number, hi: number, v: number): number {
   const t = Math.min(1, Math.max(0, (v - lo) / (hi - lo)))
