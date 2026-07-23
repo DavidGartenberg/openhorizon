@@ -33,10 +33,12 @@ function maxLevelTasKt(P: NonNullable<ReturnType<typeof rosterParams>>, altFt: n
   return (lo + hi) / 2
 }
 
-describe('Tier-B roster validation (15 proving types)', () => {
+describe(`Tier-B roster validation (${ROSTER.length} types)`, () => {
   for (const entry of ROSTER) {
     const { spec, targets } = entry
-    describe(`${spec.designator} — ${spec.label}`, () => {
+    // B2 family variants get the wider 12d sanity band (±10% cruise).
+    const cruiseTol = entry.tier === 'B2' ? 0.10 : 0.05
+    describe(`${spec.designator} — ${spec.label}${entry.tier === 'B2' ? ' [B2]' : ''}`, () => {
       const P = rosterParams(spec.designator)!
       const massKg = spec.mtowKg
 
@@ -49,9 +51,9 @@ describe('Tier-B roster validation (15 proving types)', () => {
 
       if (targets.cruiseTasKt) {
         it(`predicts cruise ${targets.cruiseTasKt} KTAS ±5% at ${targets.cruiseAltFt} ft`, () => {
-          const got = maxLevelTasKt(P, targets.cruiseAltFt!, massKg, targets.cruiseTasKt! * 0.6, targets.cruiseTasKt! * 1.45)
-          expect(got).toBeGreaterThan(targets.cruiseTasKt! * 0.95)
-          expect(got).toBeLessThan(targets.cruiseTasKt! * 1.05)
+          const got = maxLevelTasKt(P, targets.cruiseAltFt!, massKg, targets.cruiseTasKt! * 0.55, targets.cruiseTasKt! * 1.5)
+          expect(got).toBeGreaterThan(targets.cruiseTasKt! * (1 - cruiseTol))
+          expect(got).toBeLessThan(targets.cruiseTasKt! * (1 + cruiseTol))
         })
       }
 

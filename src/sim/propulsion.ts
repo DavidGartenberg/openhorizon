@@ -40,11 +40,15 @@ export const propCp = (J: number, table: PropTable = C172S.propCpTable): number 
  *  0.85 by cruise) — capped by momentum-theory static thrust
  *  ~0.9·(2ρA·P²)^⅓. Shared by dynamics and the trim solver so both fly
  *  the same model. */
-export function governedThrustN(shaftPowerW: number, vAxialMs: number, rho: number, dM: number, redlineRpm: number): number {
+export function governedThrustN(shaftPowerW: number, vAxialMs: number, rho: number, dM: number, redlineRpm: number, etaScale = 1): number {
   if (shaftPowerW <= 0) return 0
   const v = Math.max(vAxialMs, 0.1)
   const j = v / ((redlineRpm / 60) * dM)
-  const eta = Math.min(Math.max(0.4 + 0.5 * j, 0.45), 0.85)
+  // Per-type η scale: a worse prop scales its whole curve down (cap
+  // 0.85·scale); a better one lifts the low-J ramp but NO propeller
+  // converts more than ~88% of shaft power to thrust power, ever.
+  const etaMax = Math.min(0.85 * etaScale, 0.88)
+  const eta = Math.min(Math.max((0.4 + 0.5 * j) * etaScale, 0.25), etaMax)
   const diskA = (Math.PI * dM * dM) / 4
   const tStatic = 0.9 * Math.cbrt(2 * rho * diskA * shaftPowerW * shaftPowerW)
   return Math.min((eta * shaftPowerW) / v, tStatic)
@@ -131,7 +135,7 @@ export function stepPropulsion(
       st.omegaRadS = omegaRef
       const qE = Math.max(engineBrakeTorque(throttle, P.redlineRpm, rho, P) * power, 0)
       st.shaftPowerW = qE * omegaRef
-      st.thrustN = governedThrustN(st.shaftPowerW, vAxialMs, rho, D, P.redlineRpm) * (P.propEtaScale ?? 1)
+      st.thrustN = governedThrustN(st.shaftPowerW, vAxialMs, rho, D, P.redlineRpm, P.propEtaScale ?? 1)
       st.torqueNm = qE
       st.fuelFlowKgS = Math.max(st.shaftPowerW, 0.05 * P.ratedPowerW) * P.bsfcKgPerWs
     } else {

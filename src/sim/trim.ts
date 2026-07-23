@@ -67,7 +67,7 @@ function propAt(throttle: number, vAxial: number, rho: number, P: AircraftParams
     const qE = Math.max(engineBrakeTorque(throttle, P.redlineRpm, rho, P), 0)
     const powerW = qE * omegaRef
     return {
-      thrustN: governedThrustN(powerW, vAxial, rho, D, P.redlineRpm) * (P.propEtaScale ?? 1),
+      thrustN: governedThrustN(powerW, vAxial, rho, D, P.redlineRpm, P.propEtaScale ?? 1),
       torqueNm: qE,
       rpm: P.redlineRpm,
       powerW,
@@ -130,6 +130,12 @@ export function trim(spec: TrimSpec): TrimResult {
   const scale = { fx: W, fz: W, m: W * P.chordM }
   const out = makeAeroOutput()
 
+  // Trimmable-stabilizer aircraft command pitch with elevator PLUS stab —
+  // the solver's search space must match the airframe's real authority
+  // (found by 12d: heavy jets in landing flap needed −0.33..−0.40 rad
+  // total and railed at the elevator-only clamp).
+  const elevLimit = P.elevatorMaxRad + (P.trimIsStabilizer ? P.trimMaxRad : 0)
+
   let residual = Infinity
   for (let iter = 0; iter < 60; iter++) {
     const gamma = solveThrottle ? spec.gammaRad! : third
@@ -143,7 +149,7 @@ export function trim(spec: TrimSpec): TrimResult {
     const hBase = [1e-4, 1e-4, solveThrottle ? 1e-3 : 1e-4] as const
     const h: number[] = [
       alpha > 0.28 ? -hBase[0] : hBase[0],
-      elevator > P.elevatorMaxRad - 0.01 ? -hBase[1] : hBase[1],
+      elevator > elevLimit - 0.01 ? -hBase[1] : hBase[1],
       solveThrottle
         ? third > 0.995 ? -hBase[2]! : hBase[2]!
         : third > 0.34 ? -hBase[2]! : hBase[2]!,
@@ -181,7 +187,7 @@ export function trim(spec: TrimSpec): TrimResult {
     // Damped update with sane bounds.
     const damp = 0.8
     alpha = Math.min(Math.max(alpha + damp * dx1, -0.2), 0.3)
-    elevator = Math.min(Math.max(elevator + damp * dx2, -P.elevatorMaxRad), P.elevatorMaxRad)
+    elevator = Math.min(Math.max(elevator + damp * dx2, -elevLimit), elevLimit)
     third += damp * dx3
     if (solveThrottle) third = Math.min(Math.max(third, 0), 1)
     else third = Math.min(Math.max(third, -0.35), 0.35)

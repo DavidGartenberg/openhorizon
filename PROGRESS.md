@@ -28,7 +28,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 9 — Sound/polish/perf | ✅ done | sound core, save/load, perf gate, §27 flight flown at KSFO |
 | 10 — Fleet (absorbed) | ✅ → Phase 11 | absorbed by the approved Phases 11–15 mega-plan |
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
-| 12 — Every plane (data) | 🔧 12a–12c done | type registry (2,700 designators), archetype meshes, roster generator + 15 Tier-B flyables; 12d expansion next |
+| 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -59,6 +59,32 @@ sets payload with honest gross/max-ramp warning. **Documented deviation
 config/fuel/clock), not mid-maneuver 6-DOF rates; ground saves restore
 the runway spawn, not the exact ramp spot. W&B envelope plot deferred —
 payload entry + gross readout only.
+
+## Phase 12d — roster expansion to 120 flyable types (2026-07-22)
+
+Wave 2: ~28 curated B1 types with full rows (C152→P-51D Mustang→Extra
+300L→PC-12→ATR 72→Q400→Citation X→G-V→757/787/A350/A330/777-300ER/A380/
+C-130H…). Wave 3: ~77 B2 family variants through `variant()` (2-row
+sanity: calibrated stall + cruise ±10% / jet thrust-envelope; climb not
+asserted) — 737/A320/E-Jet/CRJ/767/777/787/A330/A350/747 families,
+Citation/Gulfstream/Challenger/Falcon lines, King Airs, Dash 8s, racing
+gliders, and an An-2 biplane. Totals: **120 flyable types, 421
+validation rows green (+4 honest glider skips)**; whole suite 833.
+
+**Model corrections earned by the expansion:** the trim solver's
+elevator search now includes trimmable-stabilizer authority (heavy jets
+in landing flap need −0.33..−0.40 rad total and railed at the
+elevator-only clamp — 11 approach rows failed until then); the governed-
+prop η scale applies inside physical bounds (a "better prop" cannot
+exceed 88% conversion — over-unity η slipped in via an external
+multiplier; a "worse prop" scales its whole curve). Spec errors caught
+by rows: A321/A321neo approach speeds were unrealistically slow (now
+Vref-class 145/147); A380 needed the Trent 972 rating; Citation X the
+AE3007C1 rating and its real M0.90 drag divergence; the P-51's 3,200 fpm
+book climb is the combat-weight figure (MTOW target 2,150, documented).
+All ~30 per-type tunings are inline-documented in roster-ext.ts —
+never silent widening. FLY <designator> flies any of the 120 (browser:
+the Mustang held 121 kt on final, Merlin governed at 3,000 rpm).
 
 ## Phase 12c — Tier-B roster generator + 15 proving types (2026-07-22)
 
