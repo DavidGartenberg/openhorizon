@@ -342,16 +342,19 @@ export class Aircraft {
     this.posNed.y += this.velNed.y * dt
     this.posNed.z += this.velNed.z * dt
 
-    // Crash guard: structural impact (deep gear strike / extreme ground
+    // Crash guard: structural impact (deep gear strike / absurd ground
     // speed) or numeric blowup freezes the sim honestly instead of exploding.
     const finite =
       isFinite(this.posNed.x + this.posNed.y + this.posNed.z) &&
       isFinite(this.velBody.x + this.velBody.y + this.velBody.z) &&
       isFinite(this.rates.x + this.rates.y + this.rates.z) &&
       isFinite(this.quat.w + this.quat.x + this.quat.y + this.quat.z)
+    // 105 m/s ≈ 204 kt GS on wheels: past every fleet tire limit (B737
+    // Vtire 195 kt) yet clear of every legitimate rotation/touchdown.
+    // The old C172-era 75 m/s froze 737 takeoffs mid-roll at ~140 KIAS.
     const impact =
       this.gearOut.maxCompressionM > 0.45 ||
-      (this.gearOut.onGround && Math.hypot(this.velNed.x, this.velNed.y, this.velNed.z) > 75)
+      (this.gearOut.onGround && Math.hypot(this.velNed.x, this.velNed.y, this.velNed.z) > 105)
     if (!finite || impact) {
       this.crashed = true
       v3set(this.velBody, 0, 0, 0)
