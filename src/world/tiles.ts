@@ -107,6 +107,8 @@ const TERRAIN_FRAG = /* glsl */ `
   varying vec3 vNormal;
   varying float vDist;
   varying vec2 vUv;
+  varying float vUrban;
+  varying vec2 vWXZ;
   void main() {
     float ndl = max(dot(normalize(vNormal), normalize(uSunDir)), 0.0);
     vec3 lit = vColor * (0.08 + 0.30 * uDayness + 0.85 * uDayness * ndl);
@@ -124,10 +126,14 @@ const TERRAIN_FRAG = /* glsl */ `
     // night — procedural cells, NOT real light points (recorded).
     float night = clamp(1.0 - uDayness * 1.6, 0.0, 1.0);
     if (night > 0.001 && vUrban > 0.001) {
-      vec2 cell = floor(vWXZ / 24.0);
+      // Sparse 12 m cells, faded in with distance: from altitude the city
+      // reads as a warm point-field; near the ground it stays dark (the
+      // hard cell edges would otherwise read as glowing tiles).
+      vec2 cell = floor(vWXZ / 12.0);
       float h = fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
-      float speck = smoothstep(0.62, 0.78, h) * (0.45 + 0.55 * fract(h * 9.7));
-      lit += vUrban * night * vec3(1.0, 0.72, 0.42) * (0.05 + 0.75 * speck);
+      float speck = smoothstep(0.86, 0.93, h) * (0.5 + 0.5 * fract(h * 9.7));
+      float far = smoothstep(150.0, 700.0, vDist);
+      lit += vUrban * night * vec3(1.0, 0.72, 0.42) * (0.015 + 0.5 * speck * far);
     }
     vec3 haze = mix(vec3(0.02, 0.03, 0.05), vec3(0.63, 0.71, 0.82), uDayness);
     float fog = 1.0 - exp(-vDist * uFogDensity);
@@ -359,6 +365,16 @@ export class TileManager {
         for (let i = 0; i < Math.min(uv.count, 4); i++) uvHead.push(+uv.getX(i).toFixed(3), +uv.getY(i).toFixed(3))
         for (let i = 0; i < uv.count; i++) if (uv.getX(i) > uMax) uMax = uv.getX(i)
       }
+      const urb = t.mesh?.geometry.getAttribute('urban')
+      let urbanMax = 0
+      let urbanNonZero = 0
+      if (urb) {
+        for (let i = 0; i < urb.count; i++) {
+          const v = urb.getX(i)
+          if (v > urbanMax) urbanMax = v
+          if (v > 0) urbanNonZero++
+        }
+      }
       return {
         probe: probeKey, state: t.state, hasMesh: !!t.mesh, hasTex: !!t.imTex,
         queued: !!t.imQueued,
@@ -366,7 +382,7 @@ export class TileManager {
         visible: t.mesh?.visible ?? false,
         renderOrder: t.mesh?.renderOrder ?? -1,
         uvCount: uv?.count ?? 0, posCount: t.mesh?.geometry.getAttribute('position')?.count ?? 0,
-        uvHead, uMax,
+        uvHead, uMax, urbanMax, urbanNonZero,
       }
     }
     for (const t of this.tiles.values()) {

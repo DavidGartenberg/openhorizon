@@ -109,7 +109,9 @@ export class AircraftLights {
     const dist = Math.min(Math.max((aglM + 1.5) * 5.5, 8), 200)
     const px = group.position.x + (fwd.x / fl) * dist
     const pz = group.position.z + (fwd.z / fl) * dist
-    this.disc.position.set(px, groundYAt(px, pz) + 0.1, pz)
+    // +0.3 m: the runway strip renders above the terrain surface (and is
+    // sloped) — a hair of lift keeps the spot from sinking under it.
+    this.disc.position.set(px, groundYAt(px, pz) + 0.3, pz)
     const s = 4 + dist * 0.5
     this.disc.scale.set(s, s * 2.1, 1)
     this.disc.rotation.z = Math.atan2(-fwd.x, -fwd.z)

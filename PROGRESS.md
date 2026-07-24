@@ -29,7 +29,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 10 — Fleet (absorbed) | ✅ → Phase 11 | absorbed by the approved Phases 11–15 mega-plan |
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
-| 13 — Graphics | 🔧 13a/13a′/13b done | shadows, airport detail, USGS satellite imagery terrain; night lighting next |
+| 13 — Graphics | 🔧 13a/13a′/13b/13c done | shadows, airport detail, satellite imagery, night lighting; PAPI next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -79,6 +79,54 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 13c — night lighting (2026-07-24)
+
+Pure `src/sim/lights.ts` drives every flash: rotating red beacon 45 cpm
+(35% duty), double-flash strobes (~86 ppm), civil airport beacon
+white/green ~26/min (AIM 2-1-9) — 6 exact-transition tests. **City
+glow:** the terrain worker emits an NLCD developed-class `urban`
+attribute (dev-open 0.35 → dev-high 1.0) and the terrain shader adds a
+warm procedural speckle at night — sparse 12 m hash cells (~7% lit)
+faded in 150–700 m so altitude reads a point-field while the near
+ground stays dark. **Airports:** lighted runways grow a night Points
+layer (constant-pixel additive sprites — perspective attenuation sank
+real-light points below a pixel at range): MIRL edge glow, green
+threshold / red end rows, floodlit windsock, midfield mast beacon
+flashing on the AIM cadence. **Aircraft:** nav (red/green/white),
+beacon, strobes as glow points at archetype anchors (bbox fallback for
+Tier-A), L-key landing light with a projected ground-spot ellipse
+(+0.3 m lift so the sloped runway strip can't swallow it). All lights
+need the electrical bus — the no-electrical J-3 Cub flies dark and L
+answers "NO ELECTRICAL SYSTEM — NO LIGHTS" (toast verified).
+
+**Critical bug caught in-browser (lesson recorded):** the first 13c
+frag shader used `vUrban`/`vWXZ` without declaring the varyings — the
+terrain program failed to compile from the WIP commit onward, so NO
+terrain rendered, and the night scenes masked it (runways/lights/ocean
+carried the frames). Found by painting vUrban and reading the GLSL
+compile log; day-render check is now part of shader-edit acceptance.
+Mid-slice a user takeoff report also surfaced the C172-era crash-guard
+bound (75 m/s ground speed) freezing 737 takeoffs — fixed + TDD in
+commit b91aad0.
+
+**Verified in-browser (night):** KSFO 28R 3-nm final — both runway
+outlines in edge lights, thresholds, taxiway strings, stars, ship
+nav/beacon lights; ground rollout with the landing light painting the
+threshold stripes; GFC700-coupled ILS 28R descent flown to short final
+under lights. KSJC Cub night: dark ship over the city speckle; KSJC
+day: imagery intact post-fix. **Perf gate (same scene, valid shader):**
+day p50 4.9 ms/265 calls → night 6.5 ms/265 calls — +1.6 ms, zero
+added draw calls, p95 ≤ 13.9 (§23 green). Suite 850 + validate 421,
+tsc clean. **Deviations:** city glow is procedural cells, not real
+light points (no VIIRS); threshold/end lights approximate
+bidirectional lenses as two colocated rows; beacon mast sits by the
+windsock (real beacon sites absent from free data); the white/green
+beacon flip is cadence-unit-tested + shares the proven sprite path but
+a per-pixel color screenshot wasn't captured (small pane — 15d sweep
+item); strobes/nav tie to bus power (no separate switches until 15c);
+painted markings are unlit materials, faintly visible at night (15c);
+AI traffic stays unlit until 14d.
 
 ## Phase 13b — satellite imagery terrain (2026-07-23)
 
