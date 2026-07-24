@@ -29,10 +29,16 @@ export interface TileResponse {
   normals: Float32Array
   colors: Float32Array
   uvs: Float32Array // imagery-tile UVs (13b); orientation in tileGridUv
+  urban: Float32Array // 13c city-glow intensity per vertex (NLCD developed classes)
   indices: Uint32Array
   heights: Float32Array // gridSize² for elevation queries
   gridSize: number
   error?: string
+}
+
+/** NLCD developed-class → night glow intensity (13c city glow). */
+const URBAN_GLOW: Record<string, number> = {
+  'dev-open': 0.35, 'dev-low': 0.55, 'dev-med': 0.8, 'dev-high': 1.0,
 }
 
 function colorFor(
@@ -131,6 +137,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
     const normals = new Float32Array(total * 3)
     const colors = new Float32Array(total * 3)
     const uvs = new Float32Array(total * 2)
+    const urban = new Float32Array(total)
     const dxe = req.sizeEastM / (G - 1)
     const dyn = req.sizeNorthM / (G - 1)
     const c: [number, number, number] = [0, 0, 0]
@@ -164,6 +171,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
           const lo = (ly * lcPx + lx) * 4
           const cls = classifyNlcdPixel(lc.data[lo]!, lc.data[lo + 1]!, lc.data[lo + 2]!, lc.data[lo + 3]!)
           biome = cls?.color ?? null
+          urban[idx] = (cls && URBAN_GLOW[cls.key]) || 0
         }
         colorFor(h, slope, c, biome)
         colors[idx * 3] = c[0]
@@ -190,6 +198,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
       colors[sv * 3 + 2] = colors[src * 3 + 2]!
       uvs[sv * 2] = uvs[src * 2]!
       uvs[sv * 2 + 1] = uvs[src * 2 + 1]!
+      urban[sv] = urban[src]!
       skirtIdx.push(sv)
       return sv++
     }
@@ -230,6 +239,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
       normals,
       colors,
       uvs,
+      urban,
       indices,
       heights,
       gridSize: G,
@@ -239,6 +249,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
       normals.buffer,
       colors.buffer,
       uvs.buffer,
+      urban.buffer,
       indices.buffer,
       heights.buffer,
     ])

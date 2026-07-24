@@ -3,6 +3,8 @@ import { FT } from '../sim/atmosphere'
 import { distanceM, bearingDeg, flattenForRunway, type LatLon } from '../math/geo'
 import type { WorldFrame, RunwayFlatten } from './tiles'
 import { buildRunwayMarkings, buildDistanceSigns, buildTaxiwayComplex, type RunwayLocal } from './airport-detail'
+import { airportBeacon } from '../sim/lights'
+import { lightGlowTexture } from '../render/light-glow'
 
 export interface RunwayData {
   li: string
@@ -34,6 +36,15 @@ const TURF = new THREE.MeshStandardMaterial({ color: 0x3c5233, roughness: 1 })
 const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8d8d0 })
 const EDGE_LIGHT = new THREE.MeshBasicMaterial({ color: 0xffffff })
 const SOCK_ORANGE = new THREE.MeshStandardMaterial({ color: 0xe8641b, roughness: 0.8 })
+const MAST = new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 0.9 })
+
+/** 13c: one additive Points cloud per airport (edge white, threshold
+ *  green / end red, floodlit windsock) faded in by night, plus the
+ *  white/green rotating beacon flashed by sim/lights cadence. */
+interface NightLights {
+  pts: THREE.Points | null
+  beacon: THREE.Points | null
+}
 
 export class Airports {
   private all: AirportData[] = []
@@ -137,6 +148,14 @@ export class Airports {
   private buildAirport(ap: AirportData): THREE.Group {
     const group = new THREE.Group()
     group.userData.latLon = { lat: ap.la, lon: ap.lo }
+    // 13c night-light accumulator: [x,y,z] + [r,g,b] per point.
+    const nPos: number[] = []
+    const nCol: number[] = []
+    const addLight = (x: number, y: number, z: number, r: number, g: number, b: number): void => {
+      nPos.push(x, y, z)
+      nCol.push(r, g, b)
+    }
+    let anyLighted = false
     for (const r of ap.r) {
       const lenM = r.l * FT
       const widM = Math.max(r.w * FT, 8)
@@ -204,6 +223,7 @@ export class Airports {
         group.add(detail)
       }
       if (r.lt === 1) {
+        anyLighted = true
         // Edge lights every ~60 m both sides.
         const nL = Math.max(Math.floor(lenM / 60) * 2, 4)
         const lights = new THREE.InstancedMesh(new THREE.SphereGeometry(0.35, 6, 6), EDGE_LIGHT, nL)
@@ -212,15 +232,34 @@ export class Airports {
         for (let s = 0; k < nL && s < nL / 2; s++) {
           const t = (s + 0.5) / (nL / 2) - 0.5
           for (const side of [-1, 1]) {
-            m4.makeTranslation(
-              cx + Math.sin(hdg) * t * lenM + Math.cos(hdg) * side * (widM / 2 + 1.5),
-              elevAt(t) + 0.55,
-              -(cy + Math.cos(hdg) * t * lenM) + Math.sin(hdg) * side * (widM / 2 + 1.5),
-            )
+            const ex = cx + Math.sin(hdg) * t * lenM + Math.cos(hdg) * side * (widM / 2 + 1.5)
+            const ey = elevAt(t) + 0.55
+            const ez = -(cy + Math.cos(hdg) * t * lenM) + Math.sin(hdg) * side * (widM / 2 + 1.5)
+            m4.makeTranslation(ex, ey, ez)
             lights.setMatrixAt(k++, m4)
+            addLight(ex, ey + 0.15, ez, 1, 0.97, 0.88) // MIRL white glow at night
           }
         }
         group.add(lights)
+        // Threshold bars (13c): green row facing the arrival just outside
+        // each end, red end row just inside — approximating bidirectional
+        // threshold/end lenses with two colocated rows (recorded).
+        for (const end of [-0.5, 0.5]) {
+          const dirOut = Math.sign(end)
+          const tGreen = end + dirOut * (3 / lenM)
+          const tRed = end - dirOut * (3 / lenM)
+          for (let i = 0; i < 6; i++) {
+            const w = ((i + 0.5) / 6 - 0.5) * widM
+            for (const [t, col] of [[tGreen, [0.1, 1, 0.3]], [tRed, [1, 0.12, 0.1]]] as const) {
+              addLight(
+                cx + Math.sin(hdg) * t * lenM + Math.cos(hdg) * w,
+                elevAt(Math.max(-0.5, Math.min(0.5, t))) + 0.5,
+                -(cy + Math.cos(hdg) * t * lenM) + Math.sin(hdg) * w,
+                col[0], col[1], col[2],
+              )
+            }
+          }
+        }
       }
     }
     // Windsock at the airport reference point.
@@ -231,8 +270,59 @@ export class Airports {
     sock.position.set(30, ap.e * FT + 5, 30)
     sock.rotation.z = Math.PI / 2
     group.add(sock)
+    if (anyLighted) addLight(30, ap.e * FT + 5.7, 30, 1, 0.85, 0.58) // floodlit sock
+
+    // 13c: assemble the night layer.
+    const night: NightLights = { pts: null, beacon: null }
+    if (nPos.length > 0) {
+      const geo = new THREE.BufferGeometry()
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(nPos), 3))
+      geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(nCol), 3))
+      // Constant pixel size: real airport lights read as bright points for
+      // miles — perspective attenuation would sink them below a pixel.
+      night.pts = new THREE.Points(geo, new THREE.PointsMaterial({
+        map: lightGlowTexture(), size: 3.5, sizeAttenuation: false, vertexColors: true,
+        transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
+      }))
+      night.pts.renderOrder = 30
+      group.add(night.pts)
+    }
+    if (anyLighted) {
+      // Rotating beacon on a midfield mast by the windsock (real beacon
+      // sites aren't in the free data — recorded).
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 11, 6), MAST)
+      mast.position.set(24, ap.e * FT + 5.5, 30)
+      group.add(mast)
+      const bGeo = new THREE.BufferGeometry()
+      bGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([24, ap.e * FT + 11.4, 30]), 3))
+      night.beacon = new THREE.Points(bGeo, new THREE.PointsMaterial({
+        map: lightGlowTexture(), size: 10, sizeAttenuation: false, color: 0xffffff,
+        transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
+      }))
+      night.beacon.frustumCulled = false // single point, flashes across miles
+      night.beacon.renderOrder = 30
+      group.add(night.beacon)
+    }
+    group.userData.night = night
     this.scene.add(group)
     return group
+  }
+
+  /** Per-frame 13c: fade the steady lights with darkness, flash the
+   *  beacon white/green on the AIM cadence (sim-time driven). */
+  updateNight(tS: number, night: number): void {
+    for (const group of this.rendered.values()) {
+      const nl = group.userData.night as NightLights | undefined
+      if (!nl) continue
+      if (nl.pts) (nl.pts.material as THREE.PointsMaterial).opacity = night
+      if (nl.beacon) {
+        const mat = nl.beacon.material as THREE.PointsMaterial
+        const phase = airportBeacon(tS)
+        mat.opacity = phase && night > 0.05 ? Math.min(night * 1.6, 1) : 0
+        if (phase === 'green') mat.color.setRGB(0.15, 1, 0.3)
+        else mat.color.setRGB(1, 1, 0.92)
+      }
+    }
   }
 
   /** Reposition all rendered airports (call every frame — cheap — and after rebase). */

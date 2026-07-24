@@ -35,6 +35,7 @@ import * as THREE from 'three'
 import { archetypeFor } from './world/fleet-map'
 import { buildArchetype, buildArchetypeShip } from './render/fleet-mesh'
 import { ShadowCatcher } from './render/shadow-catcher'
+import { AircraftLights } from './render/aircraft-lights'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
 import type { ArchetypeSpec } from './world/fleet-map'
 import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
@@ -180,6 +181,9 @@ aircraft.groundElevAt = (n, e) => {
 const mesh = FLEET_ACTIVE.build()
 const shadowCatcher = new ShadowCatcher(scene)
 scene.add(mesh.group)
+// 13c: exterior lights (nav/beacon/strobe glow points + landing spot).
+const aircraftLights = new AircraftLights(scene)
+aircraftLights.attach(mesh.group)
 const cockpit = buildCockpit(mesh.group)
 const cockpitInteraction = new CockpitInteraction(camera)
 
@@ -645,6 +649,15 @@ function handleDiscreteKeys(): void {
   if (input.wasPressed('KeyK') && aircraft.P.carburetor) {
     carbHeatOn = !carbHeatOn
     toast(carbHeatOn ? 'CARB HEAT ON' : 'CARB HEAT OFF')
+  }
+  // 13c: L landing light (needs the electrical bus — the Cub has none).
+  if (input.wasPressed('KeyL')) {
+    if (aircraft.P.electrical === false) {
+      toast('NO ELECTRICAL SYSTEM — NO LIGHTS')
+    } else {
+      aircraftLights.landingOn = !aircraftLights.landingOn
+      toast(aircraftLights.landingOn ? 'LANDING LIGHT ON' : 'LANDING LIGHT OFF')
+    }
   }
   if (input.wasPressed('KeyC')) {
     cameraMode =
@@ -1787,6 +1800,17 @@ function advanceFrame(elapsed: number, now: number): void {
   ocean.update(now / 1000, sunDir, dayness)
   tiles.setLight(sunDir, dayness)
   clouds.update(wxSlabs, camera.position, worldShift.e, worldShift.n, dayness)
+  // 13c night lights: airport layer + aircraft exterior lights.
+  const night = Math.min(Math.max(1 - dayness * 1.6, 0), 1)
+  airports.updateNight(loop.simTime, night)
+  const lightsPowered = aircraft.P.electrical !== false && electricalState.busVoltage > 18
+  aircraftLights.update(
+    loop.simTime, lightsPowered, aircraft.data.aglFt * FT, mesh.group,
+    (xE, zS) => {
+      const g = frame.fromLocal(-zS, xE)
+      return tiles.elevationAt(g.lat, g.lon)
+    },
+  )
   const obscuration = inCloudFactor(wxSlabs, aircraft.data.altitudeFt)
   whiteout.style.opacity = String(obscuration)
   whiteout.style.background = dayness > 0.4 ? '#c8ccd2' : '#14161a'
@@ -1877,6 +1901,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
       lat: ll.lat,
       lon: ll.lon,
       tiles: tiles.readyCount,
+      simTime: loop.simTime,
       spawn: spawnDesc,
       airportsLoaded: airports.loaded,
       navaidsLoaded: navaidsIndex.count > 0,

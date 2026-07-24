@@ -78,12 +78,17 @@ const TERRAIN_VERT = /* glsl */ `
   varying vec3 vNormal;
   varying float vDist;
   varying vec2 vUv;
+  varying float vUrban;
+  varying vec2 vWXZ;
   attribute vec3 color;
+  attribute float urban;
   void main() {
     vColor = color;
     vUv = uv;
+    vUrban = urban;
     vNormal = normalize(mat3(modelMatrix) * normal);
     vec4 wp = modelMatrix * vec4(position, 1.0);
+    vWXZ = wp.xz;
     float dx = wp.x - cameraPosition.x;
     float dz = wp.z - cameraPosition.z;
     float d2 = dx*dx + dz*dz;
@@ -115,6 +120,15 @@ const TERRAIN_FRAG = /* glsl */ `
     vec3 litIm = tex.rgb * (0.10 + 0.40 * uDayness + 0.60 * uDayness * mix(1.0, ndl, 0.4));
     float imW = uHasImagery * tex.a * (1.0 - smoothstep(38000.0, 46000.0, vDist));
     lit = mix(lit, litIm, imW);
+    // City glow (13c): NLCD developed classes emit a warm speckle at
+    // night — procedural cells, NOT real light points (recorded).
+    float night = clamp(1.0 - uDayness * 1.6, 0.0, 1.0);
+    if (night > 0.001 && vUrban > 0.001) {
+      vec2 cell = floor(vWXZ / 24.0);
+      float h = fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+      float speck = smoothstep(0.62, 0.78, h) * (0.45 + 0.55 * fract(h * 9.7));
+      lit += vUrban * night * vec3(1.0, 0.72, 0.42) * (0.05 + 0.75 * speck);
+    }
     vec3 haze = mix(vec3(0.02, 0.03, 0.05), vec3(0.63, 0.71, 0.82), uDayness);
     float fog = 1.0 - exp(-vDist * uFogDensity);
     gl_FragColor = vec4(mix(lit, haze, fog * 0.85), 1.0);
@@ -286,6 +300,7 @@ export class TileManager {
     geo.setAttribute('normal', new THREE.BufferAttribute(resp.normals, 3))
     geo.setAttribute('color', new THREE.BufferAttribute(resp.colors, 3))
     geo.setAttribute('uv', new THREE.BufferAttribute(resp.uvs, 2))
+    geo.setAttribute('urban', new THREE.BufferAttribute(resp.urban, 1))
     geo.setIndex(new THREE.BufferAttribute(resp.indices, 1))
     const mesh = new THREE.Mesh(geo, this.material)
     mesh.frustumCulled = true
