@@ -8,6 +8,7 @@ import { Clouds } from './render/clouds'
 import { NexradField } from './world/nexrad'
 import { CommsBus, isAudible, type Transmission } from './sim/atc/comms'
 import { AiPatternPilot } from './sim/traffic/ai-pilot'
+import { LiveTrafficStore, type LiveTargetWire } from './sim/traffic/live'
 import { TcasComputer } from './sim/tcas'
 import { TawsComputer } from './sim/taws'
 import { FlightRecorder, analyzeLanding, type RunwayRef } from './sim/recorder'
@@ -531,6 +532,14 @@ function handleSearch(query: string): void {
     }
     return
   }
+  if (parts[0] === 'LIVE' && parts[1] === 'TRAFFIC' && (parts[2] === 'ON' || parts[2] === 'OFF')) {
+    liveTrafficOn = parts[2] === 'ON'
+    if (!liveTrafficOn) liveTraffic.targets.clear()
+    else lastTrafficFetchAt = -Infinity // poll immediately
+    try { localStorage.setItem('oh-live-traffic', parts[2]) } catch { /* private mode */ }
+    toast(`LIVE TRAFFIC ${parts[2]}${liveTrafficOn ? ' — real ADS-B, display+TCAS only' : ''}`)
+    return
+  }
   if (parts[0] === 'IMAGERY' && (parts[1] === 'ON' || parts[1] === 'OFF')) {
     const on = parts[1] === 'ON'
     tiles.setImagery(on)
@@ -791,6 +800,38 @@ const whiteout = document.createElement('div')
 whiteout.style.cssText =
   'position:fixed;inset:0;pointer-events:none;z-index:5;opacity:0;background:#c8ccd2;transition:opacity 120ms linear'
 document.body.appendChild(whiteout)
+
+// ---- live ADS-B traffic (14b): poll on the METAR cadence pattern ----
+// Store steps with WALL time — real aircraft ignore sim time accel/pause
+// (recorded). Rendering/TCAS integration land in 14c/14d.
+const liveTraffic = new LiveTrafficStore()
+let liveTrafficOn = true
+try { if (localStorage.getItem('oh-live-traffic') === 'OFF') liveTrafficOn = false } catch { /* private mode */ }
+let lastTrafficFetchAt = -Infinity
+let lastTrafficLL = { lat: 0, lon: 0 }
+let lastTrafficPayloadTs = 0
+let lastTrafficStepAt = 0
+
+function updateLiveTraffic(lat: number, lon: number, now: number): void {
+  // Wall-clock step every frame (clamped against tab-suspend gaps).
+  const wallNow = Date.now()
+  const dt = Math.min(Math.max((wallNow - lastTrafficStepAt) / 1000, 0), 2)
+  lastTrafficStepAt = wallNow
+  if (liveTrafficOn && dt > 0) liveTraffic.step(dt, wallNow)
+  if (!liveTrafficOn) return
+  if (now - lastTrafficFetchAt > 10_000 || distanceM(lastTrafficLL, { lat, lon }) > 20_000) {
+    lastTrafficFetchAt = now
+    lastTrafficLL = { lat, lon }
+    fetch(`/api/traffic?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((json: { ac: LiveTargetWire[]; ts: number }) => {
+        if (!liveTrafficOn) return
+        lastTrafficPayloadTs = json.ts
+        liveTraffic.ingest(json.ac, Date.now(), lat, lon)
+      })
+      .catch(() => { /* stale-while-error server-side; next poll retries */ })
+  }
+}
 
 function updateLiveWeather(lat: number, lon: number, now: number): void {
   if (!liveWeatherOn) return
@@ -1615,6 +1656,7 @@ function advanceFrame(elapsed: number, now: number): void {
   }
   airports.positionAll()
   updateLiveWeather(ll.lat, ll.lon, now)
+  updateLiveTraffic(ll.lat, ll.lon, now)
   updateRadar(ll.lat, ll.lon, now)
   scanAtc(ll.lat, ll.lon, now)
   updateSafety(now)
@@ -2018,6 +2060,15 @@ Object.assign(window as unknown as Record<string, unknown>, {
     ...(designator ? { info: typeInfo(designator), parsed: parseDesc(typeInfo(designator).desc) } : {}),
   }),
   __ohTiles: (probeKey?: string) => tiles.debugImagery(probeKey),
+  __ohTraffic: () => ({
+    on: liveTrafficOn,
+    count: liveTraffic.targets.size,
+    payloadAgeS: lastTrafficPayloadTs ? +((Date.now() - lastTrafficPayloadTs) / 1000).toFixed(1) : null,
+    sample: [...liveTraffic.targets.values()].slice(0, 6).map((t) => ({
+      id: t.id, cs: t.cs, t: t.t, altFt: Math.round(t.altFt), gsKt: t.gsKt, gnd: t.gnd,
+      lat: +t.lat.toFixed(4), lon: +t.lon.toFixed(4),
+    })),
+  }),
   __ohImagery: (on: boolean) => tiles.setImagery(on),
   __ohPapi: () => airports.nearestPapi(mesh.group.position.x, mesh.group.position.y, mesh.group.position.z),
   __ohFleet: () => ({ key: fleetKey, label: FLEET_ACTIVE.label, jet: !!aircraft.P.jet, n1: aircraft.data.n1Pct, gearPos: aircraft.gearPos, gearCmd: aircraft.gearDownCommanded }),

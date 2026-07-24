@@ -30,7 +30,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
 | 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
-| 14 — Visual traffic | 🔧 14a next | live ADS-B endpoint → store → TCAS/MFD → rendering → richer AI |
+| 14 — Visual traffic | 🔧 14a+14b done | endpoint + live store flowing real targets; TCAS/MFD integration next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -80,6 +80,27 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 14b — client live-traffic store (2026-07-24)
+
+Pure `sim/traffic/live.ts` (6 tests): authoritative per-target dead
+reckoning between polls (gs/trk/vs), stale fixes led forward by their
+provider-reported age, new fixes absorbed through a decaying display
+offset (τ 0.6 s ≈ 95% inside 2 s — no teleports), 30 s expiry, cap to
+the 40 nearest at ingest. main.ts poll driver mirrors the METAR
+pattern (10 s or 20 km move), steps the store on WALL time — real
+aircraft ignore sim pause/accel (recorded) — with a 2 s clamp against
+tab-suspend gaps. `LIVE TRAFFIC ON|OFF` verb (persisted, default ON;
+OFF clears, ON repolls immediately) + `__ohTraffic()` hook.
+
+**Live verification at KSFO:** 40 targets capped from ~140 available —
+SWA381 (B38M) at 12,865 ft/347 kt, a C172 at 7,382 ft, a PA22, an SFO
+ops vehicle on the ground. Dead reckoning measured against wall time:
+SWA381 moved 864 m in 5 s (892 expected at 347 kt), the C172 239 m
+(255 expected) — both within blend variance. Verb round-trip: OFF → 0
+targets, ON → immediate 40 from the server cache. payloadAgeS 6.6 s
+freshness readout. Suite 874 + validate 421, tsc clean. Rendering,
+TCAS, and labels are 14c/14d.
 
 ## Phase 14a — /api/traffic live ADS-B endpoint (2026-07-24)
 
