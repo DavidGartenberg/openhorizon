@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { buildUsAirports, buildUsNavaids, buildCifpProcedures, buildUsAirspace, buildUsFrequencies, buildAircraftTypes, isImageBuf } from './parse.mjs'
+import { buildUsAirports, buildUsNavaids, buildCifpProcedures, buildUsAirspace, buildUsFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb } from './parse.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 /** Vendored offline fallbacks committed with the repo (Phase 12a). */
@@ -82,6 +82,77 @@ export async function imageryTile(z, x, y) {
   }
   fs.writeFileSync(f, buf)
   return buf
+}
+
+// ---- live ADS-B traffic (Phase 14a) ----
+// Free-feed etiquette (recorded in the plan): coordinates bucket to
+// 0.25° so nearby clients share one upstream query, 10 s TTL,
+// single-flight dedup per bucket, ≥5 s spacing between ANY two
+// upstream calls, provider chain with per-provider cooldowns, and
+// stale-while-error (the cached payload keeps its old ts, so client
+// age displays climb honestly instead of lying about freshness).
+const TRAFFIC_TTL_MS = 10_000
+const TRAFFIC_RADIUS_NM = 40
+const TRAFFIC_SPACING_MS = 5_000
+const TRAFFIC_COOLDOWN_MS = 60_000
+
+const trafficCache = new Map() // bucket -> { payload, at }
+const trafficInFlight = new Map() // bucket -> Promise
+let trafficLastUpstreamAt = 0
+const trafficCooldownUntil = { adsblol: 0, adsbfi: 0, opensky: 0 }
+
+const trafficSleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+async function fetchTrafficProvider(provider, lat, lon) {
+  let url
+  if (provider === 'adsblol') url = `https://api.adsb.lol/v2/point/${lat}/${lon}/${TRAFFIC_RADIUS_NM}`
+  else if (provider === 'adsbfi') url = `https://opendata.adsb.fi/api/v2/lat/${lat}/lon/${lon}/dist/${TRAFFIC_RADIUS_NM}`
+  else {
+    const dLat = TRAFFIC_RADIUS_NM / 60
+    const dLon = dLat / Math.cos((lat * Math.PI) / 180)
+    url = `https://opensky-network.org/api/states/all?lamin=${(lat - dLat).toFixed(3)}&lomin=${(lon - dLon).toFixed(3)}&lamax=${(lat + dLat).toFixed(3)}&lomax=${(lon + dLon).toFixed(3)}`
+  }
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000) })
+  if (!res.ok) throw new Error(`traffic ${provider}: ${res.status}`)
+  return normalizeAdsb(await res.json(), provider)
+}
+
+export async function trafficData(latStr, lonStr) {
+  const lat = Number(latStr)
+  const lon = Number(lonStr)
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 89 || Math.abs(lon) > 180) {
+    throw new Error('bad traffic coords')
+  }
+  const bLat = Math.round(lat * 4) / 4
+  const bLon = Math.round(lon * 4) / 4
+  const bucket = `${bLat},${bLon}`
+  const cached = trafficCache.get(bucket)
+  if (cached && Date.now() - cached.at < TRAFFIC_TTL_MS) return cached.payload
+  const inflight = trafficInFlight.get(bucket)
+  if (inflight) return inflight
+  const p = (async () => {
+    try {
+      const wait = trafficLastUpstreamAt + TRAFFIC_SPACING_MS - Date.now()
+      if (wait > 0) await trafficSleep(wait)
+      trafficLastUpstreamAt = Date.now()
+      for (const provider of ['adsblol', 'adsbfi', 'opensky']) {
+        if (Date.now() < trafficCooldownUntil[provider]) continue
+        try {
+          const payload = await fetchTrafficProvider(provider, bLat, bLon)
+          trafficCache.set(bucket, { payload, at: Date.now() })
+          return payload
+        } catch {
+          trafficCooldownUntil[provider] = Date.now() + TRAFFIC_COOLDOWN_MS
+        }
+      }
+      if (cached) return cached.payload // stale-while-error
+      return { ac: [], ts: Date.now() }
+    } finally {
+      trafficInFlight.delete(bucket)
+    }
+  })()
+  trafficInFlight.set(bucket, p)
+  return p
 }
 
 let aircraftTypesJson = null
@@ -436,6 +507,19 @@ export async function route(url, res) {
           'Access-Control-Allow-Origin': '*',
         })
         res.end(buf)
+        return true
+      }
+    }
+    {
+      const m = url.match(/^\/api\/traffic\?lat=(-?[\d.]+)&lon=(-?[\d.]+)$/)
+      if (m) {
+        const json = await trafficData(m[1], m[2])
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-store',
+          'Access-Control-Allow-Origin': '*',
+        })
+        res.end(JSON.stringify(json))
         return true
       }
     }

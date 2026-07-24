@@ -29,7 +29,8 @@ Node; add `~/.local/node/bin` to PATH).
 | 10 — Fleet (absorbed) | ✅ → Phase 11 | absorbed by the approved Phases 11–15 mega-plan |
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
-| 13 — Graphics | 🔧 13a–13e done | shadows, airport detail, imagery, night, PAPI (+GS fix), METAR sea state + cloud light; 13f bloom = evaluate |
+| 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
+| 14 — Visual traffic | 🔧 14a next | live ADS-B endpoint → store → TCAS/MFD → rendering → richer AI |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -79,6 +80,45 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 14a — /api/traffic live ADS-B endpoint (2026-07-24)
+
+Pure `normalizeAdsb(json, provider)` in parse.mjs (6 tests): adsb.lol
+and adsb.fi speak the readsb/tar1090 dialect (seconds `now` guarded
+against ms, `alt_baro:"ground"` → altFt 0 + gnd, callsigns trimmed,
+type designator kept); OpenSky's states array converts m→ft, m/s→kt
+and →fpm, carries no type (t:''); rows without a position drop;
+malformed payloads return an empty list, never throw. handlers.mjs
+`trafficData(lat, lon)` + `/api/traffic?lat=&lon=` route with the
+free-feed etiquette from the plan: 0.25° coordinate buckets, 40 nm
+radius, 10 s TTL, single-flight dedup per bucket, ≥5 s spacing between
+ANY two upstream calls, provider chain adsb.lol → adsb.fi → OpenSky
+with 60 s per-provider cooldowns, stale-while-error keeps the old
+payload ts so client age displays climb honestly.
+
+**Live verification (dev proxy):** first KSFO query returned 136 real
+aircraft in 1.7 s — a P28A descending through 1,700 ft, an R44, DLH454
+(B748) at the gate, ANA7 (B77W), UAL3934 (B752), types included for
+the 14d archetype meshes. Back-to-back repeat: 2 ms, identical ts =
+cache hit. The provider chain proved itself live: one cold-bucket call
+took 21.6 s when the first provider timed out (8 s abort → cooldown →
+next provider answered with its own 117-target coverage). Noted:
+0.25° bucket edges split nearby queries (by design); bad coords
+reject as a vite 502 (internal API, acceptable). Suite 868 green.
+
+## Phase 13f — bloom: evaluated, cut (2026-07-24)
+
+The plan's own entry condition was "only if ≥3 ms measured headroom",
+with a written abandon criterion (perf regression or MSAA loss). Cut
+without implementation, honestly: (1) the headroom precondition is
+unverifiable right now — this session's frame timings swung 5.8→30 ms
+p50 on identical scenes (pane-visibility GPU throttling, see 13e), so
+a perf-gated feature cannot pass its own gate; (2) an EffectComposer
+pass forfeits the canvas MSAA the whole sim leans on unless we add
+multisampled render targets — a real visual regression risk for a
+cosmetic win the additive light sprites already approximate. Revisit
+only if 15e's stable re-measure shows ≥3 ms headroom AND a
+multisampled-RT path proves MSAA-neutral.
 
 ## Phase 13e — clouds + ocean sea state (2026-07-24)
 

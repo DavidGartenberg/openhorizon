@@ -13,6 +13,68 @@ export function isImageBuf(buf) {
   return jpeg || png
 }
 
+// ---- ADS-B provider normalization (Phase 14a) ----
+// One wire shape out of three free feeds: adsb.lol and adsb.fi speak the
+// readsb/tar1090 aircraft.json dialect; OpenSky anon speaks its states
+// array. Rows without a position are dropped (a target you can't place
+// is noise). Output: {ac:[{id, cs, t, lat, lon, altFt, gnd, gsKt, trk,
+// vsFpm, ageS}], ts(ms epoch)} — never throws on malformed payloads.
+
+const M_TO_FT = 1 / 0.3048
+const MS_TO_KT = 1 / 0.514444
+
+function tar1090Row(a) {
+  if (typeof a?.lat !== 'number' || typeof a?.lon !== 'number') return null
+  const gnd = a.alt_baro === 'ground'
+  return {
+    id: String(a.hex ?? ''),
+    cs: String(a.flight ?? '').trim(),
+    t: String(a.t ?? ''),
+    lat: a.lat,
+    lon: a.lon,
+    altFt: gnd ? 0 : Math.round(typeof a.alt_baro === 'number' ? a.alt_baro : 0),
+    gnd,
+    gsKt: Math.round(typeof a.gs === 'number' ? a.gs : 0),
+    trk: Math.round(typeof a.track === 'number' ? a.track : 0),
+    vsFpm: Math.round(typeof a.baro_rate === 'number' ? a.baro_rate : 0),
+    ageS: typeof a.seen_pos === 'number' ? a.seen_pos : (typeof a.seen === 'number' ? a.seen : 0),
+  }
+}
+
+function openskyRow(s, nowS) {
+  if (!Array.isArray(s) || typeof s[5] !== 'number' || typeof s[6] !== 'number') return null
+  const gnd = s[8] === true
+  return {
+    id: String(s[0] ?? ''),
+    cs: String(s[1] ?? '').trim(),
+    t: '', // OpenSky carries no type designator
+    lat: s[6],
+    lon: s[5],
+    altFt: gnd || typeof s[7] !== 'number' ? 0 : Math.round(s[7] * M_TO_FT),
+    gnd,
+    gsKt: Math.round(typeof s[9] === 'number' ? s[9] * MS_TO_KT : 0),
+    trk: Math.round(typeof s[10] === 'number' ? s[10] : 0),
+    vsFpm: Math.round(typeof s[11] === 'number' ? s[11] * M_TO_FT * 60 : 0),
+    ageS: typeof s[3] === 'number' ? Math.max(nowS - s[3], 0) : 0,
+  }
+}
+
+export function normalizeAdsb(json, provider) {
+  try {
+    if (provider === 'opensky') {
+      const nowS = typeof json?.time === 'number' ? json.time : Date.now() / 1000
+      const rows = Array.isArray(json?.states) ? json.states : []
+      return { ac: rows.map((s) => openskyRow(s, nowS)).filter(Boolean), ts: Math.round(nowS * 1000) }
+    }
+    // adsb.lol / adsb.fi (readsb "now" is seconds; guard against ms).
+    const now = typeof json?.now === 'number' ? json.now : Date.now() / 1000
+    const rows = Array.isArray(json?.ac) ? json.ac : []
+    return { ac: rows.map(tar1090Row).filter(Boolean), ts: Math.round(now < 1e12 ? now * 1000 : now) }
+  } catch {
+    return { ac: [], ts: Date.now() }
+  }
+}
+
 /** Minimal CSV line splitter with quoted-field support. */
 export function splitCsvLine(line) {
   const out = []
