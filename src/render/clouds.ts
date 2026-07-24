@@ -17,9 +17,11 @@ const PUFF_VERT = /* glsl */ `
   attribute float seed;
   varying vec2 vUv;
   varying float vSeed;
+  varying vec3 vCenterW;
   void main() {
     vUv = uv;
     vSeed = seed;
+    vCenterW = offset; // instance center (render-frame world coords)
     // Billboard: face the camera.
     vec4 center = viewMatrix * modelMatrix * vec4(offset, 1.0);
     center.xy += position.xy * scale * vec2(1.0, 0.42); // flattened puffs
@@ -29,15 +31,31 @@ const PUFF_VERT = /* glsl */ `
 const PUFF_FRAG = /* glsl */ `
   uniform float uDayness;
   uniform float uOpacity;
+  uniform vec3 uSunDir;
+  uniform float uDusk;
+  uniform float uBaseDark;
   varying vec2 vUv;
   varying float vSeed;
+  varying vec3 vCenterW;
   void main() {
     vec2 p = vUv * 2.0 - 1.0;
     float r = length(p);
     // Soft blob with a wobbly edge per puff.
     float wobble = 0.12 * sin(atan(p.y, p.x) * 5.0 + vSeed * 40.0);
     float alpha = smoothstep(1.0, 0.35 + wobble, r) * uOpacity;
+    // 13e: forward scattering — how directly this puff sits between the
+    // camera and the sun.
+    vec3 viewDir = normalize(vCenterW - cameraPosition);
+    float fwd = pow(max(dot(viewDir, normalize(uSunDir)), 0.0), 10.0);
+    // Thick layers carry dark bases: darken the puff's lower half by the
+    // layer's thickness/coverage factor.
+    float baseShade = mix(1.0, 0.52, uBaseDark * smoothstep(0.15, -0.65, p.y));
     vec3 lit = mix(vec3(0.06, 0.07, 0.09), vec3(0.98), uDayness * (0.75 + 0.25 * smoothstep(1.0, 0.0, r)));
+    lit *= baseShade;
+    // Dusk tint: warm the cloud, strongest on the sunward side.
+    lit *= mix(vec3(1.0), vec3(1.0, 0.62, 0.40), uDusk * (0.35 + 0.5 * fwd));
+    // Silver lining: bright rim where the puff is backlit.
+    lit += vec3(1.0, 0.97, 0.90) * (smoothstep(0.45, 0.95, r) * fwd * uDayness);
     gl_FragColor = vec4(lit, alpha);
   }
 `
@@ -76,6 +94,8 @@ export class Clouds {
     worldOffsetE: number,
     worldOffsetN: number,
     dayness: number,
+    sunDir?: THREE.Vector3,
+    dusk = 0,
   ): void {
     const key = slabs.map((s) => `${s.cover}${s.baseMslFt}`).join('|')
     const cellX = Math.floor((cameraPos.x + worldOffsetE) / CELL_M)
@@ -96,6 +116,8 @@ export class Clouds {
     }
     for (const l of this.layers) {
       l.material.uniforms.uDayness!.value = dayness
+      if (sunDir) (l.material.uniforms.uSunDir!.value as THREE.Vector3).copy(sunDir)
+      l.material.uniforms.uDusk!.value = dusk
     }
   }
 
@@ -107,8 +129,18 @@ export class Clouds {
     geo.setAttribute('offset', new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3))
     geo.setAttribute('scale', new THREE.InstancedBufferAttribute(new Float32Array(count), 1))
     geo.setAttribute('seed', new THREE.InstancedBufferAttribute(new Float32Array(count), 1))
+    // 13e: thick, heavy layers carry darker bases (OVC 4,000 ft reads
+    // near-black underneath; a thin FEW deck stays bright).
+    const thickFt = slab.topMslFt - slab.baseMslFt
+    const cover = COVERAGE[slab.cover] ?? 0.5
+    const baseDark = Math.min(Math.max((thickFt / 3500) * (0.4 + 0.6 * cover), 0), 1)
     const material = new THREE.ShaderMaterial({
-      uniforms: { uDayness: { value: 1 }, uOpacity: { value: 0.88 } },
+      uniforms: {
+        uDayness: { value: 1 }, uOpacity: { value: 0.88 },
+        uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+        uDusk: { value: 0 },
+        uBaseDark: { value: baseDark },
+      },
       vertexShader: PUFF_VERT,
       fragmentShader: PUFF_FRAG,
       transparent: true,

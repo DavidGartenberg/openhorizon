@@ -29,7 +29,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 10 — Fleet (absorbed) | ✅ → Phase 11 | absorbed by the approved Phases 11–15 mega-plan |
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
-| 13 — Graphics | 🔧 13a–13d done | shadows, airport detail, satellite imagery, night lighting, PAPI (+GS TCH fix); clouds/ocean next |
+| 13 — Graphics | 🔧 13a–13e done | shadows, airport detail, imagery, night, PAPI (+GS fix), METAR sea state + cloud light; 13f bloom = evaluate |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -79,6 +79,37 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 13e — clouds + ocean sea state (2026-07-24)
+
+**Ocean** now takes the METAR surface wind (new `WindModel.steadyMs`/
+`steadyTowardRad` getters): pure `sim/weather/sea-state.ts` (4 tests)
+maps wind → slope scale (glassy ≤4 kt … saturating 1.7) and whitecap
+fraction (0 below 15 kt, 1 by ~25 kt); the wave field rotates so the
+primary set runs downwind; sparse foam flecks (hash cells advecting
+downwind, gated to wave crests, killed by att² before they smear
+sub-pixel) mix in above 15 kt. The 9 m chop gets its own faster
+distance rolloff on top of 13b's global fade — the shimmer band from
+altitude is gone. **Clouds**: forward-scatter term from the real sun
+direction — silver-lining rim on backlit puffs; thick layers darken
+their bases (thickness × coverage: today's real OVC013×3,000 ft deck
+reads convincingly heavy from below); dusk factor (sun within ±8° of
+the horizon) warms the decks, strongest sunward. New `__ohSlabs`
+manual-cloud hook (same manual-weather pattern as `__ohWind`).
+
+**Verified in-browser** (KHAF 12 final over the Pacific): calm 3 kt =
+glassy fresnel sheet; 25 kt = textured sea with sparse whitecap
+flecks; real OVC013 base-darkening from 1,000 ft; manual SCT dusk =
+orange-rimmed backlit puffs on the horizon. Two tuning iterations
+recorded honestly: 6 m foam cells smeared into a milky wash at range
+(fixed by 12 m cells + att² + crest gating), and a stale-HMR page
+fooled two verification rounds (hard navigate now precedes shader
+screenshots). **Perf:** 13e adds zero draw calls (shader-local by
+design); absolute frame times were unstable across this session's
+measurements (5.8→12→30 ms p50 on identical scenes — backgrounded-
+pane GPU throttling suspected, tracks pane visibility not code); §23
+p95 stayed <16.7 ms in every stable window, and the binding full
+re-measure remains 15e. Suite 862 + validate 421, tsc clean.
 
 ## Phase 13d — PAPI + the glideslope fix it exposed (2026-07-24)
 

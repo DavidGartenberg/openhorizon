@@ -1797,9 +1797,12 @@ function advanceFrame(elapsed: number, now: number): void {
   )
   const sunDir = sky.update(simDate, ll.lat, ll.lon)
   const dayness = Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1)
-  ocean.update(now / 1000, sunDir, dayness)
+  // 13e: METAR surface wind drives the sea state; sun-position dusk factor
+  // (peaks with the sun at the horizon) warms the cloud decks.
+  ocean.update(now / 1000, sunDir, dayness, wind.steadyMs, wind.steadyTowardRad)
+  const dusk = Math.min(Math.max(1 - Math.abs(sky.elevationDeg) / 8, 0), 1)
   tiles.setLight(sunDir, dayness)
-  clouds.update(wxSlabs, camera.position, worldShift.e, worldShift.n, dayness)
+  clouds.update(wxSlabs, camera.position, worldShift.e, worldShift.n, dayness, sunDir, dusk)
   // 13c night lights: airport layer + aircraft exterior lights.
   const night = Math.min(Math.max(1 - dayness * 1.6, 0), 1)
   airports.updateNight(loop.simTime, night)
@@ -2081,6 +2084,12 @@ Object.assign(window as unknown as Record<string, unknown>, {
   },
   __ohCtl: (c: Record<string, number> | null) => {
     ctlOverride = c === null ? null : { ...(ctlOverride ?? {}), ...c }
+  },
+  /** Manual cloud slabs (13e acceptance): same manual-weather pattern as
+   *  `__ohWind` — live METAR application stops so it can't overwrite. */
+  __ohSlabs: (slabs: Array<{ cover: string; baseMslFt: number; topMslFt: number }>) => {
+    liveWeatherOn = false
+    wxSlabs = slabs as typeof wxSlabs
   },
   __ohWind: (dirDeg: number, kt: number) => {
     // Manual weather: live METAR application stops so it can't overwrite.

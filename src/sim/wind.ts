@@ -22,6 +22,16 @@ export class WindModel {
     this.gustKt = Math.max(gustKt - speedKt, 0)
   }
 
+  /** Steady surface wind speed, m/s (13e: feeds the ocean sea state). */
+  get steadyMs(): number {
+    return Math.hypot(this.steady.x, this.steady.y)
+  }
+
+  /** Bearing the steady wind blows TOWARD, rad (0 = north, +cw). */
+  get steadyTowardRad(): number {
+    return Math.atan2(this.steady.y, this.steady.x)
+  }
+
   /** Advance turbulence states; returns total wind (NED, m/s). */
   step(dt: number, out: V3): V3 {
     // Dryden-flavored first-order shaping filters.
