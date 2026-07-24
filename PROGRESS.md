@@ -30,7 +30,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
 | 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
-| 14 — Visual traffic | 🔧 14a+14b done | endpoint + live store flowing real targets; TCAS/MFD integration next |
+| 14 — Visual traffic | 🔧 14a-14c done | endpoint, live store, TCAS multi-track fixes; rendering + labels next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -80,6 +80,29 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 14c — TCAS multi-track integrity + live targets (2026-07-24)
+
+Two latent Phase-7 bugs from the 11-inventory, now load-bearing with
+live ADS-B: every AI intruder fed the literal id 'AI' (ONE shared
+hysteresis state for all traffic), and `TcasComputer.states` never
+evicted departed tracks (a returning id inherited a stale widened
+gate). Fixed: stable per-pilot ids (`AI{n}`), eviction of states
+absent from each step's input, `trackedCount` testability getter.
+Live store targets (airborne only, hex ids, baro altitudes —
+recorded) now feed the same TCAS step and the MFD trafficDots.
+4 regression tests: independent per-id levels, per-id hysteresis
+retention (SL4 gate math), eviction resets the widened gate (PROX
+floor, not retained TA), 30-track churn to zero.
+
+**Verified live at KSFO:** 40 stored targets → 19 airborne TCAS dots
+(ground vehicles filtered), 12 within 10 nm, and a real arrival
+showing PROX at 2,631 m / +438 ft with the safety line and dot flags
+agreeing. Bonus: the FIRST probe ran on a stale pre-fix page and
+showed the old bug live — a stuck alerted flag (shared-id state)
+contradicting the current level; the fixed page is coherent.
+`__ohSafety` now exposes the last TCAS level + non-NONE track list.
+Suite 878 + validate 421, tsc clean.
 
 ## Phase 14b — client live-traffic store (2026-07-24)
 

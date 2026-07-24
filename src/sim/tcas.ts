@@ -76,8 +76,22 @@ export class TcasComputer {
 
   constructor(private readonly cfg: { taOnly: boolean }) {}
 
+  /** Tracked hysteresis states (14c testability). */
+  get trackedCount(): number {
+    return this.states.size
+  }
+
   step(dt: number, own: TcasOwnship, tracks: TcasTrack[]): TcasOutput {
     void dt
+    // Evict states for tracks no longer in the input (14c): a departed
+    // intruder must not bequeath its widened hysteresis gate to a later
+    // track reusing the id — live ADS-B ids churn every poll.
+    if (this.states.size > 0) {
+      const inputIds = new Set(tracks.map((t) => t.id))
+      for (const id of this.states.keys()) {
+        if (!inputIds.has(id)) this.states.delete(id)
+      }
+    }
     const { sl, taTauS, raTauS } = sensitivityLevel(own.altFt, own.aglFt)
     const dmod = dmodM(sl)
     const zthr = zthrFt(sl)

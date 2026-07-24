@@ -1004,6 +1004,7 @@ let lastSafetyAt = -Infinity
 let liftoffSimS: number | null = null
 let safetyLine = ''
 let trafficDots: Array<{ dNorthM: number; dEastM: number; relAltFt: number; alerted: boolean }> = []
+let lastTcasDebug: { level: string; trackLevels: string[] } = { level: 'NONE', trackLevels: [] }
 
 /** Non-radio cockpit annunciation (TCAS/TAWS aurals) — spoken urgently,
  *  never logged to the comms transcript (they aren't transmissions). */
@@ -1034,19 +1035,33 @@ function updateSafety(now: number): void {
   const ownVn = Math.cos(trackRad) * gsMs
   const ownVe = Math.sin(trackRad) * gsMs
 
-  // TCAS from airborne AI traffic.
+  // TCAS from airborne AI traffic (14c: stable per-pilot ids — the old
+  // literal 'AI' collapsed every intruder onto one hysteresis state) plus
+  // the live ADS-B store (hex ids; baro altitudes — recorded).
   const tracks = aiPilots
-    .filter((p) => p.phase === 'pattern' && !p.onGround)
-    .map((p) => {
+    .map((p, i) => ({ p, i }))
+    .filter(({ p }) => p.phase === 'pattern' && !p.onGround)
+    .map(({ p, i }) => {
       const hRad = (p.plane.headingDeg * Math.PI) / 180
       const v = p.plane.gsKt * KT
       return {
-        id: 'AI', relNorthM: (p.plane.lat - ll0.lat) * mLat, relEastM: (p.plane.lon - ll0.lon) * mLon,
+        id: `AI${i}`, relNorthM: (p.plane.lat - ll0.lat) * mLat, relEastM: (p.plane.lon - ll0.lon) * mLon,
         relVnMs: Math.cos(hRad) * v - ownVn, relVeMs: Math.sin(hRad) * v - ownVe,
         altFt: p.plane.altFt, vsFpm: 0,
       }
     })
+  for (const t of liveTraffic.targets.values()) {
+    if (t.gnd) continue
+    const hRad = (t.trkDeg * Math.PI) / 180
+    const v = t.gsKt * KT
+    tracks.push({
+      id: t.id, relNorthM: (t.lat - ll0.lat) * mLat, relEastM: (t.lon - ll0.lon) * mLon,
+      relVnMs: Math.cos(hRad) * v - ownVn, relVeMs: Math.sin(hRad) * v - ownVe,
+      altFt: t.altFt, vsFpm: t.vsFpm,
+    })
+  }
   const tc = tcas.step(0.5, { altFt: d.altitudeFt, aglFt: d.aglFt, vsFpm: d.verticalSpeedFpm }, tracks)
+  lastTcasDebug = { level: tc.level, trackLevels: tc.tracks.filter((t) => t.level !== 'NONE').map((t) => `${t.id}:${t.level}@${Math.round(t.rangeM)}m/${Math.round(t.relAltFt)}ft`) }
   trafficDots = tc.tracks.map((t) => ({
     dNorthM: 0, dEastM: 0, relAltFt: t.relAltFt, alerted: t.level === 'TA' || t.level === 'RA',
   }))
@@ -2005,7 +2020,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     if (targets) Object.assign(apTargets, targets)
   },
   __ohApState: () => ({ ...apState }),
-  __ohSafety: () => ({ safetyLine, dots: trafficDots }),
+  __ohSafety: () => ({ safetyLine, dots: trafficDots, tcas: lastTcasDebug }),
   __ohAudio: () => ({ unlocked: engineSound.unlocked, muted: engineSound.muted, ...engineSound.inspect() }),
   /** Fleet verification hooks (11g) — mirror the U/H/K keys + inspection. */
   /** 12b visual check: line up archetype silhouettes beside the aircraft
