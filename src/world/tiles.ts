@@ -25,13 +25,20 @@ interface Ring {
   radiusM: number
   grid: number
   skirt: number
+  /** Coarse rings render this many meters low so fine rings win the depth
+   *  test where they overlap. A z9 tile spans ~60 km — its near edge
+   *  reaches under the aircraft even when its center passes the annulus
+   *  skip, and its coarse height sampling used to crest through z13/z11
+   *  (found by 13b imagery, but as old as the rings). Render-only:
+   *  heights/elevationAt are unbiased. */
+  depthBiasM: number
 }
 
 const RINGS: Ring[] = [
-  { z: 13, radiusM: 10_000, grid: 96, skirt: 45 },
-  { z: 11, radiusM: 48_000, grid: 96, skirt: 120 },
-  { z: 9, radiusM: 180_000, grid: 64, skirt: 400 },
-  { z: 7, radiusM: 700_000, grid: 48, skirt: 1200 },
+  { z: 13, radiusM: 10_000, grid: 96, skirt: 45, depthBiasM: 0 },
+  { z: 11, radiusM: 48_000, grid: 96, skirt: 120, depthBiasM: 0.5 },
+  { z: 9, radiusM: 180_000, grid: 64, skirt: 400, depthBiasM: 6 },
+  { z: 7, radiusM: 700_000, grid: 48, skirt: 1200, depthBiasM: 18 },
 ]
 
 export interface RunwayFlatten {
@@ -60,15 +67,21 @@ interface Tile {
   gridSize?: number
   state: 'loading' | 'ready' | 'failed'
   lastWanted: number
+  /** Satellite imagery (13b) — near rings only (z ≥ 11). */
+  imTex?: THREE.Texture
+  imMat?: THREE.ShaderMaterial
+  imQueued?: boolean
 }
 
 const TERRAIN_VERT = /* glsl */ `
   varying vec3 vColor;
   varying vec3 vNormal;
   varying float vDist;
+  varying vec2 vUv;
   attribute vec3 color;
   void main() {
     vColor = color;
+    vUv = uv;
     vNormal = normalize(mat3(modelMatrix) * normal);
     vec4 wp = modelMatrix * vec4(position, 1.0);
     float dx = wp.x - cameraPosition.x;
@@ -83,12 +96,25 @@ const TERRAIN_FRAG = /* glsl */ `
   uniform vec3 uSunDir;
   uniform float uDayness;
   uniform float uFogDensity;
+  uniform sampler2D uImagery;
+  uniform float uHasImagery;
   varying vec3 vColor;
   varying vec3 vNormal;
   varying float vDist;
+  varying vec2 vUv;
   void main() {
     float ndl = max(dot(normalize(vNormal), normalize(uSunDir)), 0.0);
     vec3 lit = vColor * (0.08 + 0.30 * uDayness + 0.85 * uDayness * ndl);
+    // Satellite imagery (13b): the photo albedo has real-sun shading baked
+    // in, so the normal term is flattened to avoid double-shading slopes;
+    // the day/night curve still applies. Weighted by texture alpha (USGS
+    // no-data tiles are transparent — offshore/cross-border pixels fall
+    // back to the stylized ground) and faded out before the textured z11
+    // ring runs out — no hard imagery seam.
+    vec4 tex = texture2D(uImagery, vUv);
+    vec3 litIm = tex.rgb * (0.10 + 0.40 * uDayness + 0.60 * uDayness * mix(1.0, ndl, 0.4));
+    float imW = uHasImagery * tex.a * (1.0 - smoothstep(38000.0, 46000.0, vDist));
+    lit = mix(lit, litIm, imW);
     vec3 haze = mix(vec3(0.02, 0.03, 0.05), vec3(0.63, 0.71, 0.82), uDayness);
     float fog = 1.0 - exp(-vDist * uFogDensity);
     gl_FragColor = vec4(mix(lit, haze, fog * 0.85), 1.0);
@@ -104,6 +130,14 @@ export class TileManager {
   readonly material: THREE.ShaderMaterial
   private lastUpdatePos = { n: Infinity, e: Infinity }
   private stamp = 0
+  // Satellite imagery (13b): per-tile material clones share the base
+  // material's uniform OBJECTS for light/fog (one write updates all) and
+  // its GLSL source (three compiles one program for the lot).
+  private imageryOn = true
+  private imLoading = 0
+  private readonly imQueue: string[] = []
+  private imFailStreak = 0
+  private readonly texLoader = new THREE.TextureLoader()
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -111,11 +145,17 @@ export class TileManager {
     /** Provides runways for flattening within a lat/lon bbox. */
     private readonly runwaysInBounds: (latS: number, latN: number, lonW: number, lonE: number) => RunwayFlatten[],
   ) {
+    // 1×1 white placeholder keeps uImagery a valid sampler on the base
+    // (vertex-color) material; uHasImagery=0 ignores the sample.
+    const white = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1)
+    white.needsUpdate = true
     this.material = new THREE.ShaderMaterial({
       uniforms: {
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
         uDayness: { value: 1 },
         uFogDensity: { value: 9e-6 },
+        uImagery: { value: white },
+        uHasImagery: { value: 0 },
       },
       vertexShader: TERRAIN_VERT,
       fragmentShader: TERRAIN_FRAG,
@@ -227,6 +267,7 @@ export class TileManager {
         sizeNorthM: tile.sizeNorthM,
         runways,
         skirtDepthM: ring.skirt,
+        depthBiasM: ring.depthBiasM,
       })
     }
   }
@@ -244,6 +285,7 @@ export class TileManager {
     geo.setAttribute('position', new THREE.BufferAttribute(resp.positions, 3))
     geo.setAttribute('normal', new THREE.BufferAttribute(resp.normals, 3))
     geo.setAttribute('color', new THREE.BufferAttribute(resp.colors, 3))
+    geo.setAttribute('uv', new THREE.BufferAttribute(resp.uvs, 2))
     geo.setIndex(new THREE.BufferAttribute(resp.indices, 1))
     const mesh = new THREE.Mesh(geo, this.material)
     mesh.frustumCulled = true
@@ -255,6 +297,164 @@ export class TileManager {
     tile.state = 'ready'
     this.placeTile(tile)
     this.scene.add(mesh)
+    this.queueImagery(tile)
+  }
+
+  // ---- satellite imagery (13b) ----
+
+  /** Toggle satellite imagery (near rings). OFF reverts every tile to the
+   *  stylized vertex-color ground and frees textures. */
+  setImagery(on: boolean): void {
+    if (on === this.imageryOn) return
+    this.imageryOn = on
+    this.imFailStreak = 0
+    if (on) {
+      for (const t of this.tiles.values()) if (t.state === 'ready') this.queueImagery(t)
+    } else {
+      this.imQueue.length = 0
+      for (const t of this.tiles.values()) {
+        t.imQueued = false
+        if (t.imMat && t.mesh) t.mesh.material = this.material
+        t.imTex?.dispose()
+        t.imMat?.dispose()
+        t.imTex = undefined
+        t.imMat = undefined
+      }
+    }
+  }
+
+  get imageryEnabled(): boolean {
+    return this.imageryOn
+  }
+
+  /** Acceptance/debug snapshot for `__ohTiles` (13b). */
+  debugImagery(probeKey?: string): Record<string, unknown> {
+    let ready = 0
+    let withTex = 0
+    let queued = 0
+    let sample: Record<string, unknown> | null = null
+    const bare: string[] = []
+    if (probeKey) {
+      const t = this.tiles.get(probeKey)
+      if (!t) return { probe: probeKey, state: 'absent' }
+      const uv = t.mesh?.geometry.getAttribute('uv')
+      const uvHead: number[] = []
+      let uMax = -Infinity
+      if (uv) {
+        for (let i = 0; i < Math.min(uv.count, 4); i++) uvHead.push(+uv.getX(i).toFixed(3), +uv.getY(i).toFixed(3))
+        for (let i = 0; i < uv.count; i++) if (uv.getX(i) > uMax) uMax = uv.getX(i)
+      }
+      return {
+        probe: probeKey, state: t.state, hasMesh: !!t.mesh, hasTex: !!t.imTex,
+        queued: !!t.imQueued,
+        material: t.mesh ? (t.mesh.material === t.imMat ? 'imagery' : 'base') : 'none',
+        visible: t.mesh?.visible ?? false,
+        renderOrder: t.mesh?.renderOrder ?? -1,
+        uvCount: uv?.count ?? 0, posCount: t.mesh?.geometry.getAttribute('position')?.count ?? 0,
+        uvHead, uMax,
+      }
+    }
+    for (const t of this.tiles.values()) {
+      if (t.state === 'ready') ready++
+      if (t.imTex) withTex++
+      if (t.imQueued) queued++
+      if (t.z >= 11 && t.state === 'ready' && !t.imTex && bare.length < 24) bare.push(t.key)
+      if (!sample && t.imTex && t.mesh) {
+        const uv = t.mesh.geometry.getAttribute('uv')
+        let uMin = Infinity
+        let uMax = -Infinity
+        let vMin = Infinity
+        let vMax = -Infinity
+        if (uv) {
+          for (let i = 0; i < uv.count; i++) {
+            const u = uv.getX(i)
+            const v = uv.getY(i)
+            if (u < uMin) uMin = u
+            if (u > uMax) uMax = u
+            if (v < vMin) vMin = v
+            if (v > vMax) vMax = v
+          }
+        }
+        const img = t.imTex.image as { width?: number; height?: number } | undefined
+        sample = {
+          key: t.key,
+          material: t.mesh.material === t.imMat ? 'imagery' : 'base',
+          hasUv: !!uv,
+          uvRange: uv ? [uMin, uMax, vMin, vMax] : null,
+          imgPx: img?.width ?? 0,
+          uHasImagery: t.imMat?.uniforms.uHasImagery?.value ?? null,
+        }
+      }
+    }
+    return {
+      on: this.imageryOn, tiles: this.tiles.size, ready, withTex, queued,
+      loading: this.imLoading, failStreak: this.imFailStreak, bare, sample,
+    }
+  }
+
+  private queueImagery(tile: Tile): void {
+    if (!this.imageryOn || tile.z < 11 || tile.imTex || tile.imQueued || !tile.mesh) return
+    tile.imQueued = true
+    this.imQueue.push(tile.key)
+    this.pumpImagery()
+  }
+
+  private pumpImagery(): void {
+    while (this.imLoading < 4 && this.imQueue.length > 0) {
+      const key = this.imQueue.shift()!
+      const tile = this.tiles.get(key)
+      if (!tile || !this.imageryOn || tile.imTex) {
+        if (tile) tile.imQueued = false
+        continue
+      }
+      this.imLoading++
+      this.texLoader.load(
+        `/proxy/imagery/${key}`,
+        (tex) => {
+          this.imLoading--
+          this.imFailStreak = 0
+          const t = this.tiles.get(key)
+          if (!t || !this.imageryOn || t.imTex || !t.mesh) {
+            tex.dispose()
+          } else {
+            tex.wrapS = THREE.ClampToEdgeWrapping
+            tex.wrapT = THREE.ClampToEdgeWrapping
+            tex.anisotropy = 4
+            t.imTex = tex
+            t.imMat = new THREE.ShaderMaterial({
+              uniforms: {
+                // Shared objects — TileManager.setLight/setVisibilityM
+                // writes reach every clone through the base material.
+                uSunDir: this.material.uniforms.uSunDir!,
+                uDayness: this.material.uniforms.uDayness!,
+                uFogDensity: this.material.uniforms.uFogDensity!,
+                uImagery: { value: tex },
+                uHasImagery: { value: 1 },
+              },
+              vertexShader: TERRAIN_VERT,
+              fragmentShader: TERRAIN_FRAG,
+            })
+            t.mesh.material = t.imMat
+          }
+          if (t) t.imQueued = false
+          this.pumpImagery()
+        },
+        undefined,
+        () => {
+          this.imLoading--
+          const t = this.tiles.get(key)
+          if (t) t.imQueued = false
+          // Missing tiles keep their stylized look (never a black world);
+          // a failure streak turns the feature off to stop hammering.
+          this.imFailStreak++
+          if (this.imFailStreak >= 8 && this.imageryOn) {
+            this.imageryOn = false
+            console.warn('[openhorizon] satellite imagery auto-off after repeated failures — stylized terrain fallback (IMAGERY ON to retry)')
+          }
+          this.pumpImagery()
+        },
+      )
+    }
   }
 
   private placeTile(tile: Tile): void {
@@ -285,6 +485,8 @@ export class TileManager {
         this.scene.remove(t.mesh)
         t.mesh.geometry.dispose()
       }
+      t.imTex?.dispose()
+      t.imMat?.dispose()
       this.tiles.delete(t.key)
     }
   }

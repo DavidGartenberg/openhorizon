@@ -79,6 +79,8 @@ const loop = new FixedTimestepLoop(120)
 const frame = new WorldFrame(KHAF)
 const airports = new Airports(scene, frame)
 const tiles = new TileManager(scene, frame, (s, n, w, e) => airports.runwaysInBounds(s, n, w, e))
+// Satellite imagery (13b) defaults ON; `IMAGERY OFF` persists across loads.
+try { if (localStorage.getItem('oh-imagery') === 'OFF') tiles.setImagery(false) } catch { /* private mode */ }
 
 // ---- Phase 4: nav/airspace data loading. `NavaidsIndex`/`airspacesContaining`
 // are pure `/sim` modules (§4.1) that don't fetch themselves — this mirrors
@@ -523,6 +525,13 @@ function handleSearch(query: string): void {
     } else {
       toast(`UNKNOWN — FLY ${Object.keys(FLEET).join('|')} or ${ROSTER.map((r) => r.spec.designator).join('|')}`)
     }
+    return
+  }
+  if (parts[0] === 'IMAGERY' && (parts[1] === 'ON' || parts[1] === 'OFF')) {
+    const on = parts[1] === 'ON'
+    tiles.setImagery(on)
+    try { localStorage.setItem('oh-imagery', parts[1]) } catch { /* private mode */ }
+    toast(`SATELLITE IMAGERY ${parts[1]}${on ? '' : ' — stylized terrain'}`)
     return
   }
   if (parts[0] === 'WEIGHT' && parts[1]) {
@@ -1978,6 +1987,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
     count: aircraftTypeCount(),
     ...(designator ? { info: typeInfo(designator), parsed: parseDesc(typeInfo(designator).desc) } : {}),
   }),
+  __ohTiles: (probeKey?: string) => tiles.debugImagery(probeKey),
+  __ohImagery: (on: boolean) => tiles.setImagery(on),
   __ohFleet: () => ({ key: fleetKey, label: FLEET_ACTIVE.label, jet: !!aircraft.P.jet, n1: aircraft.data.n1Pct, gearPos: aircraft.gearPos, gearCmd: aircraft.gearDownCommanded }),
   __ohGearCmd: (down: boolean) => { if (aircraft.P.gearRetractable) aircraft.gearDownCommanded = down },
   __ohCarbHeat: (on: boolean) => { carbHeatOn = on },

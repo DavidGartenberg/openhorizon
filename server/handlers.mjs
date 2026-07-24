@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { buildUsAirports, buildUsNavaids, buildCifpProcedures, buildUsAirspace, buildUsFrequencies, buildAircraftTypes } from './parse.mjs'
+import { buildUsAirports, buildUsNavaids, buildCifpProcedures, buildUsAirspace, buildUsFrequencies, buildAircraftTypes, isImageBuf } from './parse.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 /** Vendored offline fallbacks committed with the repo (Phase 12a). */
@@ -73,8 +73,13 @@ export async function imageryTile(z, x, y) {
   const f = path.join(cacheDir, `im-${z}-${x}-${y}.jpg`)
   if (fs.existsSync(f)) return fs.readFileSync(f)
   const res = await fetch(`${IMAGERY_BASE}/${z}/${y}/${x}`)
-  if (!res.ok) throw new Error(`imagery ${z}/${x}/${y}: ${res.status}`)
+  if (!res.ok) throw new Error(`imagery ${z}/${x}/${y}: upstream ${res.status}`)
   const buf = Buffer.from(await res.arrayBuffer())
+  // Never cache junk: ArcGIS failures can arrive as 200 text/html. Magic
+  // bytes, not headers, decide what goes in the disk cache.
+  if (!isImageBuf(buf)) {
+    throw new Error(`imagery ${z}/${x}/${y}: non-image upstream (${res.headers.get('content-type')}, ${buf.length} B)`)
+  }
   fs.writeFileSync(f, buf)
   return buf
 }
@@ -426,7 +431,7 @@ export async function route(url, res) {
       if (m) {
         const buf = await imageryTile(m[1], m[2], m[3])
         res.writeHead(200, {
-          'Content-Type': 'image/jpeg',
+          'Content-Type': buf[0] === 0x89 ? 'image/png' : 'image/jpeg',
           'Cache-Control': 'public, max-age=2592000',
           'Access-Control-Allow-Origin': '*',
         })

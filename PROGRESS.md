@@ -29,7 +29,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 10 — Fleet (absorbed) | ✅ → Phase 11 | absorbed by the approved Phases 11–15 mega-plan |
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
-| 13 — Graphics | 🔧 13a+detail done | shadows, FAA runway markings, procedural taxiway/terminal, signage; imagery next |
+| 13 — Graphics | 🔧 13a/13a′/13b done | shadows, airport detail, USGS satellite imagery terrain; night lighting next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -79,6 +79,59 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 13b — satellite imagery terrain (2026-07-23)
+
+USGS National Map `USGSImageryOnly` tiles (public domain) on the near
+terrain rings. Server: `/proxy/imagery/{z}/{x}/{y}` (ArcGIS path order
+tile/z/y/x), disk-cached, **magic-byte validated** — the cache can never
+hold an upstream error page (`isImageBuf` in parse.mjs, unit-tested);
+content-type follows the actual bytes (blank no-coverage tiles are
+transparent PNGs). Worker emits per-vertex UVs (`tileGridUv` in geo.ts,
+unit-tested: v=1 = north; height rows and web-mercator imagery are both
+uniform in tile-pixel space, so the mapping aligns pixel-for-pixel).
+Client: z13/z11 tiles get per-tile ShaderMaterial clones sharing the
+base material's uniform OBJECTS (light/fog writes hit every clone) and
+its GLSL (three compiles ONE program); imagery weight = uHasImagery ×
+texture alpha (no-coverage pixels fall back per-pixel to the stylized
+ground — offshore/cross-border never goes black) × a 38–46 km fade (no
+hard seam at the z11 ring edge); photo albedo gets a flattened normal
+term (real sun shading is baked into the photo). Loader: concurrency 4,
+auto-off after an 8-failure streak (console-warned; `IMAGERY ON`
+retries), textures+materials disposed on tile evict and on `IMAGERY
+OFF`. `IMAGERY ON|OFF` search verb persists in localStorage (default
+ON). `__ohTiles(probe?)`/`__ohImagery(on)` acceptance hooks.
+
+**Two pre-existing depth bugs found by the imagery (as old as the
+rings) and fixed render-side (physics `heights` untouched, proven by
+unchanged ground spawns/AGL):** (1) coarse-ring tiles span up to ~60 km,
+so neighbors whose CENTERS pass the annulus skip still reach under the
+aircraft, and their coarse height sampling crested through z13/z11 —
+with imagery this rendered as organic flat-green invaders (diagnosed
+with a UV-debug shader after per-tile CPU state checked out); fix:
+per-ring render depth bias (z11 −0.5 m, z9 −6 m, z7 −18 m) so finer
+rings win the depth test deterministically. (2) sea-clamped terrain
+(h<0→0) was exactly coplanar with the y=0 ocean plane — view-dependent
+z-fighting over the whole South Bay; fix: sea-clamped verts render at
+−0.15 m (runway-flattened verts exempt). Also faded the ocean's wave
+slope beyond ~1 km (1/(1+d²·2.5e-6)) — the analytic waves aliased into
+glaring moiré bands from altitude; full METAR sea state remains 13e.
+
+**Verified in-browser:** KSJC 30L final = continuous urban photo with
+the street grid reading toward the runway; KSFO 28R final = coherent
+bay (photo shoreline, ocean shader water, NAIP-green marsh flats);
+KHAF ground = photo surroundings, 13a′ pavement carries the detail.
+IMAGERY OFF/ON round-trip through the real search box (textures 134→0→
+134 from disk cache, localStorage persisted). Zero console errors.
+**Perf gate (same live scene, A/B):** OFF p50 10.2 ms/334 calls/53 tex
+→ ON p50 9.8 ms/333 calls/104 tex — imagery cost below run variance,
+zero added draw calls, p95 13.6 < 16.7 ms, calls ≪ 600 (§23 green).
+**Deviations:** US-only coverage (matches sim scope); z13 ≈ 15 m/px is
+the resolution ceiling — soft at eye height (airport pavement/markings
+carry near-field detail; a z14/z15 composite is possible later);
+imagery fades to the stylized ground beyond ~46 km and on z9/z7 rings;
+above-datum tidal flats render their NAIP photo (green marsh), not
+simulated water. Suite 841 + validate 421 green (tsc clean).
 
 ## Phase 13a — sun shadows + perf gate (2026-07-22)
 

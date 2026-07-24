@@ -4,7 +4,7 @@
  * tile-local frame (x east, y up, z south; origin at tile NW corner's SW...
  * origin = tile center, y = height meters). Transfers buffers to main.
  */
-import { terrariumDecode, flattenForRunway } from '../math/geo'
+import { terrariumDecode, flattenForRunway, tileGridUv } from '../math/geo'
 import { classifyNlcdPixel } from './nlcd-palette'
 
 export interface TileRequest {
@@ -19,6 +19,8 @@ export interface TileRequest {
   /** Runways intersecting this tile, in tile-local meters (x east, y north). */
   runways: Array<{ ax: number; ay: number; bx: number; by: number; ha: number; hb: number; halfW: number }>
   skirtDepthM: number
+  /** Render-only ring depth bias (coarse rings sit low; see tiles.ts). */
+  depthBiasM: number
 }
 
 export interface TileResponse {
@@ -26,6 +28,7 @@ export interface TileResponse {
   positions: Float32Array
   normals: Float32Array
   colors: Float32Array
+  uvs: Float32Array // imagery-tile UVs (13b); orientation in tileGridUv
   indices: Uint32Array
   heights: Float32Array // gridSize² for elevation queries
   gridSize: number
@@ -90,13 +93,15 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
 
     const G = req.gridSize
     const heights = new Float32Array(G * G)
+    const sea = new Uint8Array(G * G)
     for (let j = 0; j < G; j++) {
       for (let i = 0; i < G; i++) {
         const sx = Math.min(Math.round((i / (G - 1)) * (px - 1)), px - 1)
         const sy = Math.min(Math.round((j / (G - 1)) * (px - 1)), px - 1)
         const o = (sy * px + sx) * 4
         let h = terrariumDecode(img.data[o]!, img.data[o + 1]!, img.data[o + 2]!)
-        if (h < 0) h = 0 // ocean plane is the sea
+        const belowDatum = h < 0
+        if (belowDatum) h = 0 // ocean plane is the sea
         // Local coords: x east from -sizeE/2, y north from +sizeN/2 (row j=0 = north)
         const lx = (i / (G - 1) - 0.5) * req.sizeEastM
         const ly = (0.5 - j / (G - 1)) * req.sizeNorthM
@@ -104,6 +109,10 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
           h = flattenForRunway(h, lx, ly, rw.ax, rw.ay, rw.bx, rw.by, rw.ha, rw.hb, rw.halfW)
         }
         heights[j * G + i] = h
+        // Sea-clamped verts render slightly below the y=0 ocean plane so
+        // the water wins the coplanar depth fight deterministically
+        // (physics heights keep 0; runway-flattened verts are exempt).
+        sea[j * G + i] = belowDatum && h === 0 ? 1 : 0
       }
     }
 
@@ -121,6 +130,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
     const positions = new Float32Array(total * 3)
     const normals = new Float32Array(total * 3)
     const colors = new Float32Array(total * 3)
+    const uvs = new Float32Array(total * 2)
     const dxe = req.sizeEastM / (G - 1)
     const dyn = req.sizeNorthM / (G - 1)
     const c: [number, number, number] = [0, 0, 0]
@@ -131,7 +141,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
         const x = (i / (G - 1) - 0.5) * req.sizeEastM
         const zSouth = (j / (G - 1) - 0.5) * req.sizeNorthM // j=0 north → z=-size/2
         positions[idx * 3] = x
-        positions[idx * 3 + 1] = h
+        positions[idx * 3 + 1] = (sea[idx] ? -0.15 : h) - req.depthBiasM
         positions[idx * 3 + 2] = zSouth
         // Normal from central differences.
         const hL = heights[j * G + Math.max(i - 1, 0)]!
@@ -159,6 +169,9 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
         colors[idx * 3] = c[0]
         colors[idx * 3 + 1] = c[1]
         colors[idx * 3 + 2] = c[2]
+        const [u, v] = tileGridUv(i, j, G)
+        uvs[idx * 2] = u
+        uvs[idx * 2 + 1] = v
       }
     }
     // Skirts: duplicate edge verts, dropped down.
@@ -175,6 +188,8 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
       colors[sv * 3] = colors[src * 3]!
       colors[sv * 3 + 1] = colors[src * 3 + 1]!
       colors[sv * 3 + 2] = colors[src * 3 + 2]!
+      uvs[sv * 2] = uvs[src * 2]!
+      uvs[sv * 2 + 1] = uvs[src * 2 + 1]!
       skirtIdx.push(sv)
       return sv++
     }
@@ -214,6 +229,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
       positions,
       normals,
       colors,
+      uvs,
       indices,
       heights,
       gridSize: G,
@@ -222,6 +238,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
       positions.buffer,
       normals.buffer,
       colors.buffer,
+      uvs.buffer,
       indices.buffer,
       heights.buffer,
     ])

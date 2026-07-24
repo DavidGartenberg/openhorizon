@@ -5,6 +5,14 @@
  *           s: 0 hard | 1 soft, lt: 0|1 lighted }
  */
 
+/** True when the buffer starts with JPEG or PNG magic bytes (13b: the
+ *  imagery disk cache must never hold an upstream error page). */
+export function isImageBuf(buf) {
+  const jpeg = buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff
+  const png = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47
+  return jpeg || png
+}
+
 /** Minimal CSV line splitter with quoted-field support. */
 export function splitCsvLine(line) {
   const out = []

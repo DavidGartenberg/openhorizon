@@ -41,6 +41,12 @@ export class Ocean {
 
         void main() {
           vec2 slope = waveSlope(vWorldPos.xz, uTime);
+          // Fade wave slope out with distance: per-pixel phase of ~10-60 m
+          // waves aliases into moiré bands beyond ~2 km (glaring from
+          // altitude). Full METAR sea state is 13e; this only detunes far
+          // detail the eye couldn't resolve anyway.
+          float wDist = length(cameraPosition - vWorldPos);
+          slope *= 1.0 / (1.0 + wDist * wDist * 2.5e-6);
           vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
           vec3 viewDir = normalize(cameraPosition - vWorldPos);
 

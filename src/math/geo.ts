@@ -55,6 +55,15 @@ export function tileSizeMeters(lat: number, z: number): number {
   return (Math.cos((lat * Math.PI) / 180) * 2 * Math.PI * WGS84_A) / 2 ** z
 }
 
+/** Terrain-grid vertex → imagery-tile UV (13b). Grid row j=0 is the tile's
+ *  north edge; textures load with three's default flipY, so v=1 = image
+ *  top = north. Height rows are sampled uniformly in tile-pixel
+ *  (mercator-y) space and web-map imagery is mercator too, so the linear
+ *  map aligns imagery with the heightfield pixel-for-pixel. */
+export function tileGridUv(i: number, j: number, gridSize: number): [number, number] {
+  return [i / (gridSize - 1), 1 - j / (gridSize - 1)]
+}
+
 /** Terrarium RGB → elevation meters. */
 export function terrariumDecode(r: number, g: number, b: number): number {
   return r * 256 + g + b / 256 - 32768
