@@ -23,7 +23,7 @@
  * Localizer/glideslope *geometry* itself (threshold, course, elevation)
  * comes from real loaded runway data, not this table.
  */
-import { bearingDeg, type LatLon } from '../../math/geo'
+import { bearingDeg, distanceM, type LatLon } from '../../math/geo'
 import {
   NavaidType,
   vorCdi,
@@ -85,21 +85,36 @@ export interface RunwayThresholdRef {
   oppositeLon: number
 }
 
+/** Real GS antennas sit ~750-1,250 ft down the runway; 300 m anchors the
+ *  standard 3° beam through ~52 ft over the threshold and puts the aiming
+ *  point where the PAPI (13d, also 300 m in) reads 3.0° — the two systems
+ *  agree by construction, as they do in the real world. */
+const GS_ANTENNA_SETBACK_M = 300
+
 /** Build an `IlsRef` from real runway threshold/heading data. The
- *  glideslope antenna position is approximated at the threshold (matches
- *  `IlsRef.gsAntenna`'s own documented simplification in `navaids.ts`) and
- *  the glidepath angle defaults to the standard 3.0°. */
+ *  glideslope antenna sits `GS_ANTENNA_SETBACK_M` down the runway from
+ *  the threshold (13d fix — anchored AT the threshold it crossed at 0 ft
+ *  TCH and read ~0.2° below the correctly-sited PAPI) and the glidepath
+ *  angle defaults to the standard 3.0°. */
 export function ilsRefFromRunwayThreshold(t: RunwayThresholdRef, gsAngleDeg?: number): IlsRef {
   // Front course = the direction FLOWN: from the approach threshold toward
   // the far end. (Was inverted — bearing(opposite→threshold) — producing a
   // reciprocal course datum; caught by the Phase-5 opening browser
   // verification, which is the only path that exercises this builder.)
   const courseDeg = bearingDeg({ lat: t.thresholdLat, lon: t.thresholdLon }, { lat: t.oppositeLat, lon: t.oppositeLon })
+  const lenM = distanceM(
+    { lat: t.thresholdLat, lon: t.thresholdLon },
+    { lat: t.oppositeLat, lon: t.oppositeLon },
+  )
+  const f = Math.min(GS_ANTENNA_SETBACK_M / Math.max(lenM, 1), 0.45)
   return {
     threshold: { lat: t.thresholdLat, lon: t.thresholdLon },
     courseDeg,
     thresholdElevFt: t.thresholdElevFt,
-    gsAntenna: { lat: t.thresholdLat, lon: t.thresholdLon },
+    gsAntenna: {
+      lat: t.thresholdLat + (t.oppositeLat - t.thresholdLat) * f,
+      lon: t.thresholdLon + (t.oppositeLon - t.thresholdLon) * f,
+    },
     gsAntennaElevFt: t.thresholdElevFt,
     ...(gsAngleDeg !== undefined ? { gsAngleDeg } : {}),
   }

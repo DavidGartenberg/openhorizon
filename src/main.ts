@@ -1803,6 +1803,8 @@ function advanceFrame(elapsed: number, now: number): void {
   // 13c night lights: airport layer + aircraft exterior lights.
   const night = Math.min(Math.max(1 - dayness * 1.6, 0), 1)
   airports.updateNight(loop.simTime, night)
+  // 13d PAPI: colored from the camera's real elevation angle each frame.
+  airports.updatePapi(camera.position.x, camera.position.y, camera.position.z)
   const lightsPowered = aircraft.P.electrical !== false && electricalState.busVoltage > 18
   aircraftLights.update(
     loop.simTime, lightsPowered, aircraft.data.aglFt * FT, mesh.group,
@@ -2014,6 +2016,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   }),
   __ohTiles: (probeKey?: string) => tiles.debugImagery(probeKey),
   __ohImagery: (on: boolean) => tiles.setImagery(on),
+  __ohPapi: () => airports.nearestPapi(mesh.group.position.x, mesh.group.position.y, mesh.group.position.z),
   __ohFleet: () => ({ key: fleetKey, label: FLEET_ACTIVE.label, jet: !!aircraft.P.jet, n1: aircraft.data.n1Pct, gearPos: aircraft.gearPos, gearCmd: aircraft.gearDownCommanded }),
   __ohGearCmd: (down: boolean) => { if (aircraft.P.gearRetractable) aircraft.gearDownCommanded = down },
   __ohCarbHeat: (on: boolean) => { carbHeatOn = on },

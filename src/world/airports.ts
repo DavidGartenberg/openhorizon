@@ -5,6 +5,7 @@ import type { WorldFrame, RunwayFlatten } from './tiles'
 import { buildRunwayMarkings, buildDistanceSigns, buildTaxiwayComplex, type RunwayLocal } from './airport-detail'
 import { airportBeacon } from '../sim/lights'
 import { lightGlowTexture } from '../render/light-glow'
+import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
 
 export interface RunwayData {
   li: string
@@ -37,6 +38,11 @@ const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8d8d0 })
 const EDGE_LIGHT = new THREE.MeshBasicMaterial({ color: 0xffffff })
 const SOCK_ORANGE = new THREE.MeshStandardMaterial({ color: 0xe8641b, roughness: 0.8 })
 const MAST = new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 0.9 })
+/** 13d PAPI boxes: constant-pixel additive glow points, on day and night. */
+const PAPI_MAT = new THREE.PointsMaterial({
+  map: lightGlowTexture(), size: 5, sizeAttenuation: false, vertexColors: true,
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+})
 
 /** 13c: one additive Points cloud per airport (edge white, threshold
  *  green / end red, floodlit windsock) faded in by night, plus the
@@ -44,6 +50,23 @@ const MAST = new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 0.9 })
 interface NightLights {
   pts: THREE.Points | null
   beacon: THREE.Points | null
+}
+
+/** 13d: one 4-box PAPI array per qualifying runway end. Colors are
+ *  recomputed each frame from the CAMERA's elevation angle to the
+ *  array (what the lens sees is what a pilot's eye would see). */
+interface PapiArray {
+  colors: THREE.BufferAttribute
+  /** Array center in airport-group-local coords. */
+  baseX: number
+  baseY: number
+  baseZ: number
+  /** Unit vector (x,z) pointing from the array out along the approach. */
+  outX: number
+  outZ: number
+  /** Per-box setting angle, box order matching the vertex order. */
+  boxAngles: number[]
+  rwyIdent: string
 }
 
 export class Airports {
@@ -156,6 +179,7 @@ export class Airports {
       nCol.push(r, g, b)
     }
     let anyLighted = false
+    const papis: PapiArray[] = []
     for (const r of ap.r) {
       const lenM = r.l * FT
       const widM = Math.max(r.w * FT, 8)
@@ -241,6 +265,42 @@ export class Airports {
           }
         }
         group.add(lights)
+        // PAPI (13d): 4-box array on the left of each approach, 300 m in
+        // from the threshold. Placement heuristic: lighted paved ≥4,000 ft
+        // (no lighting-inventory field in the free data — recorded).
+        if (r.s === 0 && r.l >= 4000) {
+          const along = { x: Math.sin(hdg), z: -Math.cos(hdg) }
+          for (const end of [-1, 1] as const) {
+            const t = end === -1 ? -0.5 + 300 / lenM : 0.5 - 300 / lenM
+            const y = elevAt(t) + 0.6
+            const pos = new Float32Array(12)
+            const boxAngles: number[] = []
+            for (let i = 0; i < 4; i++) {
+              // Innermost box carries the steepest angle: on-slope shows
+              // the white pair outboard, red pair inboard (AIM 2-1-2).
+              const w = end * (widM / 2 + 15 + i * 9)
+              pos[i * 3] = cx + Math.sin(hdg) * t * lenM + Math.cos(hdg) * w
+              pos[i * 3 + 1] = y
+              pos[i * 3 + 2] = -(cy + Math.cos(hdg) * t * lenM) + Math.sin(hdg) * w
+              boxAngles.push(PAPI_ANGLES_DEG[3 - i]!)
+            }
+            const geo = new THREE.BufferGeometry()
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+            const colors = new THREE.BufferAttribute(new Float32Array(12), 3)
+            geo.setAttribute('color', colors)
+            const pts = new THREE.Points(geo, PAPI_MAT)
+            pts.frustumCulled = false // four points, colored per frame
+            pts.renderOrder = 30
+            group.add(pts)
+            papis.push({
+              colors,
+              baseX: (pos[0]! + pos[9]!) / 2, baseY: y, baseZ: (pos[2]! + pos[11]!) / 2,
+              outX: -end * along.x, outZ: -end * along.z,
+              boxAngles,
+              rwyIdent: end === -1 ? r.li : r.hi,
+            })
+          }
+        }
         // Threshold bars (13c): green row facing the arrival just outside
         // each end, red end row just inside — approximating bidirectional
         // threshold/end lenses with two colocated rows (recorded).
@@ -304,8 +364,55 @@ export class Airports {
       group.add(night.beacon)
     }
     group.userData.night = night
+    group.userData.papis = papis
     this.scene.add(group)
     return group
+  }
+
+  /** Per-frame 13d: color every PAPI box from the camera's elevation
+   *  angle to its array — white above the box angle, red below; dark
+   *  outside the ±35° approach-azimuth window (real units are baffled). */
+  updatePapi(camX: number, camY: number, camZ: number): void {
+    for (const group of this.rendered.values()) {
+      const papis = group.userData.papis as PapiArray[] | undefined
+      if (!papis) continue
+      for (const p of papis) {
+        const dx = camX - (group.position.x + p.baseX)
+        const dy = camY - (group.position.y + p.baseY)
+        const dz = camZ - (group.position.z + p.baseZ)
+        const horiz = Math.hypot(dx, dz)
+        const inBeam = horiz > 1 && (dx / horiz) * p.outX + (dz / horiz) * p.outZ > 0.819
+        const angle = papiAngleDeg(horiz, dy)
+        for (let i = 0; i < 4; i++) {
+          if (!inBeam) p.colors.setXYZ(i, 0, 0, 0)
+          else if (angle > p.boxAngles[i]!) p.colors.setXYZ(i, 1, 1, 0.95)
+          else p.colors.setXYZ(i, 1, 0.1, 0.08)
+        }
+        p.colors.needsUpdate = true
+      }
+    }
+  }
+
+  /** Nearest PAPI to a world position (13d acceptance hook): the
+   *  navigation-truth readout from the AIRCRAFT, independent of the
+   *  camera-facing render colors. */
+  nearestPapi(x: number, y: number, z: number): { icao: string; rwy: string; angleDeg: number; whites: number; distM: number } | null {
+    let best: { icao: string; rwy: string; angleDeg: number; whites: number; distM: number } | null = null
+    for (const [icao, group] of this.rendered) {
+      const papis = group.userData.papis as PapiArray[] | undefined
+      if (!papis) continue
+      for (const p of papis) {
+        const dx = x - (group.position.x + p.baseX)
+        const dy = y - (group.position.y + p.baseY)
+        const dz = z - (group.position.z + p.baseZ)
+        const horiz = Math.hypot(dx, dz)
+        const dist = Math.hypot(horiz, dy)
+        if (best && dist >= best.distM) continue
+        const angle = papiAngleDeg(horiz, dy)
+        best = { icao, rwy: p.rwyIdent, angleDeg: +angle.toFixed(3), whites: papiWhiteCount(angle), distM: Math.round(dist) }
+      }
+    }
+    return best
   }
 
   /** Per-frame 13c: fade the steady lights with darkness, flash the

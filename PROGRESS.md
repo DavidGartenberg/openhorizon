@@ -29,7 +29,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 10 — Fleet (absorbed) | ✅ → Phase 11 | absorbed by the approved Phases 11–15 mega-plan |
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
-| 13 — Graphics | 🔧 13a/13a′/13b/13c done | shadows, airport detail, satellite imagery, night lighting; PAPI next |
+| 13 — Graphics | 🔧 13a–13d done | shadows, airport detail, satellite imagery, night lighting, PAPI (+GS TCH fix); clouds/ocean next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -79,6 +79,44 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 13d — PAPI + the glideslope fix it exposed (2026-07-24)
+
+Pure `src/world/papi.ts`: standard 4-box angles 2.5/2.83/3.17/3.5°,
+white-above / red-below per unit — 6 exact-transition tests (on-slope
+2W2R, boundaries flip precisely at each unit angle). Render: one 4-box
+Points array per lighted paved runway end ≥4,000 ft (placement
+heuristic — no lighting-inventory field in the free data; recorded),
+300 m in from the threshold on the approach's left, innermost box
+steepest (white pair outboard on slope, AIM 2-1-2); colors recomputed
+each frame from the CAMERA's elevation angle (dark outside a ±35°
+approach-azimuth window — real boxes are baffled). `__ohPapi()` reads
+the nearest array from the AIRCRAFT position — navigation truth,
+independent of camera optics.
+
+**The acceptance test caught a real nav bug.** Flying the coupled KSFO
+28R ILS, the needle centered while the PAPI insisted 1W (2.78°): the
+sim's glideslope beam was anchored AT the threshold at field elevation
+— 0 ft TCH — reading ~0.2° below a correctly-sited PAPI (predicted
+2.78° from that geometry; measured 2.778°). Fixed in
+`ilsRefFromRunwayThreshold`: GS antenna now sits 300 m down the runway
+→ the 3° beam crosses the threshold at ~52 ft (standard 50-55 band)
+and meets the PAPI's aiming point — the two systems agree by
+construction, as in the real world. Unit-tested (setback distance,
+TCH, an explicit PAPI-agreement row); AP/GS-descent suites unaffected
+(they fly the beam wherever it sits).
+
+**Verified in-browser:** coupled approach 5.1→3.5 km — five paired
+samples with the needle inside ±0.16 and `__ohPapi` whites=2 at
+2.885–3.079° the whole way; low-side pairings twice (needle −0.71/−1.0
+fly-up ↔ 0W at 2.498°/below); ground still frame at the 28R threshold
+shows the red array at the correct left-side station (0.23° → 4R).
+Chase-cam screenshots can't show the pilot's exact 2W2R honestly (the
+lens rides ~10 m above the eye → reads high) — the aircraft-position
+hook is the acceptance instrument; cockpit-cam framing was too cramped
+in this session's small pane (revisit in 15d). Perf: p50 5.8 ms / 294
+calls at KSFO (+29 for the arrays, §23 green). Suite 858 + validate
+421, tsc clean.
 
 ## Phase 13c — night lighting (2026-07-24)
 

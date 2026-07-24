@@ -10,6 +10,7 @@ import {
   findKnownIls,
   KNOWN_ILS_FREQUENCIES,
 } from '../../src/sim/nav/tuning'
+import { papiAngleDeg, papiWhiteCount } from '../../src/world/papi'
 
 const SFO_VOR: NavaidData = { i: 'SFO', n: 'San Francisco', t: NavaidType.VOR_DME, la: 37.6195, lo: -122.374, e: 13, f: 115800 }
 const OAK_NDB: NavaidData = { i: 'OAK', n: 'Oakland', t: NavaidType.NDB, la: 37.7, lo: -122.2, e: 10, f: 373 }
@@ -67,10 +68,36 @@ describe('ilsRefFromRunwayThreshold + localizerFraction/glideslopeFraction', () 
     const metersPerDegLat = 111_319.5
     const onCenterline: LatLon = { lat: 37.58, lon: -122.0 }
     expect(localizerFraction(ils, onCenterline).deflectionFraction).toBeCloseTo(0, 5)
+    // On-beam altitude references the GS ANTENNA 300 m down the runway
+    // (13d fix — the old threshold-anchored beam crossed the threshold at
+    // 0 ft TCH and sat ~0.2° below the PAPI).
     const point3nm: LatLon = { lat: t.thresholdLat - (3 * 1852) / metersPerDegLat, lon: -122.0 }
-    const distFt = (3 * 1852) / 0.3048
+    const distFt = (3 * 1852) / 0.3048 + 300 / 0.3048
     const altFt = t.thresholdElevFt + distFt * Math.tan((3 * Math.PI) / 180)
     expect(glideslopeFraction(ils, point3nm, altFt)).toBeCloseTo(0, 1)
+  })
+
+  it('sites the GS antenna ~300 m past the threshold → ~52 ft TCH (13d)', () => {
+    const ils = ilsRefFromRunwayThreshold(t)
+    const setbackM = 111_319.5 * (ils.gsAntenna.lat - t.thresholdLat)
+    expect(setbackM).toBeGreaterThan(295)
+    expect(setbackM).toBeLessThan(305)
+    // The 3° beam anchored there crosses the threshold at ~51.6 ft.
+    const tchFt = t.thresholdElevFt + (setbackM / 0.3048) * Math.tan((3 * Math.PI) / 180)
+    expect(glideslopeFraction(ils, { lat: t.thresholdLat, lon: t.thresholdLon }, tchFt)).toBeCloseTo(0, 1)
+  })
+
+  it('agrees with the PAPI: on the beam, the array 300 m in reads 3.0° = 2W2R', () => {
+    const ils = ilsRefFromRunwayThreshold(t)
+    const metersPerDegLat = 111_319.5
+    const distThrM = 3 * 1852
+    const point: LatLon = { lat: t.thresholdLat - distThrM / metersPerDegLat, lon: -122.0 }
+    const altFt = t.thresholdElevFt + ((distThrM + 300) / 0.3048) * Math.tan((3 * Math.PI) / 180)
+    expect(glideslopeFraction(ils, point, altFt)).toBeCloseTo(0, 2)
+    // PAPI array also sits 300 m in at threshold elevation.
+    const angle = papiAngleDeg(distThrM + 300, ((altFt - t.thresholdElevFt) * 0.3048))
+    expect(angle).toBeCloseTo(3.0, 2)
+    expect(papiWhiteCount(angle)).toBe(2)
   })
 })
 
