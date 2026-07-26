@@ -30,7 +30,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
 | 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
-| 14 — Visual traffic | 🔧 14a-14c done | endpoint, live store, TCAS multi-track fixes; rendering + labels next |
+| 14 — Visual traffic | 🔧 14a-14d done | live ADS-B rendered with archetypes + datablocks; richer sim AI next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -80,6 +80,34 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 14d — live-traffic rendering + labels (2026-07-24)
+
+`render/traffic-layer.ts`: every airborne (or typed ground) store
+target gets a 12b archetype silhouette — geometry cached per ICAO
+designator, shared material (1 call) — plus a 6-point 13c light
+cluster (1 call) with a per-target phase so strobes don't blink in
+unison. Attitude is COSMETIC and recorded: heading from track, pitch
+from vs/gs (±12°), coordinated-turn roll from the smoothed track rate
+(±25°) — pure `cosmeticAttitude` helper, 4 tests. Callsign/altitude
+datablocks draw on ONE projected 2D canvas (zero GL calls), gated to
+20 km. Ground targets pin to the terrain; unknown-type ground rows
+(ops vehicles) are skipped rather than drawn as fake airplanes;
+silhouettes beyond 25 km skip their draw calls (sub-pixel — the
+store/TCAS still track them).
+
+**Acceptance at KSFO:** real airliners on screen with live callsigns —
+JBU316/UAL488/EJA273 holding on the ground, UAL114 descending through
+1,300 ft with DAL1421 in trail, sequencing onto the parallels; a PROX
+arrival crossed 3,381 m out at −64 ft on short final. Layer cost
+measured by LIVE TRAFFIC OFF/ON A/B: +62 calls for 31 rendered
+targets (budget ≤80 ✓), p95 5.3 ms with the pane visible. **§23
+flag:** the TOTAL at the heaviest live moment hit 609–621 vs the
+600-call cap — the base KSFO scene (airport detail + night layers +
+PAPI + clouds) is the growth, not this layer; 15e's degrade ladder
+owns the reconciliation (candidates: merge per-airport night Points,
+label declutter, instanced traffic bodies). Suite 882 + validate 421,
+tsc clean.
 
 ## Phase 14c — TCAS multi-track integrity + live targets (2026-07-24)
 

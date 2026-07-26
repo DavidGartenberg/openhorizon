@@ -37,6 +37,7 @@ import { archetypeFor } from './world/fleet-map'
 import { buildArchetype, buildArchetypeShip } from './render/fleet-mesh'
 import { ShadowCatcher } from './render/shadow-catcher'
 import { AircraftLights } from './render/aircraft-lights'
+import { TrafficLayer } from './render/traffic-layer'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
 import type { ArchetypeSpec } from './world/fleet-map'
 import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
@@ -185,6 +186,8 @@ scene.add(mesh.group)
 // 13c: exterior lights (nav/beacon/strobe glow points + landing spot).
 const aircraftLights = new AircraftLights(scene)
 aircraftLights.attach(mesh.group)
+// 14d: live-traffic silhouettes + labels.
+const trafficLayer = new TrafficLayer(scene)
 const cockpit = buildCockpit(mesh.group)
 const cockpitInteraction = new CockpitInteraction(camera)
 
@@ -1672,6 +1675,14 @@ function advanceFrame(elapsed: number, now: number): void {
   airports.positionAll()
   updateLiveWeather(ll.lat, ll.lon, now)
   updateLiveTraffic(ll.lat, ll.lon, now)
+  trafficLayer.update(
+    liveTraffic.targets.values(),
+    (la, lo) => frame.toLocal(la, lo),
+    (la, lo) => tiles.elevationAt(la, lo),
+    camera,
+    now / 1000,
+    Math.min((now - lastFrame) / 1000 || 1 / 60, 0.5),
+  )
   updateRadar(ll.lat, ll.lon, now)
   scanAtc(ll.lat, ll.lon, now)
   updateSafety(now)
