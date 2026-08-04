@@ -1,16 +1,20 @@
 /**
- * OpenHorizon companion server (§3): CORS proxy + disk cache for terrain
- * tiles, weather, and nav data. Phase 0 ships the skeleton only — routes are
- * honestly INOP until Phase 2 needs them.
+ * OpenHorizon companion server (§3, real since 15b): mounts the SAME
+ * route() the Vite dev middleware uses — terrain/landcover/imagery/
+ * NEXRAD proxies, airports/navaids/airspace/procedures/frequencies/
+ * aircraft-types/METAR/traffic APIs — and serves the built client from
+ * ../dist when present, so `npm run build && node server/index.mjs` is
+ * a self-contained sim host. The Phase-0 stub answered 501 to
+ * everything; the duplicate frequencies branch died in 12a.
  */
 import express from 'express'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { route } from './handlers.mjs'
 
 const PORT = process.env.PORT ?? 8787
-const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
-fs.mkdirSync(cacheDir, { recursive: true })
+const distDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist')
 
 const app = express()
 
@@ -20,15 +24,27 @@ app.use((_req, res, next) => {
 })
 
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'openhorizon-server', phase: 0 })
+  res.json({ ok: true, service: 'openhorizon-server', dist: fs.existsSync(distDir) })
 })
 
-app.get('/proxy/*', (_req, res) => {
-  res.status(501).json({
-    error: 'INOP — proxy routes arrive with Phase 2 (terrain tile streaming)',
-  })
+// Data endpoints — identical behavior to the dev middleware.
+app.use((req, res, next) => {
+  route(req.url ?? '', res)
+    .then((handled) => {
+      if (!handled) next()
+    })
+    .catch(next)
 })
+
+// Built client (when `npm run build` has run) + SPA fallback.
+if (fs.existsSync(distDir)) {
+  app.use(express.static(distDir))
+  app.use((req, res, next) => {
+    if (req.method !== 'GET' || req.path.includes('.')) return next()
+    res.sendFile(path.join(distDir, 'index.html'))
+  })
+}
 
 app.listen(PORT, () => {
-  console.log(`[openhorizon-server] listening on http://localhost:${PORT}`)
+  console.log(`[openhorizon-server] listening on http://localhost:${PORT}${fs.existsSync(distDir) ? ' (serving dist/)' : ' (API only — run npm run build for the client)'}`)
 })
