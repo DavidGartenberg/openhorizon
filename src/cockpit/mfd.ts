@@ -304,7 +304,7 @@ export function mfdSoftkeyRegions(width: number, height: number): SoftkeyRegion[
 // Input shape
 // ============================================================================
 
-export type MfdPage = 'map' | 'lean' | 'fpl'
+export type MfdPage = 'map' | 'lean' | 'fpl' | 'wb'
 
 export interface MfdInput {
   page: MfdPage
@@ -330,6 +330,10 @@ export interface MfdInput {
 
   // Map page (only read when page === 'map')
   map?: MfdMapInput
+
+  /** W&B page (15c — only read when page === 'wb'). Null on non-C172
+   *  aircraft: the arms are C172S POH data, shown honestly as such. */
+  wb?: { grossLb: number; cgIn: number; within: boolean; fwdLimitIn: (g: number) => number; aftLimitIn: number; maxGrossLb: number } | null
 }
 
 // ============================================================================
@@ -852,9 +856,62 @@ export function drawMfd(ctx: CanvasRenderingContext2D, width: number, height: nu
     drawMapPage(ctx, pageX, 0, pageW, bodyH, data.map)
   } else if (data.page === 'lean') {
     drawLeanPage(ctx, pageX, 0, pageW, bodyH, data)
+  } else if (data.page === 'wb') {
+    drawWbPage(ctx, pageX, 0, pageW, bodyH, data.wb ?? null)
   } else {
     drawFplPage(ctx, pageX, 0, pageW, bodyH)
   }
 
   drawSoftkeys(ctx, width, height)
+}
+
+/** W&B page (15c): the POH normal-category envelope with the loaded
+ *  point — closes the 9b deferral. C172S-only (arms are POH data). */
+function drawWbPage(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, w: number, h: number,
+  wb: NonNullable<MfdInput['wb']> | null,
+): void {
+  ctx.fillStyle = '#0a0e12'
+  ctx.fillRect(x, y, w, h)
+  ctx.fillStyle = '#cfd8e3'
+  ctx.font = `${Math.round(h * 0.045)}px ui-monospace, monospace`
+  ctx.textAlign = 'left'
+  ctx.fillText('WEIGHT & BALANCE — C172S NORMAL CATEGORY', x + w * 0.05, y + h * 0.08)
+  if (!wb) {
+    ctx.fillStyle = '#8a93a0'
+    ctx.fillText('AVAILABLE FOR THE C172S ONLY (POH station data)', x + w * 0.05, y + h * 0.2)
+    return
+  }
+  // Plot area: CG 33–49 in (x), weight 1,400–2,700 lb (y, up = heavier).
+  const px0 = x + w * 0.12
+  const px1 = x + w * 0.92
+  const py0 = y + h * 0.88
+  const py1 = y + h * 0.16
+  const cgToX = (cg: number) => px0 + ((cg - 33) / (49 - 33)) * (px1 - px0)
+  const wtToY = (lb: number) => py0 + ((lb - 1400) / (2700 - 1400)) * (py1 - py0)
+  ctx.strokeStyle = '#3a434e'
+  ctx.strokeRect(px0, py1, px1 - px0, py0 - py1)
+  // Envelope polygon: fwd limit tapers 35.0@≤2350 → fwdLimit(2550)@2550.
+  ctx.strokeStyle = '#39c26d'
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.moveTo(cgToX(35.0), wtToY(1400))
+  ctx.lineTo(cgToX(35.0), wtToY(2350))
+  ctx.lineTo(cgToX(wb.fwdLimitIn(wb.maxGrossLb)), wtToY(wb.maxGrossLb))
+  ctx.lineTo(cgToX(wb.aftLimitIn), wtToY(wb.maxGrossLb))
+  ctx.lineTo(cgToX(wb.aftLimitIn), wtToY(1400))
+  ctx.closePath()
+  ctx.stroke()
+  // Loaded point.
+  ctx.fillStyle = wb.within ? '#e8f0f8' : '#ff5a4e'
+  ctx.beginPath()
+  ctx.arc(cgToX(wb.cgIn), wtToY(wb.grossLb), 6, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.font = `${Math.round(h * 0.04)}px ui-monospace, monospace`
+  ctx.fillStyle = wb.within ? '#cfd8e3' : '#ff5a4e'
+  ctx.fillText(
+    `GROSS ${Math.round(wb.grossLb)} LB   CG ${wb.cgIn.toFixed(1)} IN   ${wb.within ? 'WITHIN ENVELOPE' : 'OUTSIDE ENVELOPE'}`,
+    x + w * 0.05, y + h * 0.96,
+  )
 }

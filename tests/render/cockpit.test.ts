@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cycleFuelSelector, cycleMagneto, dragToAxisValue, nearestFlapDetent, tuneFrequency } from '../../src/render/cockpit'
+import { cycleFuelSelector, stepMagneto, dragToAxisValue, nearestFlapDetent, tuneFrequency } from '../../src/render/cockpit'
 
 describe('cycleFuelSelector (floor fuel selector click-cycle)', () => {
   it('cycles OFF -> L -> BOTH -> R -> OFF', () => {
@@ -10,12 +10,18 @@ describe('cycleFuelSelector (floor fuel selector click-cycle)', () => {
   })
 })
 
-describe('cycleMagneto (ignition key click-cycle)', () => {
-  it('cycles off -> right -> left -> both -> off', () => {
-    expect(cycleMagneto('off')).toBe('right')
-    expect(cycleMagneto('right')).toBe('left')
-    expect(cycleMagneto('left')).toBe('both')
-    expect(cycleMagneto('both')).toBe('off')
+describe('stepMagneto (15c: adjacent-detent walk, no wrap)', () => {
+  it('walks up off -> right -> left -> both and clamps at both', () => {
+    expect(stepMagneto('off', 1)).toBe('right')
+    expect(stepMagneto('right', 1)).toBe('left')
+    expect(stepMagneto('left', 1)).toBe('both')
+    expect(stepMagneto('both', 1)).toBe('both') // end stop — no one-click kill
+  })
+  it('walks back down and clamps at off', () => {
+    expect(stepMagneto('both', -1)).toBe('left')
+    expect(stepMagneto('left', -1)).toBe('right')
+    expect(stepMagneto('right', -1)).toBe('off')
+    expect(stepMagneto('off', -1)).toBe('off')
   })
 })
 

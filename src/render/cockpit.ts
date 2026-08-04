@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import type { Input } from '../input/input'
 import { drawPfd, type PfdInput } from '../cockpit/pfd'
-import { drawMfd, type MfdInput } from '../cockpit/mfd'
+import { drawMfd, mfdSoftkeyRegions, type MfdInput } from '../cockpit/mfd'
 import type { MagnetoPosition } from '../sim/systems/engine-start'
 import type { FuelSelector } from '../sim/systems/fuel'
 
@@ -42,13 +42,15 @@ export function cycleFuelSelector(current: FuelSelector): FuelSelector {
   return order[(i + 1) % order.length]!
 }
 
-/** Click-cycle order for the ignition key's 4 non-momentary detents (the
- *  starter itself is a separate momentary push, see `starterEngaged`
- *  handling in `CockpitInteraction`) — off -> right -> left -> both -> off. */
-export function cycleMagneto(current: MagnetoPosition): MagnetoPosition {
+/** One detent step for the ignition key (15c detent-order fix): a real
+ *  key walks ADJACENT detents — off ↔ right ↔ left ↔ both — it cannot
+ *  jump both→off in one click (the old wrap was a one-click engine
+ *  kill). Clicks ping-pong: advance to `both`, then walk back down; the
+ *  starter is a separate momentary push (`starterEngaged`). */
+export function stepMagneto(current: MagnetoPosition, dir: 1 | -1): MagnetoPosition {
   const order: MagnetoPosition[] = ['off', 'right', 'left', 'both']
-  const i = order.indexOf(current)
-  return order[(i + 1) % order.length]!
+  const i = Math.max(0, order.indexOf(current))
+  return order[Math.min(Math.max(i + dir, 0), order.length - 1)]!
 }
 
 /** Map a total drag distance (px) since grabbing a control to an absolute
@@ -103,7 +105,7 @@ function placeBody(m: THREE.Object3D, x: number, y: number, z: number): void {
   m.position.set(y, -z, -x)
 }
 
-export type SwitchId = 'masterBattery' | 'masterAlternator' | 'avionicsSwitch' | 'pitotHeat' | 'apMaster'
+export type SwitchId = 'masterBattery' | 'masterAlternator' | 'avionicsSwitch' | 'pitotHeat' | 'apMaster' | 'boostPump'
 
 export interface CockpitMeshes {
   group: THREE.Group
@@ -218,6 +220,10 @@ export function buildCockpit(parent: THREE.Object3D): CockpitMeshes {
     new THREE.MeshBasicMaterial({ map: mfd.texture, toneMapped: false }),
   )
   add(mfdMesh, 0.97, 0.15, -0.42)
+  // 15c: the MFD screen is pickable — clicks map through the hit UV to
+  // `mfdSoftkeyRegions` (the bezel row was drawn but never routed).
+  mfdMesh.userData.controlId = 'mfdScreen'
+  interactive.push(mfdMesh)
 
   // Standby instrument cluster (placeholder circles, left of the PFD) — a
   // full standby-gauge canvas renderer wasn't in this task's committed
@@ -237,8 +243,9 @@ export function buildCockpit(parent: THREE.Object3D): CockpitMeshes {
     avionicsSwitch: makeSwitch('sw_avionicsSwitch'),
     pitotHeat: makeSwitch('sw_pitotHeat'),
     apMaster: makeSwitch('sw_apMaster'),
+    boostPump: makeSwitch('sw_boostPump'), // 15c: was hook-only (__ohSystems)
   } as Record<SwitchId, THREE.Mesh>
-  const swIds: SwitchId[] = ['masterBattery', 'masterAlternator', 'avionicsSwitch', 'pitotHeat', 'apMaster']
+  const swIds: SwitchId[] = ['masterBattery', 'masterAlternator', 'avionicsSwitch', 'pitotHeat', 'apMaster', 'boostPump']
   swIds.forEach((id, i) => {
     add(switches[id]!, 0.97, -0.5 + i * 0.045, -0.22)
     interactive.push(switches[id]!)
@@ -454,8 +461,18 @@ export class CockpitInteraction {
   private readonly raycaster = new THREE.Raycaster()
   private readonly ndc = new THREE.Vector2()
   private activeDrag: { axis: DraggableAxis; startValue: number; startPxX: number; startPxY: number } | null = null
+  /** Ignition-key walk direction (15c ping-pong between detent stops). */
+  private magDir: 1 | -1 = 1
+  private softkey: string | null = null
 
   constructor(private readonly camera: THREE.PerspectiveCamera) {}
+
+  /** MFD softkey pressed since the last call (15c routing), else null. */
+  consumeSoftkey(): string | null {
+    const s = this.softkey
+    this.softkey = null
+    return s
+  }
 
   /** True while a drag on a cockpit control is in progress — callers (e.g.
    *  the cockpit camera's look-around) should not also consume the mouse
@@ -480,7 +497,7 @@ export class CockpitInteraction {
   update(
     input: Input,
     meshes: CockpitMeshes,
-    systems: { masterBattery: boolean; masterAlternator: boolean; avionicsSwitch: boolean; pitotHeat: boolean; apMaster: boolean; magneto: MagnetoPosition; starterEngaged: boolean; fuelSelector: FuelSelector },
+    systems: { masterBattery: boolean; masterAlternator: boolean; avionicsSwitch: boolean; pitotHeat: boolean; apMaster: boolean; boostPumpOn: boolean; magneto: MagnetoPosition; starterEngaged: boolean; fuelSelector: FuelSelector },
     controls: { throttle: number; mixture: number; flapsIndex: number; trim: number },
     radios?: { nav1: { activeMhz: number; standbyMhz: number }; com1: { activeMhz: number; standbyMhz: number }; obs1Deg: number },
   ): void {
@@ -492,9 +509,28 @@ export class CockpitInteraction {
       else if (id === 'sw_avionicsSwitch') systems.avionicsSwitch = !systems.avionicsSwitch
       else if (id === 'sw_pitotHeat') systems.pitotHeat = !systems.pitotHeat
       else if (id === 'sw_apMaster') systems.apMaster = !systems.apMaster
-      else if (id === 'ignitionKey') systems.magneto = cycleMagneto(systems.magneto)
+      else if (id === 'sw_boostPump') systems.boostPumpOn = !systems.boostPumpOn
+      else if (id === 'ignitionKey') {
+        // Walk one adjacent detent; flip direction at the end stops.
+        const next = stepMagneto(systems.magneto, this.magDir)
+        if (next === systems.magneto) {
+          this.magDir = this.magDir === 1 ? -1 : 1
+          systems.magneto = stepMagneto(systems.magneto, this.magDir)
+        } else systems.magneto = next
+      }
       else if (id === 'starterButton') systems.starterEngaged = true
       else if (id === 'fuelSelector') systems.fuelSelector = cycleFuelSelector(systems.fuelSelector)
+      else if (id === 'mfdScreen' && hit?.uv) {
+        // 15c: hit UV → canvas pixel → softkey bezel region.
+        const px = hit.uv.x * MFD_CANVAS_W
+        const py = (1 - hit.uv.y) * MFD_CANVAS_H
+        for (const r of mfdSoftkeyRegions(MFD_CANVAS_W, MFD_CANVAS_H)) {
+          if (px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h) {
+            this.softkey = r.label
+            break
+          }
+        }
+      }
       else if (id === 'throttleKnob' || id === 'mixtureKnob' || id === 'trimWheel' || id === 'flapLever') {
         const { x, y } = input.pointerPixels()
         const axis: DraggableAxis = id === 'throttleKnob' ? 'throttle' : id === 'mixtureKnob' ? 'mixture' : id === 'trimWheel' ? 'trim' : 'flap'

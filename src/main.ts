@@ -48,6 +48,7 @@ import { Hud } from './ui/hud'
 import { WorldFrame, TileManager } from './world/tiles'
 import { Airports, type AirportData, type RunwayData } from './world/airports'
 import { makeElectricalState, stepElectrical } from './sim/systems/electrical'
+import { c172WeightBalance, C172S_ENVELOPE } from './sim/weight-balance'
 import { makeFuelState, stepFuel, type FuelSelector } from './sim/systems/fuel'
 import { PitotStaticSystem } from './sim/systems/pitot'
 import { stepEngineStart, type EngineStartState, type MagnetoPosition } from './sim/systems/engine-start'
@@ -558,6 +559,29 @@ function handleSearch(query: string): void {
     tiles.setImagery(on)
     try { localStorage.setItem('oh-imagery', parts[1]) } catch { /* private mode */ }
     toast(`SATELLITE IMAGERY ${parts[1]}${on ? '' : ' — stylized terrain'}`)
+    return
+  }
+  if (parts[0] === 'FAIL' && parts[1]) {
+    // 15c failures panel: verb-driven (matches the sim's search-verb UI
+    // style) over the same flags as the __ohFail hook.
+    const name = parts[1]
+    if (name === 'ALTERNATOR') failures.alternatorFailed = true
+    else if (name === 'ICING') failures.icingConditions = true
+    else if (name === 'STATIC') failures.staticBlocked = true
+    else if (name === 'NONE') {
+      failures.alternatorFailed = false
+      failures.icingConditions = false
+      failures.staticBlocked = false
+    } else {
+      toast('FAIL ALTERNATOR|ICING|STATIC|NONE')
+      return
+    }
+    toast(`FAILURES — ALT ${failures.alternatorFailed ? 'FAILED' : 'OK'} · ICE ${failures.icingConditions ? 'ON' : 'OFF'} · STATIC ${failures.staticBlocked ? 'BLOCKED' : 'OK'}`)
+    return
+  }
+  if (parts[0] === 'WB') {
+    mfdPage = 'wb'
+    toast('MFD — WEIGHT & BALANCE (WB verb; MAP/ENGINE/FPL softkeys return)')
     return
   }
   if (parts[0] === 'WEIGHT' && parts[1]) {
@@ -1510,7 +1534,7 @@ function computeGpsCdi(aircraftLL: { lat: number; lon: number }): { deflectionFr
   return gpsCdiDeflection(progress.crossTrackNm, phase)
 }
 
-let mfdPage: 'map' | 'lean' | 'fpl' = 'map'
+let mfdPage: 'map' | 'lean' | 'fpl' | 'wb' = 'map'
 /** Last computed in-airspace result (Phase 4 Task 5 wiring) — updated once
  *  per frame in `advanceFrame`, exposed via `__ohAirspace` for a later
  *  acceptance task to verify "the sim knows when the aircraft is inside the
@@ -1717,7 +1741,9 @@ function advanceFrame(elapsed: number, now: number): void {
   updateRecorder(ll)
   if (atcMenuOpen) renderAtcMenu()
   for (const { pilot: p, mesh: m } of aiShips) {
-    p.step(Math.min(elapsed, 0.25), loop.simTime)
+    // 15c: AI steps with SIM dt — wall-dt made time-accel leave the
+    // pattern ships behind (Phase-6 quirk, noted at 14e).
+    p.step(Math.min(elapsed, 0.25) * loop.getRate(), loop.simTime)
     const lp = frame.toLocal(p.plane.lat, p.plane.lon)
     m.group.position.set(lp.e, p.plane.altFt * 0.3048, -lp.n)
     m.group.rotation.order = 'YXZ'
@@ -1771,6 +1797,15 @@ function advanceFrame(elapsed: number, now: number): void {
       camera.updateProjectionMatrix()
     }
     cockpitInteraction.update(input, cockpit, systemsControls, aircraft.controls, radios)
+    // 15c: MFD softkey routing (MAP/ENGINE/FPL switch pages; the rest of
+    // the representative bezel set answers honestly INOP).
+    const sk = cockpitInteraction.consumeSoftkey()
+    if (sk) {
+      if (sk === 'MAP') mfdPage = 'map'
+      else if (sk === 'ENGINE') mfdPage = 'lean'
+      else if (sk === 'FPL') mfdPage = 'fpl'
+      else toast(`SOFTKEY ${sk} — INOP (representative bezel set)`)
+    }
     cockpitCam.update(
       mesh.group.position,
       (d.headingDeg * Math.PI) / 180,
@@ -1793,6 +1828,7 @@ function advanceFrame(elapsed: number, now: number): void {
     avionicsSwitch: systemsControls.avionicsSwitch,
     pitotHeat: systemsControls.pitotHeat,
     apMaster: systemsControls.apMaster,
+    boostPump: systemsControls.boostPumpOn,
   }
   updateCockpitControls(
     cockpit,
@@ -1866,6 +1902,11 @@ function advanceFrame(elapsed: number, now: number): void {
         alternatorAmps: electricalState.alternatorAmps,
         batteryAmps: electricalState.batteryAmps,
       },
+      wb: mfdPage === 'wb'
+        ? (fleetKey === '172'
+          ? { ...c172WeightBalance(aircraft.P.emptyMassKg, aircraft.payloadKg, aircraft.fuelKg), fwdLimitIn: C172S_ENVELOPE.fwdLimitIn, aftLimitIn: C172S_ENVELOPE.aftLimitIn, maxGrossLb: C172S_ENVELOPE.maxGrossLb }
+          : null)
+        : undefined,
       map: mfdPage === 'map' ? {
         aircraftLat: ll.lat,
         aircraftLon: ll.lon,
@@ -2150,7 +2191,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
    *  comment, unchanged from Phase 3). Defaults to 'map' at boot so the
    *  airspace/glide-ring wiring (Phase 4 Tasks 5/6) is visible without
    *  needing this hook at all. */
-  __ohMfdPage: (page: 'map' | 'lean' | 'fpl') => {
+  __ohMfdPage: (page: 'map' | 'lean' | 'fpl' | 'wb') => {
     mfdPage = page
   },
   /** Verification-only camera-mode switch (mirrors pressing 'C' repeatedly)
