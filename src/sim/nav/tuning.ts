@@ -30,6 +30,7 @@ import {
   VOR_FULL_SCALE_DEG,
   localizerDeflection,
   glideslopeDeflection,
+  angDiff,
   LOC_FULL_SCALE_DEG,
   GS_FULL_SCALE_DEG,
   type NavaidData,
@@ -130,6 +131,14 @@ export function localizerFraction(ils: IlsRef, aircraft: LatLon): LocFraction {
 
 export function glideslopeFraction(ils: IlsRef, aircraft: LatLon, aircraftAltFt: number): number {
   return glideslopeDeflection(ils, aircraft, aircraftAltFt) / GS_FULL_SCALE_DEG
+}
+
+/** 15a Mode-5 gate: the tuned ILS counts as "on final" only inside the
+ *  localizer's full-scale AND roughly aligned with its course. A stale
+ *  tuned ILS from another field pegs the localizer — at KPAO this fired
+ *  spurious GLIDESLOPE cautions from KSFO's beam. */
+export function ilsOnFinal(locDeflectionFraction: number, headingDeg: number, courseDeg: number): boolean {
+  return Math.abs(locDeflectionFraction) < 1 && Math.abs(angDiff(headingDeg, courseDeg)) < 45
 }
 
 // ---- known ILS frequency stopgap (see module header) ----

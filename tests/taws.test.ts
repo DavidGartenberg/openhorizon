@@ -105,3 +105,17 @@ describe('§24 CFIT + silence criteria', () => {
     expect(a).toEqual(['FIVE HUNDRED'])
   })
 })
+
+describe('15a: Mode-1 ground inhibition', () => {
+  it('a gear-compression vs spike at 3 ft AGL stays fully silent (parked/rollout)', () => {
+    const taws = new TawsComputer()
+    const out = taws.step(1, base({ aglFt: 3, altFt: 10, vsFpm: -1600, gsKt: 40, nearRunwayFinal: true }))
+    expect(out.level).toBe('NONE')
+    expect(out.aural).toBeUndefined()
+  })
+  it('mode 1 still arms just above the 30 ft floor', () => {
+    const taws = new TawsComputer()
+    const out = taws.step(1, base({ aglFt: 200, vsFpm: -1600 }))
+    expect(out.aural).toBe('SINK RATE')
+  })
+})

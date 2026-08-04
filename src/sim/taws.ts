@@ -47,7 +47,7 @@ const JET_CALLOUT_GATES: ReadonlyArray<[number, string]> = [
 export class TawsComputer {
   private lastAural: string | undefined
   private maxAglSinceTakeoff = 0
-  private said500 = false
+  private prevAglFt = 0
   private calloutIdx = 0
 
   step(dt: number, inp: TawsInput): TawsOutput {
@@ -64,9 +64,12 @@ export class TawsComputer {
     }
 
     // ---- Mode 1: excessive descent rate vs AGL (simplified envelope:
-    // caution when sink exceeds ~2.5×AGL fpm below 2500; warning ~4×AGL). ----
+    // caution when sink exceeds ~2.5×AGL fpm below 2500; warning ~4×AGL).
+    // Armed only above 30 ft (15a): gear-compression vs spikes during
+    // rollout/spawn fired SINK RATE while parked — real Mode 1 arms off
+    // the radio-altimeter floor too. ----
     const sink = -inp.vsFpm
-    if (inp.aglFt < 2500 && sink > 1000) {
+    if (inp.aglFt > 30 && inp.aglFt < 2500 && sink > 1000) {
       if (sink > Math.max(1.6 * inp.aglFt, 1600)) consider('WARNING', 'PULL UP')
       else if (sink > Math.max(0.9 * inp.aglFt, 1200)) consider('CAUTION', 'SINK RATE')
     }
@@ -108,14 +111,15 @@ export class TawsComputer {
 
     // ---- Mode 6: callouts + bank angle ----
     if (Math.abs(inp.rollDeg) > 45) consider('CAUTION', 'BANK ANGLE')
-    if (!this.said500 && inp.aglFt <= 500 && inp.vsFpm < 0) {
-      this.said500 = true
+    // FIVE HUNDRED fires only on a true descending CROSSING of 500 ft
+    // (15a: the old vs<0-below-500 gate let a parked gear bounce call it).
+    if (this.prevAglFt > 500 && inp.aglFt <= 500 && inp.vsFpm < 0) {
       if (level === 'NONE') {
         level = 'CAUTION'
         aural = 'FIVE HUNDRED'
       }
     }
-    if (inp.aglFt > 900) this.said500 = false
+    this.prevAglFt = inp.aglFt
 
     // Jet short-final cadence: FIFTY, FORTY, THIRTY, TWENTY, TEN (once per
     // descending crossing; rearmed climbing back through 200).

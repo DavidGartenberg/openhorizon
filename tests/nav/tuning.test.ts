@@ -8,6 +8,7 @@ import {
   localizerFraction,
   glideslopeFraction,
   findKnownIls,
+  ilsOnFinal,
   KNOWN_ILS_FREQUENCIES,
 } from '../../src/sim/nav/tuning'
 import { papiAngleDeg, papiWhiteCount } from '../../src/world/papi'
@@ -118,5 +119,17 @@ describe('findKnownIls (stopgap ILS-frequency table)', () => {
       expect(e.runway.length).toBeGreaterThan(0)
       expect(e.freqMhz).toBeGreaterThan(100)
     }
+  })
+})
+
+describe('ilsOnFinal (15a Mode-5 gate)', () => {
+  it('is true established inbound: small deflection, aligned course', () => {
+    expect(ilsOnFinal(0.1, 300, 298)).toBe(true)
+  })
+  it('is false at full localizer deflection (the spurious-KPAO-GLIDESLOPE case)', () => {
+    expect(ilsOnFinal(1, 310, 298)).toBe(false)
+  })
+  it('is false crossing the beam 90° off course', () => {
+    expect(ilsOnFinal(0.2, 28, 298)).toBe(false)
   })
 })

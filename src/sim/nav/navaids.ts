@@ -82,7 +82,7 @@ export class NavaidsIndex {
 // ---- angle helpers ----
 
 /** Signed angular difference a-b, wrapped to (-180, 180]. */
-function angDiff(a: number, b: number): number {
+export function angDiff(a: number, b: number): number {
   let d = (a - b) % 360
   if (d > 180) d -= 360
   if (d <= -180) d += 360

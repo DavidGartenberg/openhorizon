@@ -58,7 +58,7 @@ import { airspacesContaining, type AirspacePolygon } from './sim/nav/airspace'
 import { makeAutopilotState, stepAutopilot, disconnect as disconnectAutopilot, type LateralMode, type VerticalMode } from './sim/autopilot'
 import {
   findTunedVor, vorCdiFraction, ilsRefFromRunwayThreshold, localizerFraction, glideslopeFraction, findKnownIls,
-  NO_NAV_RESULT, type TunedNavResult,
+  ilsOnFinal, NO_NAV_RESULT, type TunedNavResult,
 } from './sim/nav/tuning'
 
 const KHAF = { lat: 37.5134, lon: -122.5011 }
@@ -1109,7 +1109,12 @@ function updateSafety(now: number): void {
       return elevM / 0.3048
     },
     nearRunwayFinal: d.aglFt < 1800 && airports.near(ll0.lat, ll0.lon, 4 * 1852).length > 0,
-    gsDeviation: nav.hasGlideslope ? nav.glideslopeFraction ?? null : null,
+    // 15a Mode-5 gate: only a receivable ILS we're actually established on
+    // — a stale tuned ILS from another field fired spurious GLIDESLOPE.
+    gsDeviation:
+      nav.hasGlideslope && nav.courseDeg !== undefined && ilsOnFinal(nav.deflectionFraction ?? 2, d.headingDeg, nav.courseDeg)
+        ? nav.glideslopeFraction ?? null
+        : null,
     jetProfile: !!aircraft.P.jet,
     gearDown: aircraft.gearDownCommanded && aircraft.gearPos >= 1,
   })
