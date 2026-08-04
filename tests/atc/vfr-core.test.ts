@@ -64,12 +64,28 @@ describe('Ground + Tower: full towered VFR departure and arrival', () => {
     tower.registerInbound('N77GA', { distanceM: 3704, aglFt: 600, onGround: false })
     const holdReplies = tower.request('N123AB', 'readyTakeoff', { distanceM: 0, aglFt: 0, onGround: true })
     expect(holdReplies[0]!.text.toLowerCase()).toContain('hold short')
-    // The AI lands and clears.
+    // The AI lands — and now really HOLDS the runway (14e) until it
+    // reports clear of the runway.
     tower.update('N77GA', { distanceM: 300, aglFt: 0, onGround: true })
     tower.tick(60)
+    const stillHeld = tower.request('N123AB', 'readyTakeoff', { distanceM: 0, aglFt: 0, onGround: true })
+    expect(stillHeld[0]!.text.toLowerCase()).toContain('hold short')
+    tower.request('N77GA', 'clearRunway', { distanceM: 350, aglFt: 0, onGround: true }, 70)
+    tower.tick(75)
     const clearance = tower.request('N123AB', 'readyTakeoff', { distanceM: 0, aglFt: 0, onGround: true })
     expect(clearance[0]!.text.toLowerCase()).toContain('cleared for takeoff')
     expect(clearance[0]!.text).toContain('runway 31')
+  })
+
+  it('auto-vacates a radio-silent lander after 90 s (recorded fallback)', () => {
+    const { tower } = mk()
+    tower.registerInbound('N77GA', { distanceM: 3704, aglFt: 600, onGround: false })
+    tower.update('N77GA', { distanceM: 300, aglFt: 0, onGround: true })
+    tower.tick(60) // starts the landed timer
+    expect(tower.request('N123AB', 'readyTakeoff', { distanceM: 0, aglFt: 0, onGround: true })[0]!.text.toLowerCase()).toContain('hold short')
+    tower.tick(155) // > 90 s later: assumed clear
+    const clearance = tower.request('N123AB', 'readyTakeoff', { distanceM: 0, aglFt: 0, onGround: true })
+    expect(clearance[0]!.text.toLowerCase()).toContain('cleared for takeoff')
   })
 
   it('sequences an arrival behind existing traffic and clears when #1', () => {
@@ -77,9 +93,10 @@ describe('Ground + Tower: full towered VFR departure and arrival', () => {
     tower.registerInbound('N55XY', { distanceM: 2500, aglFt: 500, onGround: false })
     const joinReplies = tower.request('N123AB', 'inboundLanding', { distanceM: 9260, aglFt: 1200, onGround: false })
     expect(joinReplies[0]!.text.toLowerCase()).toMatch(/number 2|follow/)
-    // Leader lands; we close in — tick should clear us to land.
+    // Leader lands and reports clear; we close in — tick clears us.
     tower.update('N55XY', { distanceM: 200, aglFt: 0, onGround: true })
-    const advisories = [...tower.tick(60), ...tower.tick(120, [{ callsign: 'N123AB', view: { distanceM: 2800, aglFt: 700, onGround: false } }])]
+    tower.request('N55XY', 'clearRunway', { distanceM: 350, aglFt: 0, onGround: true }, 61)
+    const advisories = [...tower.tick(62), ...tower.tick(120, [{ callsign: 'N123AB', view: { distanceM: 2800, aglFt: 700, onGround: false } }])]
     const clear = advisories.find((t) => t.text.toLowerCase().includes('cleared to land'))
     expect(clear).toBeDefined()
     expect(clear!.text).toContain('N123AB')

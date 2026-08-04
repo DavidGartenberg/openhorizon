@@ -9,6 +9,9 @@ export interface TrafficLeg {
   lon: number
   altFt: number
   gsKt: number
+  /** Arrival radius override, m (default 250 — pattern-leg coarse; taxi
+   *  legs need precision or "vacating" stops on the pavement, 14e). */
+  arriveM?: number
 }
 
 const TURN_RATE_DEG_S = 3
@@ -55,7 +58,7 @@ export class TrafficPlane {
     const dn = (leg.lat - this.lat) * mLat
     const de = (leg.lon - this.lon) * mLon
     const dist = Math.hypot(dn, de)
-    if (dist < ARRIVE_M) {
+    if (dist < (leg.arriveM ?? ARRIVE_M)) {
       this.idx++
       return
     }

@@ -36,8 +36,10 @@ describe('§24 VFR acceptance: KPAO → KSQL, full phraseology', () => {
     bus.transmit({ freqMhz: com1, from: CS, text: pilotPhrase(CS, 'inboundLanding', '30'), atSimS: 240 })
     sqlTwr.registerInbound('N9AI', { distanceM: 2600, aglFt: 600, onGround: false }) // one ahead
     send(sqlTwr.request(CS, 'inboundLanding', { distanceM: 8500, aglFt: 1100, onGround: false }, 241))
-    // Leader lands and clears; we close in; tower clears us on tick.
+    // Leader lands, exits, and reports clear (14e: the runway is really
+    // held until the report); we close in; tower clears us on tick.
     sqlTwr.update('N9AI', { distanceM: 150, aglFt: 0, onGround: true })
+    send(sqlTwr.request('N9AI', 'clearRunway', { distanceM: 400, aglFt: 0, onGround: true }, 290))
     send(sqlTwr.tick(300, [{ callsign: CS, view: { distanceM: 3000, aglFt: 700, onGround: false } }]))
     send(sqlTwr.tick(360, [{ callsign: CS, view: { distanceM: 2400, aglFt: 500, onGround: false } }]))
 

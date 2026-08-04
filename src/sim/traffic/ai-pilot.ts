@@ -9,7 +9,7 @@ import { makePatternLegs, DOWNWIND_LEG_INDEX, type PatternRunway } from './patte
 import { TowerController, pilotPhrase, type TrafficView } from '../atc/tower'
 import { CommsBus } from '../atc/comms'
 
-export type AiPhase = 'waiting' | 'holdShort' | 'pattern' | 'landed'
+export type AiPhase = 'waiting' | 'holdShort' | 'pattern' | 'landed' | 'taxiOff' | 'done'
 
 export class AiPatternPilot {
   readonly plane: TrafficPlane
@@ -48,6 +48,10 @@ export class AiPatternPilot {
 
   get onGround(): boolean {
     return this.plane.altFt <= this.cfg.runway.elevFt + 15
+  }
+
+  get callsign(): string {
+    return this.cfg.callsign
   }
 
   private view(): TrafficView {
@@ -111,5 +115,33 @@ export class AiPatternPilot {
       }
       return
     }
+    if (this.phase === 'landed') {
+      // 14e parked-forever fix: roll out and exit 60° off the runway
+      // (pattern side), ~320 m to the hold point, then report clear.
+      const mLat = 111_320
+      const mLon = mLat * Math.cos((this.plane.lat * Math.PI) / 180)
+      const exitRad = ((c.runway.headingDeg - 60) * Math.PI) / 180
+      const exitM = 320
+      this.plane.setLegs([{
+        lat: this.plane.lat + (Math.cos(exitRad) * exitM) / mLat,
+        lon: this.plane.lon + (Math.sin(exitRad) * exitM) / mLon,
+        altFt: c.runway.elevFt,
+        gsKt: 10,
+        arriveM: 30,
+      }])
+      this.phase = 'taxiOff'
+      return
+    }
+    if (this.phase === 'taxiOff') {
+      this.plane.step(dt)
+      if (this.plane.currentLeg() === null) {
+        this.plane.gsKt = 0
+        this.phase = 'done'
+        this.say(pilotPhrase(c.callsign, 'clearRunway', c.runwayIdent), atSimS)
+        for (const r of c.tower.request(c.callsign, 'clearRunway', this.view(), atSimS)) c.bus.transmit(r)
+      }
+      return
+    }
+    // 'done': parked clear of the runway.
   }
 }

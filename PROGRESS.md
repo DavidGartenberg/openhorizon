@@ -30,7 +30,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
 | 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
-| 14 — Visual traffic | 🔧 14a-14d done | live ADS-B rendered with archetypes + datablocks; richer sim AI next |
+| 14 — Visual traffic | ✅ done | live ADS-B end-to-end + real runway occupancy for sim AI; Phase 15 next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -80,6 +80,35 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 14e — richer sim AI + the parked-forever fix (2026-07-24)
+
+The fix went deeper than the plan knew: the tower's tick DELETED every
+landed strip on the next scan ("landed traffic exits between scans")
+while the AI physically parked on the pavement forever — the tower
+pretended vacating, the planes never did, and BOTH halves were
+fiction. Now both are real: pilots roll out, exit 60° to the pattern
+side (~320 m, with a new per-leg `arriveM` — the point-mass's 250 m
+coarse arrival left the first "vacated" plane 12 m off centerline,
+caught by the new test), report "clear of runway" (new `clearRunway`
+request kind → strip 'vacated'), and the tower HOLDS landed strips
+until that report, with a recorded 90 s assume-vacated fallback for
+radio-silent traffic (the player). 7 new/updated tests: vacate ≤60 s
++ ≥50 m off centerline, held-then-cleared ordering, the auto-vacate
+timer, and a five-ship 3,000 s soak asserting no takeoff clearance
+ever issues with a ship in landed/taxiOff — which CAUGHT the tower's
+instant-forget hole before the fix. Four older tests updated honestly
+to the real-occupancy protocol (one now expects a legal go-around).
+
+main.ts: parallel aiPilots/aiMeshes arrays → ONE record list; density
+verb `AI OFF|LIGHT|REAL` = 0/2/5 ships (persisted); Tier-C variety
+(C172/P28A/SR22/C182/BE36) built as archetype silhouettes — 1 draw
+call each vs the old ~40-call full C172 builds. `__ohAi` hook.
+**Browser:** five ships at REAL with N77GA established in the KPAO
+pattern (75 kt/506 ft) and staggered followers; tower transcript shows
+the departure cycle on 118.6. Noted pre-existing quirk (Phase 6): AI
+ships step with WALL dt, so time-accel doesn't speed the pattern —
+listed for 15 polish. Suite 886 + validate 421, tsc clean.
 
 ## Phase 14d — live-traffic rendering + labels (2026-07-24)
 

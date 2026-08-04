@@ -15,7 +15,7 @@ export interface TrafficView {
   onGround: boolean
 }
 
-export type PilotRequestKind = 'readyTakeoff' | 'inboundLanding' | 'taxiOut' | 'goAround'
+export type PilotRequestKind = 'readyTakeoff' | 'inboundLanding' | 'taxiOut' | 'goAround' | 'clearRunway'
 
 export type TowerPhase =
   | 'holdingShort'
@@ -24,6 +24,7 @@ export type TowerPhase =
   | 'inbound'
   | 'clearedLand'
   | 'landed'
+  | 'vacated'
 
 interface Strip {
   callsign: string
@@ -34,6 +35,8 @@ interface Strip {
    *  on base, which inverted the queue and double-cleared the runway (found
    *  by the two-plane integration test's radio log). */
   seq: number
+  /** When the strip went 'landed' (14e assume-vacated fallback timer). */
+  landedAtS?: number
 }
 
 export function pilotPhrase(callsign: string, kind: PilotRequestKind, runway: string): string {
@@ -46,6 +49,8 @@ export function pilotPhrase(callsign: string, kind: PilotRequestKind, runway: st
       return `${callsign}, at parking with information, request taxi runway ${runway}`
     case 'goAround':
       return `${callsign}, going around`
+    case 'clearRunway':
+      return `${callsign}, clear of runway ${runway}`
   }
 }
 
@@ -129,6 +134,12 @@ export class TowerController {
           ),
         ]
       }
+      case 'clearRunway': {
+        // 14e: the vacated strip stops blocking `runwayOccupied` — the
+        // parked-forever AI held every later clearance hostage.
+        s.phase = 'vacated'
+        return [this.say(`${callsign}, roger, taxi to parking`, atSimS)]
+      }
       case 'goAround': {
         s.phase = 'inbound'
         s.seq = ++this.seqCounter // rejoin at the back of the sequence
@@ -143,8 +154,18 @@ export class TowerController {
   /** Periodic sequencing: clear the #1 arrival when the runway is free. */
   tick(atSimS: number, updates: Array<{ callsign: string; view: TrafficView }> = []): Transmission[] {
     for (const u of updates) this.update(u.callsign, u.view)
-    // Landed traffic exits the runway between scans — retire the strip.
-    for (const [cs, s] of this.strips) if (s.phase === 'landed') this.strips.delete(cs)
+    // 14e: landed strips HOLD the runway until the pilot reports clear
+    // (the old tick deleted them instantly — the tower pretended vacating
+    // while the AI physically parked on the pavement forever; both halves
+    // were fiction). Radio-silent traffic (the player) auto-vacates after
+    // 90 s — a recorded assumption, not a position check.
+    for (const [cs, s] of this.strips) {
+      if (s.phase === 'vacated') this.strips.delete(cs)
+      else if (s.phase === 'landed') {
+        if (s.landedAtS === undefined) s.landedAtS = atSimS
+        else if (atSimS - s.landedAtS > 90) this.strips.delete(cs)
+      }
+    }
     const out: Transmission[] = []
     const queue = this.arrivalQueue()
     const leader = queue[0]

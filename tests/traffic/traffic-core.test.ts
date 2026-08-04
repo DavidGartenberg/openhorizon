@@ -71,24 +71,30 @@ describe('AI pilot + tower integration', () => {
     const tower = new TowerController({ facility: 'Palo Alto Tower', freqMhz: 118.6, activeRunway: '31' })
     const a = new AiPatternPilot({ callsign: 'N1AA', runway: RWY, runwayIdent: '31', tower, bus, freqMhz: 118.6 })
     const b = new AiPatternPilot({ callsign: 'N2BB', runway: RWY, runwayIdent: '31', tower, bus, freqMhz: 118.6, startDelayS: 15 })
+    // 14e: 'landed' is no longer terminal — completion is landed-or-later
+    // (the leader taxis off and parks 'done' while the trailer finishes).
+    const complete = (p: AiPatternPilot) => p.phase === 'landed' || p.phase === 'taxiOff' || p.phase === 'done'
     let simS = 0
-    for (let i = 0; i < 1400 && !(a.phase === 'landed' && b.phase === 'landed'); i++) {
+    for (let i = 0; i < 1600 && !(complete(a) && complete(b)); i++) {
       simS += 1
       a.step(1, simS)
       b.step(1, simS)
       if (i % 5 === 0) for (const t of tower.tick(simS)) bus.transmit(t)
     }
-    expect(a.phase).toBe('landed')
-    expect(b.phase).toBe('landed')
-    // The sequencing guarantee: one landing clearance at a time. The
-    // trailing aircraft's clearance must come well after the leader's —
-    // only once the leader has landed and cleared (FIFO queue; the original
-    // distance-sorted queue double-cleared the runway, caught by this
-    // test's radio log).
+    expect(complete(a)).toBe(true)
+    expect(complete(b)).toBe(true)
+    // The sequencing guarantee: one landing clearance at a time — the
+    // trailer's first clearance comes well after the leader's, once the
+    // runway is genuinely free (FIFO queue; the original distance-sorted
+    // queue double-cleared the runway, caught by this test's radio log).
+    // 14e's real runway occupancy can force the trailer around once
+    // before its clearance — extra clearances are legal, simultaneous
+    // ones are not.
     const clears = bus.log.filter((t) => t.text.toLowerCase().includes('cleared to land'))
-    expect(clears.length).toBe(2)
+    expect(clears.length).toBeGreaterThanOrEqual(2)
     expect(clears[0]!.text).toContain('N1AA')
-    expect(clears[1]!.text).toContain('N2BB')
-    expect(clears[1]!.atSimS - clears[0]!.atSimS).toBeGreaterThan(60)
+    const trailerFirst = clears.find((t) => t.text.includes('N2BB'))!
+    expect(trailerFirst).toBeDefined()
+    expect(trailerFirst.atSimS - clears[0]!.atSimS).toBeGreaterThan(60)
   })
 })

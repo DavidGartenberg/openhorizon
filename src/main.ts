@@ -26,7 +26,7 @@ import { FlyCamera } from './render/camera'
 import { ChaseCamera } from './render/chase-camera'
 import { OrbitCamera } from './render/orbit-camera'
 import { CockpitCamera } from './render/cockpit-camera'
-import { buildC172, buildCub, buildB738, updateProp } from './render/aircraft-mesh'
+import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from './render/aircraft-mesh'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
 import { B738 } from './sim/aircraft/b738'
@@ -535,6 +535,16 @@ function handleSearch(query: string): void {
     }
     return
   }
+  if (parts[0] === 'AI' && (parts[1] === 'OFF' || parts[1] === 'LIGHT' || parts[1] === 'REAL')) {
+    aiDensity = parts[1] === 'OFF' ? 0 : parts[1] === 'LIGHT' ? 2 : 5
+    try { localStorage.setItem('oh-ai-density', parts[1]) } catch { /* private mode */ }
+    // Force the ATC scan to rebuild the pattern ships at the new density.
+    for (const s of aiShips) scene.remove(s.mesh.group)
+    aiShips = []
+    activeAtc = null
+    toast(`AI TRAFFIC ${parts[1]} — ${aiDensity} pattern ship${aiDensity === 1 ? '' : 's'}`)
+    return
+  }
   if (parts[0] === 'LIVE' && parts[1] === 'TRAFFIC' && (parts[2] === 'ON' || parts[2] === 'OFF')) {
     liveTrafficOn = parts[2] === 'ON'
     if (!liveTrafficOn) liveTraffic.targets.clear()
@@ -902,8 +912,21 @@ interface ActiveAtc {
 }
 let activeAtc: ActiveAtc | null = null
 let atisPlayedFor = ''
-/** AI pattern traffic at the active ATC field (Phase 6d/6e wiring). */
-let aiPilots: AiPatternPilot[] = []
+/** AI pattern traffic at the active ATC field (Phase 6d/6e wiring; 14e:
+ *  ONE record list — the parallel pilot/mesh arrays drifted by index —
+ *  with density OFF/LIGHT/REAL = 0/2/5 and Tier-C type variety). */
+let aiShips: Array<{ pilot: AiPatternPilot; mesh: AircraftMesh }> = []
+let aiDensity = 2
+try {
+  const d = localStorage.getItem('oh-ai-density')
+  if (d === 'OFF') aiDensity = 0
+  else if (d === 'REAL') aiDensity = 5
+} catch { /* private mode */ }
+/** Callsign / ICAO type / start-delay staggering for up to REAL density. */
+const AI_ROSTER: Array<[string, string, number]> = [
+  ['N77GA', 'C172', 25], ['N42PK', 'P28A', 210], ['N158CD', 'SR22', 430],
+  ['N631SP', 'C182', 650], ['N905TB', 'BE36', 870],
+]
 
 // ---- Phase 8c: flight recorder + auto-debrief + logbook (§18/§19) ----
 const recorder = new FlightRecorder()
@@ -1041,8 +1064,8 @@ function updateSafety(now: number): void {
   // TCAS from airborne AI traffic (14c: stable per-pilot ids — the old
   // literal 'AI' collapsed every intruder onto one hysteresis state) plus
   // the live ADS-B store (hex ids; baro altitudes — recorded).
-  const tracks = aiPilots
-    .map((p, i) => ({ p, i }))
+  const tracks = aiShips
+    .map(({ pilot }, i) => ({ p: pilot, i }))
     .filter(({ p }) => p.phase === 'pattern' && !p.onGround)
     .map(({ p, i }) => {
       const hRad = (p.plane.headingDeg * Math.PI) / 180
@@ -1097,7 +1120,6 @@ function updateSafety(now: number): void {
   if (tw.level !== 'NONE' && tw.aural) parts.push(`${tw.level === 'WARNING' ? '⛰' : '△'} ${tw.aural}`)
   safetyLine = parts.join('  ')
 }
-let aiMeshes: ReturnType<typeof buildC172>[] = []
 let lastAtcScanAt = -Infinity
 let lastTowerTickAt = -Infinity
 let atcMenuOpen = false
@@ -1201,10 +1223,11 @@ function scanAtc(lat: number, lon: number, now: number): void {
         atis, twrF, gndF, atisF,
       }
       atisPlayedFor = ''
-      // Rebuild AI pattern traffic for the new field's active runway end.
-      for (const m of aiMeshes) scene.remove(m.group)
-      aiMeshes = []
-      aiPilots = []
+      // Rebuild AI pattern traffic for the new field's active runway end
+      // (14e: aiDensity ships with Tier-C type variety — archetype
+      // silhouettes, 1 draw call each vs the old full C172 builds).
+      for (const s of aiShips) scene.remove(s.mesh.group)
+      aiShips = []
       const act = atis.activeRunway
       const rw = nearest.r.find((r) => r.li === act || r.hi === act)
       if (rw) {
@@ -1216,21 +1239,21 @@ function scanAtc(lat: number, lon: number, now: number): void {
           headingDeg: bearingDeg({ lat: thr.lat, lon: thr.lon }, far),
           elevFt: thr.e,
         }
-        for (const [cs, delay] of [['N77GA', 25], ['N42PK', 210]] as const) {
-          aiPilots.push(new AiPatternPilot({
+        for (const [cs, des, delay] of AI_ROSTER.slice(0, aiDensity)) {
+          const pilot = new AiPatternPilot({
             callsign: cs, runway: patternRwy, runwayIdent: act,
             tower: activeAtc.tower, bus: comms, freqMhz: twrF, startDelayS: loop.simTime + delay,
-          }))
-          const m = buildC172()
+          })
+          const info = typeInfo(des)
+          const m = buildArchetypeShip(archetypeFor(des, info.desc, info.wtc))
           scene.add(m.group)
-          aiMeshes.push(m)
+          aiShips.push({ pilot, mesh: m })
         }
       }
     } else if (!nearest) {
       activeAtc = null
-      for (const m of aiMeshes) scene.remove(m.group)
-      aiMeshes = []
-      aiPilots = []
+      for (const s of aiShips) scene.remove(s.mesh.group)
+      aiShips = []
     }
   }
   if (activeAtc) {
@@ -1688,10 +1711,8 @@ function advanceFrame(elapsed: number, now: number): void {
   updateSafety(now)
   updateRecorder(ll)
   if (atcMenuOpen) renderAtcMenu()
-  for (let i = 0; i < aiPilots.length; i++) {
-    const p = aiPilots[i]!
+  for (const { pilot: p, mesh: m } of aiShips) {
     p.step(Math.min(elapsed, 0.25), loop.simTime)
-    const m = aiMeshes[i]!
     const lp = frame.toLocal(p.plane.lat, p.plane.lon)
     m.group.position.set(lp.e, p.plane.altFt * 0.3048, -lp.n)
     m.group.rotation.order = 'YXZ'
@@ -2086,6 +2107,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     ...(designator ? { info: typeInfo(designator), parsed: parseDesc(typeInfo(designator).desc) } : {}),
   }),
   __ohTiles: (probeKey?: string) => tiles.debugImagery(probeKey),
+  __ohAi: () => aiShips.map((s) => ({ cs: s.pilot.callsign, phase: s.pilot.phase, gsKt: Math.round(s.pilot.plane.gsKt), altFt: Math.round(s.pilot.plane.altFt) })),
   __ohTraffic: () => ({
     on: liveTrafficOn,
     count: liveTraffic.targets.size,
