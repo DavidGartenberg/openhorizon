@@ -30,6 +30,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
 | 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
+| 15 — Perfection | 🔧 15a–15c done | TAWS gates, real standalone server, cockpit debt; regression sweep next |
 | 14 — Visual traffic | ✅ done | live ADS-B end-to-end + real runway occupancy for sim AI; Phase 15 next |
 
 ## Phase 9a — sound core (2026-07-20)
@@ -80,6 +81,47 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 15c — cockpit/UI debt (2026-07-24)
+
+Six debts closed. **Ignition detents**: the key now walks ADJACENT
+detents (off ↔ R ↔ L ↔ both, ping-pong at the stops) — the old cycle
+wrapped both→off, a one-click engine kill no real key allows (pure
+stepMagneto, tests updated). **Boost pump** got its clickable panel
+switch (was hook-only). **MFD softkeys** finally route: the screen
+mesh is pickable, hit-UV maps through mfdSoftkeyRegions — MAP/ENGINE/
+FPL switch pages, the rest of the representative bezel answers an
+honest INOP toast. **W&B envelope** (9b deferral closed): pure
+sim/weight-balance.ts with POH-representative C172S stations (lumped
+payload split 50/50 front/rear — one payload mass, recorded) and the
+normal-category envelope (4 tests); a new MFD 'wb' page draws the
+polygon + loaded point (WB verb; C172-only, shown honestly).
+**Failures panel**: FAIL ALTERNATOR|ICING|STATIC|NONE search verbs
+over the __ohFail flags with a status toast. **AI sim-rate fix** (14e
+note): pattern ships now step with sim dt — time-accel no longer
+leaves them behind. W&B verified through the real drawMfd path
+(2,346 lb / CG 42.4 / within). Suite 896 + validate 421, tsc clean.
+
+## Phase 15b — server hygiene: the standalone server is real (2026-07-24)
+
+server/index.mjs mounts the same route() as the dev middleware and
+serves the built client from dist/ with an SPA fallback — `npm run
+build && node server/index.mjs` is a self-contained sim host on
+:8787. Smoke-tested standalone: 14/14 endpoints 200 (terrain,
+landcover, imagery, NEXRAD, METAR, live traffic, airports, navaids,
+airspace, frequencies, aircraft-types, procedures, health, client).
+The duplicate frequencies branch stayed dead (12a).
+
+## Phase 15a — safety-logic polish (2026-07-24)
+
+TAWS Mode 1 arms only above 30 ft AGL (gear-compression vs spikes
+fired SINK RATE while parked — real GPWS has an RA floor too). FIVE
+HUNDRED fires only on a true descending crossing of 500 ft (the old
+vs<0-below-500 gate let a parked gear bounce call it — found by the
+new ground-silence test). Mode 5 gates on being established on the
+tuned ILS via pure ilsOnFinal (inside localizer full-scale AND within
+45° of course) — a stale tuned ILS from another field pegged the
+localizer and fired spurious GLIDESLOPE at KPAO. 5 regression tests.
 
 ## Phase 14e — richer sim AI + the parked-forever fix (2026-07-24)
 
