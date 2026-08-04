@@ -30,8 +30,8 @@ Node; add `~/.local/node/bin` to PATH).
 | 11 — Fleet core | ✅ done | 3 Tier-A aircraft (C172S/J-3/737-800) validated + fleet UX; browser acceptance flown |
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
 | 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
-| 15 — Perfection | 🔧 15a–15c done | TAWS gates, real standalone server, cockpit debt; regression sweep next |
 | 14 — Visual traffic | ✅ done | live ADS-B end-to-end + real runway occupancy for sim AI; Phase 15 next |
+| 15 — Perfection | 🔧 15a–15c done | TAWS gates, real standalone server, cockpit debt; regression sweep next |
 
 ## Phase 9a — sound core (2026-07-20)
 
