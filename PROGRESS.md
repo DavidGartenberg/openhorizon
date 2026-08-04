@@ -31,7 +31,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 12 — Every plane (data) | ✅ done | 2,700-designator registry, archetype meshes, 120-type flyable roster (421 validation rows) |
 | 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
 | 14 — Visual traffic | ✅ done | live ADS-B end-to-end + real runway occupancy for sim AI; Phase 15 next |
-| 15 — Perfection | 🔧 15a–15c done | TAWS gates, real standalone server, cockpit debt; regression sweep next |
+| 15 — Perfection | 🔧 15a–15d done | polish + hygiene + debt + full sweep green; §23 re-measure + soak next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -81,6 +81,23 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 15d — full regression sweep (2026-07-24)
+
+Every phase's acceptance re-run in its cheapest faithful form — zero
+fallout, nothing to fix:
+
+| Check | Result |
+|---|---|
+| Headless: suite 896 / validate 421 (C172+Cub+737+roster) / prod build | ✅ |
+| 0/2 world boot: 182 tiles, airports+navaids+airspace loaded | ✅ |
+| 5 live weather: real METAR applied (KHAF 180@11 SCT012, QNH 29.88) | ✅ |
+| 4+13d coupled ILS: loc 0.04, GS capturing −0.21, PAPI 2W agrees | ✅ |
+| 7+14 TCAS: live dots + PROX level, flags/line coherent | ✅ |
+| 15a TAWS: parked on 28R with traffic around — fully silent | ✅ |
+| 6+14e ATC/AI: KPAO tower cycle on 118.6, five ships REAL density | ✅ |
+| 11 fleet: 737 rolls through 137 KIAS (the user-bug speed) clean | ✅ |
+| 8/9 save→load round-trip, audio graph, logbook persistent | ✅ |
 
 ## Phase 15c — cockpit/UI debt (2026-07-24)
 
