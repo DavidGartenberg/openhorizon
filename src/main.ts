@@ -1994,14 +1994,21 @@ function frame_(now: number): void {
   requestAnimationFrame(frame_)
 }
 
-setInterval(() => {
+// Background continuation (15e): the old setInterval fallback froze in
+// hidden tabs — page timers get intensively throttled to ~1 wake/min
+// after 5 min hidden. Worker clocks are exempt, so a metronome worker
+// ticks the same idle-stepper instead. Elapsed is clamped to 1 s per
+// tick: background runs near-real-time and RESUMES after an OS sleep
+// rather than fast-forwarding the gap.
+const metronome = new Worker(new URL('./metronome-worker.ts', import.meta.url), { type: 'module' })
+metronome.onmessage = () => {
   const now = performance.now()
   if (now - lastRafAt < 400) return
-  const elapsed = (now - lastFrame) / 1000
+  const elapsed = Math.min((now - lastFrame) / 1000, 1)
   if (elapsed < 0.2) return
   lastFrame = now
   advanceFrame(elapsed, now)
-}, 250)
+}
 
 // ---- boot ----
 airports
