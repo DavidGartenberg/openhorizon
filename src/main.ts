@@ -49,6 +49,7 @@ import { WorldFrame, TileManager } from './world/tiles'
 import { Airports, type AirportData, type RunwayData } from './world/airports'
 import { makeElectricalState, stepElectrical } from './sim/systems/electrical'
 import { c172WeightBalance, C172S_ENVELOPE } from './sim/weight-balance'
+import { applyDeadzone, axisToUnipolar, detectMovedAxis, parseGamepadMap, serializeGamepadMap, DEFAULT_SINGLE_STICK, type BindableAxis, type GamepadMap } from './sim/gamepad-map'
 import { makeFuelState, stepFuel, type FuelSelector } from './sim/systems/fuel'
 import { PitotStaticSystem } from './sim/systems/pitot'
 import { stepEngineStart, type EngineStartState, type MagnetoPosition } from './sim/systems/engine-start'
@@ -561,6 +562,24 @@ function handleSearch(query: string): void {
     toast(`SATELLITE IMAGERY ${parts[1]}${on ? '' : ' — stylized terrain'}`)
     return
   }
+  if (parts[0] === 'JOY') {
+    if (parts[1] === 'CLEAR') {
+      gamepadMap = {}
+      try { localStorage.removeItem('oh-gamepad-map') } catch { /* private mode */ }
+      toast('JOY: all bindings cleared')
+      return
+    }
+    if (parts[1] === 'PROP') {
+      toast('PROP lever — INOP: no controllable-pitch model (governed props auto-govern; recorded)')
+      return
+    }
+    const one = parts[1]?.toLowerCase() as BindableAxis | undefined
+    const valid: BindableAxis[] = ['pitch', 'roll', 'yaw', 'throttle', 'mixture', 'brakes']
+    if (one && valid.includes(one)) startJoyCapture([one])
+    else if (!parts[1]) startJoyCapture(['pitch', 'roll', 'yaw', 'throttle'])
+    else toast('JOY [PITCH|ROLL|YAW|THROTTLE|MIXTURE|BRAKES|CLEAR]')
+    return
+  }
   if (parts[0] === 'FAIL' && parts[1]) {
     // 15c failures panel: verb-driven (matches the sim's search-verb UI
     // style) over the same flags as the __ohFail hook.
@@ -633,6 +652,84 @@ searchBox.addEventListener('keydown', (e) => {
 
 // ---- controls ----
 const shaped = { pitch: 0, roll: 0, yaw: 0 }
+
+// ---- 16a: joystick / throttle quadrant ----
+// Bound axes OWN their control absolutely while the device is
+// connected (stick: pitch/roll/yaw through deadzone+expo; quadrant:
+// throttle/mixture as absolute lever positions with end detents;
+// brakes max-combined with the B key). Capture convention: move the
+// axis to the function's POSITIVE extreme — that direction becomes +1,
+// so inverted hardware never needs a checkbox.
+let gamepadMap: GamepadMap = {}
+try {
+  const storedJoy = localStorage.getItem('oh-gamepad-map')
+  if (storedJoy) gamepadMap = parseGamepadMap(storedJoy) ?? {}
+} catch { /* private mode */ }
+let joyCapture: { fn: BindableAxis; queue: BindableAxis[]; baseline: number[][]; deadlineMs: number } | null = null
+
+const JOY_PROMPT: Record<BindableAxis, string> = {
+  pitch: 'PULL — nose UP', roll: 'roll RIGHT', yaw: 'RIGHT rudder',
+  throttle: 'FULL throttle', mixture: 'mixture FULL RICH', brakes: 'brakes full ON',
+}
+
+function padsSnapshot(): number[][] {
+  const pads = navigator.getGamepads?.() ?? []
+  const out: number[][] = []
+  for (const p of pads) out.push(p ? [...p.axes] : [])
+  return out
+}
+
+function startJoyCapture(queue: BindableAxis[]): void {
+  const fn = queue[0]!
+  joyCapture = { fn, queue: queue.slice(1), baseline: padsSnapshot(), deadlineMs: performance.now() + 8000 }
+  toast(`JOY — ${JOY_PROMPT[fn]} (8 s)`)
+}
+
+function saveJoyMap(): void {
+  try { localStorage.setItem('oh-gamepad-map', serializeGamepadMap(gamepadMap)) } catch { /* private mode */ }
+}
+
+window.addEventListener('gamepadconnected', (e) => {
+  const g = (e as GamepadEvent).gamepad
+  if (Object.keys(gamepadMap).length === 0 && g.axes.length >= 4) {
+    gamepadMap = { ...DEFAULT_SINGLE_STICK }
+    toast(`JOYSTICK: ${g.id.slice(0, 36)} — default map (JOY to rebind)`)
+  } else {
+    toast(`GAMEPAD CONNECTED: ${g.id.slice(0, 40)}`)
+  }
+})
+window.addEventListener('gamepaddisconnected', (e) => {
+  toast(`GAMEPAD DISCONNECTED: ${(e as GamepadEvent).gamepad.id.slice(0, 36)}`)
+})
+
+/** Read a binding's current value in command sign, or null if unplugged. */
+function joyRead(fn: BindableAxis): number | null {
+  const b = gamepadMap[fn]
+  if (!b) return null
+  const pad = (navigator.getGamepads?.() ?? [])[b.pad]
+  if (!pad) return null
+  return (pad.axes[b.axis] ?? 0) * b.sign
+}
+
+/** Capture tick: returns true while a capture is consuming input. */
+function pollJoyCapture(nowMs: number): boolean {
+  if (!joyCapture) return false
+  const hit = detectMovedAxis(joyCapture.baseline, padsSnapshot(), 0.45)
+  if (hit) {
+    gamepadMap[joyCapture.fn] = hit
+    saveJoyMap()
+    toast(`JOY: ${joyCapture.fn.toUpperCase()} ← pad${hit.pad} axis${hit.axis}${hit.sign < 0 ? ' (inverted)' : ''}`)
+    const q = joyCapture.queue
+    joyCapture = null
+    if (q.length) startJoyCapture(q)
+  } else if (nowMs > joyCapture.deadlineMs) {
+    toast(`JOY: ${joyCapture.fn.toUpperCase()} — nothing moved, skipped`)
+    const q = joyCapture.queue
+    joyCapture = null
+    if (q.length) startJoyCapture(q)
+  }
+  return true
+}
 function shapeAxis(current: number, held: number, dt: number, attack = 2.2, recenter = 3.0): number {
   if (held !== 0) return Math.min(Math.max(current + held * attack * dt, -1), 1)
   const mag = Math.max(Math.abs(current) - recenter * dt, 0)
@@ -736,15 +833,30 @@ function pollControls(dt: number): void {
   // Parking brake: set on ground spawn, auto-releases when power comes up.
   if (parkingBrake && c.throttle > 0.15) parkingBrake = false
   c.brakeLeft = c.brakeRight = input.isHeld('KeyB') || parkingBrake ? 1 : 0
-  const pad = input.gamepad()
-  if (pad) {
-    const dead = (v: number) => (Math.abs(v) > 0.08 ? v : 0)
-    const gr = dead(pad.axes[0] ?? 0)
-    const gp = dead(pad.axes[1] ?? 0)
-    const gy = dead(pad.axes[2] ?? 0)
-    if (gr !== 0) shaped.roll = gr
-    if (gp !== 0) shaped.pitch = gp
-    if (gy !== 0) shaped.yaw = gy
+  // 16a: mapped gamepad axes own their controls while connected.
+  if (!pollJoyCapture(performance.now())) {
+    const jr = joyRead('roll')
+    const jp = joyRead('pitch')
+    const jy = joyRead('yaw')
+    if (jr !== null) shaped.roll = applyDeadzone(jr)
+    if (jp !== null) shaped.pitch = applyDeadzone(jp)
+    if (jy !== null) shaped.yaw = applyDeadzone(jy)
+    const jt = joyRead('throttle')
+    if (jt !== null) {
+      const lever = axisToUnipolar(jt)
+      c.throttle = lever < 0.02 ? 0 : lever > 0.98 ? 1 : lever
+    }
+    const jm = joyRead('mixture')
+    if (jm !== null) {
+      const lever = axisToUnipolar(jm)
+      c.mixture = lever < 0.02 ? 0 : lever > 0.98 ? 1 : lever
+    }
+    const jb = joyRead('brakes')
+    if (jb !== null) {
+      const brake = axisToUnipolar(jb)
+      c.brakeLeft = Math.max(c.brakeLeft, brake)
+      c.brakeRight = Math.max(c.brakeRight, brake)
+    }
   }
   // Expo curve: fine control near center, full authority at the stops.
   const expo = (v: number) => v * Math.abs(v) * 0.65 + v * 0.35
@@ -2171,6 +2283,11 @@ Object.assign(window as unknown as Record<string, unknown>, {
     ...(designator ? { info: typeInfo(designator), parsed: parseDesc(typeInfo(designator).desc) } : {}),
   }),
   __ohTiles: (probeKey?: string) => tiles.debugImagery(probeKey),
+  __ohJoy: () => ({
+    connected: [...(navigator.getGamepads?.() ?? [])].filter(Boolean).map((g) => ({ id: g!.id.slice(0, 48), axes: g!.axes.length })),
+    map: gamepadMap,
+    capturing: joyCapture?.fn ?? null,
+  }),
   __ohAi: () => aiShips.map((s) => ({ cs: s.pilot.callsign, phase: s.pilot.phase, gsKt: Math.round(s.pilot.plane.gsKt), altFt: Math.round(s.pilot.plane.altFt) })),
   __ohTraffic: () => ({
     on: liveTrafficOn,

@@ -32,6 +32,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
 | 14 — Visual traffic | ✅ done | live ADS-B end-to-end + real runway occupancy for sim AI; Phase 15 next |
 | 15 — Perfection | ✅ done | polish, hygiene, debt, sweep, §23 gates, soak segments, §27 landing re-proof — mega-plan complete |
+| 16 — Polish batch | 🔧 16a done | joystick/quadrant support live; imagery z14, night finish, replay next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -81,6 +82,33 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 16a — joystick + throttle quadrant (2026-08-09, user-directed)
+
+Real HOTAS support replacing the old fixed-axis stub (three hardcoded
+axes, no throttle). Pure `sim/gamepad-map.ts` (7 tests): deadzone with
+rescale-to-full-range, signed→unipolar lever conversion, moved-axis
+detection across multiple devices, map serialization. The capture
+convention makes inverted hardware Just Work: `JOY` (guided) or
+`JOY PITCH|ROLL|YAW|THROTTLE|MIXTURE|BRAKES` arms an 8 s capture —
+move the axis to the function's POSITIVE extreme (nose UP, full
+throttle) and that direction becomes +1, so a slider reporting −1 at
+full forward binds itself inverted. Bound axes OWN their control while
+the device is connected: stick through deadzone+expo, quadrant levers
+as absolute positions with idle/full end detents, brakes max-combined
+with the B key. Single-stick default map applies on connect when
+nothing is stored; `JOY CLEAR` wipes; PROP lever refused honestly (no
+controllable-pitch model — governed props auto-govern). `__ohJoy`
+hook; bindings persist in localStorage.
+
+**Verified end-to-end with a synthetic injected gamepad** (patched
+`navigator.getGamepads`): JOY THROTTLE capture bound the swept slider
+as pad0/axis3/sign−1; the lever then owned throttle (0 / 0.5 / 1 with
+detents); JOY PITCH bound the pulled stick and a half-aft hold pitched
+the airborne C172 1.2°→17° in one second; CLEAR wiped the map.
+**Recorded:** physical-hardware confirmation is the user's — the
+Gamepad API cannot be exercised beyond synthetic injection from
+automation. Suite 903 + validate 421, tsc clean.
 
 ## Standalone-server 45-min soak (user-requested, 2026-08-04/09)
 
