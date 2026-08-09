@@ -157,7 +157,6 @@ export class TileManager {
   private imLoading = 0
   private readonly imQueue: string[] = []
   private imFailStreak = 0
-  private readonly texLoader = new THREE.TextureLoader()
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -430,6 +429,45 @@ export class TileManager {
     this.pumpImagery()
   }
 
+  /** 16b: z13 near-ring textures composite their four z14 children
+   *  (512 px ≈ 7.6 m/px) with fallback to the single z13 tile; z11
+   *  keeps single tiles. Alpha is preserved (no-coverage children stay
+   *  transparent → the shader's per-pixel fallback still works). */
+  private async loadImageryTexture(key: string): Promise<THREE.Texture> {
+    const parts = key.split('/')
+    const z = Number(parts[0])
+    const x = Number(parts[1])
+    const y = Number(parts[2])
+    const fetchBitmap = async (u: string): Promise<ImageBitmap> => {
+      const res = await fetch(u)
+      if (!res.ok) throw new Error(`imagery ${u}: ${res.status}`)
+      return createImageBitmap(await res.blob())
+    }
+    if (z === 13) {
+      try {
+        const kids = await Promise.all([0, 1, 2, 3].map((i) =>
+          fetchBitmap(`/proxy/imagery/14/${x * 2 + (i % 2)}/${y * 2 + (i >> 1)}`)))
+        const canvas = document.createElement('canvas')
+        canvas.width = canvas.height = 512
+        const ctx = canvas.getContext('2d')!
+        kids.forEach((bmp, i) => {
+          ctx.drawImage(bmp, (i % 2) * 256, (i >> 1) * 256, 256, 256)
+          bmp.close()
+        })
+        return new THREE.CanvasTexture(canvas)
+      } catch {
+        // fall through to the single z13 tile
+      }
+    }
+    const bmp = await fetchBitmap(`/proxy/imagery/${key}`)
+    const canvas = document.createElement('canvas')
+    canvas.width = bmp.width
+    canvas.height = bmp.height
+    canvas.getContext('2d')!.drawImage(bmp, 0, 0)
+    bmp.close()
+    return new THREE.CanvasTexture(canvas)
+  }
+
   private pumpImagery(): void {
     while (this.imLoading < 4 && this.imQueue.length > 0) {
       const key = this.imQueue.shift()!
@@ -439,9 +477,8 @@ export class TileManager {
         continue
       }
       this.imLoading++
-      this.texLoader.load(
-        `/proxy/imagery/${key}`,
-        (tex) => {
+      this.loadImageryTexture(key)
+        .then((tex) => {
           this.imLoading--
           this.imFailStreak = 0
           const t = this.tiles.get(key)
@@ -469,9 +506,8 @@ export class TileManager {
           }
           if (t) t.imQueued = false
           this.pumpImagery()
-        },
-        undefined,
-        () => {
+        })
+        .catch(() => {
           this.imLoading--
           const t = this.tiles.get(key)
           if (t) t.imQueued = false
@@ -483,8 +519,7 @@ export class TileManager {
             console.warn('[openhorizon] satellite imagery auto-off after repeated failures — stylized terrain fallback (IMAGERY ON to retry)')
           }
           this.pumpImagery()
-        },
-      )
+        })
     }
   }
 

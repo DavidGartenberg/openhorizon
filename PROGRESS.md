@@ -32,7 +32,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
 | 14 — Visual traffic | ✅ done | live ADS-B end-to-end + real runway occupancy for sim AI; Phase 15 next |
 | 15 — Perfection | ✅ done | polish, hygiene, debt, sweep, §23 gates, soak segments, §27 landing re-proof — mega-plan complete |
-| 16 — Polish batch | 🔧 16a done | joystick/quadrant support live; imagery z14, night finish, replay next |
+| 16 — Polish batch | 🔧 16a+16b done | joystick/quadrant + z14 imagery live; night finish, replay next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -82,6 +82,22 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 16b — imagery z14 composite (2026-08-09)
+
+Near-ring (z13) textures now composite their four z14 children into a
+512 px canvas — ~7.6 m/px, double 13b's resolution where it matters
+most — with the full fallback ladder intact: any missing child falls
+back to the single z13 tile, then to the stylized vertex ground;
+transparency is preserved so no-coverage pixels still fall through
+per-pixel. z11 stays single-tile (its ground footprint doesn't reward
+4× requests). The loader moved from THREE.TextureLoader to
+fetch+createImageBitmap with the same concurrency cap and failure
+streak. Verified on the standalone build: 512 px composites applied
+(probe imgPx 512, zero failures, 164 tiles textured at KSJC) and the
+urban mid-field visibly resolves street grid that was wash at 13b.
+Request volume is ×4 on the z13 ring only (disk-cached after first
+fetch). Suite 903 + validate 421, tsc clean.
 
 ## Phase 16a — joystick + throttle quadrant (2026-08-09, user-directed)
 
