@@ -848,6 +848,9 @@ let lastTrafficFetchAt = -Infinity
 let lastTrafficLL = { lat: 0, lon: 0 }
 let lastTrafficPayloadTs = 0
 let lastTrafficStepAt = 0
+let trafficPollCount = 0
+let trafficLastErr = ''
+let trafficInFlightPoll = false
 
 function updateLiveTraffic(lat: number, lon: number, now: number): void {
   // Wall-clock step every frame (clamped against tab-suspend gaps).
@@ -856,17 +859,25 @@ function updateLiveTraffic(lat: number, lon: number, now: number): void {
   lastTrafficStepAt = wallNow
   if (liveTrafficOn && dt > 0) liveTraffic.step(dt, wallNow)
   if (!liveTrafficOn) return
-  if (now - lastTrafficFetchAt > 10_000 || distanceM(lastTrafficLL, { lat, lon }) > 20_000) {
+  // In-flight guard + client timeout (soak finding): during a
+  // multi-minute upstream outage the server legitimately takes ~30 s
+  // per cold answer (provider-chain timeouts) — unguarded 10 s polls
+  // piled onto those and starved the pipeline for good. One poll at a
+  // time, and a hung one dies at 9 s.
+  if (!trafficInFlightPoll && (now - lastTrafficFetchAt > 10_000 || distanceM(lastTrafficLL, { lat, lon }) > 20_000)) {
     lastTrafficFetchAt = now
     lastTrafficLL = { lat, lon }
-    fetch(`/api/traffic?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`)
+    trafficPollCount++
+    trafficInFlightPoll = true
+    fetch(`/api/traffic?lat=${lat.toFixed(4)}&lon=${lon.toFixed(4)}`, { signal: AbortSignal.timeout(9000) })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((json: { ac: LiveTargetWire[]; ts: number }) => {
         if (!liveTrafficOn) return
         lastTrafficPayloadTs = json.ts
         liveTraffic.ingest(json.ac, Date.now(), lat, lon)
       })
-      .catch(() => { /* stale-while-error server-side; next poll retries */ })
+      .catch((e: unknown) => { trafficLastErr = String(e).slice(0, 80) /* stale-while-error server-side; next poll retries */ })
+      .finally(() => { trafficInFlightPoll = false })
   }
 }
 
@@ -2164,6 +2175,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohTraffic: () => ({
     on: liveTrafficOn,
     count: liveTraffic.targets.size,
+    pollCount: trafficPollCount,
+    lastErr: trafficLastErr,
     payloadAgeS: lastTrafficPayloadTs ? +((Date.now() - lastTrafficPayloadTs) / 1000).toFixed(1) : null,
     sample: [...liveTraffic.targets.values()].slice(0, 6).map((t) => ({
       id: t.id, cs: t.cs, t: t.t, altFt: Math.round(t.altFt), gsKt: t.gsKt, gnd: t.gnd,

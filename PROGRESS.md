@@ -82,6 +82,32 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Standalone-server 45-min soak (user-requested, 2026-08-04/09)
+
+Run on the REAL deployment path: `npm run build && node
+server/index.mjs`, production bundle at :8787. **Result: 47.8 minutes
+of continuous sim** (one unbroken run, sim clock 105 → 2,976 s with no
+reset), KLAX orbit at 3,770 ft through dusk with REAL AI density and
+live ADS-B streaming, **zero console errors at every check** (5
+windows + final), draw calls steady at ~331. Target: exceeded.
+
+**Two real findings, both fixed:**
+1. *Hidden tabs froze the sim.* The old page-timer fallback dies under
+   Chrome's intensive throttling (~1 wake/min after 5 min hidden) — a
+   metronome Worker (exempt clock) now ticks the idle-stepper, clamped
+   to 1 s/tick so background runs near-real-time and RESUMES after OS
+   sleep rather than fast-forwarding. (The automation pane throttles
+   even worker clocks to ~¼ rate; a normal browser tab does not.)
+2. *The live-traffic poller could starve for good.* During a
+   multi-minute upstream outage the server legitimately takes ~30 s
+   per cold answer (provider-timeout chains); unguarded 10 s client
+   polls piled onto those and the pipeline never recovered even after
+   the feeds returned (observed live at soak minute ~35: targets 0,
+   payload age climbing past 400 s while a manual fetch worked). Fixed
+   with a one-poll-at-a-time guard + 9 s client abort; verified 10
+   hidden minutes of uninterrupted fresh polls (age 13.9 s at check).
+   Poll counter + last-error exposed on `__ohTraffic` for future runs.
+
 ## Phase 15e — §23 re-measure + soak + §27 re-proof (2026-08-04)
 
 **Heaviest-scene measure** (KLAX 25L, dusk via time scrub, live REAL
