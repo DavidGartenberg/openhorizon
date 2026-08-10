@@ -33,6 +33,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 14 — Visual traffic | ✅ done | live ADS-B end-to-end + real runway occupancy for sim AI; Phase 15 next |
 | 15 — Perfection | ✅ done | polish, hygiene, debt, sweep, §23 gates, soak segments, §27 landing re-proof — mega-plan complete |
 | 16 — Polish batch | ✅ done | joystick/quadrant, z14 imagery, night finish, replay viewer |
+| 17 — The World | ✅ done | global airports/navaids/frequencies, Q-group altimetry, dateline math; EGLL/RJTT/NZAA flown |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -82,6 +83,37 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 17 — The World (2026-08-09, user-directed)
+
+The sim flies everywhere now. **17a — global data layer**: the two
+`iso_country` filters died (airports + navaids; frequencies follows
+the ident set); cache files bumped to `global-*.json` so stale US
+caches never serve. `parseMetar` gained international Q-group
+altimeters (hPa → inHg — international altimetry had been silently
+absent). Dateline hardening: Δlon wraps in toNedMeters/fromNedMeters
+(one unwrapped crossing threw the floating origin ~40,000 km) and in
+airports.near()'s longitude cells — all TDD'd. Payloads measured:
+11,408 airports worldwide, 2.97 MB / 1.11 MB / 0.57 MB
+(airports/navaids/frequencies), one-time cached.
+
+**17b — world acceptance** on the standalone build:
+- **EGLL 27R**: real METAR with QNH 29.94 inHg from a live Q-group,
+  EGLL Tower on its real 118.5, 40 live targets over London (UK-hex
+  ground traffic on the field), stylized English countryside — the
+  imagery fallback being honest.
+- **RJTT 34R**: Tokyo terrain streaming (297 tiles), real Haneda
+  weather, ANA A321/A20N in the live feed and JA-registered
+  datablocks holding on the ground.
+- **NZAA 23L**: southern hemisphere, longitude 174.8°E — spawn,
+  terrain, and real NZ QNH (30.09) all clean.
+
+**World-tier honest absences (recorded)**: outside the US there is no
+satellite imagery (per-pixel fallback to the stylized ground), no
+NLCD biomes (elevation ramp), no CIFP procedures, no FAA airspace,
+and no NEXRAD. Everything geometric — runway markings, PAPI, night
+lighting, ALS, replay, ATC from real frequencies, live traffic —
+works identically worldwide. Suite 913 + validate 421, tsc clean.
 
 ## Phase 16d — replay viewer (2026-08-09)
 
