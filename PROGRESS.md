@@ -32,7 +32,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
 | 14 — Visual traffic | ✅ done | live ADS-B end-to-end + real runway occupancy for sim AI; Phase 15 next |
 | 15 — Perfection | ✅ done | polish, hygiene, debt, sweep, §23 gates, soak segments, §27 landing re-proof — mega-plan complete |
-| 16 — Polish batch | 🔧 16a–16c done | joystick/quadrant, z14 imagery, night finish; replay viewer next |
+| 16 — Polish batch | ✅ done | joystick/quadrant, z14 imagery, night finish, replay viewer |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -82,6 +82,26 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 16d — replay viewer (2026-08-09)
+
+The 10 Hz recorder finally has a face. Pure `sim/replay.ts` (5 tests):
+consumes ONLY recorded samples (§18's provably-what-was-flown rule)
+and builds a plan-view track relative to the final sample, a
+cumulative-distance altitude profile, and the touchdown index (last
+airborne→ground transition) over a 4-minute window. `REPLAY` verb
+opens a viewport-responsive overlay: north-up track colored by AGL
+with a scale bar and red touchdown dot; the profile draws the flown
+path against a dashed 3° reference extending back from touchdown.
+`__ohReplay` summary hook for acceptance.
+
+**Verified live**: an AP-coupled KSFO 28R approach flown to a real
+354 fpm firm touchdown (debrief: "293 m past thr") — the viewer's
+profile shows the flown descent hugging the 3° reference into the
+touchdown marker, which quietly re-proves the 13d glideslope geometry
+too. Plot math cross-checked on the live samples via the hook
+(touchdown at index 1,645 of 1,736; 26.1 km of track ending at field
+elevation). Phase 16 — the user-directed polish batch — complete.
 
 ## Phase 16c — night finish (2026-08-09)
 

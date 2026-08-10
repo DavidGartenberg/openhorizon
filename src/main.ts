@@ -37,6 +37,8 @@ import { archetypeFor } from './world/fleet-map'
 import { buildArchetype, buildArchetypeShip } from './render/fleet-mesh'
 import { ShadowCatcher } from './render/shadow-catcher'
 import { AircraftLights } from './render/aircraft-lights'
+import { ReplayView } from './render/replay-view'
+import { buildReplayPlots } from './sim/replay'
 import { TrafficLayer } from './render/traffic-layer'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
 import type { ArchetypeSpec } from './world/fleet-map'
@@ -190,6 +192,8 @@ const aircraftLights = new AircraftLights(scene)
 aircraftLights.attach(mesh.group)
 // 14d: live-traffic silhouettes + labels.
 const trafficLayer = new TrafficLayer(scene)
+// 16d: replay viewer (REPLAY verb).
+const replayView = new ReplayView()
 const cockpit = buildCockpit(mesh.group)
 const cockpitInteraction = new CockpitInteraction(camera)
 
@@ -560,6 +564,11 @@ function handleSearch(query: string): void {
     tiles.setImagery(on)
     try { localStorage.setItem('oh-imagery', parts[1]) } catch { /* private mode */ }
     toast(`SATELLITE IMAGERY ${parts[1]}${on ? '' : ' — stylized terrain'}`)
+    return
+  }
+  if (parts[0] === 'REPLAY') {
+    replayView.toggle(recorder.samples, debriefLine)
+    if (!replayView.isOpen) toast('REPLAY closed')
     return
   }
   if (parts[0] === 'JOY') {
@@ -2283,6 +2292,17 @@ Object.assign(window as unknown as Record<string, unknown>, {
     ...(designator ? { info: typeInfo(designator), parsed: parseDesc(typeInfo(designator).desc) } : {}),
   }),
   __ohTiles: (probeKey?: string) => tiles.debugImagery(probeKey),
+  __ohReplay: () => {
+    const p = buildReplayPlots(recorder.samples, 240)
+    return {
+      points: p.plan.length,
+      touchdownIdx: p.touchdownIdx,
+      totalDistM: Math.round(p.totalDistM),
+      firstAltFt: p.profile[0] ? Math.round(p.profile[0].altFt) : null,
+      lastAltFt: p.profile.length ? Math.round(p.profile[p.profile.length - 1]!.altFt) : null,
+      viewerOpen: replayView.isOpen,
+    }
+  },
   __ohJoy: () => ({
     connected: [...(navigator.getGamepads?.() ?? [])].filter(Boolean).map((g) => ({ id: g!.id.slice(0, 48), axes: g!.axes.length })),
     map: gamepadMap,
