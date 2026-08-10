@@ -35,3 +35,15 @@ export function airportBeacon(t: number): 'white' | 'green' | null {
   if (ph >= T / 2 && ph < T / 2 + 0.18) return 'green'
   return null
 }
+
+export const RABBIT_PERIOD_S = 0.5
+
+/** Sequenced approach flashers ("the rabbit", 16c): one sweep per
+ *  RABBIT_PERIOD_S running outermost (station 0) toward the threshold,
+ *  each station flashing a ~22 ms window offset 5.5% of the sweep. */
+export function rabbitOn(t: number, station: number, count: number): boolean {
+  void count
+  const ph = ((t / RABBIT_PERIOD_S) % 1 + 1) % 1
+  const start = station * 0.055
+  return ph >= start && ph < start + 0.045
+}

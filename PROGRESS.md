@@ -32,7 +32,7 @@ Node; add `~/.local/node/bin` to PATH).
 | 13 — Graphics | ✅ done | shadows, airport detail, imagery, night, PAPI (+GS fix), sea state + cloud light; bloom evaluated-cut |
 | 14 — Visual traffic | ✅ done | live ADS-B end-to-end + real runway occupancy for sim AI; Phase 15 next |
 | 15 — Perfection | ✅ done | polish, hygiene, debt, sweep, §23 gates, soak segments, §27 landing re-proof — mega-plan complete |
-| 16 — Polish batch | 🔧 16a+16b done | joystick/quadrant + z14 imagery live; night finish, replay next |
+| 16 — Polish batch | 🔧 16a–16c done | joystick/quadrant, z14 imagery, night finish; replay viewer next |
 
 ## Phase 9a — sound core (2026-07-20)
 
@@ -82,6 +82,30 @@ distance boards follow real FAA geometry rules. Browser-verified at
 KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
+
+## Phase 16c — night finish (2026-08-09)
+
+Three items. **Approach light systems**: MALSR-style bars — seven
+5-light stations at 200 ft spacing on the extended centerline of each
+end of long lighted runways (≥6,000 ft; heuristic placement, no ALS
+inventory in free data — recorded), elevations extrapolating the
+runway plane (frangible masts). The outer five stations carry
+sequenced flashers — pure `rabbitOn` in sim/lights (2 tests: sweeps
+run outermost→threshold twice a second) driving a per-airport Points
+with per-frame colors, same mechanism as the 13c beacon. **Taxiway
+blue edges**: buildTaxiwayComplex emits edge-light positions (parallel
+every 30 m + connectors) in its local frame; airports.ts transforms
+them into the group frame and folds them into the existing night
+cloud — zero extra draw calls. **Paint dimming**: the unlit marking
+materials (runway white, taxi yellow, centerline stripes, edge-light
+spheres) now scale with darkness — painted markings no longer glow at
+night (the recorded 13c artifact); signs stay bright, as real
+illuminated signs do. Verified on the standalone build: night short
+final at KSFO shows the ALS bar string marching to the threshold
+cluster with the field's edge lights beyond and no marking glow.
+Host-load note: one transient test flake and upstream-imagery 502s
+during verification (client degraded per its ladder). Suite 905 +
+validate 421, tsc clean.
 
 ## Phase 16b — imagery z14 composite (2026-08-09)
 

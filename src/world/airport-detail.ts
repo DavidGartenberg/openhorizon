@@ -18,6 +18,17 @@
 import * as THREE from 'three'
 
 const MARK_WHITE = new THREE.MeshBasicMaterial({ color: 0xf0f2f0 })
+const MARK_WHITE_BASE = 0xf0f2f0
+const TAXI_LINE_BASE = 0xd9c04a
+
+/** 16c: painted markings are unlit materials — full-bright at night.
+ *  Scale their colors with darkness (signs stay bright: real ones are
+ *  internally illuminated). */
+export function dimPaintForNight(night: number): void {
+  const f = 1 - 0.78 * Math.min(Math.max(night, 0), 1)
+  MARK_WHITE.color.setHex(MARK_WHITE_BASE).multiplyScalar(f)
+  TAXI_LINE.color.setHex(TAXI_LINE_BASE).multiplyScalar(f)
+}
 const TAXI_GREY = new THREE.MeshStandardMaterial({ color: 0x2c2f33, roughness: 0.96 })
 const TAXI_LINE = new THREE.MeshBasicMaterial({ color: 0xd9c04a })
 const APRON_GREY = new THREE.MeshStandardMaterial({ color: 0x33373c, roughness: 0.95 })
@@ -184,13 +195,30 @@ function taxiSign(text: string, fg: string, bg: string, wM = 2.2): THREE.Mesh {
 }
 
 /** Procedural parallel taxiway + connectors + signs + apron/terminal. */
-export function buildTaxiwayComplex(r: RunwayLocal, big: boolean): THREE.Group {
+export function buildTaxiwayComplex(r: RunwayLocal, big: boolean, edgeLightsOut?: THREE.Vector3[]): THREE.Group {
   const g = new THREE.Group()
   const off = r.widM / 2 + 32 // taxiway centerline offset (right of low heading)
   const twW = big ? 15 : 10
 
   const quads: Quad[] = [{ x: off, y: 0, w: twW, l: r.lenM * 0.94 }]
   const connectors = [-0.44, 0, 0.44].map((f) => f * r.lenM)
+  // 16c: taxiway blue edge lights, LOCAL detail-frame positions (x
+  // lateral, y up, z = −along) for the caller's night layer.
+  if (edgeLightsOut) {
+    const halfLen = (r.lenM * 0.94) / 2
+    for (let a = -halfLen; a <= halfLen; a += 30) {
+      for (const side of [-1, 1]) {
+        edgeLightsOut.push(new THREE.Vector3(off + side * (twW / 2 + 1), r.elevAt(a / r.lenM) + 0.4, -a))
+      }
+    }
+    for (const cy of connectors) {
+      for (let x = r.widM / 2 + 4; x < off - twW / 2 - 2; x += 10) {
+        for (const side of [-1, 1]) {
+          edgeLightsOut.push(new THREE.Vector3(x, r.elevAt(cy / r.lenM) + 0.4, -(cy + side * (twW / 2 + 1))))
+        }
+      }
+    }
+  }
   for (const cy of connectors) quads.push({ x: off / 2, y: cy, w: 32, l: twW, rotZ: Math.PI / 2 })
   const pave = new THREE.Mesh(mergedQuads(quads, r, 0.05), TAXI_GREY)
   pave.receiveShadow = true

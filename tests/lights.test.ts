@@ -8,7 +8,7 @@
  *    per minute (AIM 2-1-9)
  */
 import { describe, expect, it } from 'vitest'
-import { beaconOn, strobeOn, airportBeacon, BEACON_PERIOD_S, STROBE_PERIOD_S, AIRPORT_BEACON_PERIOD_S } from '../src/sim/lights'
+import { beaconOn, strobeOn, airportBeacon, rabbitOn, BEACON_PERIOD_S, STROBE_PERIOD_S, AIRPORT_BEACON_PERIOD_S, RABBIT_PERIOD_S } from '../src/sim/lights'
 
 const countPerMinute = (fn: (t: number) => boolean): number => {
   let count = 0
@@ -70,5 +70,26 @@ describe('airportBeacon (alternating white/green)', () => {
     }
     expect(count).toBeGreaterThanOrEqual(24)
     expect(count).toBeLessThanOrEqual(30)
+  })
+})
+
+describe('rabbitOn (16c sequenced approach flashers)', () => {
+  it('runs outermost-first toward the threshold within each sweep', () => {
+    const P = RABBIT_PERIOD_S
+    expect(rabbitOn(0.01 * P, 0, 5)).toBe(true) // outermost fires first
+    expect(rabbitOn(0.01 * P, 3, 5)).toBe(false)
+    expect(rabbitOn(0.17 * P, 3, 5)).toBe(true) // station 3 window ~0.165-0.21
+    expect(rabbitOn(0.17 * P, 0, 5)).toBe(false)
+  })
+  it('sweeps twice per second (station 0 fires 120 times a minute)', () => {
+    let count = 0
+    let prev = false
+    for (let t = 0; t < 60; t += 0.004) {
+      const on = rabbitOn(t, 0, 5)
+      if (on && !prev) count++
+      prev = on
+    }
+    expect(count).toBeGreaterThanOrEqual(110)
+    expect(count).toBeLessThanOrEqual(125)
   })
 })

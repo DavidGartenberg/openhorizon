@@ -2,8 +2,8 @@ import * as THREE from 'three'
 import { FT } from '../sim/atmosphere'
 import { distanceM, bearingDeg, flattenForRunway, type LatLon } from '../math/geo'
 import type { WorldFrame, RunwayFlatten } from './tiles'
-import { buildRunwayMarkings, buildDistanceSigns, buildTaxiwayComplex, type RunwayLocal } from './airport-detail'
-import { airportBeacon } from '../sim/lights'
+import { buildRunwayMarkings, buildDistanceSigns, buildTaxiwayComplex, dimPaintForNight, type RunwayLocal } from './airport-detail'
+import { airportBeacon, rabbitOn } from '../sim/lights'
 import { lightGlowTexture } from '../render/light-glow'
 import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
 
@@ -36,6 +36,8 @@ const ASPHALT = new THREE.MeshStandardMaterial({ color: 0x35383c, roughness: 0.9
 const TURF = new THREE.MeshStandardMaterial({ color: 0x3c5233, roughness: 1 })
 const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8d8d0 })
 const EDGE_LIGHT = new THREE.MeshBasicMaterial({ color: 0xffffff })
+const STRIPE_BASE = 0xd8d8d0
+const EDGE_SPHERE_BASE = 0xffffff
 const SOCK_ORANGE = new THREE.MeshStandardMaterial({ color: 0xe8641b, roughness: 0.8 })
 const MAST = new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 0.9 })
 /** 13d PAPI boxes: constant-pixel additive glow points, on day and night. */
@@ -50,6 +52,9 @@ const PAPI_MAT = new THREE.PointsMaterial({
 interface NightLights {
   pts: THREE.Points | null
   beacon: THREE.Points | null
+  /** 16c sequenced approach flashers: per-point station index. */
+  rabbit: THREE.Points | null
+  rabbitStations: number[]
 }
 
 /** 13d: one 4-box PAPI array per qualifying runway end. Colors are
@@ -180,6 +185,8 @@ export class Airports {
     }
     let anyLighted = false
     const papis: PapiArray[] = []
+    const rabbitPos: number[] = []
+    const rabbitStations: number[] = []
     for (const r of ap.r) {
       const lenM = r.l * FT
       const widM = Math.max(r.w * FT, 8)
@@ -240,7 +247,15 @@ export class Airports {
         detail.add(buildDistanceSigns(rl))
         const isLongest = ap.r.every((o) => o.l <= r.l)
         if (isLongest && lenM >= 1100) {
-          detail.add(buildTaxiwayComplex(rl, lenM >= 2130))
+          // 16c: collect taxiway blue-edge lights (detail-local frame)
+          // and transform them into the airport group's frame.
+          const blues: THREE.Vector3[] = []
+          detail.add(buildTaxiwayComplex(rl, lenM >= 2130, r.lt === 1 ? blues : undefined))
+          const yAxis = new THREE.Vector3(0, 1, 0)
+          for (const v of blues) {
+            v.applyAxisAngle(yAxis, -hdg)
+            addLight(cx + v.x, elevM + 0.02 + v.y, -cy + v.z, 0.2, 0.35, 1)
+          }
         }
         detail.rotation.y = -hdg
         detail.position.set(cx, elevM + 0.02, -cy)
@@ -301,6 +316,36 @@ export class Airports {
             })
           }
         }
+        // Approach light bars (16c): MALSR-style — seven 5-light bars at
+        // 200 ft (61 m) stations on the extended centerline of each end
+        // of long lighted runways (>=6,000 ft), with sequenced flashers
+        // ("the rabbit") on the outer five stations. Heuristic placement
+        // (no ALS inventory in the free data — recorded); elevation
+        // extrapolates the runway plane (frangible masts).
+        if (r.l >= 6000) {
+          for (const end of [-1, 1] as const) {
+            for (let k = 1; k <= 7; k++) {
+              const t = end * (0.5 + (61 * k) / lenM)
+              const ey = e1M + (t + 0.5) * (e2M - e1M) + 1
+              for (let b = -2; b <= 2; b++) {
+                addLight(
+                  cx + Math.sin(hdg) * t * lenM + Math.cos(hdg) * b * 2.25,
+                  ey,
+                  -(cy + Math.cos(hdg) * t * lenM) + Math.sin(hdg) * b * 2.25,
+                  1, 0.97, 0.9,
+                )
+              }
+              if (k >= 3) {
+                rabbitPos.push(
+                  cx + Math.sin(hdg) * t * lenM,
+                  ey + 0.3,
+                  -(cy + Math.cos(hdg) * t * lenM),
+                )
+                rabbitStations.push(7 - k) // station 0 = outermost
+              }
+            }
+          }
+        }
         // Threshold bars (13c): green row facing the arrival just outside
         // each end, red end row just inside — approximating bidirectional
         // threshold/end lenses with two colocated rows (recorded).
@@ -333,7 +378,7 @@ export class Airports {
     if (anyLighted) addLight(30, ap.e * FT + 5.7, 30, 1, 0.85, 0.58) // floodlit sock
 
     // 13c: assemble the night layer.
-    const night: NightLights = { pts: null, beacon: null }
+    const night: NightLights = { pts: null, beacon: null, rabbit: null, rabbitStations: [] }
     if (nPos.length > 0) {
       const geo = new THREE.BufferGeometry()
       geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(nPos), 3))
@@ -362,6 +407,20 @@ export class Airports {
       night.beacon.frustumCulled = false // single point, flashes across miles
       night.beacon.renderOrder = 30
       group.add(night.beacon)
+    }
+    if (rabbitPos.length > 0) {
+      const rGeo = new THREE.BufferGeometry()
+      rGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(rabbitPos), 3))
+      const rCol = new THREE.BufferAttribute(new Float32Array(rabbitPos.length), 3)
+      rGeo.setAttribute('color', rCol)
+      night.rabbit = new THREE.Points(rGeo, new THREE.PointsMaterial({
+        map: lightGlowTexture(), size: 6, sizeAttenuation: false, vertexColors: true,
+        transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
+      }))
+      night.rabbit.frustumCulled = false
+      night.rabbit.renderOrder = 30
+      night.rabbitStations = rabbitStations
+      group.add(night.rabbit)
     }
     group.userData.night = night
     group.userData.papis = papis
@@ -418,6 +477,12 @@ export class Airports {
   /** Per-frame 13c: fade the steady lights with darkness, flash the
    *  beacon white/green on the AIM cadence (sim-time driven). */
   updateNight(tS: number, night: number): void {
+    // 16c: dim the unlit painted markings with darkness (signs stay
+    // bright — real ones are illuminated).
+    dimPaintForNight(night)
+    const paintF = 1 - 0.78 * night
+    STRIPE.color.setHex(STRIPE_BASE).multiplyScalar(paintF)
+    EDGE_LIGHT.color.setHex(EDGE_SPHERE_BASE).multiplyScalar(1 - 0.55 * night)
     for (const group of this.rendered.values()) {
       const nl = group.userData.night as NightLights | undefined
       if (!nl) continue
@@ -428,6 +493,16 @@ export class Airports {
         mat.opacity = phase && night > 0.05 ? Math.min(night * 1.6, 1) : 0
         if (phase === 'green') mat.color.setRGB(0.15, 1, 0.3)
         else mat.color.setRGB(1, 1, 0.92)
+      }
+      if (nl.rabbit) {
+        const mat = nl.rabbit.material as THREE.PointsMaterial
+        mat.opacity = night
+        const col = nl.rabbit.geometry.getAttribute('color') as THREE.BufferAttribute
+        for (let i = 0; i < nl.rabbitStations.length; i++) {
+          const on = rabbitOn(tS, nl.rabbitStations[i]!, 5)
+          col.setXYZ(i, on ? 1 : 0, on ? 1 : 0, on ? 0.95 : 0)
+        }
+        col.needsUpdate = true
       }
     }
   }
