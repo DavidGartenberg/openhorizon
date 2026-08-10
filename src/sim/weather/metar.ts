@@ -92,10 +92,15 @@ export function parseMetar(rawIn: string): ParsedMetar {
       continue
     }
 
-    // Altimeter: A2992 (inHg ×100)
+    // Altimeter: A2992 (inHg ×100) or international Q1013 (hPa, 17a).
     const alt = t.match(/^A(\d{4})$/)
     if (alt) {
       out.altimeterInHg = parseInt(alt[1]!, 10) / 100
+      continue
+    }
+    const qnh = t.match(/^Q(\d{4})$/)
+    if (qnh) {
+      out.altimeterInHg = parseInt(qnh[1]!, 10) / 33.8639
       continue
     }
 

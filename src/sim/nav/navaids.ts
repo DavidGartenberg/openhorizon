@@ -9,7 +9,7 @@
  * touch three.js; this one must not).
  *
  * All station types/fields mirror the compact JSON produced by
- * `server/parse.mjs#buildUsNavaids` — see that file's header comment for the
+ * `server/parse.mjs#buildNavaids` — see that file's header comment for the
  * exact OurAirports `navaids.csv` schema this was built against.
  */
 import { bearingDeg, distanceM, type LatLon } from '../../math/geo'

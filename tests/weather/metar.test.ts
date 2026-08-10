@@ -76,3 +76,12 @@ describe('parseMetar', () => {
     expect(junk.clouds).toEqual([])
   })
 })
+
+describe('international altimetry (17a)', () => {
+  it('parses a Q-group (hectopascals) into inHg', () => {
+    const m = parseMetar('EGLL 291020Z 24010KT 9999 SCT028 15/09 Q1013')
+    expect(m.altimeterInHg).toBeCloseTo(29.91, 2) // 1013 hPa (29.92 is 1013.25)
+    const hi = parseMetar('RJTT 291000Z 04008KT 9999 FEW030 22/17 Q1026')
+    expect(hi.altimeterInHg).toBeCloseTo(30.30, 2)
+  })
+})

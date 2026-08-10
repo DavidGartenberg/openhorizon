@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error — plain .mjs module without type declarations
-import { buildUsFrequencies } from '../../server/parse.mjs'
+import { buildFrequencies } from '../../server/parse.mjs'
 import { CommsBus, isAudible } from '../../src/sim/atc/comms'
 
-describe('buildUsFrequencies', () => {
+describe('buildFrequencies', () => {
   const csv =
     'id,airport_ref,airport_ident,type,description,frequency_mhz\n' +
     '1,100,KPAO,TWR,TOWER,118.6\n' +
@@ -14,7 +14,7 @@ describe('buildUsFrequencies', () => {
     '6,400,KHAF,CTAF,CTAF/UNICOM,122.8\n' +
     '7,100,KPAO,MISC,ODDBALL,999.9\n'
   const us = new Set(['KPAO', 'KSQL', 'KHAF'])
-  const out = buildUsFrequencies(csv, us)
+  const out = buildFrequencies(csv, us)
 
   it('groups known types per US airport and drops non-US/unknown', () => {
     expect(out.KPAO).toEqual([

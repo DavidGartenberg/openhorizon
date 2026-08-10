@@ -1,5 +1,5 @@
 /**
- * OurAirports CSV → compact US airport JSON (pure functions, unit-tested).
+ * OurAirports CSV → compact GLOBAL airport JSON (pure functions, unit-tested; 17a dropped the US filter).
  * Output per airport: { i: ident, n: name, la, lo, e: elevFt, r: [runway] }
  * runway: { li, hi, la1, lo1, la2, lo2, l: lengthFt, w: widthFt,
  *           s: 0 hard | 1 soft, lt: 0|1 lighted }
@@ -111,7 +111,7 @@ function project(lat, lon, headingDeg, distM) {
   return [lat + (Math.cos(h) * distM) / mLat, lon + (Math.sin(h) * distM) / mLon]
 }
 
-export function buildUsAirports(airportsCsv, runwaysCsv) {
+export function buildAirports(airportsCsv, runwaysCsv) {
   const a = parseCsv(airportsCsv)
   const r = parseCsv(runwaysCsv)
   const ai = a.idx
@@ -119,7 +119,6 @@ export function buildUsAirports(airportsCsv, runwaysCsv) {
 
   const byIdent = new Map()
   for (const row of a.rows) {
-    if (row[ai.iso_country] !== 'US') continue
     const type = row[ai.type]
     if (type !== 'small_airport' && type !== 'medium_airport' && type !== 'large_airport') continue
     const lat = parseFloat(row[ai.latitude_deg])
@@ -212,11 +211,10 @@ const NAVAID_TYPE_CODE = {
 /** Does this navaid type carry a DME/TACAN distance component? */
 const HAS_DME = new Set(['VOR-DME', 'VORTAC', 'TACAN', 'DME', 'NDB-DME'])
 
-export function buildUsNavaids(navaidsCsv) {
+export function buildNavaids(navaidsCsv) {
   const { idx, rows } = parseCsv(navaidsCsv)
   const out = []
   for (const row of rows) {
-    if (row[idx.iso_country] !== 'US') continue
     const type = row[idx.type]
     const t = NAVAID_TYPE_CODE[type]
     if (t === undefined) continue
@@ -813,12 +811,12 @@ export function buildUsAirspace(classFeatures, suaFeatures) {
  */
 const FREQ_TYPES = new Set(['TWR', 'GND', 'ATIS', 'CTAF', 'UNICOM', 'CLD', 'DEL', 'A/D', 'APP', 'DEP', 'CNTR'])
 
-export function buildUsFrequencies(frequenciesCsv, usIdentSet) {
+export function buildFrequencies(frequenciesCsv, identSet) {
   const { idx, rows } = parseCsv(frequenciesCsv)
   const out = {}
   for (const row of rows) {
     const ident = row[idx.airport_ident]
-    if (!usIdentSet.has(ident)) continue
+    if (!identSet.has(ident)) continue
     const type = row[idx.type]
     if (!FREQ_TYPES.has(type)) continue
     const f = parseFloat(row[idx.frequency_mhz])

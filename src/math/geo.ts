@@ -19,15 +19,25 @@ export function metersPerDegree(latDeg: number): { north: number; east: number }
 }
 
 /** Lat/lon → NED meters relative to an anchor (local flat frame). */
-export function toNedMeters(lat: number, lon: number, anchor: LatLon): { north: number; east: number } {
-  const m = metersPerDegree(anchor.lat)
-  return { north: (lat - anchor.lat) * m.north, east: (lon - anchor.lon) * m.east }
+/** Wrap a longitude difference into [-180, 180] (17a: the flat local
+ *  frame must survive a dateline crossing — one unwrapped frame threw
+ *  the floating origin ~40,000 km). */
+function wrapDLon(d: number): number {
+  return d > 180 ? d - 360 : d < -180 ? d + 360 : d
 }
 
-/** NED meters relative to anchor → lat/lon. */
+export function toNedMeters(lat: number, lon: number, anchor: LatLon): { north: number; east: number } {
+  const m = metersPerDegree(anchor.lat)
+  return { north: (lat - anchor.lat) * m.north, east: wrapDLon(lon - anchor.lon) * m.east }
+}
+
+/** NED meters relative to anchor → lat/lon (longitude normalized to ±180). */
 export function fromNedMeters(northM: number, eastM: number, anchor: LatLon): LatLon {
   const m = metersPerDegree(anchor.lat)
-  return { lat: anchor.lat + northM / m.north, lon: anchor.lon + eastM / m.east }
+  let lon = anchor.lon + eastM / m.east
+  if (lon > 180) lon -= 360
+  else if (lon < -180) lon += 360
+  return { lat: anchor.lat + northM / m.north, lon }
 }
 
 // ---- slippy tiles ----

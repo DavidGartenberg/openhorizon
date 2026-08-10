@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { buildUsAirports, buildUsNavaids, buildCifpProcedures, buildUsAirspace, buildUsFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb } from './parse.mjs'
+import { buildAirports, buildNavaids, buildCifpProcedures, buildUsAirspace, buildFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb } from './parse.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 /** Vendored offline fallbacks committed with the repo (Phase 12a). */
@@ -31,10 +31,10 @@ export async function terrainTile(z, x, y) {
 
 let airportsJson = null
 
-/** GET /api/airports.json — compact US airports+runways. */
+/** GET /api/airports.json — compact GLOBAL airports+runways (17a). */
 export async function airportsData() {
   if (airportsJson) return airportsJson
-  const jsonFile = path.join(cacheDir, 'us-airports.json')
+  const jsonFile = path.join(cacheDir, 'global-airports.json')
   if (fs.existsSync(jsonFile)) {
     airportsJson = fs.readFileSync(jsonFile, 'utf8')
     return airportsJson
@@ -52,7 +52,7 @@ export async function airportsData() {
     fetchCached('airports.csv'),
     fetchCached('runways.csv'),
   ])
-  airportsJson = JSON.stringify(buildUsAirports(airports, runways))
+  airportsJson = JSON.stringify(buildAirports(airports, runways))
   fs.writeFileSync(jsonFile, airportsJson)
   return airportsJson
 }
@@ -189,10 +189,10 @@ export async function aircraftTypesData() {
 
 let navaidsJson = null
 
-/** GET /api/navaids.json — compact US VOR/NDB navaids. */
+/** GET /api/navaids.json — compact GLOBAL VOR/NDB navaids (17a). */
 export async function navaidsData() {
   if (navaidsJson) return navaidsJson
-  const jsonFile = path.join(cacheDir, 'us-navaids.json')
+  const jsonFile = path.join(cacheDir, 'global-navaids.json')
   if (fs.existsSync(jsonFile)) {
     navaidsJson = fs.readFileSync(jsonFile, 'utf8')
     return navaidsJson
@@ -207,7 +207,7 @@ export async function navaidsData() {
     navaidsCsv = await res.text()
     fs.writeFileSync(f, navaidsCsv)
   }
-  navaidsJson = JSON.stringify(buildUsNavaids(navaidsCsv))
+  navaidsJson = JSON.stringify(buildNavaids(navaidsCsv))
   fs.writeFileSync(jsonFile, navaidsJson)
   return navaidsJson
 }
@@ -385,10 +385,10 @@ export async function metarData(bbox) {
 
 let frequenciesJson = null
 
-/** GET /api/frequencies.json — per-US-airport TWR/GND/ATIS/CTAF/etc. */
+/** GET /api/frequencies.json — per-airport TWR/GND/ATIS/CTAF/etc. (global, 17a). */
 export async function frequenciesData() {
   if (frequenciesJson) return frequenciesJson
-  const jsonFile = path.join(cacheDir, 'us-frequencies.json')
+  const jsonFile = path.join(cacheDir, 'global-frequencies.json')
   if (fs.existsSync(jsonFile)) {
     frequenciesJson = fs.readFileSync(jsonFile, 'utf8')
     return frequenciesJson
@@ -403,7 +403,7 @@ export async function frequenciesData() {
     fs.writeFileSync(f, csv)
   }
   const usIdents = new Set(JSON.parse(await airportsData()).map((a) => a.i))
-  frequenciesJson = JSON.stringify(buildUsFrequencies(csv, usIdents))
+  frequenciesJson = JSON.stringify(buildFrequencies(csv, usIdents))
   fs.writeFileSync(jsonFile, frequenciesJson)
   return frequenciesJson
 }

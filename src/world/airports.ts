@@ -100,7 +100,9 @@ export class Airports {
     const out: AirportData[] = []
     for (let a = Math.floor((lat - dCell / 2) * 2); a <= Math.floor((lat + dCell / 2) * 2); a++) {
       for (let b = Math.floor((lon - dCell) * 2); b <= Math.floor((lon + dCell) * 2); b++) {
-        for (const ap of this.cells.get(`${a},${b}`) ?? []) {
+        // 17a: wrap longitude cells across the dateline.
+        const bw = b >= 360 ? b - 720 : b < -360 ? b + 720 : b
+        for (const ap of this.cells.get(`${a},${bw}`) ?? []) {
           if (distanceM({ lat, lon }, { lat: ap.la, lon: ap.lo }) <= radiusM) out.push(ap)
         }
       }
