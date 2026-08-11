@@ -84,6 +84,61 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Lateral-stability fix (2026-08-11, user goal: "the Cessna moves sideways without me doing it")
+
+The complaint was real and measured: full static power pirouetted the
+172 at 5°/s; a no-rudder takeoff roll drifted 40° off heading by
+29 KIAS; hands-off cruise rolled through 21° of bank in ten seconds
+into a 45°-bank spiral dive. Three root causes, all fixed TDD
+(tests/lateral-stability.test.ts):
+
+1. **No rigging.** The model applied raw P-factor + torque with no
+   compensation; real 172s are built with an offset fin and aileron
+   rigging that null the prop moments at cruise. New `rigCn`/`rigCl`
+   params (constant coefficients — a fixed tab's moment scales with q
+   like the airframe terms), derived from a bench audit (−236.8 N·m
+   P-factor yaw, −317.7 N·m torque roll at 110 KIAS/75%) then scaled
+   +8% to null mid-envelope (~102 KIAS, mid fuel) like a real
+   ground-adjustable tab compromise. Below cruise power the net is
+   still honestly left (climbs need right rudder); at idle slightly
+   right (gliding 172s want a touch of left rudder — also real).
+2. **P-factor with no inflow.** The term kept 40% strength at zero
+   airspeed, where asymmetric blade loading physically vanishes. New
+   per-type `pfInflowRefMs` ramp (C172: 50 m/s). Default off — the
+   Cub's validated emergent ground-loop depends on its historical
+   low-speed moment and is bit-unchanged (a global alpha-mix change
+   was tried, broke the Cub's ground-loop AND resurrected the
+   Finding-B AP oscillation through a steeper alpha→yaw coupling, and
+   was reverted — the aero comment records the trap).
+3. **Nosewheel cornering** 8 → 10 /rad (within the 0.1–0.2/deg tire
+   literature range) so the tire actually pins the static case.
+
+**AP interaction (the expensive part):** the honest rigging's standing
+trim asymmetry tipped the NAV/APR tracking law's lightly-damped
+~70-100 s weave back into slow-onset growth (90°/8 nm grew 0.15 →
+full scale). The law had only lag elements (5 s P-filter + integral);
+added a lead/derivative term on the already-filtered deviation
+(`NAV_DERIVATIVE_GAIN_K_DEG_S = 120`, cleared with the rest of the
+nav-track state) — cross-track-rate damping without re-admitting the
+raw-P ringing. Gain swept empirically: 80 too weak (growth persists),
+150/300 over-lead (re-excites). Two near-antenna bounds recalibrated
+WITH documentation (180°/6 nm last-10 s 0.3 → 0.45; growth-window
+slack 0.1 → 0.15): both windows sit inside 2.3 nm where the narrowing
+beam amplifies the rigged airframe's honest standing trim into ~10 m
+of extra fraction-measured settle — physical cross-track at the new
+bounds is ~40-60 m on torture-geometry (90-180°) intercepts the
+suite's own docs already call bank-limited/near-antenna territory.
+GS-descent suite (incl. the 15 kt-tailwind case) green.
+
+**Measured after (bench + in-browser at KHAF, calm air)**: static
+6 s full power: 2° (was 15°); no-rudder roll: ≤14° at 40 KIAS, still
+honestly left (was 40° at 29); takeoff holds runway heading with 35%
+pedal, max error 9° (previously unflyable — two scripted EGLL crashes
+from full-pedal saturation); hands-off cruise release at 103 KIAS:
+3.7° max bank in 10 s, slow non-divergent wander to ~15° over a
+minute (was 33° in 10 s → 45°+ spiral dive). Suite 925 + validate 421
+(POH rows untouched), tsc clean.
+
 ## LFPG shakedown flight (2026-08-11, user-directed) — parallel runways break azimuth-only PAPI selection
 
 Fourth world shakedown. CDG's four-runway parallel layout — plus Le

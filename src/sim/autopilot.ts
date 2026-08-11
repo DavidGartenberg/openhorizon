@@ -176,6 +176,8 @@ export interface AutopilotState {
    *  stale/first-frame value. */
   navTrackPrevDeviation: number
   navTrackInitialized: boolean
+  /** Previous FILTERED deviation (for the lead/derivative term below). */
+  navTrackPrevFilteredDeviation: number
   /** Low-pass-filtered deviation fed to the tracking law's P term — see
    *  the constant-block comment above `NAV_MAX_INTERCEPT_DEG`. */
   navTrackFilteredDeviation: number
@@ -212,6 +214,7 @@ export function makeAutopilotState(): AutopilotState {
     pitchAttitude: makePid(),
     navTrackPrevDeviation: 0,
     navTrackInitialized: false,
+    navTrackPrevFilteredDeviation: 0,
     navTrackFilteredDeviation: 0,
     navTrackIntegral: 0,
     navTrackInterceptOffsetDeg: 0,
@@ -516,6 +519,7 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
     state.navTrackInitialized = false
     state.navTrackIntegral = 0
     state.navTrackInterceptOffsetDeg = 0
+    state.navTrackPrevFilteredDeviation = 0
   }
 
   let targetBankDeg: number
@@ -538,6 +542,7 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
         state.navTrackInitialized = false
         state.navTrackIntegral = 0
         state.navTrackInterceptOffsetDeg = 0
+        state.navTrackPrevFilteredDeviation = 0
         // ROUND 3 ATTEMPT (see the fix report's "round 3" section): seed the
         // P term's low-pass filter to the ACTUAL deviation at the instant of
         // capture rather than leaving it at 0/stale — a real, defensible
@@ -602,7 +607,10 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       // First tracking step: seed the P-term filter in the SAME (range-
       // scaled) domain the loop closes on — the capture-block seed uses the
       // unscaled ARMED-branch deviation, up to 2.5× off (review finding).
-      if (!state.navTrackInitialized) state.navTrackFilteredDeviation = rawEffectiveDeviation
+      if (!state.navTrackInitialized) {
+        state.navTrackFilteredDeviation = rawEffectiveDeviation
+        state.navTrackPrevFilteredDeviation = rawEffectiveDeviation
+      }
       // Deviation SLEW-RATE limit: a genuine ILS localizer's angular
       // sensitivity is inversely proportional to distance from the station,
       // and right at/very near the station itself the bearing-based
@@ -647,13 +655,24 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       // integrator shows a genuinely sustained deviation (see the
       // constant-block comment for why using integrator wind-up, not a
       // fixed cap, avoids permanently ignoring a real, persistent error).
+      // Lead/derivative term (rigged-airframe fix): the P-filter and the
+      // integral are both LAG — phase margin at the lightly-damped
+      // ~70-100 s weave was thin enough that honest airframe rigging
+      // (constant trim asymmetries, see aircraft params `rigCn`/`rigCl`)
+      // tipped it into slow-onset growth again. Differentiating the
+      // ALREADY-5s-FILTERED deviation gives smooth cross-track-rate
+      // damping without re-admitting the raw-P ringing this filter was
+      // added to stop.
+      const NAV_DERIVATIVE_GAIN_K_DEG_S = 120
+      const dDevF = dt > 1e-6 ? (state.navTrackFilteredDeviation - state.navTrackPrevFilteredDeviation) / dt : 0
+      state.navTrackPrevFilteredDeviation = state.navTrackFilteredDeviation
       const headingAlignErrorDeg = Math.abs(headingErrorDeg(inputs.headingBugDeg, inputs.headingDeg))
       const windUpImpliedDeg = Math.abs(state.navTrackIntegral) * NAV_INTEGRAL_GAIN_K_DEG_PER_UNIT_S
       const dynamicMaxInterceptDeg = clamp(Math.max(headingAlignErrorDeg * 2, windUpImpliedDeg), 3, NAV_MAX_INTERCEPT_DEG)
       // Positive deviation = right of course -> need a left (negative)
       // intercept-angle bias to converge, hence the negation.
       const rawInterceptOffsetDeg = clamp(
-        -(NAV_INTERCEPT_GAIN_K_DEG * state.navTrackFilteredDeviation + NAV_INTEGRAL_GAIN_K_DEG_PER_UNIT_S * state.navTrackIntegral),
+        -(NAV_INTERCEPT_GAIN_K_DEG * state.navTrackFilteredDeviation + NAV_INTEGRAL_GAIN_K_DEG_PER_UNIT_S * state.navTrackIntegral + NAV_DERIVATIVE_GAIN_K_DEG_S * dDevF),
         -dynamicMaxInterceptDeg, dynamicMaxInterceptDeg,
       )
       // Rate-limit the commanded bias itself too — belt-and-suspenders

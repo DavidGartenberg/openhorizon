@@ -149,6 +149,22 @@ export interface AircraftParams {
 
   propwashTailFactor: number
   pFactorCn: number
+  /** Rigging compensation (real aircraft are built with it): offset fin /
+   *  rudder-tab yaw coefficient and aileron-rigging roll coefficient,
+   *  sized to null the prop's yaw (P-factor/slipstream) and roll (torque
+   *  reaction) moments at the type's normal cruise. Constant-coefficient
+   *  is the right shape — a fixed fin offset's moment scales with q just
+   *  like the airframe terms. Below cruise power/speed the net is still
+   *  left (full-power climb needs right rudder, honestly); at idle it
+   *  over-compensates slightly right (also real — gliding 172s want a
+   *  touch of left rudder). Omit (0) = unrigged. */
+  rigCn?: number
+  rigCl?: number
+  /** P-factor forward-inflow ramp reference speed (m/s): the prop yaw
+   *  term scales by min(V/ref, 1). 0/absent = no ramp (historical
+   *  behavior — the taildragger fleet's validated ground-loop dynamics
+   *  depend on the full moment at low speed). */
+  pfInflowRefMs?: number
 
   // gear: three legs; tricycle uses `nose`, taildragger uses `tail`
   gear: {

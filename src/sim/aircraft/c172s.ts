@@ -118,8 +118,22 @@ export const C172S: AircraftParams = {
 
   // propwash: fraction of disk-loading Δq reaching the tail
   propwashTailFactor: 0.7,
-  // P-factor + slipstream swirl yaw: Cn = −pf·Tc·(0.4 + 0.6·min(α/0.12, 1))
+  // P-factor + slipstream swirl yaw: Cn = −pf·Tc·inflow·(0.4 + 0.6·min(α/0.12, 1))
   pFactorCn: 0.04,
+  pfInflowRefMs: 50, // sweep in PROGRESS: static pinned (2°/6 s), no-rudder roll ≤14° @40 KIAS
+  // Rigging (offset fin + aileron rigging, like the real airplane): sized
+  // to null the measured prop moments at 110 KIAS / 75% / 3,000 ft —
+  // P-factor yaw −236.8 N·m and torque roll −317.7 N·m over qS·span
+  // 307,678 (bench audit). Before rigging the model flew hands-off
+  // cruise into a 45°-bank spiral inside 40 s.
+  // Scaled +8% from the exact-cruise derivation: a fixed tab is a
+  // compromise across the envelope, and the browser's typical hands-off
+  // condition (~102 KIAS, mid fuel, 2,500 ft) sits below the 110-KIAS
+  // audit point where q·S is 14% smaller — nulling mid-envelope leaves a
+  // slight RIGHT tendency at exactly 110/MTOW and a slight LEFT below,
+  // like the real airplane's ground-adjustable tab.
+  rigCn: (236.8 / 307_678) * 1.08,
+  rigCl: (317.7 / 307_678) * 1.08,
 
   // ---- gear (positions rel. CG, body frame x fwd / y right / z down) ----
   gear: {
@@ -129,7 +143,7 @@ export const C172S: AircraftParams = {
   },
   rollingResistance: 0.02,
   brakeMu: 0.3,
-  tireCorneringPerRad: 8,
+  tireCorneringPerRad: 10, // light-aircraft tire ~0.1-0.2/deg; midpoint (was 8)
   tireLatMuCap: 0.75,
 
   // ---- reference speeds (KIAS, for UI/tests) ----
