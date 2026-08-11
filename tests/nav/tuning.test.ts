@@ -116,6 +116,17 @@ describe('findKnownIls (stopgap ILS-frequency table)', () => {
     expect(findKnownIls('EGLL', 109.5)?.runway).toBe('27L')
   })
 
+  it('finds RJTT ILS at the AIP Japan frequencies (distinct per runway, no shared pairs)', () => {
+    expect(findKnownIls('RJTT', 108.9)?.runway).toBe('34R') // I-TC
+    expect(findKnownIls('RJTT', 111.7)?.runway).toBe('34L') // I-HA
+    expect(findKnownIls('RJTT', 111.95)?.runway).toBe('16L') // I-OC
+    expect(findKnownIls('RJTT', 110.5)?.runway).toBe('23') // I-TD
+    // The offset LDA frequencies for 22/23 are deliberately absent — a
+    // straight-in synthesis must not impersonate an offset LDA.
+    expect(findKnownIls('RJTT', 110.1)).toBeUndefined() // I-KL (LDA W 22)
+    expect(findKnownIls('RJTT', 108.5)).toBeUndefined() // I-TL (LDA 23)
+  })
+
   it('is honest about airports/frequencies not in the table', () => {
     expect(findKnownIls('KXYZ', 109.55)).toBeUndefined()
     expect(findKnownIls('KSFO', 99.9)).toBeUndefined()

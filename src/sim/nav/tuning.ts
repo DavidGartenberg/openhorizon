@@ -177,6 +177,17 @@ export const KNOWN_ILS_FREQUENCIES: readonly KnownIlsEntry[] = [
   { icao: 'EGLL', runway: '27L', freqMhz: 109.5 }, // I-LL (09R shares as I-BB)
   { icao: 'EGLL', runway: '09L', freqMhz: 110.3 }, // I-AA (shadowed by 27R entry)
   { icao: 'EGLL', runway: '09R', freqMhz: 109.5 }, // I-BB (shadowed by 27L entry)
+  // RJTT (AIP Japan, approach charts): every ILS has a distinct frequency
+  // (no shared-end pairs). The offset LDA approaches to 22/23 (I-KL
+  // 110.1 / I-TL 108.5) are deliberately NOT listed — this table feeds a
+  // straight-in ILS synthesized from runway geometry, and presenting an
+  // offset LDA as a straight-in ILS would be a fiction.
+  { icao: 'RJTT', runway: '34R', freqMhz: 108.9 }, // I-TC
+  { icao: 'RJTT', runway: '34L', freqMhz: 111.7 }, // I-HA
+  { icao: 'RJTT', runway: '16L', freqMhz: 111.95 }, // I-OC
+  { icao: 'RJTT', runway: '16R', freqMhz: 111.55 }, // I-TA
+  { icao: 'RJTT', runway: '04', freqMhz: 108.1 }, // I-AD
+  { icao: 'RJTT', runway: '23', freqMhz: 110.5 }, // I-TD (the straight-in ILS Z 23)
 ]
 
 /** Which runway (if any) a tuned NAV frequency at `icao` corresponds to,

@@ -84,6 +84,53 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## RJTT shakedown flight (2026-08-11, user-directed) — the PAPI had been lying to pilots since 13d
+
+Same drill as EGLL: "fly RJTT and make sure everything works." It
+caught a renderer bug that three prior acceptance flights had missed:
+
+**PAPI approach-azimuth baffle inverted since 13d.** Every array's
+"toward the approach" vector pointed into the runway interior, so an
+approaching pilot's own PAPI rendered dark while the reciprocal end's
+boxes (constant-pixel points — distance-invisible) shone at them. At
+single-strip fields the ungated `nearestPapi` acceptance hook happened
+to measure the right array anyway, so 13d's KSFO numbers were correct
+while the rendered lights were wrong-sided. Haneda's four runways broke
+the luck: on 34R final the hook read arrays labeled 16L, then 23, then
+05 — never 34R. Two fixes, verified live: `nearestPapi` now applies the
+renderer's ±35° gate (a pilot can only read an array showing them
+light), and the placement's `out` sign is corrected. Post-fix: RJTT 34R
+2W@3.00° with GS 0.00 all the way down; regression spot-checks EGLL 27R
+2W@3.0 and KSFO 28R 2W@2.93 — correct arrays, needle agreement on two
+continents.
+
+**ILS table: RJTT from AIP Japan itself** (the published approach
+charts): 34R I-TC 108.9, 34L I-HA 111.7, 16L I-OC 111.95, 16R I-TA
+111.55, 04 I-AD 108.1, 23 I-TD 110.5 — each distinct, no shared pairs.
+The offset LDA approaches to 22/23 (I-KL 110.1 / I-TL 108.5) are
+deliberately absent: this table feeds a straight-in synthesis, and
+presenting an offset LDA as a straight-in ILS would be a fiction. TDD
+both ways (present + deliberately absent).
+
+**The flight**: live Haneda METAR (080@15, FEW010, ISA+9, QNH 29.56
+from a Q-group), Tower 118.1 / Ground 118.225 / ATIS 128.8 — matching
+the AIP chart exactly, two independent data sources agreeing. Departure
+call answered by "Tokyo Haneda Tower" with AI ships sequenced around us
+(one cleared to land off the left downwind, one held short for traffic
+on final). Live traffic turned over from SF to Tokyo targets on the
+teleport (all 87-block Japanese hexes, Haneda ground-ops callsigns).
+First takeoff mushed into the bay — AP handoff at 60 kt in ISA+9 with a
+quartering tailwind; honest physics, bad energy discipline; the redo
+accelerated in ground effect to 74 kt before handoff and climbed away
+clean. Coupled ILS 34R on 108.9: clean LOC→GS sequencing, GLIDESLOPE
+caution below the beam then clear, FIVE HUNDRED, a ~9° crab holding
+defl ≤0.1 in the 15 kt easterly, landings of 207 fpm and **18 fpm**
+(smooth). Crosswind drift honestly debriefed (L110 m → L71 m with a
+decrab attempt — scripted-technique gap, not a sim bug; the AI roster
+still wears US N-registrations abroad, recorded as polish). Replay
+profile true at 3.6 nm on the 3° ref. Suite 920 + validate 421, tsc
+clean.
+
 ## EGLL shakedown flight (2026-08-11, user-directed) — 3 real bugs found by flying
 
 "Fly EGLL and make sure everything works." It didn't — and the flight

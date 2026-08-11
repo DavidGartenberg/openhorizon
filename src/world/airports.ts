@@ -312,7 +312,15 @@ export class Airports {
             papis.push({
               colors,
               baseX: (pos[0]! + pos[9]!) / 2, baseY: y, baseZ: (pos[2]! + pos[11]!) / 2,
-              outX: -end * along.x, outZ: -end * along.z,
+              // Toward this array's own approach: the HE-end array (end=+1)
+              // serves pilots BEYOND the HE threshold, i.e. further along
+              // +`along` (LE→HE) — so out = +end·along. The previous
+              // `-end` baffled every array toward the runway interior:
+              // approaching pilots saw their own PAPI dark while the
+              // reciprocal end's (constant-pixel, so distance-invisible)
+              // shone at them — caught at RJTT 34R when the azimuth-gated
+              // hook returned 16L/23/05, never 34R.
+              outX: end * along.x, outZ: end * along.z,
               boxAngles,
               rwyIdent: end === -1 ? r.li : r.hi,
             })
@@ -467,6 +475,13 @@ export class Airports {
         const dy = y - (group.position.y + p.baseY)
         const dz = z - (group.position.z + p.baseZ)
         const horiz = Math.hypot(dx, dz)
+        // Same ±35° approach-azimuth baffle as `updatePapi`: a pilot can
+        // only read an array that is showing them light. Without this, an
+        // RJTT 34R acceptance flight "read" runway 05's array (78°
+        // off-axis, rendered dark) as it became the geometrically nearest
+        // — the display was honest, the telemetry hook was not.
+        const inBeam = horiz > 1 && (dx / horiz) * p.outX + (dz / horiz) * p.outZ > 0.819
+        if (!inBeam) continue
         const dist = Math.hypot(horiz, dy)
         if (best && dist >= best.distM) continue
         const angle = papiAngleDeg(horiz, dy)
