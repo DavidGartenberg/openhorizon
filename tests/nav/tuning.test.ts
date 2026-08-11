@@ -127,6 +127,19 @@ describe('findKnownIls (stopgap ILS-frequency table)', () => {
     expect(findKnownIls('RJTT', 108.5)).toBeUndefined() // I-TL (LDA 23)
   })
 
+  it('finds NZAA ILS at the AIP New Zealand frequencies', () => {
+    expect(findKnownIls('NZAA', 109.9)?.runway).toBe('23L') // I-MG
+    expect(findKnownIls('NZAA', 110.3)?.runway).toBe('05R') // I-AA
+    // LOC-only 05L/23R deliberately absent — a synthesis that always
+    // provides a glideslope must not impersonate a localizer-only
+    // approach.
+    expect(findKnownIls('NZAA', 110.1)).toBeUndefined() // I-SL (LOC 05L)
+    expect(findKnownIls('NZAA', 109.5)).toBeUndefined() // I-TR (LOC 23R)
+    // 110.3 is keyed per-airport: EGLL 27R and NZAA 05R share the number
+    // without colliding.
+    expect(findKnownIls('EGLL', 110.3)?.runway).toBe('27R')
+  })
+
   it('is honest about airports/frequencies not in the table', () => {
     expect(findKnownIls('KXYZ', 109.55)).toBeUndefined()
     expect(findKnownIls('KSFO', 99.9)).toBeUndefined()

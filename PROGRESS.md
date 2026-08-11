@@ -84,6 +84,36 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## NZAA shakedown flight (2026-08-11, user-directed) — the fixes hold; no new bugs
+
+Third of the world shakedowns ("fly NZAA and make sure everything
+works"). This one came back clean — the EGLL and RJTT fixes all held
+under southern-hemisphere, winter, wind-reversed conditions:
+
+**ILS table: NZAA from AIP New Zealand GEN 3.7** (corroborated by open
+X-Plane navdata — two independent sources agreeing): 23L I-MG 109.9
+(CAT IIIb capable), 05R I-AA 110.3. The LOC-only approaches on
+05L/23R (I-SL 110.1 / I-TR 109.5) are deliberately absent — a
+synthesis that always provides a glideslope must not impersonate a
+localizer-only approach. 110.3 is keyed per-airport (EGLL 27R and
+NZAA 05R share the number without colliding) — all TDD.
+
+**Wind-honest operations**: spawned on 23L; the live METAR read 060@8
+(winter, ISA−2, QNH 30.03 from a Q-group) and the ATIS honestly
+called **05R** active — so the flight flew 05R both ways instead.
+Tower 118.7 / ATIS 127.8 match the published frequencies. "Auckland
+Tower" answered the departure call and sequenced an AI ship off ahead
+of us. Live traffic turned over to New Zealand's c8-hex block —
+ANZ208L, an Air New Zealand Dash 8-300, in the pattern area.
+
+**The approach**: coupled ILS 05R on 110.3 — clean LOC→GS capture
+(integrator + interlock fixes holding), PAPI 2W@2.94→2.85 in exact
+agreement with a needle reading a shade below slope (the fixed baffle
+returning the correct 05R array at every sample), FIVE HUNDRED on
+cue, **103 fpm smooth** touchdown into the 8 kt headwind, drift L26 m,
+logbook persisted, replay true at 3.5 nm with the profile honestly
+showing the slightly-low track. Suite 921 + validate 421, tsc clean.
+
 ## RJTT shakedown flight (2026-08-11, user-directed) — the PAPI had been lying to pilots since 13d
 
 Same drill as EGLL: "fly RJTT and make sure everything works." It

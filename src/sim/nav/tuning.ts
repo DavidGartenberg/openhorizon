@@ -188,6 +188,13 @@ export const KNOWN_ILS_FREQUENCIES: readonly KnownIlsEntry[] = [
   { icao: 'RJTT', runway: '16R', freqMhz: 111.55 }, // I-TA
   { icao: 'RJTT', runway: '04', freqMhz: 108.1 }, // I-AD
   { icao: 'RJTT', runway: '23', freqMhz: 110.5 }, // I-TD (the straight-in ILS Z 23)
+  // NZAA (AIP New Zealand GEN 3.7, corroborated by open navdata): full
+  // CAT-I+ ILS/DME on both ends of the main runway. The LOC-only
+  // approaches on 05L/23R (I-SL 110.1 / I-TR 109.5) are deliberately NOT
+  // listed — this synthesis always provides a glideslope, and presenting
+  // a localizer-only approach as a full ILS would be a fiction.
+  { icao: 'NZAA', runway: '23L', freqMhz: 109.9 }, // I-MG (CAT IIIb capable)
+  { icao: 'NZAA', runway: '05R', freqMhz: 110.3 }, // I-AA
 ]
 
 /** Which runway (if any) a tuned NAV frequency at `icao` corresponds to,
