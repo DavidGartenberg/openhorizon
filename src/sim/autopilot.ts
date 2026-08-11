@@ -235,6 +235,21 @@ export function disconnect(state: AutopilotState): void {
   state.rollCmd = 0
   state.pitchCmd = 0
   state.yawCmd = 0
+  // Control-law memory clears with the servos: a wound-up integrator from
+  // the previous engagement must not command the first frames of the next
+  // one (an EGLL acceptance flight re-engaged APR/GS on a stable 3 nm
+  // final and dove at -4900 fpm from exactly this — real AP laws
+  // re-initialize at engagement).
+  for (const pid of [state.gsPitch, state.altPitch, state.vsPitch, state.flcPitch, state.bankAttitude, state.pitchAttitude]) {
+    pid.integrator = 0
+    pid.prevError = 0
+    pid.prevMeasurement = 0
+  }
+  state.navTrackInitialized = false
+  state.navTrackIntegral = 0
+  state.navTrackInterceptOffsetDeg = 0
+  state.navTrackFilteredDeviation = 0
+  state.navTrackPrevDeviation = 0
   // trimCommand is intentionally left alone — a real trim wheel doesn't
   // snap back to neutral just because the AP servos disengaged.
 }
@@ -712,7 +727,15 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
     if (state.verticalArmed) {
       targetPitchDeg = verticalPitchTarget(underlying, state, dt, inputs)
       trimEligible = underlying !== 'PIT'
-      if (Math.abs(inputs.glideslopeDeviation) <= CAPTURE_FRACTION) {
+      // GS capture is interlocked behind LOC capture (real GFC700
+      // sequencing): while the localizer is un-captured the aircraft can
+      // cross the beam cone far off-axis, where glideslope deviation is
+      // geometric garbage — capturing on one momentary near-zero reading
+      // there dove an EGLL acceptance flight at 3800 fpm. `lateralArmed`
+      // false alone isn't enough (it's false in HDG/ROL too), so the
+      // lateral mode must actually be APR.
+      const locCaptured = state.lateralMode === 'APR' && !state.lateralArmed
+      if (locCaptured && Math.abs(inputs.glideslopeDeviation) <= CAPTURE_FRACTION) {
         state.verticalArmed = false
       }
     } else {

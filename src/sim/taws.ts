@@ -105,7 +105,14 @@ export class TawsComputer {
     }
 
     // ---- Mode 5: below the glideslope on approach ----
-    if (inp.nearRunwayFinal && inp.gsDeviation !== null && inp.gsDeviation < -0.35 && inp.aglFt < 1000 && inp.aglFt > 150) {
+    // Deliberately NOT gated on `nearRunwayFinal`: that flag's ~4 nm-of-
+    // airport-center envelope exists to inhibit modes 2/4 during normal
+    // landings, and borrowing it here capped glideslope protection at the
+    // last ~2.5 nm of final — an EGLL acceptance flight dragged in 600 ft
+    // below the beam at 4.5 nm, established and receiving, in silence.
+    // "Established on a receivable ILS" (gsDeviation non-null via the 15a
+    // ilsOnFinal feed gate) below 1000 AGL is the honest Mode-5 envelope.
+    if (inp.gsDeviation !== null && inp.gsDeviation < -0.35 && inp.aglFt < 1000 && inp.aglFt > 150) {
       consider('CAUTION', 'GLIDESLOPE')
     }
 

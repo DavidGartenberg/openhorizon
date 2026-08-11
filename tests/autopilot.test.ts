@@ -618,16 +618,43 @@ describe('ALTS armed -> ALT capture', () => {
 })
 
 describe('GS mode (glideslope)', () => {
-  it('arms then captures once within threshold, and pitches down when above the glidepath', () => {
+  it('arms then captures once within threshold (LOC already captured), and pitches down when above the glidepath', () => {
     const state = makeAutopilotState()
-    stepAutopilot(state, 0.1, baseInputs({ verticalMode: 'GS', glideslopeDeviation: 0.9, underlyingVerticalMode: 'VS' }))
-    expect(state.verticalArmed).toBe(true)
+    // Capture the localizer first (real GFC700 sequencing: APR captures
+    // LOC, then GS becomes capturable).
+    stepAutopilot(state, 0.1, baseInputs({ lateralMode: 'APR', navDeviation: 0.2, verticalMode: 'GS', glideslopeDeviation: 0.9, underlyingVerticalMode: 'VS' }))
+    expect(state.lateralArmed).toBe(false) // LOC captured
+    expect(state.verticalArmed).toBe(true) // GS still armed (beam far above)
 
-    stepAutopilot(state, 0.1, baseInputs({ verticalMode: 'GS', glideslopeDeviation: 0.3 }))
+    stepAutopilot(state, 0.1, baseInputs({ lateralMode: 'APR', navDeviation: 0.1, verticalMode: 'GS', glideslopeDeviation: 0.3 }))
     expect(state.verticalArmed).toBe(false)
 
-    stepAutopilot(state, 0.1, baseInputs({ verticalMode: 'GS', glideslopeDeviation: 0.5 }))
+    stepAutopilot(state, 0.1, baseInputs({ lateralMode: 'APR', navDeviation: 0.1, verticalMode: 'GS', glideslopeDeviation: 0.5 }))
     expect(state.fdPitchDeg).toBeLessThan(0) // above glidepath -> pitch down
+  })
+
+  it('does NOT capture GS while the localizer is only armed or absent (EGLL acceptance-flight dive)', () => {
+    // Found live at EGLL: on a 55-degree intercept the aircraft swept
+    // through the beam cone off-axis, GS "captured" on one momentary
+    // near-zero deviation with the LOC still un-captured, and the pitch
+    // law dove 3800 fpm chasing off-axis beam geometry. Real GFC700
+    // interlocks GS capture behind LOC capture.
+    const hdgOnly = makeAutopilotState()
+    stepAutopilot(hdgOnly, 0.1, baseInputs({ lateralMode: 'HDG', verticalMode: 'GS', glideslopeDeviation: 0.9, underlyingVerticalMode: 'VS' }))
+    stepAutopilot(hdgOnly, 0.1, baseInputs({ lateralMode: 'HDG', verticalMode: 'GS', glideslopeDeviation: 0.0 }))
+    expect(hdgOnly.verticalArmed).toBe(true) // no APR at all -> stays armed
+
+    const aprArmed = makeAutopilotState()
+    // APR commanded but LOC far off (full-scale) -> lateral stays armed.
+    stepAutopilot(aprArmed, 0.1, baseInputs({ lateralMode: 'APR', navDeviation: 1.0, verticalMode: 'GS', glideslopeDeviation: 0.9, underlyingVerticalMode: 'VS' }))
+    expect(aprArmed.lateralArmed).toBe(true)
+    stepAutopilot(aprArmed, 0.1, baseInputs({ lateralMode: 'APR', navDeviation: 1.0, verticalMode: 'GS', glideslopeDeviation: 0.0 }))
+    expect(aprArmed.verticalArmed).toBe(true) // LOC not captured -> GS must not capture
+
+    // Once the LOC captures, the same GS deviation captures normally.
+    stepAutopilot(aprArmed, 0.1, baseInputs({ lateralMode: 'APR', navDeviation: 0.2, verticalMode: 'GS', glideslopeDeviation: 0.0 }))
+    expect(aprArmed.lateralArmed).toBe(false)
+    expect(aprArmed.verticalArmed).toBe(false)
   })
 })
 
@@ -698,6 +725,31 @@ describe('AP disconnect', () => {
     stepAutopilot(state, 0.1, baseInputs({ masterEnabled: false }))
     expect(state.rollCmd).toBe(0)
     expect(state.justDisconnected).toBe(true)
+  })
+
+  it('clears control-law integrators — a re-engage flies from a clean slate (EGLL dive)', () => {
+    // Found live at EGLL: an unstable approach wound up the GS and
+    // pitch-attitude integrators; a respawn later, re-engaging APR/GS on a
+    // stable 3 nm final slammed the nose down at -4900 fpm from the stale
+    // memory. Real AP control laws re-initialize at engagement.
+    const state = makeAutopilotState()
+    // Wind the vertical integrators hard: minutes below the glidepath.
+    for (let i = 0; i < 600; i++) {
+      stepAutopilot(state, 0.1, baseInputs({
+        lateralMode: 'APR', navDeviation: 0.1, verticalMode: 'GS',
+        glideslopeDeviation: 0.9, pitchDeg: 2, // beam far above, nose up -> integrators wind
+      }))
+    }
+    disconnect(state)
+    expect(state.gsPitch.integrator).toBe(0)
+    expect(state.pitchAttitude.integrator).toBe(0)
+    expect(state.bankAttitude.integrator).toBe(0)
+
+    // Re-engage on-slope, wings level: the very first commands must be
+    // near-neutral, not a stale hard-over.
+    stepAutopilot(state, 0.1, baseInputs({ lateralMode: 'APR', navDeviation: 0, verticalMode: 'GS', glideslopeDeviation: 0 }))
+    expect(Math.abs(state.pitchCmd)).toBeLessThan(0.1)
+    expect(Math.abs(state.rollCmd)).toBeLessThan(0.1)
   })
 })
 

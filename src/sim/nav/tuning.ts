@@ -168,6 +168,15 @@ export const KNOWN_ILS_FREQUENCIES: readonly KnownIlsEntry[] = [
   // (IBRG). A prior revision had these two swapped.
   { icao: 'KSFO', runway: '28R', freqMhz: 111.7 },
   { icao: 'KSFO', runway: '28L', freqMhz: 109.55 },
+  // EGLL (UK AIP): opposite runway ends share a frequency and are
+  // interlocked in reality (only the active direction radiates). The sim
+  // has no active-direction concept, so the table lists the westerly ends
+  // first — Heathrow's dominant operation — and `findKnownIls` resolves
+  // those. Easterly-ops ILS at EGLL is a recorded stopgap limitation.
+  { icao: 'EGLL', runway: '27R', freqMhz: 110.3 }, // I-RR (09L shares as I-AA)
+  { icao: 'EGLL', runway: '27L', freqMhz: 109.5 }, // I-LL (09R shares as I-BB)
+  { icao: 'EGLL', runway: '09L', freqMhz: 110.3 }, // I-AA (shadowed by 27R entry)
+  { icao: 'EGLL', runway: '09R', freqMhz: 109.5 }, // I-BB (shadowed by 27L entry)
 ]
 
 /** Which runway (if any) a tuned NAV frequency at `icao` corresponds to,

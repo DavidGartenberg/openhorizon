@@ -108,6 +108,14 @@ describe('findKnownIls (stopgap ILS-frequency table)', () => {
     expect(findKnownIls('KSFO', 109.55)?.runway).toBe('28L')
   })
 
+  it('finds EGLL westerly ILS at the published shared frequencies (IRR 110.30 / ILL 109.50)', () => {
+    // UK AIP: 09L/27R share 110.30 (IAA/IRR), 09R/27L share 109.50
+    // (IBB/ILL) — opposite ends interlocked in reality. The stopgap table
+    // resolves the westerly end first (Heathrow's dominant operation).
+    expect(findKnownIls('EGLL', 110.3)?.runway).toBe('27R')
+    expect(findKnownIls('EGLL', 109.5)?.runway).toBe('27L')
+  })
+
   it('is honest about airports/frequencies not in the table', () => {
     expect(findKnownIls('KXYZ', 109.55)).toBeUndefined()
     expect(findKnownIls('KSFO', 99.9)).toBeUndefined()

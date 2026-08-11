@@ -69,3 +69,23 @@ describe('buildReplayPlots', () => {
     expect(p.touchdownIdx).toBeNull()
   })
 })
+
+describe('respawn teleports (EGLL acceptance finding)', () => {
+  it('plots only the trailing contiguous run — a mid-window teleport is not a 4,600 nm segment', () => {
+    // Found live: the recorder buffer spanned a California default spawn,
+    // several crash→respawn cycles at Heathrow, and the landing; the
+    // profile's distance axis read 4652.8 nm because the spawn teleport
+    // entered the cumulative sum as one giant fake segment.
+    const run = approach()
+    const teleported: typeof run = run.map((s, i) => (
+      i < 300 ? { ...s, lat: s.lat + 50, lon: s.lon + 60 } : s // first 30 s: 'another continent'
+    ))
+    const p = buildReplayPlots(teleported, 300)
+    // Only the post-teleport run survives: ~150 s of flight ≈ 7.7 km, not thousands of km.
+    expect(p.totalDistM).toBeLessThan(20_000)
+    expect(p.totalDistM).toBeGreaterThan(5_000)
+    expect(p.plan.length).toBe(run.length - 300)
+    // Touchdown still found inside the surviving run.
+    expect(p.touchdownIdx).not.toBeNull()
+  })
+})

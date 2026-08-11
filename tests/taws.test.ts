@@ -76,6 +76,24 @@ describe('GPWS modes', () => {
     expect(collect(taws, seq)).toContain('GLIDESLOPE')
   })
 
+  it('mode 5 fires on a long final too — beyond the 4 nm nearRunwayFinal radius (EGLL drag-in)', () => {
+    // Found live at EGLL: 600 ft below the beam at 4.5 nm from the
+    // threshold, established on a receivable ILS at 860 AGL — silent,
+    // because Mode 5 borrowed `nearRunwayFinal` (a ~4 nm-of-airport-center
+    // inhibition envelope for modes 2/4) as its arming gate. Established
+    // on a receivable ILS (`gsDeviation !== null` via the 15a ilsOnFinal
+    // feed gate) below 1000 AGL is the honest Mode-5 envelope.
+    const taws = new TawsComputer()
+    const seq = [base({ aglFt: 860, vsFpm: -350, nearRunwayFinal: false, flapsDeg: 0, gsDeviation: -1.0 })]
+    expect(collect(taws, seq)).toContain('GLIDESLOPE')
+  })
+
+  it('mode 5 stays silent when no established ILS (gsDeviation null), wherever the aircraft is', () => {
+    const taws = new TawsComputer()
+    const seq = [base({ aglFt: 860, vsFpm: -350, nearRunwayFinal: false, flapsDeg: 0, gsDeviation: null })]
+    expect(collect(taws, seq)).not.toContain('GLIDESLOPE')
+  })
+
   it('mode 6: five-hundred callout once, and BANK ANGLE', () => {
     const taws = new TawsComputer()
     const seq = [

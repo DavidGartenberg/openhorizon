@@ -84,6 +84,53 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## EGLL shakedown flight (2026-08-11, user-directed) — 3 real bugs found by flying
+
+"Fly EGLL and make sure everything works." It didn't — and the flight
+caught what no unit test had:
+
+1. **AP glideslope capture had no localizer interlock** — crossing the
+   beam cone off-axis on a botched intercept, GS "captured" on one
+   momentary near-zero reading and the pitch law dove 3,800 fpm chasing
+   off-axis beam geometry. Real GFC700s sequence GS behind LOC capture.
+   Fixed in `autopilot.ts` (capture requires APR captured), TDD.
+2. **TAWS Mode-5 silent on a long final** — dragged in 600 ft below the
+   beam at 4.5 nm, established and receiving, in silence: Mode 5 had
+   borrowed `nearRunwayFinal` (a ~4 nm-of-airport-center inhibition
+   envelope for modes 2/4) as its arming gate, capping glideslope
+   protection at the last ~2.5 nm. The 15a `ilsOnFinal` feed gate is the
+   honest envelope; distance gate removed, TDD both ways.
+3. **AP disconnect kept control-law integrator memory** — after an
+   unstable approach wound the GS/pitch integrators, a respawn + clean
+   re-engage on a stable 3 nm final slammed the nose down at −4,900 fpm
+   from 950 ft. `disconnect()` now clears all six PID memories + the
+   nav-track filter state (real AP laws re-initialize at engagement), TDD.
+
+Plus: **replay distance axis swallowed respawn teleports** (profile read
+4,652.8 nm — a California→London respawn entered the cumulative sum as
+one segment); `buildReplayPlots` now plots the trailing contiguous run
+(500 m hop cut), TDD. And the stopgap ILS table gained EGLL, verified
+against the UK AIP chart itself: 09L/27R share 110.30 (I-AA/I-RR),
+09R/27L share 109.50 (I-BB/I-LL) — opposite ends interlocked in
+reality; the table resolves the westerly ends (dominant operation),
+easterly-ops ILS recorded as a stopgap limitation.
+
+**The flight that passed** (dev build, live data): ground checks — real
+METAR with QNH 29.97 inHg from a live Q-group, Tower 118.5 / Ground
+121.7 / ATIS 113.75, active runway 27R matching the 289° wind, 40 live
+targets including G-ZBKS (BA 787-9) taxiing; departure call transmitted
+on 118.50; takeoff; coupled ILS 27R on 110.30 with clean LOC→GS
+sequencing; PAPI read 2W all the way down, agreeing with the needle
+(3.27°→3 whites and 2.76°→1 white exactly per the unit angles);
+GLIDESLOPE caution fired below the beam and cleared on-slope; FIVE
+HUNDRED on cue; two landings — 228 fpm and 72 fpm, both graded smooth,
+72 fpm one flown from a cold boot (integrator fix proven at engage:
+first command pitchCmd 0.156, no dive); QTR67H (A359) and BAW6NC (B788)
+sequencing behind us on the real approach; logbook persisted (crashes
+from my scripted hand-flying honestly graded "hard" beside them);
+replay profile true at 3.7 nm hugging the 3° ref. Suite 919 + validate
+421, tsc clean.
+
 ## Phase 17 — The World (2026-08-09, user-directed)
 
 The sim flies everywhere now. **17a — global data layer**: the two
