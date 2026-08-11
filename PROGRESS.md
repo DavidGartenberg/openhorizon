@@ -84,6 +84,45 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## LFPG shakedown flight (2026-08-11, user-directed) — parallel runways break azimuth-only PAPI selection
+
+Fourth world shakedown. CDG's four-runway parallel layout — plus Le
+Bourget sitting under the final — found the next layer of the PAPI
+telemetry problem:
+
+**`nearestPapi` azimuth gate can't separate parallel runways.** On
+08R final the probe hopped: Le Bourget's "25" array at 877 AGL (an
+aligned neighbor AIRPORT inside the cone), then 08L's array for most
+of the approach (same azimuth 380 m left, and CDG's staggered
+thresholds made it genuinely nearer mid-final), reaching 08R only at
+short range. Fix: among in-beam arrays, prefer the approach AXIS the
+aircraft is laterally closest to (tie-break by distance) — your own
+centerline's array is always the laterally-closest axis you're
+inside, with no tuned threshold to fight real airport geometries.
+Verified live: CDG 08R shows 08R at every sample (2W@2.98 on-beam,
+honestly 3W when the needle drifted a quarter-dot high), and KSFO's
+228 m-spaced parallels discriminate cleanly (28R, 2W, tracking the
+needle). The rendered lights were correct throughout — this was the
+telemetry hook only.
+
+**ILS table: all eight CDG installations** (open navdata, every
+ident/frequency/runway triple corroborated against the published
+Jeppesen chart pack): 08L GLE 108.70, 08R DSE 108.55, 09L PNE
+109.35, 09R CGE 110.10, 26L DSU 108.35, 26R GAU 109.10, 27L CGW
+110.70, 27R PNW 110.35 — CAT III both ends of all four runways,
+French non-I-prefixed idents kept real. TDD.
+
+**The flight**: spawned 26L; the live METAR read 039@6 (ISA+13
+August heat, QNH 30.15 from a Q-group) and the ATIS honestly called
+easterly ops — so the flight flew 08R both ways. Tower 119.25 /
+ATIS 127.125 (119.25 confirmed in the Jeppesen pack). "Charles de
+Gaulle Tower" cleared us behind an AI ship; live French traffic on
+39-block hexes with AFR49HR (A220-300) climbing alongside in the
+departure screenshot and AFR59MN (E190) in the arrivals. Coupled ILS
+08R on DSE 108.55: clean LOC→GS, FIVE HUNDRED, **32 fpm smooth · R6 m
+of centerline** — the tightest line-up of the tour. Suite 922 +
+validate 421, tsc clean.
+
 ## NZAA shakedown flight (2026-08-11, user-directed) — the fixes hold; no new bugs
 
 Third of the world shakedowns ("fly NZAA and make sure everything

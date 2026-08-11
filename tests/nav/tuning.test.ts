@@ -140,6 +140,16 @@ describe('findKnownIls (stopgap ILS-frequency table)', () => {
     expect(findKnownIls('EGLL', 110.3)?.runway).toBe('27R')
   })
 
+  it('finds LFPG ILS at the published frequencies (all four runways, both ends)', () => {
+    expect(findKnownIls('LFPG', 110.35)?.runway).toBe('27R') // PNW
+    expect(findKnownIls('LFPG', 108.35)?.runway).toBe('26L') // DSU
+    expect(findKnownIls('LFPG', 110.1)?.runway).toBe('09R') // CGE
+    expect(findKnownIls('LFPG', 108.7)?.runway).toBe('08L') // GLE
+    // Per-airport keying: RJTT 23 also sits on 110.5-adjacent block and
+    // NZAA 05R shares 110.3 with EGLL — none of these collide with CDG.
+    expect(findKnownIls('LFPG', 110.3)).toBeUndefined()
+  })
+
   it('is honest about airports/frequencies not in the table', () => {
     expect(findKnownIls('KXYZ', 109.55)).toBeUndefined()
     expect(findKnownIls('KSFO', 99.9)).toBeUndefined()

@@ -467,6 +467,7 @@ export class Airports {
    *  camera-facing render colors. */
   nearestPapi(x: number, y: number, z: number): { icao: string; rwy: string; angleDeg: number; whites: number; distM: number } | null {
     let best: { icao: string; rwy: string; angleDeg: number; whites: number; distM: number } | null = null
+    let bestLateral = Infinity
     for (const [icao, group] of this.rendered) {
       const papis = group.userData.papis as PapiArray[] | undefined
       if (!papis) continue
@@ -482,9 +483,20 @@ export class Airports {
         // — the display was honest, the telemetry hook was not.
         const inBeam = horiz > 1 && (dx / horiz) * p.outX + (dz / horiz) * p.outZ > 0.819
         if (!inBeam) continue
+        // Among in-beam arrays, prefer the approach AXIS the aircraft is
+        // laterally closest to (tie-break by distance) rather than raw
+        // nearest: azimuth alone cannot separate parallel runways (CDG's
+        // 08L array sat inside the cone 380 m left on 08R final, and its
+        // staggered threshold made it genuinely nearer mid-approach) or
+        // an aligned neighbor field under the final (Le Bourget's 25
+        // showed up at 877 AGL). Your own centerline's array is always
+        // the laterally-closest axis you're inside.
+        const lateral = Math.abs(dx * -p.outZ + dz * p.outX)
+        if (lateral > bestLateral + 1) continue
         const dist = Math.hypot(horiz, dy)
-        if (best && dist >= best.distM) continue
+        if (best && lateral > bestLateral - 1 && dist >= best.distM) continue
         const angle = papiAngleDeg(horiz, dy)
+        bestLateral = lateral
         best = { icao, rwy: p.rwyIdent, angleDeg: +angle.toFixed(3), whites: papiWhiteCount(angle), distM: Math.round(dist) }
       }
     }

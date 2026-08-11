@@ -195,6 +195,18 @@ export const KNOWN_ILS_FREQUENCIES: readonly KnownIlsEntry[] = [
   // a localizer-only approach as a full ILS would be a fiction.
   { icao: 'NZAA', runway: '23L', freqMhz: 109.9 }, // I-MG (CAT IIIb capable)
   { icao: 'NZAA', runway: '05R', freqMhz: 110.3 }, // I-AA
+  // LFPG (open navdata cross-checked against the published Jeppesen chart
+  // pack — every ident/frequency/runway triple agreed): all four runways
+  // ILS CAT III both ends, each end its own frequency. French idents are
+  // not I-prefixed (GLE/DSE/... are the real registered idents).
+  { icao: 'LFPG', runway: '08L', freqMhz: 108.7 }, // GLE
+  { icao: 'LFPG', runway: '08R', freqMhz: 108.55 }, // DSE
+  { icao: 'LFPG', runway: '09L', freqMhz: 109.35 }, // PNE
+  { icao: 'LFPG', runway: '09R', freqMhz: 110.1 }, // CGE
+  { icao: 'LFPG', runway: '26L', freqMhz: 108.35 }, // DSU
+  { icao: 'LFPG', runway: '26R', freqMhz: 109.1 }, // GAU
+  { icao: 'LFPG', runway: '27L', freqMhz: 110.7 }, // CGW
+  { icao: 'LFPG', runway: '27R', freqMhz: 110.35 }, // PNW
 ]
 
 /** Which runway (if any) a tuned NAV frequency at `icao` corresponds to,
