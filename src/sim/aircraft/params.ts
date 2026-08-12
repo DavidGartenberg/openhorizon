@@ -25,7 +25,7 @@ import type { JetParams } from '../turbofan'
 export interface AircraftParams {
   /** Turbofan powerplant (Phase 11e). Present = jet: the piston/prop path
    *  (torque, P-factor, RPM) is bypassed; thrust comes from turbofan.ts.
-   *  Jet aircraft should also set pFactorCn/propwashTailFactor to 0. */
+   *  Jet aircraft should also set pFactorK/swirlK/propwashTailFactor to 0. */
   jet?: JetParams
   /** Retractable gear: transit time and the drag increment when extended.
    *  Absent = fixed gear (always down, no extra drag term). */
@@ -148,7 +148,12 @@ export interface AircraftParams {
   }
 
   propwashTailFactor: number
-  pFactorCn: number
+  /** P-factor gain (prop-effects.ts): yaw from asymmetric blade loading,
+   *  N = −kP·T·R·(V·sinα)/vDisk. 0 for jets/gliders. */
+  pFactorK: number
+  /** Slipstream-swirl gain: fin yaw per N·m of engine torque (geometry
+   *  constant, ~0.6 for a single with the fin in the slipstream). */
+  swirlK: number
   /** Rigging compensation (real aircraft are built with it): offset fin /
    *  rudder-tab yaw coefficient and aileron-rigging roll coefficient,
    *  sized to null the prop's yaw (P-factor/slipstream) and roll (torque
@@ -160,11 +165,6 @@ export interface AircraftParams {
    *  touch of left rudder). Omit (0) = unrigged. */
   rigCn?: number
   rigCl?: number
-  /** P-factor forward-inflow ramp reference speed (m/s): the prop yaw
-   *  term scales by min(V/ref, 1). 0/absent = no ramp (historical
-   *  behavior — the taildragger fleet's validated ground-loop dynamics
-   *  depend on the full moment at low speed). */
-  pfInflowRefMs?: number
 
   // gear: three legs; tricycle uses `nose`, taildragger uses `tail`
   gear: {

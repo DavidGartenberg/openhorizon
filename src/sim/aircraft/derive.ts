@@ -24,6 +24,7 @@ import { C172S } from './c172s'
 import { B738 } from './b738'
 import { CFM56_7B26 } from '../turbofan'
 import { G, RHO0, KT } from '../atmosphere'
+import { propEffectsYawNm } from '../prop-effects'
 
 export type RosterPowerplant =
   | { kind: 'piston'; ratedPowerW: number; count: number; propDiameterM: number; redlineRpm: number; governed?: boolean }
@@ -170,28 +171,32 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
 
   const multiEngineProp = (pp.kind === 'piston' || pp.kind === 'turboprop') && pp.count > 1
 
-  // Rigging (lateral-stability fix, fleet-wide — see c172s.ts/params.ts):
-  // real aircraft null the prop's yaw/roll moments at cruise with fin
-  // offset + aileron rigging; without it every roster prop flew hands-off
-  // into the same left spiral the C172 did. Derived at the canonical
-  // level-cruise point CL≈0.35, thrust=drag, typical (mid) mass:
-  //  - tc = T/qS = D/qS = cd_cruise exactly, so rigCn cancels the prop-yaw
-  //    coefficient q-independently at that condition;
-  //  - qS = W/CL (level flight), so torque/(qS·span) needs no speed input;
-  //  - torque from power REQUIRED at that point (D·v / η·ω, η 0.78,
-  //    fixed-pitch cruise ~85% redline): cross-checks the C172 bench
-  //    audit to 1% (320 vs 317.7 N·m) — a rated-power fraction guess
-  //    missed 3× on oversized-engine types like the TBM.
-  // pfInflowRefMs 20 kills only the static-pirouette artifact (full
-  // strength by 39 kt — validated low-speed dynamics untouched).
+  // Prop-effect gains + rigging (prop-effects.ts — user goal "proper
+  // thrust and P-factor"): the gains are geometry-class constants
+  // (calibrated on the C172 audit; twins get partial values — the
+  // combined-disc model splits the crossflow across two discs and the
+  // fin sits between the slipstream tubes). Rigging then cancels EXACTLY
+  // the moments the sim computes, because it is derived by calling the
+  // same pure functions at the canonical level-cruise point (CL≈0.35,
+  // thrust=drag, mid mass, 3,000 ft):
+  //  - T = D = qS·cd_cruise, qS = W/CL, v from CL (all level-flight
+  //    identities);
+  //  - Q from power required, D·v/(η·ω) — cross-checks the C172 bench
+  //    audit to 1% (a rated-power-fraction guess missed 3× on
+  //    oversized-engine types).
+  const PF_K_SINGLE = 2.397
+  const SWIRL_K_SINGLE = 0.607
+  const propGains = glider || jet
+    ? { pFactorK: 0, swirlK: 0 }
+    : multiEngineProp
+      ? { pFactorK: PF_K_SINGLE * 0.5, swirlK: SWIRL_K_SINGLE * 0.5 }
+      : { pFactorK: PF_K_SINGLE, swirlK: SWIRL_K_SINGLE }
   const rigging = (() => {
     if (glider || jet) return {}
     const clCruise = 0.35
     const kInd = 1 / (Math.PI * e * AR)
     const cdCruise = CD0_BY_CLASS[opts.cd0Class] + kInd * clCruise * clCruise
     const alphaCruise = Math.max((clCruise - 0.25) / clAlpha, 0) // prop cl0 = 0.25 below
-    const mix = 0.4 + 0.6 * Math.min(alphaCruise / 0.12, 1)
-    const pf = multiEngineProp ? 0.02 : 0.04
     const midMassKg = (spec.emptyKg + spec.mtowKg) / 2
     const qS = (midMassKg * G) / clCruise
     const RHO_3000FT = 1.121
@@ -199,10 +204,10 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
     const dragN = qS * cdCruise
     const omega = ((redline * Math.PI) / 30) * (governed ? 1 : 0.85)
     const torqueNm = (dragN * vCruise) / (0.78 * omega)
+    const yawNm = propEffectsYawNm(propGains, dragN, torqueNm, vCruise, alphaCruise, RHO_3000FT, propD)
     return {
-      rigCn: pf * cdCruise * mix,
+      rigCn: -yawNm / (qS * spec.spanM),
       rigCl: torqueNm / (qS * spec.spanM),
-      pfInflowRefMs: 20,
     }
   })()
 
@@ -255,7 +260,7 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
     ...(governed ? { propGoverned: true as const, ...(spec.propThrustScale ? { propEtaScale: spec.propThrustScale } : {}) } : {}),
     carburetor: false,
     propwashTailFactor: glider || jet ? 0 : multiEngineProp ? 0.35 : 0.7,
-    pFactorCn: glider || jet ? 0 : multiEngineProp ? 0.02 : 0.04,
+    ...propGains,
     ...rigging,
     ...(jet && pp.kind === 'jet'
       ? {

@@ -16,25 +16,49 @@ const DT = 1 / 120
 const wrap = (d: number) => ((d + 540) % 360) - 180
 
 describe('lateral stability (rigging + P-factor inflow)', () => {
-  it('static full power: the nosewheel pins it — no pirouette', () => {
+  it('static full power: no pirouette (slipstream swirl creeps it, the tires hold it)', () => {
+    // Prop-effects model: slipstream swirl on the fin is PRESENT at
+    // static (torque-conserved — a real runup pushes the tail), so
+    // feet-off full power creeps left a few degrees as it starts rolling;
+    // the old hand-ramped model zeroed this. The contract is "no
+    // pirouette" (the original bug was 5°/s — 30° in this window), not
+    // "no physics".
     const ac = new Aircraft()
     ac.spawnOnGround(0, 0, 0)
     ac.controls.throttle = 1
     for (let t = 0; t < 6; t += DT) ac.step(DT)
-    expect(Math.abs(wrap(ac.data.headingDeg))).toBeLessThan(4)
+    expect(Math.abs(wrap(ac.data.headingDeg))).toBeLessThan(10)
   })
 
-  it('no-rudder takeoff roll veers left but stays driveable (<15° by 40 KIAS)', () => {
-    const ac = new Aircraft()
-    ac.spawnOnGround(0, 0, 0)
-    ac.controls.throttle = 1
-    for (let t = 0; t < 40; t += DT) {
-      ac.step(DT)
-      if (ac.data.kias >= 40) break
-    }
-    const drift = wrap(ac.data.headingDeg)
+  it('no-rudder takeoff roll veers left; WITH modest pedal it holds the centerline', () => {
+    // Feet-off, the prop-effects swirl+P-factor walk it left from brake
+    // release (real: a hands-off full-power 172 exits the runway edge) —
+    // assert the character loosely. The user-facing contract is
+    // CONTROLLABILITY: a proportional pedal ≤40% authority holds heading
+    // within a few degrees all the way to 40 KIAS.
+    const free = new Aircraft()
+    free.spawnOnGround(0, 0, 0)
+    free.controls.throttle = 1
+    for (let t = 0; t < 40; t += DT) { free.step(DT); if (free.data.kias >= 40) break }
+    const drift = wrap(free.data.headingDeg)
     expect(drift).toBeLessThan(0) // still honestly yaws LEFT
-    expect(Math.abs(drift)).toBeLessThan(15)
+    expect(Math.abs(drift)).toBeLessThan(40)
+
+    const held = new Aircraft()
+    held.spawnOnGround(0, 0, 0)
+    held.controls.throttle = 1
+    let maxPedal = 0, maxErr = 0
+    for (let t = 0; t < 40; t += DT) {
+      const err = -wrap(held.data.headingDeg)
+      const yaw = Math.max(-0.4, Math.min(0.4, err * 0.1))
+      maxPedal = Math.max(maxPedal, Math.abs(yaw))
+      maxErr = Math.max(maxErr, Math.abs(err))
+      held.controls.yaw = yaw
+      held.step(DT)
+      if (held.data.kias >= 40) break
+    }
+    expect(maxErr).toBeLessThan(6)
+    expect(maxPedal).toBeLessThanOrEqual(0.4)
   })
 
   it('hands-off cruise holds near wings-level for a minute (rigged, mild spiral only)', () => {

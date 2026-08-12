@@ -84,6 +84,61 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Proper prop physics fleet-wide (2026-08-12, user goal: "fix the physics of all the planes with proper thrust and P[-factor]")
+
+The prop-effect heuristics accumulated this session (thrust-coefficient
+hack with a q-floor, an alpha-mix floor, per-type pfInflowRefMs ramps)
+were patches over a wrong formulation. Replaced by
+**src/sim/prop-effects.ts** — terms derived from actual thrust, engine
+torque, and momentum-theory inflow, TDD:
+
+- **Disk axial velocity** v = ½(V + √(V² + 2T/ρA)) (momentum theory).
+- **P-factor** N = −kP·T·R·(V·sinα)/vDisk — asymmetric blade loading
+  needs CROSSFLOW relative to the disk's own inflow. The static and
+  zero-alpha limits now fall out of the physics: a stationary runup has
+  axial inflow and NO P-factor (the old model needed a hand-tuned ramp
+  to avoid a phantom pirouette), and a tail-up wheel run at α=0 has
+  none either.
+- **Slipstream swirl** N = −kS·Q — torque conservation through the
+  slipstream tube folds the fin force to a geometry constant times
+  ENGINE TORQUE; present at static (a real runup pushes the tail),
+  linear in power, bounded by construction.
+
+Gains calibrated so the C172's audited cruise moment (−236.8 N·m at
+110 KIAS/75%) is bit-preserved — the AP lateral law's Finding-B
+stability margins were re-tuned against exactly that value, and all
+AP suites stay green untouched. kP 2.397 / kS 0.607 (single with fin
+in slipstream); twins half of each (combined-disc model); jets and
+gliders zero (asserted). Rigging re-derived everywhere: derive.ts now
+computes rigCn by CALLING THE SAME physics functions at the canonical
+level-cruise point — cancellation by construction — and the audited
+types (C172, Cub at 70 kt: −126.9 N·m; TBM9 at FL280 and DH8D at
+FL250 via documented tuning pins, where the flat-rated-turboprop
+cruise sits far from the generic point) match the sim exactly.
+
+**Honest behavior changes, tests recalibrated with documentation**:
+static full power now creeps a few degrees left before the tires hold
+it (swirl is real; the contract is "no pirouette", bound 4°→10°) and
+a feet-off takeoff roll walks left from brake release (real 172s
+exit the runway edge hands-off) — the user-facing contract became a
+CONTROLLABILITY assertion: proportional pedal ≤40% holds the roll
+within 6° to 40 KIAS (C172), and the Cub contract (fly-off ≤50 kt,
+heading held) passes at full historic low-speed moment — no ramps.
+
+**In-browser on the new physics**: the Cub finally flew its complete
+circuit at KHAF — takeoff at 52 kt with 20% pedal, right pattern,
+path-gated final (turn only at-or-above the 3° path — an earlier
+attempt turned final 3.4 km out at 250 ft and dragged in 1.2 km
+short), hold-off flare, touchdown ON the runway, dead-straight
+rollout to walking pace, smooth-graded 7-minute logbook entry. C172:
+takeoff straight at 45% pedal (more foot than before — honest),
+hands-off cruise max bank 1.7° in 10 s. An AP full-power-Vy-climb
+bench test confirmed the AP handles the new climb moments cleanly
+(max roll 3.7°, beta ~1.5° honest skid) — my browser handoff crashes
+were script artifacts (instant stick release at low altitude, then a
+left turn into the Pillar Point headland). Suite 942 + validate 421,
+tsc clean.
+
 ## Cub circuit: tailwheel steering was inverted since 11b (2026-08-11, user goal)
 
 Flying the Cub circuit in-browser ("make sure it feels normal too")

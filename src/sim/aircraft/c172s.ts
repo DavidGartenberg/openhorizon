@@ -118,9 +118,12 @@ export const C172S: AircraftParams = {
 
   // propwash: fraction of disk-loading Δq reaching the tail
   propwashTailFactor: 0.7,
-  // P-factor + slipstream swirl yaw: Cn = −pf·Tc·inflow·(0.4 + 0.6·min(α/0.12, 1))
-  pFactorCn: 0.04,
-  pfInflowRefMs: 50, // sweep in PROGRESS: static pinned (2°/6 s), no-rudder roll ≤14° @40 KIAS
+  // Prop-effect gains (prop-effects.ts): calibrated so the total yaw at
+  // the audited 110 KIAS / 75% cruise reproduces the legacy −236.8 N·m
+  // the AP lateral law was re-tuned against (swirl share from the old
+  // model's alpha-floor: kS = 192.7/317.7; P-factor takes the rest).
+  pFactorK: 2.397,
+  swirlK: 0.607,
   // Rigging (offset fin + aileron rigging, like the real airplane): sized
   // to null the measured prop moments at 110 KIAS / 75% / 3,000 ft —
   // P-factor yaw −236.8 N·m and torque roll −317.7 N·m over qS·span

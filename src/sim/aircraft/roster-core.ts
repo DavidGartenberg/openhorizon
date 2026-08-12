@@ -142,7 +142,10 @@ export const CORE_ROSTER: RosterEntry[] = [
       vSpeeds: { vyKcas: 124, approachKcas: 85, vneKcas: 271, glideKcas: 120 },
       // Tuning: cruise −1.5% short at the class cd0 — the TBM is the
       // slickest single-turboprop flying; set from the cruise anchor.
-      tuning: { cd0: 0.0196 },
+      // Rigging pinned from a level-cruise audit under the prop-effects
+      // model (280 kt TAS / FL280): the generic 3,000 ft CL-0.35 point
+      // sits far from a flat-rated turboprop's real cruise.
+      tuning: { cd0: 0.0196, rigCn: 0.001036, rigCl: 0.001552 },
     },
     opts: { cd0Class: 'turbopropSingle' },
     targets: { cruiseTasKt: 330, cruiseAltFt: 28_000, climbFpm: 2380 },

@@ -99,7 +99,8 @@ export const B738: AircraftParams = {
   propCpTable: [[0, 0], [1, 0]],
 
   propwashTailFactor: 0, // no propwash
-  pFactorCn: 0, // no P-factor
+  pFactorK: 0, // no P-factor
+  swirlK: 0,
 
   jet: CFM56_7B26,
   machModel: { mdd: 0.82, dragRiseK: 20 },

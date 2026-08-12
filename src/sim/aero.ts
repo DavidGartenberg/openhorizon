@@ -6,6 +6,7 @@
  * moments (N·m).
  */
 import { C172S, flapInterp } from './aircraft/c172s'
+import { propEffectsYawNm } from './prop-effects'
 import type { AircraftParams } from './aircraft/params'
 import type { V3 } from '../math/vec'
 import { v3set, clamp } from '../math/vec'
@@ -145,21 +146,14 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
     P.cnDa * inp.aileronRad +
     P.cnDr * inp.rudderRad * tailQFactor
 
-  // ---- prop effects (§5.1): P-factor + slipstream swirl → left yaw; engine
-  // torque reaction → left roll. Scale with thrust coefficient AND forward
-  // inflow: P-factor is asymmetric blade loading from the inflow angle —
-  // it does not exist statically (a stationary 172 at full power does not
-  // pirouette; the moment builds as the roll accelerates). Full strength
-  // by ~49 kt.
-  const tc = Math.max(inp.thrustN, 0) / Math.max(qS, 1)
-  // Per-type inflow ramp (pfInflowRefMs, 0/absent = off): P-factor needs
-  // forward inflow — a stationary aircraft at full power does not
-  // pirouette. NOTE the alpha-mix SLOPE below is load-bearing for the
-  // AP's NAV/APR law: steepening it (a tried 0.2+0.8 variant) deepened
-  // the alpha→yaw cross-coupling enough to resurrect the Finding-B
-  // slow-onset lateral oscillation against the real airframe.
-  const pfInflow = P.pfInflowRefMs ? Math.min(V / P.pfInflowRefMs, 1) : 1
-  cn -= P.pFactorCn * tc * pfInflow * (0.4 + 0.6 * Math.min(Math.max(alpha, 0) / 0.12, 1))
+  // ---- prop effects (§5.1, prop-effects.ts): P-factor + slipstream
+  // swirl → left yaw, computed as MOMENTS from actual thrust/torque and
+  // momentum-theory inflow — the static and zero-alpha limits fall out of
+  // the physics instead of the old hand-tuned q-floor/alpha-mix/inflow
+  // ramps. Applied in the moment assembly below alongside the
+  // torque-reaction roll. Gains are calibrated so the C172's audited
+  // cruise moment is unchanged — the AP lateral law's stability margins
+  // were re-tuned against exactly that value.
   // Rigging compensation (offset fin / aileron rigging — see params.ts):
   // constant coefficients nulling the prop moments at the type's cruise.
   cn += P.rigCn ?? 0
@@ -180,11 +174,17 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
     -D * sa * cb + Y * -sa * sb - L * ca,
   )
 
+  const propYawNm = P.pFactorK > 0 || P.swirlK > 0
+    ? propEffectsYawNm(
+        { pFactorK: P.pFactorK, swirlK: P.swirlK },
+        inp.thrustN, inp.propTorqueNm, inp.vAir, alpha, inp.rho, P.propDiameterM,
+      )
+    : 0
   v3set(
     out.moment,
     qS * P.spanM * croll - inp.propTorqueNm, // torque reaction: left roll
     qS * P.chordM * cm,
-    qS * P.spanM * cn,
+    qS * P.spanM * cn + propYawNm,
   )
 
   out.cl = cl

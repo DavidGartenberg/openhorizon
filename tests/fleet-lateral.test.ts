@@ -37,10 +37,10 @@ describe('fleet lateral stability (rigging fleet-wide)', () => {
   it('every powered prop roster type carries rigging + the inflow ramp', () => {
     for (const entry of ROSTER) {
       const P = rosterParams(entry.spec.designator)!
-      if (P.pFactorCn > 0) {
+      if (P.pFactorK > 0) {
+        expect(P.swirlK, entry.spec.designator).toBeGreaterThan(0)
         expect(P.rigCn ?? 0, entry.spec.designator).toBeGreaterThan(0)
         expect(P.rigCl ?? 0, entry.spec.designator).toBeGreaterThan(0)
-        expect(P.pfInflowRefMs ?? 0, entry.spec.designator).toBeGreaterThan(0)
       } else {
         expect(P.rigCn ?? 0, entry.spec.designator).toBe(0)
         expect(P.rigCl ?? 0, entry.spec.designator).toBe(0)
