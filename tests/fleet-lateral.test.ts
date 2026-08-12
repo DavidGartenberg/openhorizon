@@ -68,6 +68,34 @@ describe('fleet lateral stability (rigging fleet-wide)', () => {
     })
   }
 
+  it('J-3 Cub: full-power takeoff roll is controllable — holds heading with full pedal available, flies off by 50 kt', () => {
+    // Found flying the Cub in-browser (goal: "feels normal"): full right
+    // pedal could not hold the takeoff roll — ~300 N·m of low-speed prop
+    // yaw vs ~280 N·m of total rudder+tailwheel authority — and the Cub
+    // pirouetted through full circles at 13-33 kt. No test had ever flown
+    // a full-POWER ground roll (the validated landing rolls are at idle,
+    // where prop yaw vanishes).
+    const ac = new Aircraft({ ...J3CUB })
+    ac.spawnOnGround(0, 0, 0)
+    ac.engineRunning = true
+    ac.controls.mixture = 1
+    ac.controls.throttle = 1
+    let offKias = -1
+    let maxAbsHdgErr = 0
+    for (let t = 0; t < 35; t += DT) {
+      const d = ac.data
+      const hdgErr = -(((d.headingDeg + 180) % 360) - 180)
+      maxAbsHdgErr = Math.max(maxAbsHdgErr, Math.abs(hdgErr))
+      ac.controls.yaw = Math.max(-0.8, Math.min(0.8, hdgErr * 0.1))
+      ac.controls.pitch = d.kias < 25 ? 0.25 : 0.14
+      ac.step(DT)
+      if (t > 1 && !ac.data.onGround && ac.data.aglFt > 2) { offKias = ac.data.kias; break }
+    }
+    expect(maxAbsHdgErr).toBeLessThan(20) // veers left but holdable
+    expect(offKias).toBeGreaterThan(0) // actually flies off
+    expect(offKias).toBeLessThanOrEqual(50) // in the three-point window, not a wheelbarrow
+  })
+
   it('J-3 Cub: hands-off level cruise bounded (rigged; ground-loop untouched)', () => {
     const r = handsOff(J3CUB, 70, 2000)
     expect(r).toBeTruthy()

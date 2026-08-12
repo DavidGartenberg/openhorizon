@@ -98,7 +98,14 @@ export function computeGear(inp: GearInput, out: GearOutput, P: AircraftParams =
     if (normal <= 0) continue
 
     // Wheel heading in the ground plane: body-x projected, plus steering.
-    const steer = g.steerMaxRad > 0 ? inp.rudder * g.steerMaxRad : 0
+    // Steering sign flips for legs BEHIND the CG: steering a TAILWHEEL
+    // right swings the tail right — yawing the NOSE left. Right pedal must
+    // yaw the nose right on both layouts, so a tail leg steers opposite
+    // the pedal. (Found via the Cub: its tailwheel fought the rudder at
+    // full power and no pedal could stop the takeoff-roll pirouette; every
+    // prior ground test rolled at idle where feedback control masked it.)
+    const steerSign = g.x < 0 ? -1 : 1
+    const steer = g.steerMaxRad > 0 ? steerSign * inp.rudder * g.steerMaxRad : 0
     qrotate(scratch, inp.quat, v3set(fNed, Math.cos(steer), Math.sin(steer), 0))
     const wheelHdgX = scratch.x
     const wheelHdgY = scratch.y

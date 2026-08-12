@@ -84,6 +84,38 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Cub circuit: tailwheel steering was inverted since 11b (2026-08-11, user goal)
+
+Flying the Cub circuit in-browser ("make sure it feels normal too")
+found that **no Cub had ever taken off under power**: at full throttle
+the roll pirouetted through complete circles with full right pedal
+held. Bench isolation showed heading 360→265→116→35 during one roll —
+and the inflow-ramp sweep barely moved it, which broke the P-factor
+theory. Root cause in gear.ts: steering applied `rudder × steerMax`
+uniformly to any steerable leg — correct for a nosewheel, INVERTED
+for a tailwheel (steering the tail wheel right swings the tail right,
+yawing the nose LEFT). The Cub's own tailwheel fought its rudder,
+with P-factor piling on. Every prior ground test rolled at IDLE
+(three-point landings, rudder-frozen ground-loop) where either
+feedback control masked it or the rudder was frozen — no test had
+ever flown a full-POWER roll. Fix: steering sign flips for legs
+behind the CG. Nosewheel types (172/737/roster tricycles) are
+bit-identical (sign +1); roster taildraggers inherit the fix.
+
+New contract test (fleet-lateral): Cub full-power takeoff roll holds
+heading (max error <20°) and flies off ≤50 kt in the three-point
+window — with pfInflowRefMs restored to 20 (historic low-speed
+dynamics; the validated 38-kt rudder-frozen ground-loop keeps full
+margin, all 7 Cub validation tests green).
+
+Also caught while flying: the Cub DIED OF CARB ICE idling in
+zero-spread manual weather (ice fraction 1.000 — killed the engine
+and blocked every restart until 60 s of carb heat + a hand-prop
+swing, the period procedure), and my scripted attempts nosed it over
+by braking at idle without the stick aft, then wheelbarrowed it by
+easing the stick too far forward at speed — all honest taildragger
+physics doing its job. Suite 933 + validate 421, tsc clean.
+
 ## Fleet-wide lateral stability + C172 feel-flight (2026-08-11, user goal)
 
 **The C172 feels normal now — flown and measured in-browser (calm
