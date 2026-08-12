@@ -84,6 +84,44 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Fleet-wide lateral stability + C172 feel-flight (2026-08-11, user goal)
+
+**The C172 feels normal now — flown and measured in-browser (calm
+air, KHAF/KSFO)**: takeoff tracks the centerline with 35% max pedal;
+hands-off at cruise wanders ≤6° over 20 s; roll response crisp
+(0→28° in 3.3 s at 30% aileron, clean reversal); coupled approach to
+a 106 fpm smooth landing at KSFO. (My scripted VISUAL landings at
+KHAF remain embarrassing — glidepath-loop scripting, not the
+airframe; recorded as such.)
+
+**The same bug fixed for every other powered prop** (user goal part
+2). deriveParams now computes rigging generically at the canonical
+level-cruise point (CL≈0.35, thrust=drag, mid mass): tc = cd_cruise
+exactly (q-independent cancellation), qS = W/CL, and torque from
+power REQUIRED (D·v/η·ω — cross-checks the C172 bench audit to 1%;
+the first attempt used 0.7×rated power and missed 3× on
+oversized-engine types). All prop types also get pfInflowRefMs 20 —
+kills the static-pirouette artifact, full moment by 39 kt so no
+validated low-speed dynamics change. Jets/gliders: no prop moments,
+no rigging (asserted). Per-type audits where the generic derivation
+can't reach: **J-3 Cub** (own-params LEVEL-cruise audit: rigCn
+0.001476, torque 161.1 N·m / 133,340 — the validated 38-kt emergent
+ground-loop is untouched, all 7 Cub tests green) and **DH8D**
+(pinned via the documented `tuning` mechanism from a 306 kt/FL250
+audit — the 3,000 ft generic point lands 40% low for a 7,500 shp
+FL250 turboprop).
+
+**New fleet regression** (tests/fleet-lateral.test.ts): every powered
+prop roster type asserts rigging + inflow present (jets/gliders
+assert none); five representative types (P28A, SR22, BE58, TBM9,
+DH8D) + the Cub fly a level-trimmed hands-off minute bounded <8°
+first-10 s / <25° at 60 s. Harness lesson recorded: fixed-throttle
+trim CLIMBS oversized-engine types (thrust ≫ drag → prop moments far
+off the level point) — level trim (gammaRad 0, own params) is the
+honest condition. In-browser: SR22 flown — straight takeoff at 35%
+pedal, hands-off 160 KIAS ≤5.4°/10 s. Suite 932 + validate 421, tsc
+clean.
+
 ## Lateral-stability fix (2026-08-11, user goal: "the Cessna moves sideways without me doing it")
 
 The complaint was real and measured: full static power pirouetted the

@@ -1,0 +1,77 @@
+/**
+ * Fleet-wide lateral-stability regression (user goal: "fix this bug for
+ * all the other planes"): every powered prop type is RIGGED (rigCn/rigCl
+ * derived at the canonical CL≈0.35 thrust=drag cruise in derive.ts) and
+ * carries the static-pirouette inflow ramp. Hands-off LEVEL cruise must
+ * hold a bounded, non-divergent bank — the pre-fix C172 rolled through
+ * 21° in 10 s into a 45° spiral dive, and unrigged roster types did the
+ * same.
+ */
+import { describe, expect, it } from 'vitest'
+import { Aircraft } from '../src/sim/aircraft'
+import { ROSTER, rosterParams } from '../src/sim/aircraft/roster'
+import { J3CUB } from '../src/sim/aircraft/j3cub'
+import { trim } from '../src/sim/trim'
+import { KT } from '../src/sim/atmosphere'
+import type { AircraftParams } from '../src/sim/aircraft/params'
+
+const DT = 1 / 120
+
+/** Level-trim (gammaRad 0 solves throttle) at the type's own cruise,
+ *  release hands-off, sample the bank envelope. */
+function handsOff(P: AircraftParams, tasKt: number, altFt: number) {
+  const ac = new Aircraft({ ...P })
+  const tas = tasKt * KT
+  const t = trim({ tasMs: tas, altM: altFt * 0.3048, massKg: ac.massKg, flapsDeg: 0, gammaRad: 0, params: P })
+  if (!t.converged) return null
+  ac.applyTrimState(tas, t.alphaRad, altFt * 0.3048, 0, 0, t.elevatorRad, t.throttle, t.rpm)
+  let bank10 = 0
+  for (let s = 0; s < 60; s += DT) {
+    ac.step(DT)
+    if (s < 10) bank10 = Math.max(bank10, Math.abs(ac.data.rollDeg))
+  }
+  return { bank10, bank60: Math.abs(ac.data.rollDeg) }
+}
+
+describe('fleet lateral stability (rigging fleet-wide)', () => {
+  it('every powered prop roster type carries rigging + the inflow ramp', () => {
+    for (const entry of ROSTER) {
+      const P = rosterParams(entry.spec.designator)!
+      if (P.pFactorCn > 0) {
+        expect(P.rigCn ?? 0, entry.spec.designator).toBeGreaterThan(0)
+        expect(P.rigCl ?? 0, entry.spec.designator).toBeGreaterThan(0)
+        expect(P.pfInflowRefMs ?? 0, entry.spec.designator).toBeGreaterThan(0)
+      } else {
+        expect(P.rigCn ?? 0, entry.spec.designator).toBe(0)
+        expect(P.rigCl ?? 0, entry.spec.designator).toBe(0)
+      }
+    }
+  })
+
+  // Representative types across the powerplant/class matrix, flown at
+  // ~85% of their validated max-level cruise (a normal cruise setting).
+  const SAMPLE: Array<{ des: string; tasKt: number; altFt: number }> = [
+    { des: 'P28A', tasKt: 109, altFt: 8000 },
+    { des: 'SR22', tasKt: 153, altFt: 8000 },
+    { des: 'BE58', tasKt: 170, altFt: 7000 },
+    { des: 'TBM9', tasKt: 280, altFt: 28_000 },
+    { des: 'DH8D', tasKt: 306, altFt: 25_000 },
+  ]
+  for (const s of SAMPLE) {
+    it(`${s.des}: hands-off level cruise is bounded and non-divergent`, () => {
+      const P = rosterParams(s.des)
+      expect(P, s.des).toBeTruthy()
+      const r = handsOff(P!, s.tasKt, s.altFt)
+      expect(r, `${s.des} trim converged`).toBeTruthy()
+      expect(r!.bank10, `${s.des} first-10s bank`).toBeLessThan(8)
+      expect(r!.bank60, `${s.des} bank at 60s`).toBeLessThan(25)
+    })
+  }
+
+  it('J-3 Cub: hands-off level cruise bounded (rigged; ground-loop untouched)', () => {
+    const r = handsOff(J3CUB, 70, 2000)
+    expect(r).toBeTruthy()
+    expect(r!.bank10).toBeLessThan(6)
+    expect(r!.bank60).toBeLessThan(25)
+  })
+})

@@ -246,6 +246,12 @@ const WAVE2: RosterEntry[] = [
       stallCleanKcas: 120,
       vSpeeds: { vyKcas: 160, approachKcas: 125, vneKcas: 286, glideKcas: 170 },
       propThrustScale: 0.82,
+      // Rigging pinned from a level-cruise bench audit at 306 kt/FL250
+      // (documented per-type override): the generic 3,000 ft/CL-0.35
+      // derivation lands ~40% low for a 7,500 shp FL250 turboprop —
+      // measured prop-yaw coefficient 0.000488, torque 31,792 N·m over
+      // qS·span 12,197,531.
+      tuning: { rigCn: 0.000488, rigCl: 31_792 / 12_197_531 },
     },
     opts: { cd0Class: 'turbopropTwin' },
     targets: { cruiseTasKt: 350, cruiseAltFt: 25_000, climbFpm: 2400 },

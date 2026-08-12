@@ -125,6 +125,16 @@ export const J3CUB: AircraftParams = {
 
   propwashTailFactor: 0.85, // everything sits in the slipstream
   pFactorCn: 0.05,
+  // Rigging (fleet lateral-stability fix — see c172s.ts): LEVEL-cruise
+  // bench audit at 70 kt TAS / 2,000 ft (own-params trim, throttle 0.87
+  // level) gave prop-yaw coefficient 0.001476 and torque 161.1 N·m over
+  // qS·span 133,340. pfInflowRefMs 20 kills only the static-pirouette
+  // artifact — full moment by 39 kt, so the VALIDATED emergent
+  // ground-loop at 38 kt (tail-up, feet asleep) keeps its historical
+  // dynamics.
+  rigCn: 0.001476,
+  rigCl: 161.1 / 133_340,
+  pfInflowRefMs: 20,
 
   // ---- gear: taildragger. Mains AHEAD of the CG (x +0.25 m) — the
   // ground-loop tendency is this geometry, not a scripted behavior. ----
