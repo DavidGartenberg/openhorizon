@@ -30,6 +30,12 @@ export interface AircraftParams {
   /** Retractable gear: transit time and the drag increment when extended.
    *  Absent = fixed gear (always down, no extra drag term). */
   gearRetractable?: { transitS: number; dCdExtended: number }
+  /** Flight spoilers / speedbrakes (737-class): drag increment, lift
+   *  dump (ΔCL removed at full deploy), and actuator rate (fraction/s).
+   *  Absent = no spoilers (piston fleet). Simplification (documented):
+   *  symmetric speedbrake only — no roll-spoiler mixing, no ground
+   *  auto-deploy arming. */
+  spoilers?: { dCd: number; dCl: number; ratePerS: number }
   /** Compressibility (Phase 11e): Prandtl–Glauert lift-slope correction and
    *  quadratic drag rise past the drag-divergence Mach. Absent = no Mach
    *  effects (piston fleet never gets near them). */

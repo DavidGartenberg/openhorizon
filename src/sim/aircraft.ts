@@ -86,6 +86,9 @@ export class Aircraft {
   gearDownCommanded = true
   /** Actual gear position 0..1 (1 = down/locked). Fixed gear pins at 1. */
   gearPos = 1
+  /** Speedbrake lever [0,1] (spoilers param present); actuator below. */
+  spoilerCmd = 0
+  spoilerPos = 0
 
   constructor(params: AircraftParams = C172S) {
     this.P = params
@@ -227,6 +230,10 @@ export class Aircraft {
     this.alphaPrev = alpha
 
     // ---- gear transit (Phase 11e; fixed gear pins at 1) ----
+    if (this.P.spoilers) {
+      const sRate = this.P.spoilers.ratePerS * dt
+      this.spoilerPos = clamp(this.spoilerPos + clamp(this.spoilerCmd - this.spoilerPos, -sRate, sRate), 0, 1)
+    }
     if (this.P.gearRetractable) {
       const rate = dt / this.P.gearRetractable.transitS
       this.gearPos = clamp(this.gearPos + (this.gearDownCommanded ? rate : -rate), 0, 1)
@@ -283,7 +290,9 @@ export class Aircraft {
     ai.thrustN = this.prop.thrustN
     ai.propTorqueNm = this.prop.torqueNm
     ai.mach = mach
-    ai.extraCd = this.P.gearRetractable ? this.P.gearRetractable.dCdExtended * this.gearPos : 0
+    ai.extraCd = (this.P.gearRetractable ? this.P.gearRetractable.dCdExtended * this.gearPos : 0) +
+      (this.P.spoilers ? this.P.spoilers.dCd * this.spoilerPos : 0)
+    ai.extraClDump = this.P.spoilers ? this.P.spoilers.dCl * this.spoilerPos : 0
     const groundElev = this.safeGroundElev(this.posNed.x, this.posNed.y)
     ai.heightAglM = altM - groundElev
     this.data.aglFt = ai.heightAglM / FT

@@ -84,6 +84,51 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Proper thrust + real-life looks + 737 moving surfaces (2026-08-12, user goal)
+
+**Thrust validated against published performance** (new permanent rows,
+tests/validate/takeoff-roll.test.ts): C172S ground roll 889 ft vs the
+POH's 960 (honest); the J-3's 1,147 N static thrust cross-checks
+momentum theory (65 hp / 1.83 m disc: ideal ~1,950 N, real fixed-pitch
+props deliver 55-65% → the model is right; an earlier scare was a
+newtons-vs-pounds confusion — 258 lbf matches published A-65
+measurements). The real gap was the TURBOFAN: the old Mach curve held
+91% of static thrust at M0.25 and rolled a MTOW 737 to Vr in ~870 m.
+Reshaped as a Mattingly-style dip-and-ram-recovery quadratic
+(machA 0.85 / machB 0.63): 0.83 at M0.25 (takeoff), minimum ~0.71 at
+M0.67, 0.73 at M0.82 — threaded between the published 26 kN-class
+FL350 cruise anchor (from below) and the roster jets' real, thin
+cruise margins (from above; the CitationJet needed a documented cd0
+pin — its cruise Mach sits exactly at the curve minimum). MTOW 737
+ground roll now validates in the FCOM band (1,250-1,850 m to 155 kt).
+
+**737 flight spoilers/speedbrake** (new system, TDD): params
+`spoilers { dCd, dCl, ratePerS }`, rate-limited actuator, drag +
+lift-dump through the aero path (test asserts ENERGY decay — at fixed
+elevator the lift dump drops the nose and the jet honestly comes out
+FASTER downhill), KeyV lever + `__ohSpoiler` hook. Symmetric
+speedbrake only, no roll-spoiler mixing or ground auto-deploy arming
+(documented).
+
+**Meshes rebuilt from published dimensions** (Boeing ACAP class data
+for the 737: 39.47 m × 35.8 m with winglets × 12.55 m tail, 3.76 m
+tube, 25° sweep): low wing at the belly line, tapered swept panels,
+blended winglets canted ~15°, CFM pods with flattened bottoms and
+dark inlets on pylons, window strips, raked tail cone, taller swept
+fin. **ANIMATED surfaces** wired through a new `surfaces()` mesh hook
+driven per-frame from sim state: Fowler flaps (aft translation +
+droop to ~35°), four flight-spoiler panels per wing (hinge up ~50°
+with the actuator), and retracting gear (nose folds forward, mains
+fold inboard). C172 got tapered outer wing panels, wheel spats, a
+dorsal fillet, and ANIMATED slotted flaps; the Cub got true Cub
+yellow, rounded rudder + wingtips, exposed cylinder heads, and bungee
+V-strut gear. Screenshots in-browser confirm flaps/spoilers moving on
+the 737 at KSFO (with live DAL/JAL/UAL ground traffic behind it), the
+172's planform, and the yellow Cub three-point. The chase camera now
+scales with span — it had been tuned for the C172 and sat INSIDE the
+737's fuselage. Suite 948 + validate 424 (takeoff-roll rows included),
+tsc clean.
+
 ## Proper prop physics fleet-wide (2026-08-12, user goal: "fix the physics of all the planes with proper thrust and P[-factor]")
 
 The prop-effect heuristics accumulated this session (thrust-coefficient

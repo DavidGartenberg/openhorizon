@@ -199,6 +199,7 @@ const cockpitInteraction = new CockpitInteraction(camera)
 
 const wind = new WindModel()
 const chase = new ChaseCamera(camera)
+chase.setSizeScale(Math.max(FLEET_ACTIVE.params.spanM / 11, 1))
 const orbit = new OrbitCamera(camera)
 const freeCam = new FlyCamera(camera)
 const cockpitCam = new CockpitCamera(camera)
@@ -842,6 +843,14 @@ function pollControls(dt: number): void {
   // Parking brake: set on ground spawn, auto-releases when power comes up.
   if (parkingBrake && c.throttle > 0.15) parkingBrake = false
   c.brakeLeft = c.brakeRight = input.isHeld('KeyB') || parkingBrake ? 1 : 0
+  if (input.wasPressed('KeyV')) {
+    if (aircraft.P.spoilers) {
+      aircraft.spoilerCmd = aircraft.spoilerCmd > 0.5 ? 0 : 1
+      toast(aircraft.spoilerCmd > 0.5 ? 'SPEEDBRAKE — FLIGHT DETENT' : 'SPEEDBRAKE DOWN')
+    } else {
+      toast('NO SPEEDBRAKES ON THIS TYPE')
+    }
+  }
   // 16a: mapped gamepad axes own their controls while connected.
   if (!pollJoyCapture(performance.now())) {
     const jr = joyRead('roll')
@@ -1896,6 +1905,11 @@ function advanceFrame(elapsed: number, now: number): void {
   mesh.group.rotation.x = (d.pitchDeg * Math.PI) / 180
   mesh.group.rotation.z = (-d.rollDeg * Math.PI) / 180
   updateProp(mesh, d.rpm, elapsed)
+  mesh.surfaces?.({
+    flapFrac: aircraft.flapsDeg / Math.max(FLEET_ACTIVE.params.flapDetentsDeg[FLEET_ACTIVE.params.flapDetentsDeg.length - 1] ?? 1, 1),
+    spoilerFrac: aircraft.spoilerPos,
+    gearPos: aircraft.gearPos,
+  })
 
   engineSound.update({
     rpm: d.rpm,
@@ -2324,6 +2338,11 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohPapi: () => airports.nearestPapi(mesh.group.position.x, mesh.group.position.y, mesh.group.position.z),
   __ohFleet: () => ({ key: fleetKey, label: FLEET_ACTIVE.label, jet: !!aircraft.P.jet, n1: aircraft.data.n1Pct, gearPos: aircraft.gearPos, gearCmd: aircraft.gearDownCommanded }),
   __ohGearCmd: (down: boolean) => { if (aircraft.P.gearRetractable) aircraft.gearDownCommanded = down },
+  /** Speedbrake lever (types with a spoilers block): set 0..1 / read state. */
+  __ohSpoiler: (cmd?: number) => {
+    if (cmd !== undefined && aircraft.P.spoilers) aircraft.spoilerCmd = Math.max(0, Math.min(1, cmd))
+    return { cmd: aircraft.spoilerCmd, pos: aircraft.spoilerPos, fitted: !!aircraft.P.spoilers }
+  },
   __ohCarbHeat: (on: boolean) => { carbHeatOn = on },
   __ohHandProp: () => { handPropRequested = true },
   __ohCarb: () => ({ ice: carbIceState.iceFraction, heat: carbHeatOn, intake: aircraft.intakePowerFactor, spreadC: wxTempDewSpreadC }),

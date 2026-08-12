@@ -14,6 +14,14 @@ export class ChaseCamera {
     private height = 3.8,
   ) {}
 
+  /** Scale the follow distance/height for larger airframes (the defaults
+   *  were tuned around an 11 m-span C172 — a 36 m 737 put the camera
+   *  INSIDE the fuselage). */
+  setSizeScale(scale: number): void {
+    this.distance = 13 * scale
+    this.height = 3.8 * scale
+  }
+
   /** Shift internal smoothed state after a floating-origin rebase. */
   shiftWorld(dxRender: number, dzRender: number): void {
     this.smoothedTarget.x += dxRender

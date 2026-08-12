@@ -33,6 +33,9 @@ export interface AeroInput {
   mach?: number
   /** Extra parasite-drag increment (extended gear, Phase 11e). Default 0. */
   extraCd?: number
+  /** Lift decrement (spoiler lift dump), applied after the stall blend.
+   *  Default 0. */
+  extraClDump?: number
 }
 
 export interface AeroOutput {
@@ -105,6 +108,7 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
   const clFlatPlate = 1.05 * Math.sin(2 * alpha)
   let cl = (1 - stall) * clAttached + stall * clFlatPlate
   cl += P.clDe * inp.elevatorRad + (P.clQ * qhat + P.clAlphaDot * adot) * (1 - stall)
+  cl -= inp.extraClDump ?? 0
   // Buffet/annunciation + test detection: 0.5 exactly at the CLmax break.
   const stallFraction = sigmoid((alpha - alphaPeak) / 0.02)
 

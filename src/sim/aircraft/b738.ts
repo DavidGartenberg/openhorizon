@@ -101,6 +101,10 @@ export const B738: AircraftParams = {
   propwashTailFactor: 0, // no propwash
   pFactorK: 0, // no P-factor
   swirlK: 0,
+  // Flight spoilers/speedbrake: in-flight drag + lift dump at full
+  // deflection (class figures for a narrowbody: ΔCD ≈ 0.05, ΔCL ≈ 0.35);
+  // ~1.2 s full travel. Symmetric speedbrake only (documented above).
+  spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85 },
 
   jet: CFM56_7B26,
   machModel: { mdd: 0.82, dragRiseK: 20 },

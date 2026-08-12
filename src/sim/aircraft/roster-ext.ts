@@ -513,7 +513,12 @@ const WAVE3: RosterEntry[] = [
   variant(b190, { designator: 'D228', label: 'Dornier 228', wingAreaM2: 32.0, spanM: 16.97, lengthM: 16.56, emptyKg: 3739, mtowKg: 6400, gear: { layout: 'tricycle' }, powerplant: { kind: 'turboprop', ratedPowerW: 578_700, count: 2, propDiameterM: 2.7, redlineRpm: 1600, thermoMargin: 1.6 }, stallCleanKcas: 80, tuning: { cd0: 0.038 } }, { cruiseTasKt: 223, cruiseAltFt: 10_000 }),
   variant(core('DHC6'), { designator: 'L410', label: 'Let L-410 Turbolet', wingAreaM2: 34.86, spanM: 19.98, lengthM: 14.42, emptyKg: 4200, mtowKg: 6600, powerplant: { kind: 'turboprop', ratedPowerW: 559_275, count: 2, propDiameterM: 2.3, redlineRpm: 2080, thermoMargin: 1.6 }, stallCleanKcas: 78, tuning: { cd0: 0.045 }, propThrustScale: undefined }, { cruiseTasKt: 197, cruiseAltFt: 10_000 }),
   // Bizjet families
-  variant(c25a, { designator: 'C525', label: 'CitationJet CJ1', lengthM: 12.98, emptyKg: 3121, mtowKg: 4853, powerplant: { kind: 'jet', staticThrustN: 8740, count: 2 }, stallCleanKcas: 88 }, { jetCruise: { mach: 0.68, altFt: 35_000 } }),
+  variant(c25a, { designator: 'C525', label: 'CitationJet CJ1', lengthM: 12.98, emptyKg: 3121, mtowKg: 4853, powerplant: { kind: 'jet', staticThrustN: 8740, count: 2 }, // Drag-ratio 0.943 vs the 0.92 envelope bound at the reshaped
+      // (ram-recovery) lapse curve's minimum, which sits at the CJ1's
+      // exact cruise Mach — the real CJ is a famously clean straight-wing
+      // jet; cd0 nudged 0.021 → 0.0198 from the cruise anchor.
+      tuning: { cd0: 0.0198 },
+      stallCleanKcas: 88 }, { jetCruise: { mach: 0.68, altFt: 35_000 } }),
   variant(c25a, { designator: 'C25B', label: 'Citation CJ3', lengthM: 15.59, emptyKg: 3810, mtowKg: 6291, powerplant: { kind: 'jet', staticThrustN: 12_400, count: 2 }, stallCleanKcas: 95 }, { jetCruise: { mach: 0.72, altFt: 37_000 } }),
   variant(c25a, { designator: 'C25C', label: 'Citation CJ4', lengthM: 16.26, emptyKg: 4241, mtowKg: 7761, powerplant: { kind: 'jet', staticThrustN: 16_100, count: 2 }, stallCleanKcas: 98 }, { jetCruise: { mach: 0.74, altFt: 37_000 } }),
   variant(c56x, { designator: 'C680', label: 'Citation Sovereign', wingAreaM2: 47.7, spanM: 22.04, lengthM: 19.35, emptyKg: 8149, mtowKg: 13_744, powerplant: { kind: 'jet', staticThrustN: 25_300, count: 2 }, stallCleanKcas: 98 }, { jetCruise: { mach: 0.75, altFt: 39_000 } }),

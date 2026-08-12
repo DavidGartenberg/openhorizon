@@ -40,8 +40,17 @@ export const CFM56_7B26: JetParams = {
   tsfcKgPerNs: 1.07e-5, // 0.38 lb/lbf/hr
   tsfcMachSlope: 0.72,
   lapseExp: 0.85,
-  machA: 0.45,
-  machB: 0.11,
+  // Installed lapse reshaped (was 0.45/0.11, which held 91% of static at
+  // M0.25 and rolled a MTOW 737 to Vr in ~870 m). High-bypass installed
+  // thrust DIPS through mid-Mach then partially RECOVERS by ram effect
+  // (Mattingly-style quadratic): with 0.85/0.72 the curve gives 0.83 at
+  // M0.25 (honest takeoff), a minimum of ~0.71 at M0.67, and 0.73 at
+  // M0.82 (cruise ram recovery) — threading the published 26 kN-class
+  // FL350 cruise anchor from below and the roster jets' real (thin)
+  // cruise margins from above. Cruise fuel-flow rows are TSFC ×
+  // required-thrust and stay put.
+  machA: 0.85,
+  machB: 0.63,
   windmillCdA: 0.47, // ~0.25 · 1.89 m² fan disc
 }
 

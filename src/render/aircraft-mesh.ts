@@ -1,34 +1,44 @@
 import * as THREE from 'three'
 
 /**
- * Phase 1 placeholder C172 built from primitives — correct proportions and
- * gear positions matching the physics contact points (§ plan). The proper
- * glTF exterior arrives with Phase 3's cockpit work.
+ * Primitive aircraft exteriors, proportioned from published dimensions
+ * (user goal: "make the planes actually resemble their ones in real
+ * life"). Still primitives — no glTF — but the silhouettes now follow
+ * the real airframes:
+ *  - C172S: 8.28 m × 11.0 m span, strut-braced high wing, wheel spats,
+ *    dorsal fillet, ANIMATED slotted flaps.
+ *  - J-3 Cub: 6.83 m × 10.74 m, Cub-yellow, rounded rudder and wingtips,
+ *    exposed A-65 cylinders, bungee-sprung gear, boot cowl.
+ *  - 737-800 (Boeing ACAP class data): 39.47 m long, 35.8 m span with
+ *    blended winglets, 12.55 m tail, 3.76 m tube, 25° sweep; ANIMATED
+ *    Fowler flaps (aft translation + droop), flight spoilers, and
+ *    retracting gear.
  *
- * Model frame: nose −z, up +y, right wing +x (body x,y,z → model y→+x,
- * z→−y, x→−z applied at placement time).
+ * Model frame: nose −z, up +y, right wing +x (body x,y,z → model
+ * y→+x, z→−y, x→−z applied at placement time).
  */
+export interface SurfaceState {
+  /** Flap deflection as a fraction of full travel [0,1]. */
+  flapFrac: number
+  /** Spoiler/speedbrake actuator position [0,1]. */
+  spoilerFrac: number
+  /** Landing-gear position: 1 down … 0 retracted. */
+  gearPos: number
+}
+
 export interface AircraftMesh {
   group: THREE.Group
   propDisc: THREE.Mesh
+  /** Present when the mesh has animated control surfaces / gear. */
+  surfaces?: (s: SurfaceState) => void
 }
 
 const WHITE = new THREE.MeshStandardMaterial({ color: 0xf2f3f5, roughness: 0.55, metalness: 0.1 })
 const RED = new THREE.MeshStandardMaterial({ color: 0xa31621, roughness: 0.6 })
 const DARK = new THREE.MeshStandardMaterial({ color: 0x1a1d20, roughness: 0.9 })
-// Semi-transparent (was fully opaque): this box is a flat "windshield hint",
-// never meant to be looked at face-on — from outside it only ever appeared
-// as a small, oblique, mostly-shadowed sliver, so its opacity never
-// mattered. Task 2d's cockpit camera is the first view that looks straight
-// through it, filling much of the frame, and this face happens to point
-// away from the sun (dim hemisphere-ambient-only lighting, no direct
-// light), so as an opaque solid it rendered as a large flat black void
-// rather than a windshield. Real glass is transmissive; making this one
-// partially see-through (rather than juicing its lit brightness, which
-// would just be a differently-wrong flat color) lets the actual sky/exterior
-// show through, which is what a windshield is supposed to do. metalness 0
-// (was 0.4) also avoids `MeshStandardMaterial`'s "black metal with no
-// envMap" trap for the still-visible tinted portion.
+const BELLY = new THREE.MeshStandardMaterial({ color: 0xb9c0c7, roughness: 0.5, metalness: 0.25 })
+// Semi-transparent windshield hint — see the Task 2d note in git history:
+// opaque glass read as a black void from the cockpit camera.
 const GLASS = new THREE.MeshStandardMaterial({
   color: 0x223138,
   roughness: 0.15,
@@ -42,6 +52,31 @@ function placeBody(m: THREE.Object3D, x: number, y: number, z: number): void {
   m.position.set(y, -z, -x)
 }
 
+/** Tapered swept wing panel as a plan-view shape extruded to thickness.
+ *  Corners in BODY coords: rootX = LE x at root, rootChord, tipX = LE x
+ *  at tip, tipChord, from spanwise y0 to y1 (one side). Returns a mesh
+ *  lying in the body x/y plane (thickness along z). */
+function taperedPanel(
+  rootLeX: number, rootChord: number, tipLeX: number, tipChord: number,
+  y0: number, y1: number, thick: number, mat: THREE.Material,
+): THREE.Mesh {
+  const s = new THREE.Shape()
+  // Shape space: (u,v) = (body y, body x)
+  s.moveTo(y0, rootLeX)
+  s.lineTo(y1, tipLeX)
+  s.lineTo(y1, tipLeX - tipChord)
+  s.lineTo(y0, rootLeX - rootChord)
+  s.closePath()
+  const geo = new THREE.ExtrudeGeometry(s, { depth: thick, bevelEnabled: false })
+  // Shape lies in (x=bodyY, y=bodyX) with depth along +z. Rotate so the
+  // panel lies flat: model x = bodyY (shape x ✓), model −z = bodyX (shape
+  // y must map to model −z), extrusion depth becomes model y (up).
+  geo.rotateX(-Math.PI / 2) // shape y → model −z? shape (x,y,z)→(x, z, −y): y→−z ✓ depth z→y ✓
+  const m = new THREE.Mesh(geo, mat)
+  m.castShadow = true
+  return m
+}
+
 export function buildC172(): AircraftMesh {
   const g = new THREE.Group()
   const add = (mesh: THREE.Mesh, x: number, y: number, z: number): THREE.Mesh => {
@@ -51,39 +86,48 @@ export function buildC172(): AircraftMesh {
     return mesh
   }
 
-  // Fuselage: cabin box + tapering tail cone + cowl.
+  // Fuselage: cabin box + tapering tail cone + cowl + dorsal fillet.
   add(new THREE.Mesh(new THREE.BoxGeometry(1.12, 1.3, 2.6), WHITE), 0.35, 0, -0.15)
   const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.55, 3.1, 8), WHITE)
-  tail.rotation.x = Math.PI / 2 // axis along model z
+  tail.rotation.x = Math.PI / 2
   add(tail, -2.5, 0, -0.28)
   const cowl = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.85, 0.85), RED)
   add(cowl, 1.75, 0, -0.05)
-  // Windshield hint. Depth (fore-aft) was 0.6, spanning body-x 0.75-1.35 —
-  // fine as a small oblique sliver seen from outside, but that range
-  // physically overlaps `cockpit.ts`'s panel bezel/PFD/MFD (body-x
-  // ~0.99-1.05), which Task 2d's cockpit camera looks at head-on for the
-  // first time. With this box now semi-transparent (see GLASS, above) so it
-  // doesn't read as a solid black void, that overlap meant the glass sat
-  // *in front of* the avionics screens from the pilot's eyepoint, tinting/
-  // dimming them. Shrunk to 0.12 and moved forward so its aft face (~1.06)
-  // clears the PFD/MFD screen plane (~0.99) — still overlaps the thin bezel
-  // box by a hair, but that's opaque and unaffected by any of this.
+  const dorsal = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.42, 1.5), WHITE)
+  dorsal.rotation.x = 0.25
+  add(dorsal, -3.05, 0, -0.72)
   add(new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.55, 0.12), GLASS), 1.12, 0, -0.72)
 
-  // Wing (high, slight visible thickness), struts.
-  add(new THREE.Mesh(new THREE.BoxGeometry(11.0, 0.15, 1.5), WHITE), 0.25, 0, -1.05)
+  // Wing: constant-chord center + tapered outer panels (the 172's planform),
+  // struts, and ANIMATED flap sections on the inboard trailing edge.
+  add(new THREE.Mesh(new THREE.BoxGeometry(5.4, 0.15, 1.63), WHITE), 0.3, 0, -1.06)
   for (const side of [-1, 1]) {
+    const outer = taperedPanel(1.11, 1.63, 0.86, 1.13, side * 2.7, side * 5.5, 0.13, WHITE)
+    outer.position.y = 1.0 // model up = −body z (wing plane at z −1.06)
+    g.add(outer)
     const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 2.05, 6), WHITE)
     strut.rotation.z = side * 0.55
     add(strut, 0.45, side * 1.35, -0.45)
   }
+  // Flaps: single-slotted sections, body y ±(0.7 … 2.65), chord 0.53.
+  const flapPivots: THREE.Group[] = []
+  for (const side of [-1, 1]) {
+    const pivot = new THREE.Group()
+    placeBody(pivot, -0.47, side * 1.68, -1.02) // hinge line at flap LE
+    const flap = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.09, 0.53), WHITE)
+    flap.position.set(0, -0.02, 0.27) // hang aft of the hinge
+    flap.castShadow = true
+    pivot.add(flap)
+    g.add(pivot)
+    flapPivots.push(pivot)
+  }
 
   // Empennage.
-  add(new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.1, 1.15), WHITE), -3.9, 0, -0.35) // h-stab
+  add(new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.1, 1.15), WHITE), -3.9, 0, -0.35)
   const fin = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.5, 1.25), RED)
   add(fin, -3.95, 0, -1.05)
 
-  // Gear: struts + wheels at the physics contact points.
+  // Gear: struts + wheels + SPATS at the physics contact points.
   const wheelGeo = new THREE.CylinderGeometry(0.19, 0.19, 0.15, 12)
   for (const [x, y, z] of [
     [1.3, 0, 1.3],
@@ -93,8 +137,11 @@ export function buildC172(): AircraftMesh {
     const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.0, 6), WHITE)
     add(strut, x, y, z - 0.55)
     const wheel = new THREE.Mesh(wheelGeo, DARK)
-    wheel.rotation.z = Math.PI / 2 // roll axis lateral
+    wheel.rotation.z = Math.PI / 2
     add(wheel, x, y, z - 0.19)
+    const spat = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.23, 0.2, 10, 1, false, 0, Math.PI), WHITE)
+    spat.rotation.z = Math.PI / 2
+    add(spat, x, y, z - 0.22)
   }
 
   // Prop: spinner + translucent disc that spins with RPM.
@@ -107,10 +154,6 @@ export function buildC172(): AircraftMesh {
   )
   placeBody(propDisc, 2.32, 0, -0.05)
   g.add(propDisc)
-  // Two blade hints (visible when slow).
-  // Own material: updateProp animates blade opacity — on the SHARED DARK
-  // material that made every wheel ghost at cruise RPM (latent since
-  // Phase 1, fixed in the 11g fleet pass).
   const blade = new THREE.Mesh(
     new THREE.BoxGeometry(0.12, 1.9, 0.04),
     new THREE.MeshStandardMaterial({ color: 0x1a1d20, roughness: 0.9, transparent: true }),
@@ -119,13 +162,17 @@ export function buildC172(): AircraftMesh {
   propDisc.userData.blade = blade
   g.add(blade)
 
-  return { group: g, propDisc }
+  const surfaces = (s: SurfaceState): void => {
+    for (const p of flapPivots) p.rotation.x = -s.flapFrac * 0.52 // droop 30°
+  }
+  return { group: g, propDisc, surfaces }
 }
 
-const YELLOW = new THREE.MeshStandardMaterial({ color: 0xd9a916, roughness: 0.6 })
+const YELLOW = new THREE.MeshStandardMaterial({ color: 0xe6b800, roughness: 0.55 })
 const SILVER = new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.4, metalness: 0.35 })
 
-/** Piper J-3 Cub (11g): yellow taildragger, wheels at the physics gear. */
+/** Piper J-3 Cub: Cub-yellow taildragger — rounded rudder and wingtips,
+ *  exposed A-65 cylinders, bungee gear, wheels at the physics points. */
 export function buildCub(): AircraftMesh {
   const g = new THREE.Group()
   const add = (mesh: THREE.Mesh, x: number, y: number, z: number): THREE.Mesh => {
@@ -134,31 +181,46 @@ export function buildCub(): AircraftMesh {
     g.add(mesh)
     return mesh
   }
-  // Slab-sided fuselage + rounded cowl.
+  // Slab-sided fuselage + boot cowl + exposed cylinder heads.
   add(new THREE.Mesh(new THREE.BoxGeometry(0.75, 1.05, 2.4), YELLOW), 0.2, 0, -0.2)
   const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.42, 3.0, 8), YELLOW)
   tail.rotation.x = Math.PI / 2
   add(tail, -2.4, 0, -0.3)
   add(new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.68, 0.6), DARK), 1.45, 0, -0.12)
-  add(new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.5, 0.1), GLASS), 0.95, 0, -0.75)
-  // High wing + struts.
-  add(new THREE.Mesh(new THREE.BoxGeometry(10.74, 0.13, 1.6), YELLOW), 0.15, 0, -1.0)
   for (const side of [-1, 1]) {
+    add(new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.2, 0.34), DARK), 1.62, side * 0.32, -0.3)
+  }
+  add(new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.5, 0.1), GLASS), 0.95, 0, -0.75)
+  // High wing + rounded tips + struts.
+  add(new THREE.Mesh(new THREE.BoxGeometry(10.1, 0.13, 1.6), YELLOW), 0.15, 0, -1.0)
+  for (const side of [-1, 1]) {
+    const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.8, 0.13, 12, 1, false, side > 0 ? -Math.PI / 2 : Math.PI / 2, Math.PI), YELLOW)
+    add(tip, 0.15, side * 5.05, -1.0)
     const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.9, 6), YELLOW)
     strut.rotation.z = side * 0.55
     add(strut, 0.3, side * 1.2, -0.45)
+    const strut2 = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.9, 6), YELLOW)
+    strut2.rotation.z = side * 0.62
+    add(strut2, -0.15, side * 1.2, -0.45)
   }
-  // Empennage (the Cub's rounded fin rendered as a slab).
+  // Empennage: stab + the Cub's ROUNDED rudder (half-disc + slab).
   add(new THREE.Mesh(new THREE.BoxGeometry(2.9, 0.09, 1.0), YELLOW), -3.75, 0, -0.4)
-  add(new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.15, 1.05), YELLOW), -3.8, 0, -1.0)
-  // Gear at the physics contact points: mains forward, tiny tailwheel.
+  add(new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.0, 0.7), YELLOW), -3.6, 0, -0.85)
+  const rudder = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.62, 0.08, 14, 1, false, 0, Math.PI), YELLOW)
+  rudder.rotation.z = Math.PI / 2
+  rudder.rotation.y = Math.PI / 2
+  add(rudder, -4.0, 0, -1.05)
+  // Bungee gear: V struts + wheels at the physics contact points.
   const wheelGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.12, 12)
   for (const [x, y, z] of [
     [0.25, -0.9, 1.25],
     [0.25, 0.9, 1.25],
   ] as const) {
-    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.85, 6), YELLOW)
-    add(strut, x, y, z - 0.5)
+    for (const lean of [-0.5, 0.35]) {
+      const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.05, 6), DARK)
+      strut.rotation.x = lean
+      add(strut, x + lean * 0.35, y * 0.85, z - 0.55)
+    }
     const wheel = new THREE.Mesh(wheelGeo, DARK)
     wheel.rotation.z = Math.PI / 2
     add(wheel, x, y, z - 0.2)
@@ -186,63 +248,152 @@ export function buildCub(): AircraftMesh {
   return { group: g, propDisc }
 }
 
-/** Boeing 737-800 (11g): low-wing twin-jet, gear at the physics points.
- *  The prop-disc slot carries an invisible disc so updateProp is a no-op
- *  visually (jets have no prop) while the shared interface stays uniform. */
+/** Boeing 737-800 — proportioned from the ACAP class dimensions
+ *  (39.47 m × 35.8 m with winglets × 12.55 m tail, 3.76 m tube, 25°
+ *  sweep). ANIMATED: Fowler flaps (aft travel + droop), flight
+ *  spoilers, retracting gear. The prop-disc slot carries an invisible
+ *  disc so updateProp stays a visual no-op for jets. */
 export function buildB738(): AircraftMesh {
   const g = new THREE.Group()
-  const add = (mesh: THREE.Mesh, x: number, y: number, z: number): THREE.Mesh => {
+  const add = (mesh: THREE.Object3D, x: number, y: number, z: number): THREE.Object3D => {
     placeBody(mesh, x, y, z)
     mesh.castShadow = true
     g.add(mesh)
     return mesh
   }
-  // Fuselage tube + nose + tail cone.
-  const fuse = new THREE.Mesh(new THREE.CylinderGeometry(1.9, 1.9, 28, 16), WHITE)
+  // ---- fuselage: 3.76 m tube, nose + raked tail cone, window strip ----
+  const fuse = new THREE.Mesh(new THREE.CylinderGeometry(1.88, 1.88, 28.6, 18), WHITE)
   fuse.rotation.x = Math.PI / 2
-  add(fuse, 1.0, 0, -0.6)
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(1.9, 4.4, 16), WHITE)
+  add(fuse, 0.9, 0, -0.6)
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(1.88, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2), WHITE)
   nose.rotation.x = -Math.PI / 2
-  add(nose, 17.2, 0, -0.6)
-  const tailCone = new THREE.Mesh(new THREE.ConeGeometry(1.9, 6.5, 16), WHITE)
+  nose.scale.set(1, 1, 1.7)
+  add(nose, 15.2, 0, -0.6)
+  const tailCone = new THREE.Mesh(new THREE.ConeGeometry(1.86, 8.2, 16), WHITE)
   tailCone.rotation.x = Math.PI / 2
-  add(tailCone, -16.2, 0, -0.6)
-  // Swept wing (two slabs rotated for sweep), engines, winglets.
+  tailCone.rotation.z = Math.PI
+  add(tailCone, -17.5, 0, -1.05)
+  ;(tailCone.rotation as THREE.Euler).x = Math.PI / 2 + 0.06 // raked up
+  const windows = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.26, 24), DARK)
+  add(windows, 1.2, -1.87, -1.15)
+  const windowsR = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.26, 24), DARK)
+  add(windowsR, 1.2, 1.87, -1.15)
+  const cockpitGlass = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.5, 0.9), DARK)
+  add(cockpitGlass, 15.4, 0, -1.35)
+
+  // ---- wings: 25° sweep, 6° dihedral, tapered; flaps + spoilers ----
+  const flapPivots: THREE.Group[] = []
+  const spoilerPivots: THREE.Group[] = []
   for (const side of [-1, 1]) {
-    const wing = new THREE.Mesh(new THREE.BoxGeometry(15.5, 0.35, 4.6), SILVER)
-    wing.rotation.y = side * 0.44 // ~25° sweep
-    add(wing, -1.2 - 2.0, side * 7.6, 0.3)
-    const winglet = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.4, 1.3), SILVER)
-    add(winglet, -4.6, side * 16.4, -0.9)
-    const eng = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 0.85, 4.2, 14), SILVER)
+    const wingGroup = new THREE.Group()
+    // Panel in body coords from the root: LE at x 3.1 sweeping back.
+    const y0 = 1.7, y1 = 16.6
+    const rootChord = 7.2, tipChord = 1.55
+    const panel = taperedPanel(3.1, rootChord, 3.1 - Math.tan(0.436) * (y1 - y0), tipChord, side * y0, side * y1, 0.3, BELLY)
+    panel.position.y = -1.25 // low wing: plane near the belly line
+    wingGroup.add(panel)
+    // Blended winglet: a 2.4 m blade standing at the tip, canted ~15° out.
+    const tipLeX = 3.1 - Math.tan(0.436) * (y1 - y0)
+    const wlShape = new THREE.Shape()
+    wlShape.moveTo(0, tipLeX)
+    wlShape.lineTo(2.35, tipLeX - 0.35)
+    wlShape.lineTo(2.35, tipLeX - 0.95)
+    wlShape.lineTo(0, tipLeX - tipChord)
+    wlShape.closePath()
+    const wlGeo = new THREE.ExtrudeGeometry(wlShape, { depth: 0.1, bevelEnabled: false })
+    wlGeo.rotateY(Math.PI / 2) // shape (up, bodyX) → model: x-depth, y up, z = −bodyX
+    wlGeo.rotateY(Math.PI)
+    const wl = new THREE.Mesh(wlGeo, BELLY)
+    wl.castShadow = true
+    wl.position.set(side * 16.55, -1.25, 0)
+    wl.rotation.z = side * -0.26 // ~15° outward cant
+    wingGroup.add(wl)
+    // Dihedral for the whole wing side.
+    wingGroup.rotation.z = side * -0.105 // ~6°
+    g.add(wingGroup)
+
+    // Fowler flaps: inboard + outboard sections, pivot groups at their LE.
+    for (const [fy0, fy1, chord, leX] of [
+      [2.2, 5.4, 1.75, 3.1 - Math.tan(0.436) * 3.8 - 4.4],
+      [5.8, 12.2, 1.35, 3.1 - Math.tan(0.436) * 9.0 - 3.6],
+    ] as const) {
+      const pivot = new THREE.Group()
+      placeBody(pivot, leX, 0, 1.05)
+      const flap = taperedPanel(0, chord, -Math.tan(0.436) * (fy1 - fy0) * 0.9, chord * 0.85, side * fy0, side * fy1, 0.16, SILVER)
+      flap.position.y = -0.14
+      pivot.add(flap)
+      wingGroup.add(pivot)
+      flapPivots.push(pivot)
+    }
+    // Flight spoilers: 4 thin panels on the upper surface ahead of the flaps.
+    for (let i = 0; i < 4; i++) {
+      const sy = 3.0 + i * 2.3
+      const pivot = new THREE.Group()
+      const leX = 3.1 - Math.tan(0.436) * (sy - 1.7) - 4.0
+      placeBody(pivot, leX, side * sy, 0.88)
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.05, 0.85), SILVER)
+      panel.position.set(0, 0.03, 0.43) // hang aft of the hinge, on top
+      panel.castShadow = true
+      pivot.add(panel)
+      wingGroup.add(pivot)
+      spoilerPivots.push(pivot)
+    }
+
+    // ---- engines: CFM pods slung forward and below on pylons ----
+    const eng = new THREE.Mesh(new THREE.CylinderGeometry(1.32, 1.05, 4.2, 16), SILVER)
     eng.rotation.x = Math.PI / 2
-    add(eng, 2.6, side * 5.4, 1.35)
-    const intake = new THREE.Mesh(new THREE.CylinderGeometry(1.08, 1.08, 0.4, 14), DARK)
-    intake.rotation.x = Math.PI / 2
-    add(intake, 4.8, side * 5.4, 1.35)
+    eng.scale.y = 0.92 // the CFM56's flattened bottom
+    add(eng, 4.4, side * 5.75, 1.15)
+    const inlet = new THREE.Mesh(new THREE.CylinderGeometry(1.34, 1.34, 0.35, 16), DARK)
+    inlet.rotation.x = Math.PI / 2
+    inlet.scale.y = 0.92
+    add(inlet, 6.55, side * 5.75, 1.15)
+    const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.35, 1.1, 2.6), BELLY)
+    add(pylon, 3.4, side * 5.75, 0.15)
   }
-  // Empennage: swept fin + stabs.
-  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.25, 6.2, 3.6), RED)
-  fin.rotation.x = -0.5 // sweep the slab back
-  add(fin, -15.0, 0, -3.4)
+
+  // ---- empennage: swept fin to 12.55 m, swept stabs ----
+  const fin = taperedPanel(-12.6, 6.4, -18.8, 1.9, 0, 7.7, 0.26, WHITE)
+  fin.rotation.z = -Math.PI / 2 // stand the panel upright
+  placeBody(fin, 0, 0.05, -2.2)
+  g.add(fin)
+  const finFlash = new THREE.Mesh(new THREE.BoxGeometry(0.26, 2.2, 1.4), RED)
+  add(finFlash, -17.6, 0, -7.6)
   for (const side of [-1, 1]) {
-    const stab = new THREE.Mesh(new THREE.BoxGeometry(6.4, 0.18, 2.6), SILVER)
-    stab.rotation.y = side * 0.5
-    add(stab, -15.6, side * 3.4, -1.2)
+    const stab = taperedPanel(-15.6, 3.4, -18.9, 1.2, side * 0.4, side * 7.2, 0.16, BELLY)
+    stab.position.y = 0.9
+    g.add(stab)
   }
-  // Gear at the physics contact points.
-  const wheelGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.4, 14)
-  for (const [x, y, z] of [
-    [14.6, 0, 2.84],
-    [-1.0, -2.86, 2.9],
-    [-1.0, 2.86, 2.9],
+
+  // ---- gear: retracting; twin-wheel nose, twin-wheel main bogies ----
+  const gearGroups: { grp: THREE.Group; nose: boolean }[] = []
+  const mkWheel = (r: number, w: number): THREE.Mesh => {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, w, 14), DARK)
+    m.rotation.z = Math.PI / 2
+    m.castShadow = true
+    return m
+  }
+  for (const [x, y, z, isNose] of [
+    [14.6, 0, 2.84, true],
+    [-1.0, -2.86, 2.9, false],
+    [-1.0, 2.86, 2.9, false],
   ] as const) {
-    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1.8, 8), SILVER)
-    add(strut, x, y, z - 1.0)
-    const wheel = new THREE.Mesh(wheelGeo, DARK)
-    wheel.rotation.z = Math.PI / 2
-    add(wheel, x, y, z - 0.5)
+    const grp = new THREE.Group()
+    placeBody(grp, x, y, z - 1.9) // pivot at the top of the strut
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 1.9, 8), SILVER)
+    strut.position.y = -0.95
+    strut.castShadow = true
+    grp.add(strut)
+    for (const wy of isNose ? [-0.25, 0.25] : [-0.3, 0.3]) {
+      const wheel = mkWheel(isNose ? 0.38 : 0.55, 0.34)
+      wheel.position.set(wy, -1.9 + (isNose ? 0.38 : 0.55) * 0 - 0, 0)
+      wheel.position.y = -1.9
+      grp.add(wheel)
+    }
+    g.add(grp)
+    gearGroups.push({ grp, nose: isNose })
   }
+
   // Invisible prop-disc slot (interface uniformity; jets spin nothing).
   const propDisc = new THREE.Mesh(
     new THREE.CircleGeometry(0.01, 6),
@@ -250,12 +401,31 @@ export function buildB738(): AircraftMesh {
   )
   const blade = new THREE.Mesh(
     new THREE.BoxGeometry(0.01, 0.01, 0.01),
-    new THREE.MeshStandardMaterial({ transparent: true, opacity: 0 }), // own material — never mutate the shared DARK
+    new THREE.MeshStandardMaterial({ transparent: true, opacity: 0 }),
   )
   propDisc.userData.blade = blade
   g.add(propDisc)
   g.add(blade)
-  return { group: g, propDisc }
+
+  const surfaces = (s: SurfaceState): void => {
+    // Fowler motion: translate aft + down, then droop. Model frame:
+    // aft = +z, down = −y.
+    for (const p of flapPivots) {
+      p.position.z = p.userData.z0 ?? (p.userData.z0 = p.position.z)
+      p.position.y = p.userData.y0 ?? (p.userData.y0 = p.position.y)
+      p.position.z += s.flapFrac * 1.05
+      p.position.y -= s.flapFrac * 0.22
+      p.rotation.x = -s.flapFrac * 0.62 // ~35° droop at flaps 30
+    }
+    for (const p of spoilerPivots) p.rotation.x = s.spoilerFrac * 0.87 // ~50° up
+    for (const { grp, nose } of gearGroups) {
+      // Nose folds forward; mains fold inward toward the belly.
+      if (nose) grp.rotation.x = (1 - s.gearPos) * 1.5
+      else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? 1.5 : -1.5)
+      grp.visible = s.gearPos > 0.02
+    }
+  }
+  return { group: g, propDisc, surfaces }
 }
 
 /** Spin the prop visuals; blade visible at low RPM, blur disc at high. */
