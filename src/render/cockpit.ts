@@ -119,6 +119,9 @@ export interface CockpitMeshes {
    *  lamps, redrawn only when the formatted state changes. Absent on the
    *  G1000 layout. */
   mcp?: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; last: string; cmdLabel: string }
+  /** N3: yoke slots hold a sidestick (Airbus layout) — the control
+   *  animation tilts instead of translating. */
+  sidestick?: true
   switches: Record<SwitchId, THREE.Mesh>
   ignitionKey: THREE.Mesh
   starterButton: THREE.Mesh
@@ -405,10 +408,18 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   // pilot looks over it, not through it — so the wheel's top edge is
   // lowered here to clear the PFD's bottom edge (checked against the
   // PFD/eye/panel geometry above, not just eyeballed).
-  const yokeColumn = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.35, 8), YOKE_MAT)
-  add(yokeColumn, 0.7, -0.3, -0.16)
-  const yokeWheel = new THREE.Mesh(new THREE.TorusGeometry(0.11, 0.015, 8, 16), YOKE_MAT)
-  add(yokeWheel, 0.68, -0.3, -0.26)
+  // N3: Airbus gets the SIDESTICK on the captain's left console — the
+  // FCU cockpit must not carry a Boeing yoke. Same mesh slots (the
+  // animation path keys off `sidestick`), different geometry/placement.
+  const isStick = layout === 'airbusFcu'
+  const yokeColumn = isStick
+    ? new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.022, 0.16, 8), YOKE_MAT)
+    : new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.35, 8), YOKE_MAT)
+  add(yokeColumn, isStick ? 0.62 : 0.7, isStick ? -0.62 : -0.3, isStick ? -0.28 : -0.16)
+  const yokeWheel = isStick
+    ? new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.05, 0.06), YOKE_MAT)
+    : new THREE.Mesh(new THREE.TorusGeometry(0.11, 0.015, 8, 16), YOKE_MAT)
+  add(yokeWheel, isStick ? 0.62 : 0.68, isStick ? -0.62 : -0.3, isStick ? -0.36 : -0.26)
 
   parent.add(group)
 
@@ -431,6 +442,7 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     trimWheel,
     yokeColumn,
     yokeWheel,
+    ...(layout === 'airbusFcu' ? { sidestick: true as const } : {}),
     nav1TuneUp,
     nav1TuneDown,
     nav1FlipFlop,
@@ -543,6 +555,15 @@ export function updateCockpitControls(
   const trimSpinQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), trim * Math.PI)
   meshes.trimWheel.quaternion.copy(trimBaseQuat).multiply(trimSpinQuat)
   // Yoke mirrors pitch/roll input, small visual throws (no new interaction).
+  if (meshes.sidestick) {
+    // Sidestick: tilt in roll and pitch about its base, no fore/aft slide.
+    const rollRad = (rollDeg * Math.PI) / 180
+    for (const m of [meshes.yokeColumn, meshes.yokeWheel]) {
+      m.rotation.z = -rollRad * 0.4
+      m.rotation.x = THREE.MathUtils.clamp(pitchDeg / 20, -1, 1) * 0.35
+    }
+    return
+  }
   meshes.yokeColumn.rotation.z = (rollDeg * Math.PI) / 180 * 0.3
   meshes.yokeWheel.rotation.z = (rollDeg * Math.PI) / 180 * 0.6
   const pitchThrow = THREE.MathUtils.clamp(pitchDeg / 20, -1, 1) * 0.05
