@@ -82,11 +82,11 @@ N3, N7, N8+N9 are multi-night arcs each. The frontier lives here:
 
 - [x] N0 — DONE (hinge signs fixed, screenshots verified)
 - [x] N1 — DONE (menu + 121/121 fleet-takeoff lattice + transport gear-geometry fix)
-- [ ] N2 — not started
+- [~] N2 — first pass done (buildAirliner + family table; 747/CRJ verified; GA/TP archetypes remain)
 - [ ] N3 — not started
 - [ ] N4 — not started
-- [ ] N5 — blocked on user detail (what flashes?), suspects huntable
-- [ ] N6 — not started
+- [~] N5 — best suspect fixed (surface z-fight clearance + polygonOffset); rest needs user detail
+- [~] N6 — unknown-type ground targets render as generic narrowbody; gate parking waits on N8
 - [ ] N7 — not started
 - [ ] N8 — not started
 - [ ] N9 — not started

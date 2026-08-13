@@ -37,6 +37,14 @@ const WHITE = new THREE.MeshStandardMaterial({ color: 0xf2f3f5, roughness: 0.55,
 const RED = new THREE.MeshStandardMaterial({ color: 0xa31621, roughness: 0.6 })
 const DARK = new THREE.MeshStandardMaterial({ color: 0x1a1d20, roughness: 0.9 })
 const BELLY = new THREE.MeshStandardMaterial({ color: 0xb9c0c7, roughness: 0.5, metalness: 0.25 })
+// Animated-surface material: polygonOffset pulls flap/spoiler faces off
+// the wing skin in depth so near-coplanar pairs never z-fight (N5
+// "flashing" hunt — the 737's flap panels sat within centimetres of the
+// wing underside and shimmered at distance).
+const SURFACE = new THREE.MeshStandardMaterial({
+  color: 0xaeb4bb, roughness: 0.45, metalness: 0.3,
+  polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+})
 // Semi-transparent windshield hint — see the Task 2d note in git history:
 // opaque glass read as a black void from the cockpit camera.
 const GLASS = new THREE.MeshStandardMaterial({
@@ -114,8 +122,8 @@ export function buildC172(): AircraftMesh {
   for (const side of [-1, 1]) {
     const pivot = new THREE.Group()
     placeBody(pivot, -0.47, side * 1.68, -1.02) // hinge line at flap LE
-    const flap = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.09, 0.53), WHITE)
-    flap.position.set(0, -0.02, 0.27) // hang aft of the hinge
+    const flap = new THREE.Mesh(new THREE.BoxGeometry(1.95, 0.09, 0.53), SURFACE)
+    flap.position.set(0, -0.07, 0.27) // clear of the wing underside (N5)
     flap.castShadow = true
     pivot.add(flap)
     g.add(pivot)
@@ -319,8 +327,8 @@ export function buildB738(): AircraftMesh {
     ] as const) {
       const pivot = new THREE.Group()
       placeBody(pivot, leX, 0, 1.05)
-      const flap = taperedPanel(0, chord, -Math.tan(0.436) * (fy1 - fy0) * 0.9, chord * 0.85, side * fy0, side * fy1, 0.16, SILVER)
-      flap.position.y = -0.14
+      const flap = taperedPanel(0, chord, -Math.tan(0.436) * (fy1 - fy0) * 0.9, chord * 0.85, side * fy0, side * fy1, 0.16, SURFACE)
+      flap.position.y = -0.30 // real clearance below the wing skin (N5)
       pivot.add(flap)
       wingGroup.add(pivot)
       flapPivots.push(pivot)
@@ -331,8 +339,8 @@ export function buildB738(): AircraftMesh {
       const pivot = new THREE.Group()
       const leX = 3.1 - Math.tan(0.436) * (sy - 1.7) - 4.0
       placeBody(pivot, leX, side * sy, 0.88)
-      const panel = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.05, 0.85), SILVER)
-      panel.position.set(0, 0.03, 0.43) // hang aft of the hinge, on top
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.05, 0.85), SURFACE)
+      panel.position.set(0, 0.09, 0.43) // clear of the wing top skin (N5)
       panel.castShadow = true
       pivot.add(panel)
       wingGroup.add(pivot)

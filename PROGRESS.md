@@ -84,6 +84,34 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N5-partial + N6 + N2 first pass (2026-08-12)
+
+**N5 (flashing hunt, best-suspect fix without the user's detail)**: the
+737's flap panels sat within centimetres of the wing underside and the
+spoiler plates rode the top skin — classic near-coplanar z-fighting
+shimmer at distance. All animated surfaces now carry real clearance
+offsets plus a polygonOffset material. Ground paint checked: already
+raised +0.16 m (not a fighter). Remaining suspects (strobe intensity,
+shadow shimmer) need the user's answer to "what flashes, when."
+
+**N6**: unknown-type GROUND targets were skipped entirely by the
+traffic layer — airports looked empty of parked iron even with live
+data. They now render as a generic narrowbody silhouette with an
+honest datablock (callsign/hex only, no invented type). Live feed
+returned zero aircraft at verification time (healthy polls, empty
+payload — upstream lull, recorded); code path exercises on the next
+live target.
+
+**N2 first pass**: config-driven `buildAirliner` generalizes the
+study 737's construction to every roster airliner/bizjet — real
+length/span from each spec, family traits from a table (engine count
+and mounting, T-tails, 747/A380 humps, winglet styles: blended/
+sharklet/raked/none), low wing, window strips, animated Fowler flaps +
+4 spoiler panels per wing + retracting gear. Verified in-browser: the
+747-400 shows four underwing pods; the CRJ900 shows aft-fuselage pods
+and a T-tail. GA/turboprop roster types keep the 12b archetypes for
+now (arc continues).
+
 ## Night shift N1 (2026-08-12): aircraft menu + the fleet-takeoff lattice it forced
 
 **Aircraft menu** (KeyN): browsable DOM overlay grouping all 123

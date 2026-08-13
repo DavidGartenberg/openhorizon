@@ -28,6 +28,7 @@ import { OrbitCamera } from './render/orbit-camera'
 import { CockpitCamera } from './render/cockpit-camera'
 import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from './render/aircraft-mesh'
 import { PlaneMenu } from './render/plane-menu'
+import { buildAirliner, airlinerCfgFor } from './render/airliner-mesh'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
 import { B738 } from './sim/aircraft/b738'
@@ -169,7 +170,9 @@ const FLEET_ACTIVE = ((): (typeof FLEET)[string] => {
   return {
     params,
     label: `${entry.spec.label} (Tier B)`,
-    build: () => buildArchetypeShip(rosterArchetype(entry)),
+    build: entry.opts.cd0Class === 'airliner' || entry.opts.cd0Class === 'bizjet'
+      ? () => buildAirliner(airlinerCfgFor(entry.spec))
+      : () => buildArchetypeShip(rosterArchetype(entry)),
     final: {
       kias: entry.spec.vSpeeds.approachKcas,
       flapsIndex: lastIdx,

@@ -85,8 +85,11 @@ export class TrafficLayer {
     return p
   }
 
-  private spawn(t: LiveTarget): PoolEntry {
-    const p = this.proto(t.t)
+  private spawn(t: LiveTarget, unknownGnd = false): PoolEntry {
+    // Unknown-type ground targets render as a generic narrowbody
+    // silhouette (A320 archetype) — visible parked iron; the datablock
+    // stays honest (callsign/hex only, no invented type).
+    const p = this.proto(unknownGnd ? 'A320' : t.t)
     const group = new THREE.Group()
     const body = new THREE.Mesh(p.geometry, p.material)
     body.castShadow = false
@@ -136,14 +139,18 @@ export class TrafficLayer {
     for (const t of targets) {
       // Ops vehicles: on the ground with a type the registry doesn't
       // know — skip rather than draw a fake airplane (recorded).
-      if (t.gnd && !typeInfo(t.t).desc) continue
+      // N6: unknown-type GROUND targets used to be skipped entirely —
+      // airports looked empty of parked iron even with live data. Render
+      // them as a generic narrowbody silhouette; the datablock stays
+      // honest (callsign/hex only, no invented type).
+      const unknownGnd = t.gnd && !typeInfo(t.t).desc
       const local = toLocal(t.lat, t.lon)
       // Beyond 25 km a silhouette is sub-pixel — skip the draw calls
       // (the store keeps the target; TCAS/MFD still see it).
       if (Math.hypot(local.n, local.e) > 25_000) continue
       seen.add(t.id)
       let e = this.pool.get(t.id)
-      if (!e) e = this.spawn(t)
+      if (!e) e = this.spawn(t, unknownGnd)
       const terrainY = elevAtM(t.lat, t.lon)
       const y = t.gnd ? terrainY + 0.8 : Math.max(t.altFt * FT, terrainY + 2)
       e.group.position.set(local.e, y, -local.n)
