@@ -89,4 +89,4 @@ N3, N7, N8+N9 are multi-night arcs each. The frontier lives here:
 - [~] N6 — unknown-type ground targets render as generic narrowbody; gate parking waits on N8
 - [ ] N7 — not started
 - [~] N8 — first pass done (OSM pipeline + KSFO real taxiways/aprons/terminals rendered; signage = N9)
-- [ ] N9 — not started
+- [~] N9 — taxiway ident signs at real positions (hold-short bars/gate numbers remain)

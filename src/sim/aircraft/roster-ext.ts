@@ -246,9 +246,6 @@ const WAVE2: RosterEntry[] = [
       stallCleanKcas: 120,
       vSpeeds: { vyKcas: 160, approachKcas: 125, vneKcas: 286, glideKcas: 170 },
       propThrustScale: 0.82,
-      // Rigging pinned from a level-cruise audit under the prop-effects
-      // model (306 kt TAS / FL250) — same rationale as the TBM9 pin.
-      tuning: { rigCn: 0.000964, rigCl: 0.002606 },
     },
     opts: { cd0Class: 'turbopropTwin' },
     targets: { cruiseTasKt: 350, cruiseAltFt: 25_000, climbFpm: 2400 },

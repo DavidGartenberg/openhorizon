@@ -84,6 +84,31 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N9 + self-auditing rigging (2026-08-12)
+
+**N9 first pass**: taxiway identifier SIGNS at real positions — one
+black-on-yellow board per distinct OSM `ref`, placed at the midpoint
+of that ident's longest real segment (canvas-textured, capped at 40
+per airport; segments without a mapped ident get no sign — recorded).
+
+**Self-auditing rigging** (the deepest physics honesty move of the
+night): the fleet-wide 30-s hands-off screen caught 17 governed-prop
+types spiraling AT THEIR OWN RIG POINT — derive.ts's analytic torque
+estimate diverges from the governed-prop model's actual torque. Now
+the SIM AUDITS ITSELF at build time: each type trims at its own
+operating cruise (0.85× its validation cruise target at its cruise
+altitude, ISA density; canonical CL-0.35/3,000 ft fallback) through
+its own physics, reads the actual thrust/torque one step later, and
+sets rigCn/rigCl to cancel exactly what the sim computes —
+cancellation by construction for every type; the TBM9/DH8D hand pins
+retired. Recorded limitation: one fixed tab cannot null every
+altitude (real turboprops carry cockpit rudder trim, unmodeled);
+Tier-B representative rows therefore assert rig quality in the first
+10 s (<8°) and a 30-s divergent-spiral-lottery bound, per the honesty
+ladder ("Tier B is performance-validated, NOT handling-validated").
+All-types screen: every powered type holds <15° for 30 s at its own
+audited point. Suite 1074 + validate 545.
+
 ## Night shift N8 first pass (2026-08-12): real airport ground layouts
 
 New pipeline: `/api/osm/{ICAO}.json` queries the Overpass API for the

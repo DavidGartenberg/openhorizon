@@ -13,6 +13,7 @@ import * as THREE from 'three'
  */
 
 const TAXI = new THREE.MeshStandardMaterial({ color: 0x3c4043, roughness: 0.95 })
+const SIGN_FACE = new THREE.MeshBasicMaterial({ color: 0x1a1a08 })
 const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8b23a })
 const APRON = new THREE.MeshStandardMaterial({ color: 0x55595e, roughness: 0.9 })
 const TERMINAL = new THREE.MeshStandardMaterial({ color: 0x9aa2ab, roughness: 0.6, metalness: 0.2 })
@@ -135,6 +136,44 @@ export async function enhanceAirportWithOsm(
     m.castShadow = true
     m.receiveShadow = true
     osm.add(m)
+  }
+
+  // N9: taxiway identifier signs at the real segment locations. One
+  // canvas-textured board per DISTINCT ident, placed at the midpoint of
+  // that ident's longest segment (real position from the data; board
+  // styling is the standard black-on-yellow location sign). Idents come
+  // from OSM `ref` tags — segments without one get no sign (recorded).
+  const byRef = new Map<string, { pts: { x: number; z: number }[]; len: number }>()
+  for (const tw of data.tw) {
+    if (!tw.r) continue
+    const pts = tw.p.map(([lat, lon]) => toLocal(lat, lon))
+    const len = pts.reduce((acc, p, i) => (i ? acc + Math.hypot(p.x - pts[i - 1]!.x, p.z - pts[i - 1]!.z) : 0), 0)
+    const prev = byRef.get(tw.r)
+    if (!prev || len > prev.len) byRef.set(tw.r, { pts, len })
+  }
+  let signCount = 0
+  for (const [ref, { pts }] of byRef) {
+    if (signCount >= 40) continue
+    const mid = pts[Math.floor(pts.length / 2)]!
+    const canvas = document.createElement('canvas')
+    canvas.width = 128
+    canvas.height = 64
+    const c = canvas.getContext('2d')!
+    c.fillStyle = '#d8b23a'
+    c.fillRect(0, 0, 128, 64)
+    c.fillStyle = '#141405'
+    c.font = 'bold 44px sans-serif'
+    c.textAlign = 'center'
+    c.textBaseline = 'middle'
+    c.fillText(ref.slice(0, 4), 64, 34)
+    const tex = new THREE.CanvasTexture(canvas)
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.2), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }))
+    board.position.set(mid.x + 10, elevM + 1.0, mid.z + 10)
+    osm.add(board)
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.9, 0.12), SIGN_FACE)
+    post.position.set(mid.x + 10, elevM + 0.45, mid.z + 10)
+    osm.add(post)
+    signCount++
   }
 
   // Real layout in — retire the procedural taxiway stand-in.
