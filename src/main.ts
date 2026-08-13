@@ -47,7 +47,7 @@ import { buildReplayPlots } from './sim/replay'
 import { TrafficLayer } from './render/traffic-layer'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
 import type { ArchetypeSpec } from './world/fleet-map'
-import { buildCockpit, updateCockpitControls, updateCockpitDisplays, updateMcp, CockpitInteraction, type SwitchId } from './render/cockpit'
+import { buildCockpit, panelLayoutFor, updateCockpitControls, updateCockpitDisplays, updateMcp, CockpitInteraction, type SwitchId } from './render/cockpit'
 import type { PfdInput } from './cockpit/pfd'
 import { Input } from './input/input'
 import { EngineSound } from './audio/engine-sound'
@@ -218,7 +218,7 @@ aircraftLights.attach(mesh.group)
 const trafficLayer = new TrafficLayer(scene)
 // 16d: replay viewer (REPLAY verb).
 const replayView = new ReplayView()
-const cockpit = buildCockpit(mesh.group, FLEET_ACTIVE.params.trimIsStabilizer ? 'boeingNG' : 'g1000')
+const cockpit = buildCockpit(mesh.group, panelLayoutFor(fleetKey, FLEET_ACTIVE.params.trimIsStabilizer ?? false))
 const cockpitInteraction = new CockpitInteraction(camera)
 
 const wind = new WindModel()

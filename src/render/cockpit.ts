@@ -118,7 +118,7 @@ export interface CockpitMeshes {
   /** Boeing-NG MCP digit strip (N3): live SPD/HDG/ALT/VS windows + mode
    *  lamps, redrawn only when the formatted state changes. Absent on the
    *  G1000 layout. */
-  mcp?: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; last: string }
+  mcp?: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; last: string; cmdLabel: string }
   switches: Record<SwitchId, THREE.Mesh>
   ignitionKey: THREE.Mesh
   starterButton: THREE.Mesh
@@ -171,7 +171,16 @@ function makeSwitch(label: string): THREE.Mesh {
  *  body group from `aircraft-mesh.ts`, so it tracks position/attitude for
  *  free). Returns handles used every frame to redraw the PFD/MFD canvases
  *  and animate the controls. */
-export type PanelLayout = 'g1000' | 'boeingNG'
+export type PanelLayout = 'g1000' | 'boeingNG' | 'airbusFcu'
+
+/** Pick the panel layout for a fleet member (N3). Airbus-family
+ *  designators (A3xx, A220/BCS) get the FCU layout; other stabilizer-trim
+ *  transports get the Boeing-NG layout; everything else keeps the G1000.
+ *  Pure — unit-tested. */
+export function panelLayoutFor(designator: string, trimIsStabilizer: boolean): PanelLayout {
+  if (!trimIsStabilizer) return 'g1000'
+  return /^(A[23]|BCS)/.test(designator) ? 'airbusFcu' : 'boeingNG' // A20N/A21N are neo A32x
+}
 
 export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g1000'): CockpitMeshes {
   const group = new THREE.Group()
@@ -195,10 +204,13 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   // CONTENT is still this sim's G1000-style PFD/ND drawing for now — the
   // LAYOUT, proportions, and palette follow the NG photos; per-family
   // display content is a later slice.
-  const BOEING_PANEL = new THREE.MeshStandardMaterial({ color: 0x655b52, roughness: 0.85 })
-  const DU_BEZEL = new THREE.MeshStandardMaterial({ color: 0x24262a, roughness: 0.6 })
-  const MCP_FACE = new THREE.MeshStandardMaterial({ color: 0x83807a, roughness: 0.55 })
-  if (layout === 'boeingNG') {
+  // Palettes: Boeing NG brown-gray vs Airbus blue-gray (photo-matched
+  // tones; both share the six-DU + glareshield-strip arrangement — the
+  // Airbus ECAM pair sits where the EICAS pair does).
+  const BOEING_PANEL = new THREE.MeshStandardMaterial({ color: layout === 'airbusFcu' ? 0x39404a : 0x655b52, roughness: 0.85 })
+  const DU_BEZEL = new THREE.MeshStandardMaterial({ color: layout === 'airbusFcu' ? 0x1c1e22 : 0x24262a, roughness: 0.6 })
+  const MCP_FACE = new THREE.MeshStandardMaterial({ color: layout === 'airbusFcu' ? 0x4a5058 : 0x83807a, roughness: 0.55 })
+  if (layout === 'boeingNG' || layout === 'airbusFcu') {
     add(new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.62, 0.06), BOEING_PANEL), 1.02, 0.02, -0.55)
     // Six DU bezels: [captain PFD, captain ND, upper EICAS, lower EICAS,
     // FO ND, FO PFD] — screens for the captain pair come below; the rest
@@ -253,14 +265,14 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   // gives clean separation. This was a pre-existing bug, unrelated to the
   // depth/yoke fix — it just took a close screenshot to notice the PFD/MFD
   // were rendering as solid dark rectangles instead of their actual content.
-  if (layout === 'boeingNG') pfdMesh.scale.setScalar(0.55) // fit the DU bezel
-  add(pfdMesh, 0.97, layout === 'boeingNG' ? -0.02 : -0.24, layout === 'boeingNG' ? -0.62 : -0.42)
+  if (layout !== 'g1000') pfdMesh.scale.setScalar(0.55) // fit the DU bezel
+  add(pfdMesh, 0.97, layout !== 'g1000' ? -0.02 : -0.24, layout !== 'g1000' ? -0.62 : -0.42)
   const mfdMesh = new THREE.Mesh(
     new THREE.PlaneGeometry(0.42, 0.32),
     new THREE.MeshBasicMaterial({ map: mfd.texture, toneMapped: false }),
   )
-  if (layout === 'boeingNG') mfdMesh.scale.setScalar(0.55)
-  add(mfdMesh, 0.97, layout === 'boeingNG' ? -0.02 : 0.15, layout === 'boeingNG' ? -0.42 : -0.42)
+  if (layout !== 'g1000') mfdMesh.scale.setScalar(0.55)
+  add(mfdMesh, 0.97, layout !== 'g1000' ? -0.02 : 0.15, layout !== 'g1000' ? -0.42 : -0.42)
   // 15c: the MFD screen is pickable — clicks map through the hit UV to
   // `mfdSoftkeyRegions` (the bezel row was drawn but never routed).
   mfdMesh.userData.controlId = 'mfdScreen'
@@ -402,7 +414,7 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
 
   return {
     group,
-    ...(mcp ? { mcp: { ctx: mcp.ctx, texture: mcp.texture, last: '' } } : {}),
+    ...(mcp ? { mcp: { ctx: mcp.ctx, texture: mcp.texture, last: '', cmdLabel: layout === 'airbusFcu' ? 'AP1' : 'CMD' } } : {}),
     pfdCanvas: pfd.canvas,
     pfdCtx: pfd.ctx,
     pfdTexture: pfd.texture,
@@ -487,7 +499,7 @@ export function updateMcp(
   }
   lamp(180, d.lateral === 'HDG' ? 'HDG' : d.lateral === 'NAV' ? 'LNAV' : d.lateral === 'APR' ? 'APP' : d.lateral, d.master, !!d.lateralArmed)
   lamp(460, d.vertical === 'ALTS' || d.vertical === 'ALT' ? 'ALT' : d.vertical === 'VS' ? 'V/S' : d.vertical === 'GS' ? 'G/S' : d.vertical, d.master, !!d.verticalArmed)
-  lamp(750, 'CMD', d.master)
+  lamp(750, m.cmdLabel, d.master)
   m.texture.needsUpdate = true
 }
 

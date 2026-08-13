@@ -84,6 +84,18 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N3: Airbus FCU panel layout (2026-08-12)
+
+Airbus-family types (A319–A388 including neos, A220/BCS) no longer
+wear a Boeing panel: `panelLayoutFor` (pure, tested) routes them to a
+third cockpit layout — blue-gray Airbus panel tone, near-black DU
+bezels, darker FCU strip, and the glareshield lamp reading AP1 instead
+of CMD. The live digit windows (IAS/HDG/ALT/V/S) work identically on
+both transport layouts. Honest scope: the arrangement still uses the
+shared six-DU frame (ECAM pair where the EICAS pair sits); sidestick
+vs yoke geometry is not differentiated yet — recorded, next cockpit
+slice.
+
 ## Night shift N7: airborne departure handoff (2026-08-12)
 
 The tower now completes the departure phase-chain: when a cleared

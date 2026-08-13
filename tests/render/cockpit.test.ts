@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cycleFuelSelector, stepMagneto, dragToAxisValue, nearestFlapDetent, tuneFrequency } from '../../src/render/cockpit'
+import { cycleFuelSelector, stepMagneto, dragToAxisValue, nearestFlapDetent, tuneFrequency, panelLayoutFor } from '../../src/render/cockpit'
 
 describe('cycleFuelSelector (floor fuel selector click-cycle)', () => {
   it('cycles OFF -> L -> BOTH -> R -> OFF', () => {
@@ -94,5 +94,18 @@ describe('tuneFrequency (NAV/COM standby-frequency click knob)', () => {
     let f = 118.0
     for (let i = 0; i < 40; i++) f = tuneFrequency(f, 1, 0.025, 118.0, 136.0)
     expect(f).toBeCloseTo(119.0, 9)
+  })
+})
+
+describe('panelLayoutFor (N3 family layouts)', () => {
+  it('routes Airbus family to the FCU layout, Boeing/other jets to NG, GA to G1000', () => {
+    expect(panelLayoutFor('A20N', true)).toBe('airbusFcu')
+    expect(panelLayoutFor('A388', true)).toBe('airbusFcu')
+    expect(panelLayoutFor('BCS3', true)).toBe('airbusFcu')
+    expect(panelLayoutFor('B738', true)).toBe('boeingNG')
+    expect(panelLayoutFor('MD88', true)).toBe('boeingNG')
+    expect(panelLayoutFor('CRJ9', true)).toBe('boeingNG')
+    expect(panelLayoutFor('C172', false)).toBe('g1000')
+    expect(panelLayoutFor('A320', false)).toBe('g1000') // trim gate wins
   })
 })
