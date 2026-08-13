@@ -177,7 +177,7 @@ export class Airports {
         // N8: real ground layout (async; procedural stand-in retires when
         // real data lands, stays when the airport is unmapped).
         const elevM = (ap.r[0]?.e1 ?? 0) * 0.3048
-        void enhanceAirportWithOsm(g, ap.i, ap.la, ap.lo, elevM)
+        void enhanceAirportWithOsm(g, ap.i, ap.la, ap.lo, elevM, ap.r)
       }
     }
     this.positionAll()

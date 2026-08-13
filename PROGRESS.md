@@ -84,6 +84,22 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N9 completion: hold-short bars, gate numbers, ground-stack ladder (2026-08-12)
+
+Three finishing pieces on the real-layout system:
+- **Hold-short bars** — every OSM taxiway endpoint that stops 25–95 m
+  from a runway centerline gets the amber bar perpendicular to its
+  final segment, at the real intersection position (cap 30/airport).
+- **Gate numbers** — OSM `parking_position` refs render as lit boards
+  at the REAL stand coordinates (cap 60); stands without a mapped ref
+  get nothing (honest — no invented numbering).
+- **Ground-stack height ladder (N5)** — runway strips sit at +0.06 and
+  the new taxiway ribbons were ALSO at +0.06: every crossing was a
+  coplanar z-fight (the "flashing" class). Re-laddered: apron +0.02 <
+  taxiway +0.04 < runway +0.06 < centerline stripes +0.08 (lead-on
+  lines legitimately paint over the runway) < hold bars +0.12 — 20 mm
+  separations, no coplanar pairs anywhere in the stack.
+
 ## Night shift N3 + N7 first slices (2026-08-12)
 
 **N3 (cockpits)**: panel-layout variant system in the 3D cockpit —

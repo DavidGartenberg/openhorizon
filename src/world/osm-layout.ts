@@ -7,6 +7,10 @@ import * as THREE from 'three'
  * When data lands, the procedural taxiway stand-in is removed; where OSM
  * has nothing, the stand-in stays (recorded honest fallback).
  *
+ * Height ladder (N5 anti-flash): apron +0.02 < taxiway +0.04 < runway
+ * +0.06 < centerline stripes +0.08 (lead-on lines legitimately paint over
+ * the runway) < hold bars +0.12 — 20 mm separations, no coplanar pairs.
+ *
  * Known limitation (recorded): geometry is laid flat at field elevation —
  * terrain flattening only covers the runway corridor, so at hilly fields
  * distant taxiways can sink/float. Flat major airports render true.
@@ -67,6 +71,7 @@ export async function enhanceAirportWithOsm(
   refLat: number,
   refLon: number,
   elevM: number,
+  runways?: { la1: number; lo1: number; la2: number; lo2: number }[],
 ): Promise<void> {
   let data: OsmLayout
   try {
@@ -112,7 +117,7 @@ export async function enhanceAirportWithOsm(
     const geo = new THREE.ShapeGeometry(shapes)
     geo.rotateX(Math.PI / 2)
     const m = new THREE.Mesh(geo, APRON)
-    m.position.y = elevM + 0.03
+    m.position.y = elevM + 0.02
     m.receiveShadow = true
     osm.add(m)
   }
@@ -124,8 +129,8 @@ export async function enhanceAirportWithOsm(
   const stIdx: number[] = []
   for (const tw of data.tw) {
     const pts = tw.p.map(([lat, lon]) => toLocal(lat, lon))
-    appendRibbon(twPos, twIdx, pts, 18, elevM + 0.06)
-    appendRibbon(stPos, stIdx, pts, 0.38, elevM + 0.1)
+    appendRibbon(twPos, twIdx, pts, 18, elevM + 0.04)
+    appendRibbon(stPos, stIdx, pts, 0.38, elevM + 0.08)
   }
   if (twPos.length) {
     osm.add(meshFromBuffers(twPos, twIdx, TAXI))
@@ -149,6 +154,41 @@ export async function enhanceAirportWithOsm(
     m.castShadow = true
     m.receiveShadow = true
     osm.add(m)
+  }
+
+  // N9: HOLD-SHORT BARS where real taxiways meet the runway — a taxiway
+  // endpoint within 95 m of a runway centerline gets the amber double
+  // bar perpendicular to its final segment, at its real position.
+  if (runways?.length) {
+    const rwLocal = runways.map((r) => ({ a: toLocal(r.la1, r.lo1), b: toLocal(r.la2, r.lo2) }))
+    const distToRunway = (p: { x: number; z: number }): number => {
+      let best = Infinity
+      for (const { a, b } of rwLocal) {
+        const dx = b.x - a.x, dz = b.z - a.z
+        const len2 = dx * dx + dz * dz || 1
+        const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / len2))
+        best = Math.min(best, Math.hypot(p.x - (a.x + t * dx), p.z - (a.z + t * dz)))
+      }
+      return best
+    }
+    const HOLD = new THREE.MeshBasicMaterial({ color: 0xd8b23a })
+    let bars = 0
+    for (const tw of data.tw) {
+      if (tw.p.length < 2 || bars >= 30) continue
+      for (const endIdx of [0, tw.p.length - 1]) {
+        const end = toLocal(tw.p[endIdx]![0], tw.p[endIdx]![1])
+        const d = distToRunway(end)
+        if (d > 95 || d < 25) continue // ends ON the runway have no bar
+        const prevIdx = endIdx === 0 ? 1 : tw.p.length - 2
+        const prev = toLocal(tw.p[prevIdx]![0], tw.p[prevIdx]![1])
+        const ang = Math.atan2(end.x - prev.x, end.z - prev.z)
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(12, 0.02, 1.0), HOLD)
+        bar.position.set(end.x, elevM + 0.12, end.z)
+        bar.rotation.y = ang + Math.PI / 2
+        osm.add(bar)
+        bars++
+      }
+    }
   }
 
   // N9: taxiway identifier signs at the real segment locations. One
@@ -187,6 +227,33 @@ export async function enhanceAirportWithOsm(
     post.position.set(mid.x + 10, elevM + 0.45, mid.z + 10)
     osm.add(post)
     signCount++
+  }
+
+  // N9: gate numbers at the REAL stand positions (OSM parking_position
+  // refs — stands without a mapped number get nothing; capped at 60).
+  let gates = 0
+  for (const st of data.st) {
+    if (!st.r || gates >= 60 || !st.p.length) continue
+    const p = toLocal(st.p[0]![0], st.p[0]![1])
+    const canvas = document.createElement('canvas')
+    canvas.width = 96
+    canvas.height = 48
+    const c = canvas.getContext('2d')!
+    c.fillStyle = '#20242a'
+    c.fillRect(0, 0, 96, 48)
+    c.fillStyle = '#e8eaee'
+    c.font = 'bold 30px sans-serif'
+    c.textAlign = 'center'
+    c.textBaseline = 'middle'
+    c.fillText(st.r.slice(0, 5), 48, 26)
+    const tex = new THREE.CanvasTexture(canvas)
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.9), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }))
+    board.position.set(p.x, elevM + 2.4, p.z)
+    osm.add(board)
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.0, 0.1), SIGN_FACE)
+    post.position.set(p.x, elevM + 1.0, p.z)
+    osm.add(post)
+    gates++
   }
 
   // Real layout in — retire the procedural taxiway stand-in.
