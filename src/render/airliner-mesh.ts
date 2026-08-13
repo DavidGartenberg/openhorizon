@@ -214,6 +214,16 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   g.add(fin)
   const flash = new THREE.Mesh(new THREE.BoxGeometry(R * 0.14, finH * 0.32, L * 0.04), RED)
   add(flash, finRootX - L * 0.115, 0, -R * 0.9 - finH * 0.83)
+  // Trijet center engine (MD-11/DC-10 class): S-duct pod at the fin base.
+  if (cfg.engines.count === 3) {
+    const cR = R * 0.58
+    const ceng = new THREE.Mesh(new THREE.CylinderGeometry(cR, cR * 0.82, R * 2.4, 14), SILVER)
+    ceng.rotation.x = Math.PI / 2
+    add(ceng, finRootX + L * 0.02, 0, -R * 1.05)
+    const cinlet = new THREE.Mesh(new THREE.CylinderGeometry(cR * 1.02, cR * 1.02, 0.25, 14), DARK)
+    cinlet.rotation.x = Math.PI / 2
+    add(cinlet, finRootX + L * 0.02 + R * 1.2, 0, -R * 1.05)
+  }
   const stabZ = cfg.tTail ? -R * 0.9 - finH * 0.92 : -R * 0.25
   const stabX = cfg.tTail ? finRootX - L * 0.1 : -L * 0.38
   for (const side of [-1, 1]) {
@@ -300,6 +310,8 @@ const FAMILY: Record<string, Partial<AirlinerCfg>> = {
   BCS1: { winglet: 'sharklet' },
   BCS3: { winglet: 'sharklet' },
   // classic no-winglet types
+  B38M: { winglet: 'sharklet' },
+  B39M: { winglet: 'sharklet' },
   B752: { winglet: 'none' },
   B762: { winglet: 'none' },
   B763: { winglet: 'none' },
