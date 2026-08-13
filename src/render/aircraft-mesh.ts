@@ -163,7 +163,7 @@ export function buildC172(): AircraftMesh {
   g.add(blade)
 
   const surfaces = (s: SurfaceState): void => {
-    for (const p of flapPivots) p.rotation.x = -s.flapFrac * 0.52 // droop 30°
+    for (const p of flapPivots) p.rotation.x = s.flapFrac * 0.52 // trailing edge DOWN 30° (sign was inverted — user report N0)
   }
   return { group: g, propDisc, surfaces }
 }
@@ -415,9 +415,9 @@ export function buildB738(): AircraftMesh {
       p.position.y = p.userData.y0 ?? (p.userData.y0 = p.position.y)
       p.position.z += s.flapFrac * 1.05
       p.position.y -= s.flapFrac * 0.22
-      p.rotation.x = -s.flapFrac * 0.62 // ~35° droop at flaps 30
+      p.rotation.x = s.flapFrac * 0.62 // trailing edge DOWN ~35° at flaps 30 (sign was inverted — N0)
     }
-    for (const p of spoilerPivots) p.rotation.x = s.spoilerFrac * 0.87 // ~50° up
+    for (const p of spoilerPivots) p.rotation.x = -s.spoilerFrac * 0.87 // panel UP ~50° (sign was inverted — N0)
     for (const { grp, nose } of gearGroups) {
       // Nose folds forward; mains fold inward toward the belly.
       if (nose) grp.rotation.x = (1 - s.gearPos) * 1.5

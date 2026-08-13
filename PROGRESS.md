@@ -84,6 +84,17 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N0 (2026-08-12): flap/spoiler hinge signs were inverted
+
+User report: C172 flaps deployed UPWARD. The hinge math (rotation about
+model +x of a surface extending aft along +z: y' = −z·sinθ) says
+positive θ = trailing edge down — all three animated-surface signs
+shipped inverted: C172 flaps up, 737 flaps up (masked visually by the
+Fowler aft-translation), and 737 spoilers rotating INTO the wing.
+Fixed; verified by screenshot: C172 flap sections hang below the wing
+at flaps 30, and the 737 shows raised spoiler plates with daylight
+under them + drooped flaps in the landing configuration.
+
 ## Proper thrust + real-life looks + 737 moving surfaces (2026-08-12, user goal)
 
 **Thrust validated against published performance** (new permanent rows,
