@@ -88,5 +88,5 @@ N3, N7, N8+N9 are multi-night arcs each. The frontier lives here:
 - [~] N5 — best suspect fixed (surface z-fight clearance + polygonOffset); rest needs user detail
 - [~] N6 — unknown-type ground targets render as generic narrowbody; gate parking waits on N8
 - [ ] N7 — not started
-- [ ] N8 — not started
+- [~] N8 — first pass done (OSM pipeline + KSFO real taxiways/aprons/terminals rendered; signage = N9)
 - [ ] N9 — not started

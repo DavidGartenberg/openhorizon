@@ -84,6 +84,25 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N8 first pass (2026-08-12): real airport ground layouts
+
+New pipeline: `/api/osm/{ICAO}.json` queries the Overpass API for the
+airport's REAL aeroway geometry (taxiways with their actual idents,
+apron polygons, terminal footprints, parking positions), cached
+forever per airport server-side (Overpass etiquette; identifying
+User-Agent). KSFO: 243 taxiway segments (idents F, G, H, C2, E, V, T,
+K, D, Q, R…), 18 aprons, 8 terminal footprints, 287 stands. Client
+`enhanceAirportWithOsm` renders merged taxiway ribbons (18 m, with
+yellow centerline stripes), apron slabs, and extruded terminal
+footprints (footprint REAL, 11 m height class-estimated — recorded);
+when real data lands the procedural taxiway stand-in retires, and at
+unmapped airports it stays (recorded honest fallback). Known
+limitation (recorded): geometry lies flat at field elevation — the
+terrain flatten zone covers only the runway corridor, so hilly-field
+outlying taxiways can sink/float; flat major airports render true.
+Verified in-browser: crossing KSFO at 400 ft shows the real parallel
+taxiway network, connectors, and crossing-runway geometry.
+
 ## Night shift N4 landing kit (2026-08-12): reversers, spoiler ARM, FCOM stops
 
 Every roster jet + the study 737 now carries the full landing kit,

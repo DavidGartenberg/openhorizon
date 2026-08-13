@@ -408,6 +408,48 @@ export async function frequenciesData() {
   return frequenciesJson
 }
 
+// ---- Real airport ground layouts from OpenStreetMap (night-shift N8) ----
+
+const osmCache = new Map()
+
+/** GET /api/osm/{ICAO}.json — the airport's REAL ground layout from OSM
+ *  aeroway data (taxiway centerlines with their real idents, apron
+ *  polygons, terminal footprints). Cached forever on disk per airport —
+ *  Overpass etiquette. Honest fallback: an empty layout means "not
+ *  mapped", and the client keeps its procedural stand-in (recorded). */
+export async function osmAirport(icao, lat, lon) {
+  if (!/^[A-Z0-9]{3,4}$/.test(icao)) throw new Error('bad icao')
+  if (osmCache.has(icao)) return osmCache.get(icao)
+  const file = path.join(cacheDir, `osm-${icao}.json`)
+  if (fs.existsSync(file)) {
+    const j = fs.readFileSync(file, 'utf8')
+    osmCache.set(icao, j)
+    return j
+  }
+  const q = `[out:json][timeout:25];(way["aeroway"~"^(taxiway|apron|terminal)$"](around:4200,${lat},${lon});way["aeroway"="parking_position"](around:4200,${lat},${lon}););out geom;`
+  const res = await fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'OpenHorizon-flight-sim/1.0 (personal project; cached forever per airport)' },
+    body: 'data=' + encodeURIComponent(q),
+  })
+  if (!res.ok) throw new Error(`overpass ${icao}: ${res.status}`)
+  const raw = await res.json()
+  const out = { tw: [], ap: [], tm: [], st: [] }
+  for (const el of raw.elements ?? []) {
+    if (!el.geometry || el.geometry.length < 2) continue
+    const pts = el.geometry.map((g) => [+g.lat.toFixed(6), +g.lon.toFixed(6)])
+    const t = el.tags ?? {}
+    if (t.aeroway === 'taxiway') out.tw.push({ r: t.ref ?? '', p: pts })
+    else if (t.aeroway === 'apron') out.ap.push(pts)
+    else if (t.aeroway === 'terminal') out.tm.push(pts)
+    else if (t.aeroway === 'parking_position') out.st.push({ r: t.ref ?? '', p: pts })
+  }
+  const json = JSON.stringify(out)
+  fs.writeFileSync(file, json)
+  osmCache.set(icao, json)
+  return json
+}
+
 // ---- Global ILS table (night-shift N4) ----
 
 let ilsJson = null
@@ -562,6 +604,19 @@ export async function route(url, res) {
       })
       res.end(json)
       return true
+    }
+    if (url.startsWith('/api/osm/')) {
+      const m = url.match(/^\/api\/osm\/([A-Z0-9]{3,4})\.json\?lat=(-?[\d.]+)&lon=(-?[\d.]+)$/)
+      if (m) {
+        const json = await osmAirport(m[1], parseFloat(m[2]), parseFloat(m[3]))
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'public, max-age=604800',
+          'Access-Control-Allow-Origin': '*',
+        })
+        res.end(json)
+        return true
+      }
     }
     if (url === '/api/ils.json') {
       const json = await ilsData()

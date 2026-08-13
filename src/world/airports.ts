@@ -6,6 +6,7 @@ import { buildRunwayMarkings, buildDistanceSigns, buildTaxiwayComplex, dimPaintF
 import { airportBeacon, rabbitOn } from '../sim/lights'
 import { lightGlowTexture } from '../render/light-glow'
 import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
+import { enhanceAirportWithOsm } from './osm-layout'
 
 export interface RunwayData {
   li: string
@@ -170,7 +171,14 @@ export class Airports {
       }
     }
     for (const ap of nearby) {
-      if (!this.rendered.has(ap.i)) this.rendered.set(ap.i, this.buildAirport(ap))
+      if (!this.rendered.has(ap.i)) {
+        const g = this.buildAirport(ap)
+        this.rendered.set(ap.i, g)
+        // N8: real ground layout (async; procedural stand-in retires when
+        // real data lands, stays when the airport is unmapped).
+        const elevM = (ap.r[0]?.e1 ?? 0) * 0.3048
+        void enhanceAirportWithOsm(g, ap.i, ap.la, ap.lo, elevM)
+      }
     }
     this.positionAll()
   }
@@ -252,7 +260,9 @@ export class Airports {
           // 16c: collect taxiway blue-edge lights (detail-local frame)
           // and transform them into the airport group's frame.
           const blues: THREE.Vector3[] = []
-          detail.add(buildTaxiwayComplex(rl, lenM >= 2130, r.lt === 1 ? blues : undefined))
+          const proc = buildTaxiwayComplex(rl, lenM >= 2130, r.lt === 1 ? blues : undefined)
+          proc.name = 'proceduralTaxi'
+          detail.add(proc)
           const yAxis = new THREE.Vector3(0, 1, 0)
           for (const v of blues) {
             v.applyAxisAngle(yAxis, -hdg)
