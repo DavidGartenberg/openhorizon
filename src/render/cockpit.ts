@@ -292,6 +292,16 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   // `mfdSoftkeyRegions` (the bezel row was drawn but never routed).
   mfdMesh.userData.controlId = 'mfdScreen'
   interactive.push(mfdMesh)
+  if (layout !== 'g1000') {
+    // FO-side DUs reuse the captain's live textures (a real NG mirrors
+    // PFD/ND content across sides in normal ops; zero extra canvas work).
+    const foPfd = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.32), new THREE.MeshBasicMaterial({ map: pfd.texture, toneMapped: false }))
+    foPfd.scale.setScalar(0.55)
+    add(foPfd, 0.97, -0.02, 0.22)
+    const foNd = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.32), new THREE.MeshBasicMaterial({ map: mfd.texture, toneMapped: false }))
+    foNd.scale.setScalar(0.55)
+    add(foNd, 0.97, -0.02, 0.02)
+  }
 
   // Standby instrument cluster (placeholder circles, left of the PFD) — a
   // full standby-gauge canvas renderer wasn't in this task's committed
