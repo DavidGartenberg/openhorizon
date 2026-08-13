@@ -84,6 +84,23 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift: 45-minute soak PASS (standalone build) (2026-08-12)
+
+Soak #2 on the production build (standalone node server, :8787), C172
+airborne from KHAF 30: **45+ wall minutes, 3,023 s of sim time
+accrued, aircraft flying and uncrashed at the end (98 KIAS, 3,400 ft),
+zero JavaScript exceptions.** The only console entries were ~50
+resource-load 502s from `/api/traffic` during a mid-soak upstream
+outage of the free ADS-B provider chain — the endpoint answered 200
+again by soak end, and the client's stale-while-error path carried the
+gap as designed. (Soak #1 had been killed by the in-app pane
+spontaneously reloading — a host artifact, recorded previously.)
+Frame p50 read 25.3 ms at soak end vs 13.1 ms at the bench gate; the
+soak pane spent the whole run as an occluded background surface, where
+the browser caps rAF cadence, so the bench measurement stands as the
+performance number and this one is recorded as an environment
+artifact, not a regression.
+
 ## Night shift N3: live engine DU (EICAS/ECAM upper) (2026-08-12)
 
 The upper-center display unit on both transport layouts is now a live
