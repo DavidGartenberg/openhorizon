@@ -28,6 +28,7 @@ import { OrbitCamera } from './render/orbit-camera'
 import { CockpitCamera } from './render/cockpit-camera'
 import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from './render/aircraft-mesh'
 import { PlaneMenu } from './render/plane-menu'
+import { loadIls, ilsLoaded, ilsCount } from './world/ils'
 import { buildAirliner, airlinerCfgFor } from './render/airliner-mesh'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
@@ -182,6 +183,7 @@ const FLEET_ACTIVE = ((): (typeof FLEET)[string] => {
 })()
 
 loadAircraftTypes() // Phase 12a: Doc-8643 registry (traffic typing)
+loadIls() // N4: global ILS table (offline seed until it lands)
 
 const aircraft = new Aircraft(FLEET_ACTIVE.params)
 aircraft.groundElevAt = (n, e) => {
@@ -2359,6 +2361,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohFleet: () => ({ key: fleetKey, label: FLEET_ACTIVE.label, jet: !!aircraft.P.jet, n1: aircraft.data.n1Pct, gearPos: aircraft.gearPos, gearCmd: aircraft.gearDownCommanded }),
   __ohGearCmd: (down: boolean) => { if (aircraft.P.gearRetractable) aircraft.gearDownCommanded = down },
   /** Speedbrake lever (types with a spoilers block): set 0..1 / read state. */
+  __ohIls: () => ({ loaded: ilsLoaded, count: ilsCount }),
   __ohSpoiler: (cmd?: number) => {
     if (cmd !== undefined && aircraft.P.spoilers) aircraft.spoilerCmd = Math.max(0, Math.min(1, cmd))
     return { cmd: aircraft.spoilerCmd, pos: aircraft.spoilerPos, fitted: !!aircraft.P.spoilers }

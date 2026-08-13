@@ -860,3 +860,31 @@ export function buildAircraftTypes(typesJsonText, namesCsvText) {
   }
   return out
 }
+
+/** earth_nav.dat type-4 rows → compact global ILS table (night-shift N4).
+ *  Only true ILS localizers (category starts "ILS-cat") — LDA/SDF/LOC-only
+ *  approaches are deliberately excluded: the sim synthesizes a straight-in
+ *  localizer + glideslope from runway geometry, and presenting an offset
+ *  or GS-less approach as a full ILS would be a fiction (the honesty rule
+ *  first written for the NZAA/RJTT stopgap rows, now applied globally).
+ *  Output: { ICAO: [{ r: runway, f: freq kHz×10 (e.g. 11030 = 110.30),
+ *  i: ident, c: "I"|"II"|"III" }] } */
+export function buildIls(datText) {
+  const out = {}
+  for (const line of datText.split('\n')) {
+    if (!line.startsWith('4 ')) continue
+    const p = line.trim().split(/\s+/)
+    if (p.length < 11) continue
+    const cat = p[10]
+    if (!/^ILS-cat/.test(cat)) continue
+    const icao = p[8]
+    const rwy = p[9]
+    const freq = parseInt(p[4], 10)
+    if (!icao || !rwy || !Number.isFinite(freq)) continue
+    const arr = (out[icao] ??= [])
+    // Duplicate guard (some mirrors carry doubled rows).
+    if (arr.some((e) => e.r === rwy && e.f === freq)) continue
+    arr.push({ r: rwy, f: freq, i: p[7], c: cat.replace('ILS-cat-', '') })
+  }
+  return out
+}

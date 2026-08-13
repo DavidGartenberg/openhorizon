@@ -84,6 +84,24 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N4-ILS (2026-08-12): global ILS — the stopgap table retired
+
+New data pipeline: server ingests the open navdata earth_nav.dat
+(pinned URL, disk cache) → `buildIls` keeps only true-ILS rows
+(category ILS-cat-*; LDA/SDF/LOC-only excluded per the honesty rule
+first written for the NZAA/RJTT stopgap — the sim synthesizes
+straight-in LOC+GS and must not impersonate offset or GS-less
+approaches) → `/api/ils.json` (3,157 localizers worldwide) → client
+loads at boot and swaps the tuning table via `setIlsTable`. The
+hand-entered stopgap rows survive only as the OFFLINE SEED (the same
+AIP-verified entries the world shakedowns flew); the pipeline data
+cross-checks them exactly (EGLL 27R 110.30 I-RR, KSFO 28R 111.70
+I-GWQ, all eight LFPG, both NZAA). End-to-end proof at an airport this
+project had never touched: spawn YSSY 16R, tune 109.5 → LOC "YSSY
+16R", glideslope alive, course 168 (I-KS per the data). Vintage note
+(recorded): community AIRAC mirror — frequencies can lag reality by
+cycles; the five shakedown airports agree with primary AIP sources.
+
 ## Night shift N5-partial + N6 + N2 first pass (2026-08-12)
 
 **N5 (flashing hunt, best-suspect fix without the user's detail)**: the

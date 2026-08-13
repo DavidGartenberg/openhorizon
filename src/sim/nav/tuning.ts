@@ -163,7 +163,8 @@ export interface KnownIlsEntry {
  *  Removed rather than left in as an unverified/likely-fictional entry,
  *  per this project's binding "no fabricated data" rule; only re-add if
  *  confirmed against a primary FAA source. */
-export const KNOWN_ILS_FREQUENCIES: readonly KnownIlsEntry[] = [
+/** Offline seed: the AIP-verified entries the world shakedowns flew. */
+const SEED_ILS: readonly KnownIlsEntry[] = [
   // Published FAA frequencies: ILS 28R = 111.7 (IGWQ), ILS 28L = 109.55
   // (IBRG). A prior revision had these two swapped.
   { icao: 'KSFO', runway: '28R', freqMhz: 111.7 },
@@ -209,8 +210,17 @@ export const KNOWN_ILS_FREQUENCIES: readonly KnownIlsEntry[] = [
   { icao: 'LFPG', runway: '27R', freqMhz: 110.35 }, // PNW
 ]
 
+/** The live ILS table: starts as the offline seed; `setIlsTable` swaps in
+ *  the GLOBAL table once /api/ils.json lands (night-shift N4 — every
+ *  true-ILS localizer on Earth from the open-navdata pipeline). */
+export let KNOWN_ILS_FREQUENCIES: readonly KnownIlsEntry[] = SEED_ILS
+
+export function setIlsTable(entries: readonly KnownIlsEntry[]): void {
+  if (entries.length > 0) KNOWN_ILS_FREQUENCIES = entries
+}
+
 /** Which runway (if any) a tuned NAV frequency at `icao` corresponds to,
- *  per the stopgap table above. */
+ *  per the loaded table. */
 export function findKnownIls(icao: string, activeMhz: number, entries: readonly KnownIlsEntry[] = KNOWN_ILS_FREQUENCIES): KnownIlsEntry | undefined {
   return entries.find((e) => e.icao === icao && Math.abs(e.freqMhz - activeMhz) < 0.005)
 }

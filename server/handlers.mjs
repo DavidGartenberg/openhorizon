@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
-import { buildAirports, buildNavaids, buildCifpProcedures, buildUsAirspace, buildFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb } from './parse.mjs'
+import { buildAirports, buildNavaids, buildCifpProcedures, buildUsAirspace, buildFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb , buildIls } from './parse.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 /** Vendored offline fallbacks committed with the repo (Phase 12a). */
@@ -408,6 +408,36 @@ export async function frequenciesData() {
   return frequenciesJson
 }
 
+// ---- Global ILS table (night-shift N4) ----
+
+let ilsJson = null
+const NAVDAT_URL = 'https://raw.githubusercontent.com/ptsmonteiro/x-plane-navdata/master/earth_nav.dat'
+
+/** GET /api/ils.json — every true-ILS localizer on Earth from the open
+ *  navdata mirror (community AIRAC vintage — recorded; frequencies for
+ *  EGLL/KSFO/LFPG/NZAA/RJTT cross-check the AIP values verified during
+ *  the world shakedowns). */
+export async function ilsData() {
+  if (ilsJson) return ilsJson
+  const jsonFile = path.join(cacheDir, 'global-ils.json')
+  if (fs.existsSync(jsonFile)) {
+    ilsJson = fs.readFileSync(jsonFile, 'utf8')
+    return ilsJson
+  }
+  const f = path.join(cacheDir, 'earth_nav.dat')
+  let dat
+  if (fs.existsSync(f)) dat = fs.readFileSync(f, 'utf8')
+  else {
+    const res = await fetch(NAVDAT_URL)
+    if (!res.ok) throw new Error(`earth_nav.dat: ${res.status}`)
+    dat = await res.text()
+    fs.writeFileSync(f, dat)
+  }
+  ilsJson = JSON.stringify(buildIls(dat))
+  fs.writeFileSync(jsonFile, ilsJson)
+  return ilsJson
+}
+
 // ---- NEXRAD composite tiles (Phase 5 §11, FIS-B presentation) ----
 
 const nexradCache = new Map() // key → { at: ms, buf: Buffer }
@@ -525,6 +555,16 @@ export async function route(url, res) {
     }
     if (url === '/api/aircraft-types.json') {
       const json = await aircraftTypesData()
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=86400',
+        'Access-Control-Allow-Origin': '*',
+      })
+      res.end(json)
+      return true
+    }
+    if (url === '/api/ils.json') {
+      const json = await ilsData()
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Cache-Control': 'public, max-age=86400',

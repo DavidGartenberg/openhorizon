@@ -84,7 +84,7 @@ N3, N7, N8+N9 are multi-night arcs each. The frontier lives here:
 - [x] N1 — DONE (menu + 121/121 fleet-takeoff lattice + transport gear-geometry fix)
 - [~] N2 — first pass done (buildAirliner + family table; 747/CRJ verified; GA/TP archetypes remain)
 - [ ] N3 — not started
-- [ ] N4 — not started
+- [~] N4 — global ILS DONE (3,157 localizers, YSSY end-to-end); landing kit + lattice extensions next
 - [~] N5 — best suspect fixed (surface z-fight clearance + polygonOffset); rest needs user detail
 - [~] N6 — unknown-type ground targets render as generic narrowbody; gate parking waits on N8
 - [ ] N7 — not started

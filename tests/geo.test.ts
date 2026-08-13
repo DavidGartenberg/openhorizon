@@ -166,3 +166,20 @@ describe('dateline handling (17a)', () => {
     expect(out.lon).toBeGreaterThanOrEqual(-180)
   })
 })
+
+describe('global ILS pipeline (night-shift N4)', () => {
+  it('buildIls: true ILS rows in, LDA/LOC-only and duplicates out', async () => {
+    // @ts-expect-error — plain .mjs module without type declarations
+    const { buildIls } = await import('../server/parse.mjs')
+    const dat = [
+      '4  51.47746700 -000.49373900     83 11030  18     269.660 IRR  EGLL 27R ILS-cat-I',
+      '4  37.62953900 -122.39531100      5 11170  18     297.903 IGWQ KSFO 28R ILS-cat-III',
+      '4  37.62953900 -122.39531100      5 11170  18     297.903 IGWQ KSFO 28R ILS-cat-III', // dupe
+      '4  37.62129900 -122.36840200     13 11075  18     294.802 IFNP KSFO 28R LDA-GS', // offset LDA — excluded
+      '5 -37.00464600  174.80607600     23 11010  18      70.882 ISL  NZAA 05L LOC', // LOC-only row type — excluded
+    ].join('\n')
+    const out = buildIls(dat)
+    expect(out.EGLL).toEqual([{ r: '27R', f: 11030, i: 'IRR', c: 'I' }])
+    expect(out.KSFO).toEqual([{ r: '28R', f: 11170, i: 'IGWQ', c: 'III' }])
+  })
+})
