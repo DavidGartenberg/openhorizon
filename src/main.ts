@@ -29,6 +29,8 @@ import { CockpitCamera } from './render/cockpit-camera'
 import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from './render/aircraft-mesh'
 import { PlaneMenu } from './render/plane-menu'
 import { loadIls, ilsLoaded, ilsCount } from './world/ils'
+import { osmIdentSegs } from './world/osm-layout'
+import { routeIdents } from './sim/atc/ground'
 import { buildAirliner, airlinerCfgFor } from './render/airliner-mesh'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
@@ -216,7 +218,7 @@ aircraftLights.attach(mesh.group)
 const trafficLayer = new TrafficLayer(scene)
 // 16d: replay viewer (REPLAY verb).
 const replayView = new ReplayView()
-const cockpit = buildCockpit(mesh.group)
+const cockpit = buildCockpit(mesh.group, FLEET_ACTIVE.params.trimIsStabilizer ? 'boeingNG' : 'g1000')
 const cockpitInteraction = new CockpitInteraction(camera)
 
 const wind = new WindModel()
@@ -1506,7 +1508,22 @@ function atcMenuItems(): AtcMenuItem[] {
       },
     })
   } else if (view.onGround) {
-    items.push({ label: `Request taxi (Ground ${a.gndF.toFixed(2)})`, run: () => sendPilot('taxiOut', a.gndF, () => a.ground.request(CALLSIGN, 'taxiOut', loop.simTime)) })
+    items.push({ label: `Request taxi (Ground ${a.gndF.toFixed(2)})`, run: () => sendPilot('taxiOut', a.gndF, () => a.ground.request(CALLSIGN, 'taxiOut', loop.simTime, (() => {
+          // N7: name REAL taxiways when the OSM layout knows them —
+          // corridor idents between the aircraft and the active threshold.
+          const segs = activeAtc ? osmIdentSegs.get(activeAtc.ident) : undefined
+          if (!segs || !segs.length || !activeAtc) return undefined
+          const ap = airports.find(activeAtc.ident)
+          const rwy = ap?.r.find((r) => r.li === activeAtc!.atis.activeRunway || r.hi === activeAtc!.atis.activeRunway)
+          if (!ap || !rwy) return undefined
+          const thrLat = rwy.li === activeAtc.atis.activeRunway ? rwy.la1 : rwy.la2
+          const thrLon = rwy.li === activeAtc.atis.activeRunway ? rwy.lo1 : rwy.lo2
+          const mLon = 111_320 * Math.cos((ap.la * Math.PI) / 180)
+          const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+          const from = { x: (ll.lon - ap.lo) * mLon, z: -(ll.lat - ap.la) * 111_320 }
+          const to = { x: (thrLon - ap.lo) * mLon, z: -(thrLat - ap.la) * 111_320 }
+          return routeIdents(segs, from, to)
+        })())) })
     items.push({ label: `Ready for departure (Tower ${a.twrF.toFixed(2)})`, run: () => sendPilot('readyTakeoff', a.twrF, () => a.tower.request(CALLSIGN, 'readyTakeoff', playerAtcView(), loop.simTime)) })
   } else {
     items.push({ label: `Inbound for landing (Tower ${a.twrF.toFixed(2)})`, run: () => sendPilot('inboundLanding', a.twrF, () => a.tower.request(CALLSIGN, 'inboundLanding', playerAtcView(), loop.simTime)) })

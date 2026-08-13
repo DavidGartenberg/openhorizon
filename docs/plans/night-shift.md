@@ -83,10 +83,10 @@ N3, N7, N8+N9 are multi-night arcs each. The frontier lives here:
 - [x] N0 — DONE (hinge signs fixed, screenshots verified)
 - [x] N1 — DONE (menu + 121/121 fleet-takeoff lattice + transport gear-geometry fix)
 - [~] N2 — first pass done (buildAirliner + family table; 747/CRJ verified; GA/TP archetypes remain)
-- [ ] N3 — not started
+- [~] N3 — Boeing-NG panel layout live for airliners (DU content per-family = next)
 - [~] N4 — global ILS DONE (3,157 localizers, YSSY end-to-end); landing kit + lattice extensions next
 - [~] N5 — best suspect fixed (surface z-fight clearance + polygonOffset); rest needs user detail
 - [~] N6 — unknown-type ground targets render as generic narrowbody; gate parking waits on N8
-- [ ] N7 — not started
+- [~] N7 — real taxiway names in ground clearances (approach/departure chain = next)
 - [~] N8 — first pass done (OSM pipeline + KSFO real taxiways/aprons/terminals rendered; signage = N9)
 - [~] N9 — taxiway ident signs at real positions (hold-short bars/gate numbers remain)

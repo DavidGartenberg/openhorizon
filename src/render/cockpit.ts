@@ -167,7 +167,9 @@ function makeSwitch(label: string): THREE.Mesh {
  *  body group from `aircraft-mesh.ts`, so it tracks position/attitude for
  *  free). Returns handles used every frame to redraw the PFD/MFD canvases
  *  and animate the controls. */
-export function buildCockpit(parent: THREE.Object3D): CockpitMeshes {
+export type PanelLayout = 'g1000' | 'boeingNG'
+
+export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g1000'): CockpitMeshes {
   const group = new THREE.Group()
   const interactive: THREE.Object3D[] = []
   const add = (mesh: THREE.Mesh, x: number, y: number, z: number): THREE.Mesh => {
@@ -180,7 +182,31 @@ export function buildCockpit(parent: THREE.Object3D): CockpitMeshes {
   // (render-X, render-Y, render-Z) directly since this mesh has no rotation
   // — under the placeBody convention that's (lateral, vertical, fore/aft),
   // so a wide-and-tall-but-thin panel needs (lateral, vertical, thin).
-  add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.62, 0.06), PANEL_DARK), 1.02, 0.02, -0.55)
+  //
+  // N3: the Boeing-NG layout swaps the G1000 shell for the 737 panel —
+  // wide brown-gray main panel, SIX display-unit bezels (outboard PFD /
+  // inboard ND per side + stacked center EICAS pair), and a glareshield
+  // MCP strip. HONEST SCOPE (recorded in the night-shift plan): the DU
+  // CONTENT is still this sim's G1000-style PFD/ND drawing for now — the
+  // LAYOUT, proportions, and palette follow the NG photos; per-family
+  // display content is a later slice.
+  const BOEING_PANEL = new THREE.MeshStandardMaterial({ color: 0x655b52, roughness: 0.85 })
+  const DU_BEZEL = new THREE.MeshStandardMaterial({ color: 0x24262a, roughness: 0.6 })
+  const MCP_FACE = new THREE.MeshStandardMaterial({ color: 0x83807a, roughness: 0.55 })
+  if (layout === 'boeingNG') {
+    add(new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.62, 0.06), BOEING_PANEL), 1.02, 0.02, -0.55)
+    // Six DU bezels: [captain PFD, captain ND, upper EICAS, lower EICAS,
+    // FO ND, FO PFD] — screens for the captain pair come below; the rest
+    // are dark faces tonight.
+    for (const [dz, dy] of [[-0.62, -0.02], [-0.42, -0.02], [-0.2, 0.06], [-0.2, -0.2], [0.02, -0.02], [0.22, -0.02]] as const) {
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 0.015), DU_BEZEL), 1.0, dy, dz)
+    }
+    // Glareshield MCP strip.
+    add(new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.09, 0.1), DU_BEZEL), 1.03, 0.36, -0.3)
+    add(new THREE.Mesh(new THREE.BoxGeometry(1.34, 0.06, 0.02), MCP_FACE), 0.985, 0.36, -0.3)
+  } else {
+    add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.62, 0.06), PANEL_DARK), 1.02, 0.02, -0.55)
+  }
 
   // PFD (left) and MFD (center) — canvas-textured planes.
   const pfd = makeCanvasTexture(CANVAS_W, CANVAS_H)
@@ -214,12 +240,14 @@ export function buildCockpit(parent: THREE.Object3D): CockpitMeshes {
   // gives clean separation. This was a pre-existing bug, unrelated to the
   // depth/yoke fix — it just took a close screenshot to notice the PFD/MFD
   // were rendering as solid dark rectangles instead of their actual content.
-  add(pfdMesh, 0.97, -0.24, -0.42)
+  if (layout === 'boeingNG') pfdMesh.scale.setScalar(0.55) // fit the DU bezel
+  add(pfdMesh, 0.97, layout === 'boeingNG' ? -0.02 : -0.24, layout === 'boeingNG' ? -0.62 : -0.42)
   const mfdMesh = new THREE.Mesh(
     new THREE.PlaneGeometry(0.42, 0.32),
     new THREE.MeshBasicMaterial({ map: mfd.texture, toneMapped: false }),
   )
-  add(mfdMesh, 0.97, 0.15, -0.42)
+  if (layout === 'boeingNG') mfdMesh.scale.setScalar(0.55)
+  add(mfdMesh, 0.97, layout === 'boeingNG' ? -0.02 : 0.15, layout === 'boeingNG' ? -0.42 : -0.42)
   // 15c: the MFD screen is pickable — clicks map through the hit UV to
   // `mfdSoftkeyRegions` (the bezel row was drawn but never routed).
   mfdMesh.userData.controlId = 'mfdScreen'

@@ -12,6 +12,10 @@ import * as THREE from 'three'
  * distant taxiways can sink/float. Flat major airports render true.
  */
 
+/** Real taxiway-ident segment midpoints per airport (airport-local
+ *  meters) — consumed by ground control's route naming (N7). */
+export const osmIdentSegs = new Map<string, { ref: string; x: number; z: number }[]>()
+
 const TAXI = new THREE.MeshStandardMaterial({ color: 0x3c4043, roughness: 0.95 })
 const SIGN_FACE = new THREE.MeshBasicMaterial({ color: 0x1a1a08 })
 const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8b23a })
@@ -82,6 +86,15 @@ export async function enhanceAirportWithOsm(
   })
   const osm = new THREE.Group()
   osm.name = 'osmLayout'
+  // N7 route naming: every ident'd segment's midpoint.
+  const segRegistry: { ref: string; x: number; z: number }[] = []
+  for (const tw of data.tw) {
+    if (!tw.r || tw.p.length < 2) continue
+    const mid = tw.p[Math.floor(tw.p.length / 2)]!
+    const p = toLocal(mid[0], mid[1])
+    segRegistry.push({ ref: tw.r, x: p.x, z: p.z })
+  }
+  osmIdentSegs.set(icao, segRegistry)
 
   // Aprons first (lowest).
   if (data.ap.length) {

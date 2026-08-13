@@ -84,6 +84,29 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N3 + N7 first slices (2026-08-12)
+
+**N3 (cockpits)**: panel-layout variant system in the 3D cockpit —
+`buildCockpit(parent, layout)` with a **Boeing-NG layout** for
+airliner-class types (trimIsStabilizer): wide brown-gray main panel,
+SIX display-unit bezels in the NG arrangement (outboard PFD / inboard
+ND each side + stacked center EICAS pair), captain's DUs carrying the
+live PFD/ND screens, and a glareshield MCP strip. HONEST SCOPE
+(recorded, per the plan): DU CONTENT is still the sim's G1000-style
+drawing tonight — layout, proportions, and palette follow the NG
+photos; per-family display content is a later slice. GA types keep
+the G1000 shell untouched.
+
+**N7 (ATC)**: ground control now names REAL taxiways. `routeIdents`
+(TDD) picks corridor idents between the aircraft and the active
+threshold from the OSM segment registry — ordered along the path,
+deduped, max three — and the taxi clearance reads "runway 28R, taxi
+via A, F, hold short runway 28R" with the airport's actual taxiway
+names at their actual positions. Falls back to the honest "via the
+parallel" where no idents are mapped. (Clearance delivery/CRAFT and
+readback discipline already existed from Phase 6 — the fiction being
+retired here was the unnamed taxi route.)
+
 ## Night shift N9 + self-auditing rigging (2026-08-12)
 
 **N9 first pass**: taxiway identifier SIGNS at real positions — one
