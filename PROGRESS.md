@@ -84,6 +84,39 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift: post-soak browser verification pass (2026-08-13)
+
+Production build at KSFO, live checks after the soak:
+
+- **N3 verified (and fixed)**: the first cockpit screenshot exposed a
+  transposed-axes bug — the DU offsets had vertical passed into the
+  lateral slot of the body-frame helper, stacking the six display
+  units in a COLUMN. Fixed the mapping (dLat → y, height → −z);
+  re-shot: the 737 panel now reads captain PFD/ND left, live EICAS
+  (N1 20.0/20.0 needles + FF) upper center, FO ND/PFD right, MCP
+  digit windows + CMD lamp on the glareshield. The A320neo re-shot
+  shows the FCU layout: AP1 lamp instead of CMD, blue-gray tone, live
+  ECAM dials, sidestick (no yoke in view). Exactly the class of bug
+  only a screenshot finds — recorded as the reason the browser pass
+  exists.
+- **N7 verified live**: taxi request at KSFO produced "San Francisco
+  Ground: Skyhawk 123AB, runway 1L, taxi via F2, A2, M, hold short
+  runway 1L" — real SFO taxiway identifiers from the OSM registry,
+  on the real ground frequency (121.80).
+- **N9 presence verified by draw-call census**: KSFO render list grew
+  319 → 574 calls with the sign boards / hold bars / gate boards in
+  (all under the ≤600 budget); the ident data driving the boards is
+  the same registry the verified taxi phrase used. DEFERRED
+  (recorded): a close-up screenshot of an individual sign board —
+  the throttled background pane and fixed chase camera made a
+  legible close-up impractical tonight; geometry instancing for the
+  ~230 board/post meshes is also noted as a headroom item.
+- **N6**: live ADS-B feed returned 0 targets near KSFO during the
+  pass (upstream chain flapping 502s all night, handled by
+  stale-while-error); nothing to render — honestly nothing shown.
+- **Morning state**: 737-800 parked on KSFO 28R, engines idle,
+  chase camera, controls released.
+
 ## Night shift: 45-minute soak PASS (standalone build) (2026-08-12)
 
 Soak #2 on the production build (standalone node server, :8787), C172

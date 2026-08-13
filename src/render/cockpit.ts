@@ -220,14 +220,17 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   if (layout === 'boeingNG' || layout === 'airbusFcu') {
     add(new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.62, 0.06), BOEING_PANEL), 1.02, 0.02, -0.55)
     // Six DU bezels: [captain PFD, captain ND, upper EICAS, lower EICAS,
-    // FO ND, FO PFD] — screens for the captain pair come below; the rest
-    // are dark faces tonight.
-    for (const [dz, dy] of [[-0.62, -0.02], [-0.42, -0.02], [-0.2, 0.06], [-0.2, -0.2], [0.02, -0.02], [0.22, -0.02]] as const) {
-      add(new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 0.015), DU_BEZEL), 1.0, dy, dz)
+    // FO ND, FO PFD]. `add(mesh, x, y, z)` is BODY frame: y = lateral
+    // (right +), z = DOWN — the first cut passed vertical offsets into y
+    // and lateral into z, stacking the DUs in a column (found by the
+    // cockpit-camera screenshot). dLat is lateral offset, dUp is height
+    // above the panel-shell center (0.55 m up).
+    for (const [dLat, dUp] of [[-0.62, -0.02], [-0.42, -0.02], [-0.2, 0.06], [-0.2, -0.2], [0.02, -0.02], [0.22, -0.02]] as const) {
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.24, 0.015), DU_BEZEL), 1.0, dLat, -(0.55 + dUp))
     }
-    // Glareshield MCP strip.
-    add(new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.09, 0.1), DU_BEZEL), 1.03, 0.36, -0.3)
-    add(new THREE.Mesh(new THREE.BoxGeometry(1.34, 0.06, 0.02), MCP_FACE), 0.985, 0.36, -0.3)
+    // Glareshield MCP strip (above the panel, slightly captain-biased).
+    add(new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.09, 0.1), DU_BEZEL), 1.03, -0.2, -0.92)
+    add(new THREE.Mesh(new THREE.BoxGeometry(1.34, 0.06, 0.02), MCP_FACE), 0.985, -0.2, -0.92)
     // Live MCP digit windows (canvas plane proud of the metal face —
     // same coplanarity lesson as the PFD/MFD screens).
     mcp = makeCanvasTexture(1024, 40)
@@ -235,7 +238,7 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
       new THREE.PlaneGeometry(1.3, 0.05),
       new THREE.MeshBasicMaterial({ map: mcp.texture, toneMapped: false }),
     )
-    add(mcpMesh, 0.97, 0.36, -0.3)
+    add(mcpMesh, 0.97, -0.2, -0.92)
     // Upper-center DU: live engine display (EICAS/ECAM upper) — real N1
     // and fuel flow from the turbofan model, drawn in updateEicas.
     eicas = makeCanvasTexture(256, 256)
@@ -243,7 +246,7 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
       new THREE.PlaneGeometry(0.21, 0.21),
       new THREE.MeshBasicMaterial({ map: eicas.texture, toneMapped: false }),
     )
-    add(eicasMesh, 0.97, 0.06, -0.2)
+    add(eicasMesh, 0.97, -0.2, -0.61)
   } else {
     add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.62, 0.06), PANEL_DARK), 1.02, 0.02, -0.55)
   }
@@ -281,13 +284,13 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   // depth/yoke fix — it just took a close screenshot to notice the PFD/MFD
   // were rendering as solid dark rectangles instead of their actual content.
   if (layout !== 'g1000') pfdMesh.scale.setScalar(0.55) // fit the DU bezel
-  add(pfdMesh, 0.97, layout !== 'g1000' ? -0.02 : -0.24, layout !== 'g1000' ? -0.62 : -0.42)
+  add(pfdMesh, 0.97, layout !== 'g1000' ? -0.62 : -0.24, layout !== 'g1000' ? -0.53 : -0.42)
   const mfdMesh = new THREE.Mesh(
     new THREE.PlaneGeometry(0.42, 0.32),
     new THREE.MeshBasicMaterial({ map: mfd.texture, toneMapped: false }),
   )
   if (layout !== 'g1000') mfdMesh.scale.setScalar(0.55)
-  add(mfdMesh, 0.97, layout !== 'g1000' ? -0.02 : 0.15, layout !== 'g1000' ? -0.42 : -0.42)
+  add(mfdMesh, 0.97, layout !== 'g1000' ? -0.42 : 0.15, layout !== 'g1000' ? -0.53 : -0.42)
   // 15c: the MFD screen is pickable — clicks map through the hit UV to
   // `mfdSoftkeyRegions` (the bezel row was drawn but never routed).
   mfdMesh.userData.controlId = 'mfdScreen'
@@ -297,10 +300,10 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     // PFD/ND content across sides in normal ops; zero extra canvas work).
     const foPfd = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.32), new THREE.MeshBasicMaterial({ map: pfd.texture, toneMapped: false }))
     foPfd.scale.setScalar(0.55)
-    add(foPfd, 0.97, -0.02, 0.22)
+    add(foPfd, 0.97, 0.22, -0.53)
     const foNd = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.32), new THREE.MeshBasicMaterial({ map: mfd.texture, toneMapped: false }))
     foNd.scale.setScalar(0.55)
-    add(foNd, 0.97, -0.02, 0.02)
+    add(foNd, 0.97, 0.02, -0.53)
   }
 
   // Standby instrument cluster (placeholder circles, left of the PFD) — a
