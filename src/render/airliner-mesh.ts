@@ -113,15 +113,16 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     wingGroup.add(panel)
     if (cfg.winglet !== 'none') {
       const h = cfg.winglet === 'raked' ? 1.2 : cfg.winglet === 'sharklet' ? 2.0 : 2.35
+      // Same axis fix as buildB738's winglet: shape in (−bodyX, height),
+      // one rotateY(−π/2) → thickness X, height Y, chord Z.
       const wlShape = new THREE.Shape()
-      wlShape.moveTo(0, tipLeX)
-      wlShape.lineTo(h, tipLeX - tipChord * 0.25)
-      wlShape.lineTo(h, tipLeX - tipChord * 0.62)
-      wlShape.lineTo(0, tipLeX - tipChord)
+      wlShape.moveTo(-tipLeX, 0)
+      wlShape.lineTo(-(tipLeX - tipChord * 0.25), h)
+      wlShape.lineTo(-(tipLeX - tipChord * 0.62), h)
+      wlShape.lineTo(-(tipLeX - tipChord), 0)
       wlShape.closePath()
       const wlGeo = new THREE.ExtrudeGeometry(wlShape, { depth: 0.1, bevelEnabled: false })
-      wlGeo.rotateY(Math.PI / 2)
-      wlGeo.rotateY(Math.PI)
+      wlGeo.rotateY(-Math.PI / 2)
       const wl = new THREE.Mesh(wlGeo, BELLY)
       wl.castShadow = true
       wl.position.set(side * y1, -wingDrop, 0)
@@ -274,6 +275,19 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       if (nose) grp.rotation.x = (1 - s.gearPos) * 1.5
       else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? 1.5 : -1.5)
       grp.visible = s.gearPos > 0.02
+    }
+  }
+  // Real exterior-light anchors (nav/strobe at the wingtips, tail/beacon
+  // on the fin) — the bounding-box fallback floats lights mid-air on
+  // low-wing jets (found by the user on the 737).
+  {
+    const yTip = halfSpan - (cfg.winglet === 'none' ? 0 : 0.4)
+    const zTip = -(wingRootX - Math.tan(sweep) * (yTip - R * 0.85)) + 0.2
+    const tipUp = -wingDrop + Math.sin(0.105) * yTip + 0.12
+    g.userData.lightAnchors = {
+      wingtipL: new THREE.Vector3(-yTip, tipUp, zTip),
+      wingtipR: new THREE.Vector3(yTip, tipUp, zTip),
+      tail: new THREE.Vector3(0, R * 0.9 + finH * 0.55, -finRootX + L * 0.1),
     }
   }
   return { group: g, propDisc, surfaces }

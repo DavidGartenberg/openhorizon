@@ -2157,7 +2157,11 @@ function advanceFrame(elapsed: number, now: number): void {
   airports.updateNight(loop.simTime, night)
   // 13d PAPI: colored from the camera's real elevation angle each frame.
   airports.updatePapi(camera.position.x, camera.position.y, camera.position.z)
-  const lightsPowered = aircraft.P.electrical !== false && electricalState.busVoltage > 18
+  // Jets: the electrical model is piston-only (bus reads 0 V), which
+  // silently killed every exterior light on the 737/airliners — found by
+  // the user. Until a jet electrical model exists, jets count as powered
+  // (recorded simplification).
+  const lightsPowered = aircraft.P.jet ? true : aircraft.P.electrical !== false && electricalState.busVoltage > 18
   aircraftLights.update(
     loop.simTime, lightsPowered, aircraft.data.aglFt * FT, mesh.group,
     (xE, zS) => {

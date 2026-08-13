@@ -84,6 +84,44 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## User fixes: winglets, jet lights, yoke vs stick, photo-matched panels (2026-08-13)
+
+Four user reports, all verified on screen:
+
+- **Winglets were invisible on every jet** — the winglet construction
+  in BOTH builders (bespoke 737 + the airliner family) double-rotated
+  the extruded blade so its chord axis pointed vertically, burying the
+  geometry metres below the wing. Rebuilt the shape in (−bodyX, height)
+  with a single rotateY(−π/2). Verified: 737 blended winglets and
+  A320neo sharklets stand at the tips.
+- **No exterior lights on jets** — two causes: the lights-power gate
+  required bus voltage from the piston-only electrical model (jets read
+  0 V → recorded simplification: jets count as powered until a jet
+  electrical model exists), and the bounding-box light anchors floated
+  mid-air on low-wing airframes (fine on the high-wing C172 — that's
+  why it was never seen before). Both builders now carry REAL anchors:
+  nav/strobe at the winglet bases, tail/beacon on the fin. Verified:
+  red left / green right / beacon on the 737 and A320neo.
+- **Yoke, not a steering wheel** — Boeing/GA layouts get a two-horn
+  control yoke (hub + angled arms + near-vertical grips, roll turns
+  the assembly); Airbus keeps the sidestick.
+- **Photo-matched panels** — looked up straight-on 737NG and A320
+  panel references (user's instruction) and repainted both transport
+  panels as 2048-px canvas faces matched to them: 737NG light warm-gray
+  with six dark DU frames + corner screws, round standby cluster,
+  FLAPS dial, red-striped GEAR slot with wheel handle, autobrake
+  rotary; A320 darker neutral gray with ISIS-style standby stack. The
+  glareshield is now a full-width painted MCP/FCU band (EFIS panels at
+  the ends, WARN/CAUT clusters) carrying the LIVE digit windows and
+  mode lamps. GA hardware (ignition key, mixture vernier, fuel
+  selector, C172 switch row, radio pods) is hidden and unclickable on
+  transports. Painted details are cosmetic and recorded as such; DU
+  content stays live on the real canvases.
+
+Also from this pass: chase camera clips into the terrain berm behind
+KHAF 30's threshold on large airframes (camera terrain-avoidance) —
+noted as a follow-up, not fixed tonight.
+
 ## M opens the plane menu; mute moves to Q (2026-08-13, user request)
 
 Pressing **M** now opens the aircraft menu (N still works); engine

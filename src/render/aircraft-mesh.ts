@@ -305,15 +305,20 @@ export function buildB738(): AircraftMesh {
     wingGroup.add(panel)
     // Blended winglet: a 2.4 m blade standing at the tip, canted ~15° out.
     const tipLeX = 3.1 - Math.tan(0.436) * (y1 - y0)
+    // Shape space (chordZ, height): chordZ = −bodyX (same mapping as
+    // taperedPanel), height straight up. One rotateY(−π/2) then puts
+    // thickness on X, height on Y, chord on Z. (The original double
+    // rotateY landed the blade's chord axis VERTICAL, burying the whole
+    // winglet metres below the wing — found by the user: "the winglets
+    // aren't on the plane".)
     const wlShape = new THREE.Shape()
-    wlShape.moveTo(0, tipLeX)
-    wlShape.lineTo(2.35, tipLeX - 0.35)
-    wlShape.lineTo(2.35, tipLeX - 0.95)
-    wlShape.lineTo(0, tipLeX - tipChord)
+    wlShape.moveTo(-tipLeX, 0)
+    wlShape.lineTo(-(tipLeX - 0.35), 2.35)
+    wlShape.lineTo(-(tipLeX - 0.95), 2.35)
+    wlShape.lineTo(-(tipLeX - tipChord), 0)
     wlShape.closePath()
     const wlGeo = new THREE.ExtrudeGeometry(wlShape, { depth: 0.1, bevelEnabled: false })
-    wlGeo.rotateY(Math.PI / 2) // shape (up, bodyX) → model: x-depth, y up, z = −bodyX
-    wlGeo.rotateY(Math.PI)
+    wlGeo.rotateY(-Math.PI / 2) // (x,y,z)→(−z,y,x): thickness, height ↑, chord
     const wl = new THREE.Mesh(wlGeo, BELLY)
     wl.castShadow = true
     wl.position.set(side * 16.55, -1.25, 0)
@@ -446,6 +451,13 @@ export function buildB738(): AircraftMesh {
       else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? 1.5 : -1.5)
       grp.visible = s.gearPos > 0.02
     }
+  }
+  // Real light anchors: winglet bases and fin (the box fallback put the
+  // nav lights metres above the low wing — user-reported).
+  g.userData.lightAnchors = {
+    wingtipL: new THREE.Vector3(-16.7, -1.0, 3.95),
+    wingtipR: new THREE.Vector3(16.7, -1.0, 3.95),
+    tail: new THREE.Vector3(0, 4.4, 19.3),
   }
   return { group: g, propDisc, surfaces }
 }
