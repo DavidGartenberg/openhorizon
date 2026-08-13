@@ -82,11 +82,11 @@ N3, N7, N8+N9 are multi-night arcs each. The frontier lives here:
 
 - [x] N0 — DONE (hinge signs fixed, screenshots verified)
 - [x] N1 — DONE (menu + 121/121 fleet-takeoff lattice + transport gear-geometry fix)
-- [~] N2 — first pass done (buildAirliner + family table; 747/CRJ verified; GA/TP archetypes remain)
-- [~] N3 — Boeing-NG panel layout live for airliners (DU content per-family = next)
+- [~] N2 — buildAirliner + family table (747/CRJ browser-verified; trijet center engine + MAX sharklets added; geometry invariants tested fleet-wide; GA/TP archetypes remain)
+- [~] N3 — Boeing-NG + Airbus-FCU layouts, sidestick, live MCP digit windows + mode lamps, live N1/FF engine DU, FO DUs lit (PFD/ND drawing itself still G1000-style = the remaining gap)
 - [~] N4 — global ILS DONE (3,157 localizers, YSSY end-to-end); landing kit + lattice extensions next
-- [~] N5 — best suspect fixed (surface z-fight clearance + polygonOffset); rest needs user detail
+- [~] N5 — surface z-fight clearance + polygonOffset + ground-stack height ladder (apron/taxi/runway/stripes/hold-bars all separated); rest needs user detail
 - [~] N6 — unknown-type ground targets render as generic narrowbody; gate parking waits on N8
-- [~] N7 — real taxiway names in ground clearances (approach/departure chain = next)
+- [~] N7 — real taxiway names in ground clearances + airborne departure handoff on the real DEP/APP freq (approach-side chain = next)
 - [~] N8 — first pass done (OSM pipeline + KSFO real taxiways/aprons/terminals rendered; signage = N9)
-- [~] N9 — taxiway ident signs at real positions (hold-short bars/gate numbers remain)
+- [~] N9 — ident signs + hold-short bars at real intersections + gate numbers at real stands (browser pass pending)
