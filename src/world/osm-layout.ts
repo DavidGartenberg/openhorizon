@@ -178,12 +178,21 @@ export async function enhanceAirportWithOsm(
       for (const endIdx of [0, tw.p.length - 1]) {
         const end = toLocal(tw.p[endIdx]![0], tw.p[endIdx]![1])
         const d = distToRunway(end)
-        if (d > 95 || d < 25) continue // ends ON the runway have no bar
+        if (d > 95) continue
         const prevIdx = endIdx === 0 ? 1 : tw.p.length - 2
         const prev = toLocal(tw.p[prevIdx]![0], tw.p[prevIdx]![1])
+        const segLen = Math.hypot(end.x - prev.x, end.z - prev.z) || 1
+        const backX = (prev.x - end.x) / segLen
+        const backZ = (prev.z - end.z) / segLen
+        // Connectors that reach the runway (d≈0) hold ~75 m short of the
+        // centerline — the real hold-position setback class for these
+        // runways; ends already stopping 25–95 m out get the bar there.
+        const setback = d < 25 ? Math.min(75 - d, segLen) : 0
+        const bx = end.x + backX * setback
+        const bz = end.z + backZ * setback
         const ang = Math.atan2(end.x - prev.x, end.z - prev.z)
         const bar = new THREE.Mesh(new THREE.BoxGeometry(12, 0.02, 1.0), HOLD)
-        bar.position.set(end.x, elevM + 0.12, end.z)
+        bar.position.set(bx, elevM + 0.12, bz)
         bar.rotation.y = ang + Math.PI / 2
         osm.add(bar)
         bars++
