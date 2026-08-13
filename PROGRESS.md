@@ -84,6 +84,16 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift: instanced airport furniture (2026-08-13)
+
+The N9 furniture pushed KSFO to 574 draw calls — inside the ≤600
+budget but with little headroom. Sign/gate POSTS (shared geometry,
+per-instance height scale) and HOLD BARS (shared geometry + rotation)
+now render as one InstancedMesh each; boards keep individual meshes
+because each carries its own canvas texture. Measured on the
+production build at KSFO in the 737: **574 → 439 draw calls**, same
+scene. Budget headroom restored.
+
 ## Night shift: post-soak browser verification pass (2026-08-13)
 
 Production build at KSFO, live checks after the soak:

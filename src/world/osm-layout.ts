@@ -172,6 +172,7 @@ export async function enhanceAirportWithOsm(
       return best
     }
     const HOLD = new THREE.MeshBasicMaterial({ color: 0xd8b23a })
+    const barXf: { x: number; z: number; ang: number }[] = []
     let bars = 0
     for (const tw of data.tw) {
       if (tw.p.length < 2 || bars >= 30) continue
@@ -191,14 +192,29 @@ export async function enhanceAirportWithOsm(
         const bx = end.x + backX * setback
         const bz = end.z + backZ * setback
         const ang = Math.atan2(end.x - prev.x, end.z - prev.z)
-        const bar = new THREE.Mesh(new THREE.BoxGeometry(12, 0.02, 1.0), HOLD)
-        bar.position.set(bx, elevM + 0.12, bz)
-        bar.rotation.y = ang + Math.PI / 2
-        osm.add(bar)
+        barXf.push({ x: bx, z: bz, ang: ang + Math.PI / 2 })
         bars++
       }
     }
+    if (barXf.length) {
+      // One draw call for every hold bar (shared geometry/material).
+      const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(12, 0.02, 1.0), HOLD, barXf.length)
+      const m4 = new THREE.Matrix4()
+      const q = new THREE.Quaternion()
+      const up = new THREE.Vector3(0, 1, 0)
+      barXf.forEach((b, i) => {
+        q.setFromAxisAngle(up, b.ang)
+        m4.compose(new THREE.Vector3(b.x, elevM + 0.12, b.z), q, new THREE.Vector3(1, 1, 1))
+        inst.setMatrixAt(i, m4)
+      })
+      osm.add(inst)
+    }
   }
+
+  // Sign/gate posts share one instanced draw call (unit box scaled to
+  // each post's height) — boards keep individual meshes because each
+  // carries its own canvas texture.
+  const postXf: { x: number; z: number; h: number }[] = []
 
   // N9: taxiway identifier signs at the real segment locations. One
   // canvas-textured board per DISTINCT ident, placed at the midpoint of
@@ -232,9 +248,7 @@ export async function enhanceAirportWithOsm(
     const board = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.2), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }))
     board.position.set(mid.x + 10, elevM + 1.0, mid.z + 10)
     osm.add(board)
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.9, 0.12), SIGN_FACE)
-    post.position.set(mid.x + 10, elevM + 0.45, mid.z + 10)
-    osm.add(post)
+    postXf.push({ x: mid.x + 10, z: mid.z + 10, h: 0.9 })
     signCount++
   }
 
@@ -259,10 +273,20 @@ export async function enhanceAirportWithOsm(
     const board = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.9), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }))
     board.position.set(p.x, elevM + 2.4, p.z)
     osm.add(board)
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.0, 0.1), SIGN_FACE)
-    post.position.set(p.x, elevM + 1.0, p.z)
-    osm.add(post)
+    postXf.push({ x: p.x, z: p.z, h: 2.0 })
     gates++
+  }
+
+  if (postXf.length) {
+    const unit = new THREE.BoxGeometry(0.12, 1, 0.12)
+    unit.translate(0, 0.5, 0) // origin at base so y-scale = height
+    const inst = new THREE.InstancedMesh(unit, SIGN_FACE, postXf.length)
+    const m4 = new THREE.Matrix4()
+    postXf.forEach((p, i) => {
+      m4.makeScale(1, p.h, 1).setPosition(p.x, elevM, p.z)
+      inst.setMatrixAt(i, m4)
+    })
+    osm.add(inst)
   }
 
   // Real layout in — retire the procedural taxiway stand-in.
