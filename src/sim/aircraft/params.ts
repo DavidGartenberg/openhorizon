@@ -36,6 +36,10 @@ export interface AircraftParams {
    *  symmetric speedbrake only — no roll-spoiler mixing, no ground
    *  auto-deploy arming. */
   spoilers?: { dCd: number; dCl: number; ratePerS: number }
+  /** Thrust reversers (jets): effective reverse thrust as a fraction of
+   *  forward thrust at the same N1, and sleeve transit time. Deploy is
+   *  interlocked to weight-on-wheels like the real airplane. */
+  reversers?: { effectiveness: number; transitS: number }
   /** Compressibility (Phase 11e): Prandtl–Glauert lift-slope correction and
    *  quadratic drag rise past the drag-divergence Mach. Absent = no Mach
    *  effects (piston fleet never gets near them). */

@@ -105,6 +105,9 @@ export const B738: AircraftParams = {
   // deflection (class figures for a narrowbody: ΔCD ≈ 0.05, ΔCL ≈ 0.35);
   // ~1.2 s full travel. Symmetric speedbrake only (documented above).
   spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85 },
+  // CFM56 fan-air cascade reversers: ~45% of forward thrust at the same
+  // N1 (class figure), ~1.5 s sleeve transit, weight-on-wheels interlock.
+  reversers: { effectiveness: 0.45, transitS: 1.5 },
 
   jet: CFM56_7B26,
   machModel: { mdd: 0.82, dragRiseK: 20 },

@@ -89,6 +89,12 @@ export class Aircraft {
   /** Speedbrake lever [0,1] (spoilers param present); actuator below. */
   spoilerCmd = 0
   spoilerPos = 0
+  /** Speedbrake ARM: on touchdown the ground spoilers auto-deploy. */
+  spoilerArmed = false
+  /** Reverse thrust: commanded by the pilot, deploy INTERLOCKED to
+   *  weight-on-wheels (real airplane behavior). */
+  reverseCmd = false
+  reversePos = 0
 
   constructor(params: AircraftParams = C172S) {
     this.P = params
@@ -231,8 +237,15 @@ export class Aircraft {
 
     // ---- gear transit (Phase 11e; fixed gear pins at 1) ----
     if (this.P.spoilers) {
+      // ARM → auto-deploy on touchdown (ground spoilers).
+      if (this.spoilerArmed && this.data.onGround) { this.spoilerCmd = 1; this.spoilerArmed = false }
       const sRate = this.P.spoilers.ratePerS * dt
       this.spoilerPos = clamp(this.spoilerPos + clamp(this.spoilerCmd - this.spoilerPos, -sRate, sRate), 0, 1)
+    }
+    if (this.P.reversers) {
+      const tgt = this.reverseCmd && this.data.onGround ? 1 : 0
+      const rRate = dt / this.P.reversers.transitS
+      this.reversePos = clamp(this.reversePos + clamp(tgt - this.reversePos, -rRate, rRate), 0, 1)
     }
     if (this.P.gearRetractable) {
       const rate = dt / this.P.gearRetractable.transitS
@@ -251,6 +264,11 @@ export class Aircraft {
       const running = this.fuelKg > 0.5 && this.engineRunning
       stepTurbofan(this.jetState, dt, c.throttle, rho, mach, running, this.P.jet)
       this.prop.thrustN = running ? this.jetState.thrustN : -windmillDragN(rho, vAir, this.P.jet)
+      // Reversers: cascade redirect — effective thrust swings negative as
+      // the sleeves translate (weight-on-wheels interlocked upstream).
+      if (this.P.reversers && this.reversePos > 0) {
+        this.prop.thrustN *= 1 - this.reversePos * (1 + this.P.reversers.effectiveness)
+      }
       this.prop.torqueNm = 0
       this.prop.fuelFlowKgS = this.jetState.fuelFlowKgS
       this.prop.shaftPowerW = Math.max(this.jetState.thrustN * vAir, 0)

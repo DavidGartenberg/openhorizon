@@ -272,6 +272,8 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
     ...rigging,
     ...(jet && pp.kind === 'jet'
       ? {
+          spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85 },
+          reversers: { effectiveness: 0.45, transitS: 1.5 },
           jet: {
             ...CFM56_7B26,
             engines: pp.count,

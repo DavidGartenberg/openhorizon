@@ -24,6 +24,8 @@ export interface SurfaceState {
   spoilerFrac: number
   /** Landing-gear position: 1 down … 0 retracted. */
   gearPos: number
+  /** Reverser sleeve position: 0 stowed … 1 deployed. */
+  reverseFrac?: number
 }
 
 export interface AircraftMesh {
@@ -263,6 +265,7 @@ export function buildCub(): AircraftMesh {
  *  disc so updateProp stays a visual no-op for jets. */
 export function buildB738(): AircraftMesh {
   const g = new THREE.Group()
+  const reverserSleeves: THREE.Mesh[] = []
   const add = (mesh: THREE.Object3D, x: number, y: number, z: number): THREE.Object3D => {
     placeBody(mesh, x, y, z)
     mesh.castShadow = true
@@ -358,6 +361,16 @@ export function buildB738(): AircraftMesh {
     add(inlet, 6.55, side * 5.75, 1.15)
     const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.35, 1.1, 2.6), BELLY)
     add(pylon, 3.4, side * 5.75, 0.15)
+    const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(1.36, 1.1, 1.7, 16), SILVER)
+    sleeve.rotation.x = Math.PI / 2
+    sleeve.scale.y = 0.92
+    add(sleeve, 3.1, side * 5.75, 1.15)
+    sleeve.userData.stowZ = sleeve.position.z
+    reverserSleeves.push(sleeve)
+    const cascade = new THREE.Mesh(new THREE.CylinderGeometry(1.28, 1.28, 1.5, 16), DARK)
+    cascade.rotation.x = Math.PI / 2
+    cascade.scale.y = 0.92
+    add(cascade, 3.1, side * 5.75, 1.15)
   }
 
   // ---- empennage: swept fin to 12.55 m, swept stabs ----
@@ -426,6 +439,7 @@ export function buildB738(): AircraftMesh {
       p.rotation.x = s.flapFrac * 0.62 // trailing edge DOWN ~35° at flaps 30 (sign was inverted — N0)
     }
     for (const p of spoilerPivots) p.rotation.x = -s.spoilerFrac * 0.87 // panel UP ~50° (sign was inverted — N0)
+    for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85
     for (const { grp, nose } of gearGroups) {
       // Nose folds forward; mains fold inward toward the belly.
       if (nose) grp.rotation.x = (1 - s.gearPos) * 1.5

@@ -55,6 +55,7 @@ function taperedPanel(
 }
 
 export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
+  const reverserSleeves: THREE.Mesh[] = []
   const g = new THREE.Group()
   const add = (mesh: THREE.Object3D, x: number, y: number, z: number): THREE.Object3D => {
     placeBody(mesh, x, y, z)
@@ -178,6 +179,18 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
         add(inlet, ex + engLen / 2, side * ey, wingDrop * 0.55 + engR * 0.75)
         const pylon = new THREE.Mesh(new THREE.BoxGeometry(engR * 0.3, engR * 0.9, engLen * 0.7), BELLY)
         add(pylon, ex - engLen * 0.15, side * ey, wingDrop * 0.25)
+        // Reverser sleeve: aft nacelle ring that translates AFT on deploy,
+        // showing a dark cascade band.
+        const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(engR * 1.04, engR * 0.86, engLen * 0.4, 16), SILVER)
+        sleeve.rotation.x = Math.PI / 2
+        sleeve.scale.y = 0.92
+        add(sleeve, ex - engLen * 0.32, side * ey, wingDrop * 0.55 + engR * 0.75)
+        sleeve.userData.stowZ = sleeve.position.z
+        reverserSleeves.push(sleeve)
+        const cascade = new THREE.Mesh(new THREE.CylinderGeometry(engR * 0.98, engR * 0.98, engLen * 0.36, 16), DARK)
+        cascade.rotation.x = Math.PI / 2
+        cascade.scale.y = 0.92
+        add(cascade, ex - engLen * 0.32, side * ey, wingDrop * 0.55 + engR * 0.75)
       }
     } else {
       // tail-mounted pods (MD-80/CRJ class)
@@ -246,6 +259,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       p.rotation.x = s.flapFrac * 0.62
     }
     for (const p of spoilerPivots) p.rotation.x = -s.spoilerFrac * 0.87
+    for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85
     for (const { grp, nose } of gearGroups) {
       if (nose) grp.rotation.x = (1 - s.gearPos) * 1.5
       else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? 1.5 : -1.5)

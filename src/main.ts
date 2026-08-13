@@ -867,10 +867,20 @@ function pollControls(dt: number): void {
   c.brakeLeft = c.brakeRight = input.isHeld('KeyB') || parkingBrake ? 1 : 0
   if (input.wasPressed('KeyV')) {
     if (aircraft.P.spoilers) {
-      aircraft.spoilerCmd = aircraft.spoilerCmd > 0.5 ? 0 : 1
-      toast(aircraft.spoilerCmd > 0.5 ? 'SPEEDBRAKE — FLIGHT DETENT' : 'SPEEDBRAKE DOWN')
+      // Lever cycle: DOWN → ARM → FLIGHT DETENT → DOWN (737 quadrant).
+      if (aircraft.spoilerArmed) { aircraft.spoilerArmed = false; aircraft.spoilerCmd = 1; toast('SPEEDBRAKE — FLIGHT DETENT') }
+      else if (aircraft.spoilerCmd > 0.5) { aircraft.spoilerCmd = 0; toast('SPEEDBRAKE DOWN') }
+      else { aircraft.spoilerArmed = true; toast('SPEEDBRAKE ARMED — auto-deploys on touchdown') }
     } else {
       toast('NO SPEEDBRAKES ON THIS TYPE')
+    }
+  }
+  if (input.wasPressed('KeyZ')) {
+    if (aircraft.P.reversers) {
+      aircraft.reverseCmd = !aircraft.reverseCmd
+      toast(aircraft.reverseCmd ? 'REVERSE THRUST (deploys on ground)' : 'REVERSERS STOWED')
+    } else {
+      toast('NO REVERSERS ON THIS TYPE')
     }
   }
   // 16a: mapped gamepad axes own their controls while connected.
@@ -1931,6 +1941,7 @@ function advanceFrame(elapsed: number, now: number): void {
     flapFrac: aircraft.flapsDeg / Math.max(FLEET_ACTIVE.params.flapDetentsDeg[FLEET_ACTIVE.params.flapDetentsDeg.length - 1] ?? 1, 1),
     spoilerFrac: aircraft.spoilerPos,
     gearPos: aircraft.gearPos,
+    reverseFrac: aircraft.reversePos,
   })
 
   engineSound.update({
@@ -2362,6 +2373,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohGearCmd: (down: boolean) => { if (aircraft.P.gearRetractable) aircraft.gearDownCommanded = down },
   /** Speedbrake lever (types with a spoilers block): set 0..1 / read state. */
   __ohIls: () => ({ loaded: ilsLoaded, count: ilsCount }),
+  __ohReverse: (cmd?: boolean) => { if (cmd !== undefined && aircraft.P.reversers) aircraft.reverseCmd = cmd; return { cmd: aircraft.reverseCmd, pos: aircraft.reversePos, armedSpoilers: aircraft.spoilerArmed } },
   __ohSpoiler: (cmd?: number) => {
     if (cmd !== undefined && aircraft.P.spoilers) aircraft.spoilerCmd = Math.max(0, Math.min(1, cmd))
     return { cmd: aircraft.spoilerCmd, pos: aircraft.spoilerPos, fitted: !!aircraft.P.spoilers }

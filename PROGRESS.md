@@ -84,6 +84,22 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N4 landing kit (2026-08-12): reversers, spoiler ARM, FCOM stops
+
+Every roster jet + the study 737 now carries the full landing kit,
+TDD: **thrust reversers** (params `reversers { effectiveness 0.45,
+transitS 1.5 }` — cascade-class figures; deploy INTERLOCKED to
+weight-on-wheels like the real airplane, test-proven: commanded in
+the air, the sleeves stay stowed), **speedbrake ARM** (KeyV cycles
+DOWN → ARM → FLIGHT DETENT; armed ground spoilers auto-deploy on
+touchdown), and an **FCOM-band stopping validation**: a 140-kt
+touchdown with full kit (auto-spoilers + reverse + max manual
+braking) stops in ~700 m at ~62 t — max-effort class numbers.
+KeyZ toggles reverse (with a no-reverser toast on props);
+`__ohReverse` hook; reverser sleeves visually translate aft exposing
+a dark cascade band on both the study 737 and every buildAirliner
+type. Suite 1073 + validate 545.
+
 ## Night shift N4-ILS (2026-08-12): global ILS — the stopgap table retired
 
 New data pipeline: server ingests the open navdata earth_nav.dat
