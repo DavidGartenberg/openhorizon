@@ -84,6 +84,18 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N7: airborne departure handoff (2026-08-12)
+
+The tower now completes the departure phase-chain: when a cleared
+aircraft breaks ground and climbs through 100 ft, the strip goes
+'departed' and the tower transmits — once — "contact departure 135.65,
+so long" using the field's REAL published DEP frequency (APP where no
+separate DEP exists, both from the OurAirports feed already wired to
+the radios). Fields without a departure facility get the honest VFR
+phrase "frequency change approved, so long". TDD in
+tests/atc/vfr-core.test.ts (handoff once, real freq in the phrase,
+no-facility fallback).
+
 ## Night shift N3: live MCP digits; N2: family-geometry invariants (2026-08-12)
 
 **MCP comes alive** — the Boeing-NG glareshield strip is now a canvas

@@ -37,6 +37,8 @@ interface Strip {
   seq: number
   /** When the strip went 'landed' (14e assume-vacated fallback timer). */
   landedAtS?: number
+  /** N7: departure handoff already transmitted for this strip. */
+  handedOff?: boolean
 }
 
 export function pilotPhrase(callsign: string, kind: PilotRequestKind, runway: string): string {
@@ -61,7 +63,15 @@ export class TowerController {
   private seqCounter = 0
 
   constructor(
-    private readonly cfg: { facility: string; freqMhz: number; activeRunway: string },
+    private readonly cfg: {
+      facility: string
+      freqMhz: number
+      activeRunway: string
+      /** N7: real DEP (or APP) frequency for this field, when published —
+       *  drives the airborne handoff. Absent = "frequency change approved"
+       *  (the honest phrase at fields with no departure facility). */
+      departureFreqMhz?: number
+    },
   ) {}
 
   private say(text: string, atSimS = 0): Transmission {
@@ -167,6 +177,21 @@ export class TowerController {
       }
     }
     const out: Transmission[] = []
+    // N7: hand departures off — once, when the strip goes 'departed'.
+    for (const s of this.strips.values()) {
+      if (s.phase === 'departed' && !s.handedOff) {
+        s.handedOff = true
+        const f = this.cfg.departureFreqMhz
+        out.push(
+          this.say(
+            f
+              ? `${s.callsign}, contact departure ${f.toFixed(2)}, so long`
+              : `${s.callsign}, frequency change approved, so long`,
+            atSimS,
+          ),
+        )
+      }
+    }
     const queue = this.arrivalQueue()
     const leader = queue[0]
     if (leader && leader.phase === 'inbound' && !this.runwayOccupied() && leader.view.distanceM < 4 * 1852) {

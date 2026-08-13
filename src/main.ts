@@ -1422,7 +1422,12 @@ function scanAtc(lat: number, lon: number, now: number): void {
       activeAtc = {
         ident: nearest.i,
         ll: { lat: nearest.la, lon: nearest.lo },
-        tower: new TowerController({ facility: `${name} Tower`, freqMhz: twrF, activeRunway: atis.activeRunway }),
+        tower: new TowerController({
+          facility: `${name} Tower`,
+          freqMhz: twrF,
+          activeRunway: atis.activeRunway,
+          departureFreqMhz: fs.find((x) => x.t === 'DEP')?.f ?? fs.find((x) => x.t === 'APP')?.f,
+        }),
         ground: new GroundController({ facility: `${name} Ground`, freqMhz: gndF, activeRunway: atis.activeRunway }),
         atis, twrF, gndF, atisF,
       }

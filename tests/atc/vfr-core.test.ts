@@ -109,3 +109,21 @@ describe('Ground + Tower: full towered VFR departure and arrival', () => {
     expect(pilotPhrase('N123AB', 'taxiOut', '31').toLowerCase()).toContain('taxi')
   })
 })
+
+describe('departure handoff (N7)', () => {
+  it('hands a departed aircraft to the real departure frequency, once', () => {
+    const twr = new TowerController({ facility: 'Norcal Tower', freqMhz: 120.5, activeRunway: '28R', departureFreqMhz: 135.65 })
+    twr.request('N1', 'readyTakeoff', { distanceM: 200, aglFt: 0, onGround: true }, 0)
+    let out = twr.tick(5, [{ callsign: 'N1', view: { distanceM: 800, aglFt: 250, onGround: false } }])
+    expect(out.some((t) => t.text.includes('N1, contact departure 135.65'))).toBe(true)
+    out = twr.tick(10, [{ callsign: 'N1', view: { distanceM: 1600, aglFt: 600, onGround: false } }])
+    expect(out.some((t) => t.text.includes('contact departure'))).toBe(false)
+  })
+
+  it('says frequency change approved where no departure facility exists', () => {
+    const twr = new TowerController({ facility: 'Small Tower', freqMhz: 119.1, activeRunway: '13' })
+    twr.request('N2', 'readyTakeoff', { distanceM: 100, aglFt: 0, onGround: true }, 0)
+    const out = twr.tick(4, [{ callsign: 'N2', view: { distanceM: 900, aglFt: 300, onGround: false } }])
+    expect(out.some((t) => t.text.includes('N2, frequency change approved'))).toBe(true)
+  })
+})
