@@ -84,6 +84,24 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N3: live MCP digits; N2: family-geometry invariants (2026-08-12)
+
+**MCP comes alive** — the Boeing-NG glareshield strip is now a canvas
+instrument, not painted metal: IAS / HEADING / ALTITUDE / VERT SPEED
+digit windows showing the REAL autopilot targets, plus lateral/vertical
+mode lamps (green active, amber armed) and the CMD lamp tied to the AP
+master. Redraws only when the formatted state changes (state-change
+rate, not frame rate). Window order and lamp coloring follow the NG
+panel; V/S window dashes when V/S mode is not selected, as the real
+unit does.
+
+**N2 invariants (headless)** — new tests/airliner-cfg.test.ts sweeps
+every airliner/bizjet in the roster through airlinerCfgFor: sane
+fuselage/span/gear geometry for all (>20 types), and the family traits
+pinned by designator — 747/A380 humps, MD-88/CRJ tail engines + T-tail,
+A320neo sharklets, 787 raked tips, 757 bare tips, four engines on the
+744/388. Guards the trait table against regression without a browser.
+
 ## Night shift N9 completion: hold-short bars, gate numbers, ground-stack ladder (2026-08-12)
 
 Three finishing pieces on the real-layout system:

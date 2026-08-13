@@ -115,6 +115,10 @@ export interface CockpitMeshes {
   mfdCanvas: HTMLCanvasElement
   mfdCtx: CanvasRenderingContext2D
   mfdTexture: THREE.CanvasTexture
+  /** Boeing-NG MCP digit strip (N3): live SPD/HDG/ALT/VS windows + mode
+   *  lamps, redrawn only when the formatted state changes. Absent on the
+   *  G1000 layout. */
+  mcp?: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; last: string }
   switches: Record<SwitchId, THREE.Mesh>
   ignitionKey: THREE.Mesh
   starterButton: THREE.Mesh
@@ -172,6 +176,7 @@ export type PanelLayout = 'g1000' | 'boeingNG'
 export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g1000'): CockpitMeshes {
   const group = new THREE.Group()
   const interactive: THREE.Object3D[] = []
+  let mcp: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } | undefined
   const add = (mesh: THREE.Mesh, x: number, y: number, z: number): THREE.Mesh => {
     placeBody(mesh, x, y, z)
     group.add(mesh)
@@ -204,6 +209,14 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     // Glareshield MCP strip.
     add(new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.09, 0.1), DU_BEZEL), 1.03, 0.36, -0.3)
     add(new THREE.Mesh(new THREE.BoxGeometry(1.34, 0.06, 0.02), MCP_FACE), 0.985, 0.36, -0.3)
+    // Live MCP digit windows (canvas plane proud of the metal face —
+    // same coplanarity lesson as the PFD/MFD screens).
+    mcp = makeCanvasTexture(1024, 40)
+    const mcpMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.3, 0.05),
+      new THREE.MeshBasicMaterial({ map: mcp.texture, toneMapped: false }),
+    )
+    add(mcpMesh, 0.97, 0.36, -0.3)
   } else {
     add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.62, 0.06), PANEL_DARK), 1.02, 0.02, -0.55)
   }
@@ -389,6 +402,7 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
 
   return {
     group,
+    ...(mcp ? { mcp: { ctx: mcp.ctx, texture: mcp.texture, last: '' } } : {}),
     pfdCanvas: pfd.canvas,
     pfdCtx: pfd.ctx,
     pfdTexture: pfd.texture,
@@ -421,6 +435,62 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
  *  canvases are cheap enough at this resolution to redraw every frame;
  *  `pfd.ts`/`mfd.ts`'s own header docs target 20-30fps, which this meets
  *  under a typical rAF loop without extra throttling logic). */
+/** N3: redraw the Boeing-NG MCP digit strip — real AP targets in the real
+ *  window order (SPD | HDG | ALT | V/S) with active/armed mode lamps.
+ *  No-op on the G1000 layout; skips the canvas entirely when nothing
+ *  changed (digits update at state-change rate, not frame rate). */
+export function updateMcp(
+  meshes: CockpitMeshes,
+  d: {
+    iasKt: number
+    hdgDeg: number
+    altFt: number
+    vsFpm: number
+    master: boolean
+    lateral: string
+    vertical: string
+    lateralArmed?: boolean
+    verticalArmed?: boolean
+  },
+): void {
+  const m = meshes.mcp
+  if (!m) return
+  const vsTxt = d.vertical === 'VS' ? `${d.vsFpm >= 0 ? '+' : '-'}${String(Math.abs(Math.round(d.vsFpm))).padStart(4, '0')}` : '----'
+  const key = [Math.round(d.iasKt), Math.round(d.hdgDeg), Math.round(d.altFt), vsTxt, d.master, d.lateral, d.vertical, d.lateralArmed, d.verticalArmed].join('|')
+  if (key === m.last) return
+  m.last = key
+  const c = m.ctx
+  c.fillStyle = '#83807a'
+  c.fillRect(0, 0, 1024, 40)
+  const windowAt = (x: number, w: number, label: string, value: string): void => {
+    c.fillStyle = '#111'
+    c.fillRect(x, 4, w, 32)
+    c.fillStyle = '#f2f2ee'
+    c.font = '11px sans-serif'
+    c.textAlign = 'center'
+    c.fillText(label, x + w / 2, 13)
+    c.fillStyle = '#ffdca8'
+    c.font = 'bold 19px monospace'
+    c.fillText(value, x + w / 2, 33)
+  }
+  windowAt(60, 100, 'IAS', String(Math.round(d.iasKt)).padStart(3, '0'))
+  windowAt(330, 100, 'HEADING', String(((Math.round(d.hdgDeg) % 360) + 360) % 360).padStart(3, '0'))
+  windowAt(600, 120, 'ALTITUDE', String(Math.round(d.altFt)).padStart(5, '0'))
+  windowAt(860, 100, 'VERT SPEED', vsTxt)
+  const lamp = (x: number, label: string, on: boolean, armed = false): void => {
+    c.fillStyle = on ? '#2f6e2f' : armed ? '#6e662f' : '#3a3a3a'
+    c.fillRect(x, 8, 52, 24)
+    c.fillStyle = on || armed ? '#eaffea' : '#9a9a9a'
+    c.font = 'bold 11px sans-serif'
+    c.textAlign = 'center'
+    c.fillText(label, x + 26, 24)
+  }
+  lamp(180, d.lateral === 'HDG' ? 'HDG' : d.lateral === 'NAV' ? 'LNAV' : d.lateral === 'APR' ? 'APP' : d.lateral, d.master, !!d.lateralArmed)
+  lamp(460, d.vertical === 'ALTS' || d.vertical === 'ALT' ? 'ALT' : d.vertical === 'VS' ? 'V/S' : d.vertical === 'GS' ? 'G/S' : d.vertical, d.master, !!d.verticalArmed)
+  lamp(750, 'CMD', d.master)
+  m.texture.needsUpdate = true
+}
+
 export function updateCockpitDisplays(meshes: CockpitMeshes, pfdInput: PfdInput, mfdInput: MfdInput): void {
   drawPfd(meshes.pfdCtx, CANVAS_W, CANVAS_H, pfdInput)
   meshes.pfdTexture.needsUpdate = true

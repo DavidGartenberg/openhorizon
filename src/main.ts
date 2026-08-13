@@ -47,7 +47,7 @@ import { buildReplayPlots } from './sim/replay'
 import { TrafficLayer } from './render/traffic-layer'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
 import type { ArchetypeSpec } from './world/fleet-map'
-import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
+import { buildCockpit, updateCockpitControls, updateCockpitDisplays, updateMcp, CockpitInteraction, type SwitchId } from './render/cockpit'
 import type { PfdInput } from './cockpit/pfd'
 import { Input } from './input/input'
 import { EngineSound } from './audio/engine-sound'
@@ -2118,6 +2118,18 @@ function advanceFrame(elapsed: number, now: number): void {
       } : undefined,
     },
   )
+
+  updateMcp(cockpit, {
+    iasKt: apTargets.iasTargetKt,
+    hdgDeg: apTargets.headingBugDeg,
+    altFt: apTargets.altitudeBugFt,
+    vsFpm: apTargets.vsTargetFpm,
+    master: apState.masterEnabled,
+    lateral: apState.lateralMode,
+    vertical: apState.verticalMode,
+    lateralArmed: apState.lateralArmed,
+    verticalArmed: apState.verticalArmed,
+  })
 
   const simDate = new Date(baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000)
   sky.setShadowTarget(mesh.group.position)
