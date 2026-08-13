@@ -27,6 +27,7 @@ import { ChaseCamera } from './render/chase-camera'
 import { OrbitCamera } from './render/orbit-camera'
 import { CockpitCamera } from './render/cockpit-camera'
 import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from './render/aircraft-mesh'
+import { PlaneMenu } from './render/plane-menu'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
 import { B738 } from './sim/aircraft/b738'
@@ -185,6 +186,22 @@ aircraft.groundElevAt = (n, e) => {
   return airports.flattenElevation(tiles.elevationAt(ll.lat, ll.lon), ll.lat, ll.lon)
 }
 const mesh = FLEET_ACTIVE.build()
+// N1: aircraft menu (KeyN) — selection respawns via the FLY path.
+const planeMenu = new PlaneMenu((key) => {
+  try { localStorage.setItem('oh-aircraft', key) } catch { /* private mode */ }
+  location.reload()
+}, FLEET_ACTIVE.params === C172S ? '172' : (localStorage.getItem('oh-aircraft') ?? '172'))
+window.addEventListener('keydown', (e) => {
+  if (planeMenu.isOpen) {
+    if (planeMenu.handleKey(e.code)) { e.preventDefault(); e.stopImmediatePropagation() }
+    return
+  }
+  if (e.code === 'KeyN' && document.activeElement?.tagName !== 'INPUT') {
+    planeMenu.open()
+    e.preventDefault()
+    e.stopImmediatePropagation()
+  }
+}, { capture: true })
 const shadowCatcher = new ShadowCatcher(scene)
 scene.add(mesh.group)
 // 13c: exterior lights (nav/beacon/strobe glow points + landing spot).
@@ -816,7 +833,7 @@ function handleDiscreteKeys(): void {
     cameraMode =
       cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'free' : cameraMode === 'free' ? 'cockpit' : 'chase'
   }
-  if (input.wasPressed('KeyF')) c.flapsIndex = Math.min(c.flapsIndex + 1, 3)
+  if (input.wasPressed('KeyF')) c.flapsIndex = Math.min(c.flapsIndex + 1, aircraft.P.flapDetentsDeg.length - 1)
   if (input.wasPressed('KeyG')) c.flapsIndex = Math.max(c.flapsIndex - 1, 0)
   if (input.wasPressed('KeyR')) {
     const ap = airports.find(spawnDesc.split(' ')[0] || 'KHAF')

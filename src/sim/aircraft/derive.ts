@@ -110,11 +110,19 @@ function gearLegs(spec: RosterSpec): AircraftParams['gear'] {
       mainR: { x: L * 0.045, y: track / 2, z: zMain, k, c, steerMaxRad: 0, maxNormalN },
     }
   }
+  // Mains-behind-CG offset: transports carry ~6-8% of weight on the nose
+  // (mains ≈ 2.8% of length aft of CG — the study 737's own geometry);
+  // the old generic 4.5% figure put ~11% on the nose and made rotation
+  // physically impossible below ~170 kt for the jets (N1 lattice finding:
+  // the A320 pinned at −0.3° pitch to the 204-kt crash guard under FULL
+  // aft stick). GA keeps 4.5% (C172-class anchor).
+  const jetlike = spec.powerplant.kind === 'jet'
+  const mainsAft = jetlike ? 0.028 : 0.045
   const nose: GearLeg = { x: L * 0.38, y: 0, z: zMain * 0.98, k: k * 0.45, c: c * 0.45, steerMaxRad: 0.4, maxNormalN }
   return {
     nose,
-    mainL: { x: -L * 0.045, y: -track / 2, z: zMain, k, c, steerMaxRad: 0, maxNormalN },
-    mainR: { x: -L * 0.045, y: track / 2, z: zMain, k, c, steerMaxRad: 0, maxNormalN },
+    mainL: { x: -L * mainsAft, y: -track / 2, z: zMain, k, c, steerMaxRad: 0, maxNormalN },
+    mainR: { x: -L * mainsAft, y: track / 2, z: zMain, k, c, steerMaxRad: 0, maxNormalN },
   }
 }
 

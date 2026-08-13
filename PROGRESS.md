@@ -84,6 +84,35 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N1 (2026-08-12): aircraft menu + the fleet-takeoff lattice it forced
+
+**Aircraft menu** (KeyN): browsable DOM overlay grouping all 123
+flyable types (study trio + 120-type roster) by class — Airliners,
+Turboprops, Business jets, Piston twins, GA singles, Taildraggers,
+Gliders — arrow/enter/click to fly via the FLY respawn path. Hard rule
+honored: every row comes from FLEET/ROSTER, so nothing unflyable can
+be listed. Also fixed in passing: the F-key flap clamp was hardcoded
+to detent 3 (jets could never reach flaps 15-40 from the keyboard).
+
+**The menu immediately exposed that roster jets had never taken off
+from the ground** (only ever air-trimmed): the first menu selection
+(A350) crashed on its maiden ground roll. New permanent lattice
+(tests/validate/fleet-takeoff.test.ts): EVERY powered type spawns,
+takes off with class-appropriate technique, and climbs through
+300 ft — 121/121 green. Real physics fix found by the lattice:
+**derived transport gear geometry put ~11% of weight on the nose**
+(GA-scaled 4.5%-of-length mains offset) making rotation physically
+impossible below ~170 kt — the A320 pinned at −0.3° pitch under FULL
+aft stick to the 204-kt ground guard. Transports now use the study
+737's own ~2.8% offset (6-8% nose share, the real class figure).
+Harness lessons encoded per class: takeoff stab trim + firm flat pull
+for transports (the 77W's nose breaks out 25 kt past Vr), V2+10-ish
+climb targets (a 1.3×Vr target made the law dive the 747 at 204 kt),
+speed-by-pitch sign discipline, wings-level loop (the P-51's torque
+rolled it over with no aileron commanded), and never dispatching
+overweight (A340-class exceeds MTOW with full tanks — defueled to 97%
+MTOW like real dispatch). Suite 1069 + validate 545, tsc clean.
+
 ## Night shift N0 (2026-08-12): flap/spoiler hinge signs were inverted
 
 User report: C172 flaps deployed UPWARD. The hinge math (rotation about

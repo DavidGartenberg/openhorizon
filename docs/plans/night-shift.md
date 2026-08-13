@@ -81,7 +81,7 @@ N3, N7, N8+N9 are multi-night arcs each. The frontier lives here:
 ## Frontier
 
 - [x] N0 — DONE (hinge signs fixed, screenshots verified)
-- [ ] N1 — not started
+- [x] N1 — DONE (menu + 121/121 fleet-takeoff lattice + transport gear-geometry fix)
 - [ ] N2 — not started
 - [ ] N3 — not started
 - [ ] N4 — not started
