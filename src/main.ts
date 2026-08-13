@@ -193,7 +193,7 @@ aircraft.groundElevAt = (n, e) => {
   return airports.flattenElevation(tiles.elevationAt(ll.lat, ll.lon), ll.lat, ll.lon)
 }
 const mesh = FLEET_ACTIVE.build()
-// N1: aircraft menu (KeyN) — selection respawns via the FLY path.
+// N1: aircraft menu (M or N) — selection respawns via the FLY path.
 const planeMenu = new PlaneMenu((key) => {
   try { localStorage.setItem('oh-aircraft', key) } catch { /* private mode */ }
   location.reload()
@@ -203,7 +203,7 @@ window.addEventListener('keydown', (e) => {
     if (planeMenu.handleKey(e.code)) { e.preventDefault(); e.stopImmediatePropagation() }
     return
   }
-  if (e.code === 'KeyN' && document.activeElement?.tagName !== 'INPUT') {
+  if ((e.code === 'KeyM' || e.code === 'KeyN') && document.activeElement?.tagName !== 'INPUT') {
     planeMenu.open()
     e.preventDefault()
     e.stopImmediatePropagation()
@@ -814,7 +814,7 @@ function handleDiscreteKeys(): void {
     }
   }
   if (input.wasPressed('KeyX')) assistOn = !assistOn
-  if (input.wasPressed('KeyM')) engineSound.muted = !engineSound.muted
+  if (input.wasPressed('KeyQ')) engineSound.muted = !engineSound.muted // mute moved M→Q (M = plane menu)
   if (input.wasPressed('KeyO')) saveSnapshot()
   if (input.wasPressed('KeyP')) loadSnapshot()
   // Fleet keys (11g): U gear (retractable only), H hand-prop, K carb heat.

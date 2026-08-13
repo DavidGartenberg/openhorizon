@@ -77,7 +77,7 @@ export class PlaneMenu {
       'box-shadow:0 12px 40px rgba(0,0,0,0.5)',
     ].join(';')
     const title = document.createElement('div')
-    title.textContent = 'SELECT AIRCRAFT — ↑↓ move · Enter fly · Esc/N close'
+    title.textContent = 'SELECT AIRCRAFT — click a plane to fly it · ↑↓ + Enter also works · Esc/M close'
     title.style.cssText = 'padding:2px 14px 8px;color:#8fa3b8;font-size:12px;border-bottom:1px solid #2a3442;margin-bottom:6px'
     this.root.appendChild(title)
 
@@ -140,7 +140,7 @@ export class PlaneMenu {
     if (code === 'PageDown') { this.setCursor(Math.min(this.cursor + 12, this.rows.length - 1)); this.rows[this.cursor]!.el.scrollIntoView({ block: 'nearest' }); return true }
     if (code === 'PageUp') { this.setCursor(Math.max(this.cursor - 12, 0)); this.rows[this.cursor]!.el.scrollIntoView({ block: 'nearest' }); return true }
     if (code === 'Enter') { const e = this.rows[this.cursor]!.entry; this.close(); this.onSelect(e.key); return true }
-    if (code === 'Escape' || code === 'KeyN') { this.close(); return true }
+    if (code === 'Escape' || code === 'KeyN' || code === 'KeyM') { this.close(); return true }
     return false
   }
 }

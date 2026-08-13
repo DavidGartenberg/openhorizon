@@ -84,6 +84,18 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## M opens the plane menu; mute moves to Q (2026-08-13, user request)
+
+Pressing **M** now opens the aircraft menu (N still works); engine
+mute moved to **Q** ("quiet") since M was taken by it. Menu title now
+says "click a plane to fly it" — rows were already mouse-clickable
+(hover highlight + click-to-select), verified end-to-end in a second
+browser tab so the user's live flight wasn't disturbed: M keydown →
+menu block, mouse click on "Airbus A320neo" → menu closes, selection
+stored, page respawns as the A320neo. HUD footer updated (M planes ·
+Q mute). The user's stored aircraft (B77L — picked from this menu
+live) restored after the test.
+
 ## Night shift: instanced airport furniture (2026-08-13)
 
 The N9 furniture pushed KSFO to 574 draw calls — inside the ≤600
