@@ -84,6 +84,17 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Night shift N3: live engine DU (EICAS/ECAM upper) (2026-08-12)
+
+The upper-center display unit on both transport layouts is now a live
+engine instrument: twin round N1 dials with green needles, digital
+N1 readouts, the 104% redline tick, and total fuel flow in kg/h — all
+driven by the REAL turbofan state (n1Pct and fuelFlowKgS from the
+CFM56-class model). Redraws at 0.5% N1 / 50 kg/h resolution rather
+than frame rate. Honest note (recorded): the model drives both
+engines matched, so the two dials read identically — per-engine state
+splits when the powerplant model does.
+
 ## Night shift N3: Airbus FCU panel layout (2026-08-12)
 
 Airbus-family types (A319–A388 including neos, A220/BCS) no longer

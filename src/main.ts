@@ -47,7 +47,7 @@ import { buildReplayPlots } from './sim/replay'
 import { TrafficLayer } from './render/traffic-layer'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
 import type { ArchetypeSpec } from './world/fleet-map'
-import { buildCockpit, panelLayoutFor, updateCockpitControls, updateCockpitDisplays, updateMcp, CockpitInteraction, type SwitchId } from './render/cockpit'
+import { buildCockpit, panelLayoutFor, updateCockpitControls, updateCockpitDisplays, updateEicas, updateMcp, CockpitInteraction, type SwitchId } from './render/cockpit'
 import type { PfdInput } from './cockpit/pfd'
 import { Input } from './input/input'
 import { EngineSound } from './audio/engine-sound'
@@ -2124,6 +2124,7 @@ function advanceFrame(elapsed: number, now: number): void {
     },
   )
 
+  if (aircraft.P.jet) updateEicas(cockpit, { n1Pct: d.n1Pct, ffKgH: aircraft.prop.fuelFlowKgS * 3600 })
   updateMcp(cockpit, {
     iasKt: apTargets.iasTargetKt,
     hdgDeg: apTargets.headingBugDeg,

@@ -119,6 +119,9 @@ export interface CockpitMeshes {
    *  lamps, redrawn only when the formatted state changes. Absent on the
    *  G1000 layout. */
   mcp?: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; last: string; cmdLabel: string }
+  /** Transport layouts: upper-center DU engine display (N1 dials + FF)
+   *  driven by the REAL turbofan state. */
+  eicas?: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; last: string }
   /** N3: yoke slots hold a sidestick (Airbus layout) — the control
    *  animation tilts instead of translating. */
   sidestick?: true
@@ -189,6 +192,7 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   const group = new THREE.Group()
   const interactive: THREE.Object3D[] = []
   let mcp: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } | undefined
+  let eicas: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } | undefined
   const add = (mesh: THREE.Mesh, x: number, y: number, z: number): THREE.Mesh => {
     placeBody(mesh, x, y, z)
     group.add(mesh)
@@ -232,6 +236,14 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
       new THREE.MeshBasicMaterial({ map: mcp.texture, toneMapped: false }),
     )
     add(mcpMesh, 0.97, 0.36, -0.3)
+    // Upper-center DU: live engine display (EICAS/ECAM upper) — real N1
+    // and fuel flow from the turbofan model, drawn in updateEicas.
+    eicas = makeCanvasTexture(256, 256)
+    const eicasMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.21, 0.21),
+      new THREE.MeshBasicMaterial({ map: eicas.texture, toneMapped: false }),
+    )
+    add(eicasMesh, 0.97, 0.06, -0.2)
   } else {
     add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.62, 0.06), PANEL_DARK), 1.02, 0.02, -0.55)
   }
@@ -426,6 +438,7 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   return {
     group,
     ...(mcp ? { mcp: { ctx: mcp.ctx, texture: mcp.texture, last: '', cmdLabel: layout === 'airbusFcu' ? 'AP1' : 'CMD' } } : {}),
+    ...(eicas ? { eicas: { ctx: eicas.ctx, texture: eicas.texture, last: '' } } : {}),
     pfdCanvas: pfd.canvas,
     pfdCtx: pfd.ctx,
     pfdTexture: pfd.texture,
@@ -513,6 +526,68 @@ export function updateMcp(
   lamp(460, d.vertical === 'ALTS' || d.vertical === 'ALT' ? 'ALT' : d.vertical === 'VS' ? 'V/S' : d.vertical === 'GS' ? 'G/S' : d.vertical, d.master, !!d.verticalArmed)
   lamp(750, m.cmdLabel, d.master)
   m.texture.needsUpdate = true
+}
+
+/** N3: redraw the transport engine DU — twin N1 dials (the turbofan
+ *  model drives both engines matched; recorded) + digital N1 and fuel
+ *  flow. Redraws at 0.5% N1 / 50 kg/h FF resolution, not frame rate. */
+export function updateEicas(meshes: CockpitMeshes, d: { n1Pct: number; ffKgH: number }): void {
+  const e = meshes.eicas
+  if (!e) return
+  const n1 = Math.round(d.n1Pct * 2) / 2
+  const ff = Math.round(d.ffKgH / 50) * 50
+  const key = `${n1}|${ff}`
+  if (key === e.last) return
+  e.last = key
+  const c = e.ctx
+  c.fillStyle = '#0a0d10'
+  c.fillRect(0, 0, 256, 256)
+  const dial = (cx: number): void => {
+    const cy = 92
+    const rad = 52
+    const a0 = Math.PI * 0.75
+    const a1 = Math.PI * 2.25
+    c.strokeStyle = '#c9ced4'
+    c.lineWidth = 3
+    c.beginPath()
+    c.arc(cx, cy, rad, a0, a1)
+    c.stroke()
+    // redline tick at 104%
+    const aRed = a0 + (a1 - a0) * (104 / 110)
+    c.strokeStyle = '#e33'
+    c.lineWidth = 4
+    c.beginPath()
+    c.moveTo(cx + Math.cos(aRed) * (rad - 8), cy + Math.sin(aRed) * (rad - 8))
+    c.lineTo(cx + Math.cos(aRed) * (rad + 4), cy + Math.sin(aRed) * (rad + 4))
+    c.stroke()
+    const aN = a0 + (a1 - a0) * (Math.min(n1, 110) / 110)
+    c.strokeStyle = '#7fe07f'
+    c.lineWidth = 4
+    c.beginPath()
+    c.moveTo(cx, cy)
+    c.lineTo(cx + Math.cos(aN) * (rad - 6), cy + Math.sin(aN) * (rad - 6))
+    c.stroke()
+    c.fillStyle = '#101418'
+    c.fillRect(cx - 34, cy + 14, 68, 26)
+    c.strokeStyle = '#3a4048'
+    c.lineWidth = 1
+    c.strokeRect(cx - 34, cy + 14, 68, 26)
+    c.fillStyle = '#7fe07f'
+    c.font = 'bold 20px monospace'
+    c.textAlign = 'center'
+    c.fillText(n1.toFixed(1), cx, cy + 34)
+  }
+  dial(66)
+  dial(190)
+  c.fillStyle = '#c9ced4'
+  c.font = 'bold 15px sans-serif'
+  c.textAlign = 'center'
+  c.fillText('N1 %', 128, 22)
+  c.fillText('FF KG/H', 128, 196)
+  c.fillStyle = '#7fe07f'
+  c.font = 'bold 22px monospace'
+  c.fillText(String(ff), 128, 226)
+  e.texture.needsUpdate = true
 }
 
 export function updateCockpitDisplays(meshes: CockpitMeshes, pfdInput: PfdInput, mfdInput: MfdInput): void {
