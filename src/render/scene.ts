@@ -13,7 +13,7 @@ export function createScene(container: HTMLElement): SceneContext {
   renderer.shadowMap.enabled = true
 renderer.shadowMap.type = THREE.PCFSoftShadowMap
 renderer.toneMapping = THREE.ACESFilmicToneMapping
-  renderer.toneMappingExposure = 0.55
+  renderer.toneMappingExposure = 0.62 // msfs-look: punchier mids (was 0.55)
   container.appendChild(renderer.domElement)
 
   const scene = new THREE.Scene()

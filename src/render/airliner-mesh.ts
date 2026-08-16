@@ -23,11 +23,11 @@ export interface AirlinerCfg {
   gear: { x: number; y: number; z: number; nose?: boolean }[]
 }
 
-const WHITE = new THREE.MeshStandardMaterial({ color: 0xf2f3f5, roughness: 0.55, metalness: 0.1 })
+const WHITE = new THREE.MeshStandardMaterial({ color: 0xf2f3f5, roughness: 0.3, metalness: 0.12 }) // gloss livery paint (env-lit)
 const RED = new THREE.MeshStandardMaterial({ color: 0xa31621, roughness: 0.6 })
 const DARK = new THREE.MeshStandardMaterial({ color: 0x1a1d20, roughness: 0.9 })
 const BELLY = new THREE.MeshStandardMaterial({ color: 0xb9c0c7, roughness: 0.5, metalness: 0.25 })
-const SILVER = new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.4, metalness: 0.35 })
+const SILVER = new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.32, metalness: 0.5 })
 const SURFACE = new THREE.MeshStandardMaterial({
   color: 0xaeb4bb, roughness: 0.45, metalness: 0.3,
   polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,

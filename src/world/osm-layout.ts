@@ -20,10 +20,10 @@ import * as THREE from 'three'
  *  meters) — consumed by ground control's route naming (N7). */
 export const osmIdentSegs = new Map<string, { ref: string; x: number; z: number }[]>()
 
-const TAXI = new THREE.MeshStandardMaterial({ color: 0x3c4043, roughness: 0.95 })
+const TAXI = new THREE.MeshStandardMaterial({ color: 0x3c4043, roughness: 0.95, envMapIntensity: 0.3 })
 const SIGN_FACE = new THREE.MeshBasicMaterial({ color: 0x1a1a08 })
 const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8b23a })
-const APRON = new THREE.MeshStandardMaterial({ color: 0x55595e, roughness: 0.9 })
+const APRON = new THREE.MeshStandardMaterial({ color: 0x55595e, roughness: 0.9, envMapIntensity: 0.3 })
 const TERMINAL = new THREE.MeshStandardMaterial({ color: 0x9aa2ab, roughness: 0.6, metalness: 0.2 })
 
 interface OsmLayout {

@@ -33,8 +33,8 @@ export interface AirportData {
   r: RunwayData[]
 }
 
-const ASPHALT = new THREE.MeshStandardMaterial({ color: 0x35383c, roughness: 0.95 })
-const TURF = new THREE.MeshStandardMaterial({ color: 0x3c5233, roughness: 1 })
+const ASPHALT = new THREE.MeshStandardMaterial({ color: 0x35383c, roughness: 0.95, envMapIntensity: 0.3 }) // damp IBL: pavement was going sky-blue
+const TURF = new THREE.MeshStandardMaterial({ color: 0x3c5233, roughness: 1, envMapIntensity: 0.25 })
 const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8d8d0 })
 const EDGE_LIGHT = new THREE.MeshBasicMaterial({ color: 0xffffff })
 const STRIPE_BASE = 0xd8d8d0

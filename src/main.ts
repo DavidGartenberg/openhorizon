@@ -2153,6 +2153,7 @@ function advanceFrame(elapsed: number, now: number): void {
   })
 
   const simDate = new Date(baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000)
+  sky.updateEnvironment(renderer, scene)
   sky.setShadowTarget(mesh.group.position)
   shadowCatcher.update(
     mesh.group.position.x,

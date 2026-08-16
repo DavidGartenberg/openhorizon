@@ -84,6 +84,33 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## MSFS-look G1+G2: sky-driven reflections, sun glare, golden light (2026-08-13)
+
+Goal: "make the graphics look stunning like msfs." First two slices:
+
+- **G1 — image-based lighting from the real sky**: a PMREM environment
+  is baked FROM the sim's own Nishita sky shader (probe scene = sky
+  dome + dark ground hemisphere) and set as scene.environment, re-baked
+  whenever the sun moves >1.5°. Every MeshStandardMaterial now reflects
+  the actual sky state — fuselages carry sky sheen that warms at dusk.
+  Airframe paint glossed to roughness ~0.3; pavement/turf get
+  envMapIntensity 0.25–0.3 (the runway was going sky-blue at full IBL).
+- **G2 — sun glare + golden hour**: additive radial glare sprite at the
+  sun direction (1 draw call), swelling and warming as the sun drops;
+  the directional sun light itself warms toward amber below ~25°
+  elevation; tonemapping exposure 0.55 → 0.62. Clouds correctly occlude
+  the glare (renderOrder ordering).
+
+Verified by screenshots at KSFO midday and dusk (amber horizon band,
+lit edge lights, warm fuselage sheen). Perf on the production build at
+KSFO with live traffic: p50 6.8 ms, 405 draw calls — well inside the
+§23 budget.
+
+Also fixed while staging shots: none — but two live findings recorded:
+the throttle-axis state persists across respawns (a stuck-at-100%
+session made the 737 charge off runways; cleared by reload — a spawn-
+time axis reset is a candidate fix), and __ohTime is RELATIVE hours.
+
 ## Fleet fuel: full tanks per type; stick shows control input (2026-08-13)
 
 **Fuel (user-found, twice over)**: the A320neo flamed out four minutes

@@ -127,6 +127,16 @@ const FRAG = /* glsl */ `
 export class SkyDome {
   readonly sunDir = new THREE.Vector3(0, 1, 0)
 
+  // G1 (msfs-look): PBR environment generated FROM this sky — the same
+  // scattering shader renders into a PMREM so every MeshStandardMaterial
+  // (fuselages, terminals, wet runways) reflects the actual sky state.
+  // Regenerated only when the sun has moved meaningfully.
+  private pmrem: THREE.PMREMGenerator | null = null
+  private glare!: THREE.Sprite
+  private envScene = new THREE.Scene()
+  private envRT: THREE.WebGLRenderTarget | null = null
+  private lastEnvElevation = Infinity
+
   private readonly material: THREE.ShaderMaterial
   private readonly sunLight = new THREE.DirectionalLight(0xffffff, 3)
   private readonly hemiLight = new THREE.HemisphereLight(0x8fb4dd, 0x1c2a38, 0.5)
@@ -168,6 +178,51 @@ export class SkyDome {
     dome.frustumCulled = false
     dome.renderOrder = -10
     scene.add(dome, this.sunLight, this.hemiLight)
+
+    // Environment probe scene: a unit dome with the SAME material plus a
+    // dark ground hemisphere (reflections need a ground half, not sky
+    // wrapped below the horizon).
+    const envDome = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), this.material)
+    envDome.scale.setScalar(1000)
+    const ground = new THREE.Mesh(
+      new THREE.CircleGeometry(900, 24),
+      new THREE.MeshBasicMaterial({ color: 0x2a2d26 }),
+    )
+    ground.rotation.x = -Math.PI / 2
+    ground.position.y = -2
+    this.envScene.add(envDome, ground)
+
+    // G2 (msfs-look): sun glare — a big additive radial sprite at the sun
+    // direction. Cheap (1 draw), warms and swells near the horizon.
+    const glareCanvas = document.createElement('canvas')
+    glareCanvas.width = 256
+    glareCanvas.height = 256
+    const gc = glareCanvas.getContext('2d')!
+    const grad = gc.createRadialGradient(128, 128, 0, 128, 128, 128)
+    grad.addColorStop(0, 'rgba(255,250,235,0.85)')
+    grad.addColorStop(0.18, 'rgba(255,240,205,0.35)')
+    grad.addColorStop(0.5, 'rgba(255,225,170,0.10)')
+    grad.addColorStop(1, 'rgba(255,220,160,0)')
+    gc.fillStyle = grad
+    gc.fillRect(0, 0, 256, 256)
+    const glareTex = new THREE.CanvasTexture(glareCanvas)
+    this.glare = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glareTex, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false, toneMapped: false,
+    }))
+    this.glare.renderOrder = -9 // right after the sky dome
+    scene.add(this.glare)
+  }
+
+  /** Regenerate scene.environment from the live sky when the sun has
+   *  moved >1.5° since the last bake (~a few times per sim hour). */
+  updateEnvironment(renderer: THREE.WebGLRenderer, scene: THREE.Scene): void {
+    if (Math.abs(this.elevationDeg - this.lastEnvElevation) < 1.5) return
+    this.lastEnvElevation = this.elevationDeg
+    this.pmrem ??= new THREE.PMREMGenerator(renderer)
+    const rt = this.pmrem.fromScene(this.envScene, 0.06)
+    scene.environment = rt.texture
+    this.envRT?.dispose()
+    this.envRT = rt
   }
 
   /** Position the sun for `date` at (lat, lon); returns the sun direction. */
@@ -186,6 +241,16 @@ export class SkyDome {
     // Ramp direct light through twilight (-6° civil twilight → +10° full day).
     const dayness = smoothstep(-6, 10, angles.elevationDeg)
     this.sunLight.intensity = 3 * dayness
+    // Warm the direct sun toward the horizon (MSFS-look golden hour):
+    // white overhead → amber at 0°.
+    const lowSun = 1 - smoothstep(0, 25, angles.elevationDeg)
+    this.sunLight.color.setRGB(1, 1 - 0.25 * lowSun, 1 - 0.45 * lowSun)
+    // Sun glare sprite: sits at the sun direction, swells + warms low.
+    this.glare.position.copy(this.sunDir).multiplyScalar(800_000)
+    const glareScale = 90_000 * (1 + 1.6 * lowSun)
+    this.glare.scale.setScalar(glareScale)
+    ;(this.glare.material as THREE.SpriteMaterial).opacity = dayness * (0.55 + 0.45 * lowSun)
+    this.glare.visible = dayness > 0.02
     // Moonlit floor at night (matches the shader's permanent full moon).
     this.hemiLight.intensity = 0.06 + 0.5 * dayness
 
