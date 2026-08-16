@@ -84,6 +84,26 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## MSFS-look G3: sun-aware aerial perspective (2026-08-13)
+
+Terrain haze is no longer a flat blue-gray: per-fragment it now warms
+toward the sun's azimuth as the sun drops (pow-3 lobe on the
+camera→fragment vs sun bearing, gated by a low-sun factor from solar
+elevation), so golden-hour terrain glows amber toward the sun and
+stays cool away from it — the strongest single "MSFS depth" cue.
+Uniform plumbing respects the shared-uniform-object pattern across
+per-tile imagery clones.
+
+**Found while staging (recorded, not yet fixed): the time scrub
+replays control inputs.** Every "runaway throttle" tonight — including
+the user's 737 charging off KHAF's runway — traces to `__ohTime` /
+time-scrub usage: scrubbing re-drives recorded control inputs into the
+live aircraft (throttle observed ramping to 50–100% immediately after
+scrubs on otherwise-clean boots, three separate reproductions).
+Workaround used for staging: hold `__ohCtl` overrides through any
+scrub. A proper fix (scrub must not replay controls into the live
+ship) is queued as follow-up work.
+
 ## MSFS-look G1+G2: sky-driven reflections, sun glare, golden light (2026-08-13)
 
 Goal: "make the graphics look stunning like msfs." First two slices:

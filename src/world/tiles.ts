@@ -100,6 +100,7 @@ const TERRAIN_VERT = /* glsl */ `
 const TERRAIN_FRAG = /* glsl */ `
   uniform vec3 uSunDir;
   uniform float uDayness;
+  uniform float uLowSun;
   uniform float uFogDensity;
   uniform sampler2D uImagery;
   uniform float uHasImagery;
@@ -135,7 +136,12 @@ const TERRAIN_FRAG = /* glsl */ `
       float far = smoothstep(150.0, 700.0, vDist);
       lit += vUrban * night * vec3(1.0, 0.72, 0.42) * (0.015 + 0.5 * speck * far);
     }
-    vec3 haze = mix(vec3(0.02, 0.03, 0.05), vec3(0.63, 0.71, 0.82), uDayness);
+    // MSFS-look G3: sun-aware aerial perspective — the haze warms toward
+    // the sun's azimuth as it drops (golden-hour terrain), stays cool
+    // blue-gray away from it and at high sun.
+    float sunAmt = max(dot(normalize(vWXZ - cameraPosition.xz), normalize(uSunDir.xz + vec2(1e-5))), 0.0);
+    vec3 hazeDay = mix(vec3(0.60, 0.69, 0.81), vec3(1.0, 0.70, 0.42), uLowSun * pow(sunAmt, 3.0) * 0.85);
+    vec3 haze = mix(vec3(0.02, 0.03, 0.05), hazeDay, uDayness);
     float fog = 1.0 - exp(-vDist * uFogDensity);
     gl_FragColor = vec4(mix(lit, haze, fog * 0.85), 1.0);
   }
@@ -172,6 +178,7 @@ export class TileManager {
       uniforms: {
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
         uDayness: { value: 1 },
+        uLowSun: { value: 0 },
         uFogDensity: { value: 9e-6 },
         uImagery: { value: white },
         uHasImagery: { value: 0 },
@@ -186,9 +193,10 @@ export class TileManager {
     }
   }
 
-  setLight(sunDir: THREE.Vector3, dayness: number): void {
+  setLight(sunDir: THREE.Vector3, dayness: number, lowSun = 0): void {
     ;(this.material.uniforms.uSunDir!.value as THREE.Vector3).copy(sunDir)
     this.material.uniforms.uDayness!.value = dayness
+    this.material.uniforms.uLowSun!.value = lowSun
   }
 
   /** Meteorological visibility → exponential fog (95% obscuration at the
@@ -495,6 +503,7 @@ export class TileManager {
                 // writes reach every clone through the base material.
                 uSunDir: this.material.uniforms.uSunDir!,
                 uDayness: this.material.uniforms.uDayness!,
+                uLowSun: this.material.uniforms.uLowSun!,
                 uFogDensity: this.material.uniforms.uFogDensity!,
                 uImagery: { value: tex },
                 uHasImagery: { value: 1 },

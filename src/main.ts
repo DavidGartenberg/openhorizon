@@ -2166,7 +2166,8 @@ function advanceFrame(elapsed: number, now: number): void {
   // (peaks with the sun at the horizon) warms the cloud decks.
   ocean.update(now / 1000, sunDir, dayness, wind.steadyMs, wind.steadyTowardRad)
   const dusk = Math.min(Math.max(1 - Math.abs(sky.elevationDeg) / 8, 0), 1)
-  tiles.setLight(sunDir, dayness)
+  const lowSunT = Math.min(1, Math.max(0, 1 - sky.elevationDeg / 25))
+  tiles.setLight(sunDir, dayness, lowSunT * lowSunT * (3 - 2 * lowSunT))
   clouds.update(wxSlabs, camera.position, worldShift.e, worldShift.n, dayness, sunDir, dusk)
   // 13c night lights: airport layer + aircraft exterior lights.
   const night = Math.min(Math.max(1 - dayness * 1.6, 0), 1)
