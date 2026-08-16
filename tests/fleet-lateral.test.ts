@@ -124,7 +124,9 @@ describe('fleet lateral stability (rigging fleet-wide)', () => {
       if (maxBank >= 15) failures.push(`${entry.spec.designator}: ${maxBank.toFixed(0)}°`)
     }
     expect(failures, failures.join(', ')).toEqual([])
-  })
+    // 121-type × 30 s sweep runs ~4.8 s alone; the 5 s default timeout
+    // flaked once under parallel suite load (no physics change involved).
+  }, 20_000)
 
   it('J-3 Cub: hands-off level cruise bounded (rigged; ground-loop untouched)', () => {
     const r = handsOff(J3CUB, 70, 2000)
