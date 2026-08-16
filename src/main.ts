@@ -242,7 +242,18 @@ const COCKPIT_NEAR = 0.02 // cockpit controls sit centimeters from the eyepoint
 // ignition key/battery off via the cockpit switches or __ohFail, it's just
 // not the boot default. See task report for the full rationale.
 const electricalState = makeElectricalState()
-const fuelState = makeFuelState()
+// Fuel ledger sized to the ACTIVE aircraft (user-found: the A320neo
+// flamed out after four minutes — every non-C172 type was flying on the
+// C172's 144 kg tank ledger while burning jet fuel flows through it).
+// Full tanks, capped so spawn mass stays under 97% MTOW (same rule as
+// the fleet-takeoff lattice). C172 numbers land bit-exact on the old
+// default.
+// FULL tanks for the active type (user: "add the fuel to the max for
+// each plane"). A few heavies can sit above MTOW with full fuel and no
+// payload — that's real ramp behavior; the fleet-takeoff tests defuel
+// themselves and are unaffected.
+const initialFuelPerSideKg = FLEET_ACTIVE.params.fuelCapacityKg / 2
+const fuelState = makeFuelState(initialFuelPerSideKg, initialFuelPerSideKg)
 const pitotSystem = new PitotStaticSystem()
 // Boot default: engine already running (see comment above) rather than the
 // cold-and-dark default `makeEngineStartState()` would give. Shared with
@@ -349,7 +360,7 @@ const failures = { alternatorFailed: false, icingConditions: false, staticBlocke
  *  exactly (reuses the same defaults/constants) rather than inventing a
  *  second "normal" state. */
 function resetSystemsState(): void {
-  Object.assign(fuelState, makeFuelState())
+  Object.assign(fuelState, makeFuelState(initialFuelPerSideKg, initialFuelPerSideKg)) // full tanks for THIS type — bare makeFuelState() reset every plane to C172 tanks (the A320 flameout)
   Object.assign(electricalState, makeElectricalState())
   Object.assign(engineStartState, ENGINE_START_BOOT_RUNNING)
   Object.assign(engineTemps, makeEngineTemps())
@@ -548,6 +559,10 @@ function loadSnapshot(): boolean {
     airports.updateVisuals(frame.anchor.lat, frame.anchor.lon)
   }
   aircraft.fuelKg = snap.fuelKg
+  // The per-tank ledger overwrites aircraft.fuelKg every tick — restore
+  // it too or the load silently reverts to pre-save quantities.
+  fuelState.leftKg = snap.fuelKg / 2
+  fuelState.rightKg = snap.fuelKg / 2
   scrubSeconds = (snap.simMs - baseDate.getTime()) / 1000 - loop.simTime
   toast(`LOADED — ${snap.spawn || 'airborne'} ${Math.round(snap.altFt)} ft`)
   return true
@@ -2038,8 +2053,8 @@ function advanceFrame(elapsed: number, now: number): void {
     aircraft.controls.mixture,
     aircraft.controls.flapsIndex,
     aircraft.controls.trim,
-    d.pitchDeg,
-    d.rollDeg,
+    aircraft.controls.pitch,
+    aircraft.controls.roll,
   )
   const pitotReadings = pitotSystem.step({
     trueIasKt: d.kias,

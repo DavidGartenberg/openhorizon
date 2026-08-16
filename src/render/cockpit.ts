@@ -563,10 +563,14 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   // FCU cockpit must not carry a Boeing yoke. Same mesh slots (the
   // animation path keys off `sidestick`), different geometry/placement.
   const isStick = layout === 'airbusFcu'
+  // Sidestick placement: the physically-true console spot (-0.62 lateral)
+  // sits just past the cockpit camera's frame corner — moved to the
+  // console's inner edge and sized up slightly so the captain's view
+  // actually shows it (verified by screenshot).
   const yokeColumn = isStick
-    ? new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.022, 0.16, 8), YOKE_MAT)
+    ? new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.026, 0.19, 10), YOKE_MAT)
     : new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.35, 8), YOKE_MAT)
-  add(yokeColumn, isStick ? 0.62 : 0.7, isStick ? -0.62 : -0.3, isStick ? -0.28 : -0.16)
+  add(yokeColumn, isStick ? 0.68 : 0.7, isStick ? -0.54 : -0.3, isStick ? -0.3 : -0.16)
   // Two-horn control yoke (user: "for boeing planes make it a yoke",
   // not a steering wheel — and the C172's real yoke is the same shape).
   // Hub mesh carries the horns as children so the roll animation's
@@ -585,10 +589,21 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     }
     return hub
   }
-  const yokeWheel = isStick
-    ? new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.05, 0.06), YOKE_MAT)
-    : buildYokeAssembly()
-  add(yokeWheel, isStick ? 0.62 : 0.68, isStick ? -0.62 : -0.3, isStick ? -0.36 : -0.26)
+  const buildStickGrip = (): THREE.Mesh => {
+    // Angled A320-style grip: canted body + thumb rest + red AP-disconnect.
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.036, 0.085, 0.05), YOKE_MAT)
+    grip.rotation.x = -0.35 // raked toward the pilot
+    const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.034, 0.03, 0.035), BLACK_KNOB)
+    thumb.position.set(0, 0.045, 0.02)
+    grip.add(thumb)
+    const apDisc = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.012, 8), RED_KNOB)
+    apDisc.rotation.x = Math.PI / 2
+    apDisc.position.set(0, 0.035, -0.022)
+    grip.add(apDisc)
+    return grip
+  }
+  const yokeWheel = isStick ? buildStickGrip() : buildYokeAssembly()
+  add(yokeWheel, isStick ? 0.68 : 0.68, isStick ? -0.54 : -0.3, isStick ? -0.41 : -0.26)
 
   if (layout !== 'g1000') {
     // GA-only hardware (ignition key, starter, mixture vernier, floor
@@ -604,6 +619,12 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
       const i = interactive.indexOf(o)
       if (i >= 0) interactive.splice(i, 1)
     }
+  }
+
+  if (isStick) {
+    const console = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.22), BEZEL)
+    placeBody(console, 0.68, -0.54, -0.2)
+    group.add(console)
   }
 
   parent.add(group)
@@ -816,8 +837,8 @@ export function updateCockpitControls(
   mixture: number,
   flapsIndex: number,
   trim: number,
-  pitchDeg: number,
-  rollDeg: number,
+  pitchFrac: number, // control DEFLECTION −1..1 (aft positive), not attitude
+  rollFrac: number, // control deflection −1..1 (right positive)
 ): void {
   for (const id of Object.keys(switchStates) as SwitchId[]) {
     meshes.switches[id]!.material = switchStates[id] ? SWITCH_ON : SWITCH_OFF
@@ -839,20 +860,24 @@ export function updateCockpitControls(
   const trimSpinQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), trim * Math.PI)
   meshes.trimWheel.quaternion.copy(trimBaseQuat).multiply(trimSpinQuat)
   // Yoke mirrors pitch/roll input, small visual throws (no new interaction).
+  // Yoke/stick mirror the pilot's CONTROL INPUT (the original wiring fed
+  // aircraft attitude here — a stick that ignores your hand and follows
+  // the horizon is wrong; found while verifying the A320 stick).
+  const p = THREE.MathUtils.clamp(pitchFrac, -1, 1)
+  const r = THREE.MathUtils.clamp(rollFrac, -1, 1)
   if (meshes.sidestick) {
-    // Sidestick: tilt in roll and pitch about its base, no fore/aft slide.
-    const rollRad = (rollDeg * Math.PI) / 180
+    // Sidestick: tilts about its base — ±20° roll, ±17° pitch at full throw.
     for (const m of [meshes.yokeColumn, meshes.yokeWheel]) {
-      m.rotation.z = -rollRad * 0.4
-      m.rotation.x = THREE.MathUtils.clamp(pitchDeg / 20, -1, 1) * 0.35
+      m.rotation.z = -r * 0.35
+      m.rotation.x = p * 0.3
     }
     return
   }
-  meshes.yokeColumn.rotation.z = (rollDeg * Math.PI) / 180 * 0.3
-  meshes.yokeWheel.rotation.z = (rollDeg * Math.PI) / 180 * 0.6
-  const pitchThrow = THREE.MathUtils.clamp(pitchDeg / 20, -1, 1) * 0.05
-  placeBody(meshes.yokeColumn, 0.7, -0.3, -0.16 + pitchThrow)
-  placeBody(meshes.yokeWheel, 0.68, -0.3, -0.26 + pitchThrow)
+  // Yoke: wheel turns (±75° at full aileron), column slides aft on pull.
+  meshes.yokeWheel.rotation.z = -r * 1.3
+  const pitchThrow = p * 0.07
+  placeBody(meshes.yokeColumn, 0.7 - pitchThrow, -0.3, -0.16)
+  placeBody(meshes.yokeWheel, 0.68 - pitchThrow, -0.3, -0.26)
 }
 
 // ============================================================================

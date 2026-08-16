@@ -84,6 +84,37 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Fleet fuel: full tanks per type; stick shows control input (2026-08-13)
+
+**Fuel (user-found, twice over)**: the A320neo flamed out four minutes
+after takeoff — the systems fuel ledger was hardcoded to the C172's
+144 kg tanks for EVERY aircraft (boot seeding and, worse, the respawn
+reset both called bare makeFuelState()). Jets burn thousands of kg/h
+through that. Per the user's instruction the ledger now fills to the
+ACTIVE type's full capacity at boot and at every respawn (A320neo:
+18,728 kg — verified live post-spawn), and snapshot loads restore the
+ledger alongside aircraft.fuelKg (loads previously reverted fuel to
+the pre-save ledger on the next tick). Recorded honestly: a few
+heavies sit above MTOW with full tanks and zero payload — real ramp
+behavior; the takeoff-lattice tests defuel themselves and pin the
+lighter config.
+
+**Sidestick/yoke animation**: the assemblies were fed aircraft
+ATTITUDE, not control input — a stick that follows the horizon and
+ignores the pilot's hand. Both now mirror control deflection (stick
+±20° roll / ±17° pitch; yoke ±75° wheel + fore-aft column). The A320
+stick also moved from the physically-true console spot (just past the
+cockpit camera's frame corner) to the console's inner edge with an
+A320-style raked grip + red AP-disconnect, on a console pad — visible
+and moving in the captain's view, verified by neutral-vs-deflected
+screenshots.
+
+**A320 flight check**: hand-flown takeoff from KSFO 28R (two crashes
+were MY open-loop step flying, recorded for honesty), then a clean
+closed-loop liftoff, gear up via __ohGearCmd, flaps clean, AP HDG/VS
+climb — FCU windows live-reading 210 | HDG 280 | V/S +1600 | ALT 06000
+with green lamps, engines sustained after the fuel fix.
+
 ## User fixes: winglets, jet lights, yoke vs stick, photo-matched panels (2026-08-13)
 
 Four user reports, all verified on screen:
