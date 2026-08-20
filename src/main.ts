@@ -2431,7 +2431,14 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohIls: () => ({ loaded: ilsLoaded, count: ilsCount }),
   __ohReverse: (cmd?: boolean) => { if (cmd !== undefined && aircraft.P.reversers) aircraft.reverseCmd = cmd; return { cmd: aircraft.reverseCmd, pos: aircraft.reversePos, armedSpoilers: aircraft.spoilerArmed } },
   __ohSpoiler: (cmd?: number) => {
-    if (cmd !== undefined && aircraft.P.spoilers) aircraft.spoilerCmd = Math.max(0, Math.min(1, cmd))
+    // Numeric-guard the boundary: a stray string here once NaN-poisoned
+    // the entire physics state (Math.min(1,'FLIGHT') → NaN → forces →
+    // NaN g). Non-finite input is ignored; non-finite stored state heals
+    // to 0.
+    const n = Number(cmd)
+    if (cmd !== undefined && Number.isFinite(n) && aircraft.P.spoilers) aircraft.spoilerCmd = Math.max(0, Math.min(1, n))
+    if (!Number.isFinite(aircraft.spoilerCmd)) aircraft.spoilerCmd = 0
+    if (!Number.isFinite(aircraft.spoilerPos)) aircraft.spoilerPos = 0
     return { cmd: aircraft.spoilerCmd, pos: aircraft.spoilerPos, fitted: !!aircraft.P.spoilers }
   },
   __ohCarbHeat: (on: boolean) => { carbHeatOn = on },
@@ -2495,7 +2502,15 @@ Object.assign(window as unknown as Record<string, unknown>, {
     loop.setRate(r)
   },
   __ohCtl: (c: Record<string, number> | null) => {
-    ctlOverride = c === null ? null : { ...(ctlOverride ?? {}), ...c }
+    if (c === null) { ctlOverride = null; return }
+    // Same NaN-guard as __ohSpoiler: drop non-finite fields instead of
+    // letting them poison the physics through the override path.
+    const clean: Record<string, number> = { ...(ctlOverride ?? {}) }
+    for (const [k, v] of Object.entries(c)) {
+      const n = Number(v)
+      if (Number.isFinite(n)) clean[k] = n
+    }
+    ctlOverride = clean
   },
   /** Manual cloud slabs (13e acceptance): same manual-weather pattern as
    *  `__ohWind` — live METAR application stops so it can't overwrite. */

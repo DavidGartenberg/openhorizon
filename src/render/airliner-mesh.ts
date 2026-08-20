@@ -155,10 +155,10 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     wingGroup.rotation.z = side * -0.105 // dihedral
     g.add(wingGroup)
 
-    // Fowler flaps (two sections) + 4 spoiler panels, scaled spanwise.
+    // ONE continuous Fowler flap per wing + ONE spoiler panel (user:
+    // "make the flaps one piece together and spoilers one piece").
     for (const [f0, f1, cFrac] of [
-      [0.13, 0.32, 0.26],
-      [0.35, 0.72, 0.2],
+      [0.14, 0.68, 0.23],
     ] as const) {
       const fy0 = y0 + (y1 - y0) * f0
       const fy1 = y0 + (y1 - y0) * f1
@@ -172,13 +172,13 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       wingGroup.add(pivot)
       flapPivots.push(pivot)
     }
-    for (let i = 0; i < 4; i++) {
-      const sy = y0 + (y1 - y0) * (0.16 + i * 0.14)
+    for (let i = 0; i < 1; i++) {
+      const sy = y0 + (y1 - y0) * 0.41 // single panel centered over the flap span
       const pivot = new THREE.Group()
       const leX = wingRootX - Math.tan(sweep) * (sy - y0) - rootChord * 0.55
       placeBody(pivot, leX, side * sy, wingDrop * 0.7)
-      const panel = new THREE.Mesh(new THREE.BoxGeometry((y1 - y0) * 0.12, 0.05, rootChord * 0.12), SURFACE)
-      panel.position.set(0, 0.05, rootChord * 0.06)
+      const panel = new THREE.Mesh(new THREE.BoxGeometry((y1 - y0) * 0.5, 0.05, rootChord * 0.13), SURFACE)
+      panel.position.set(0, 0.05, rootChord * 0.065)
       panel.castShadow = true
       pivot.add(panel)
       wingGroup.add(pivot)
@@ -192,7 +192,10 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
         const ey = cfg.engines.count === 4 ? halfSpan * (ei === 0 ? 0.36 : 0.62) : halfSpan * 0.34
         const engLen = R * 2.2
         const engR = R * 0.7
-        const ex = wingRootX - Math.tan(sweep) * (ey - y0) + rootChord * 0.35
+        // Pod center barely ahead of the local LE — the old +35% of root
+        // chord hung the engine in space ahead of the wing (user: "make
+        // the engines actually on the plane").
+        const ex = wingRootX - Math.tan(sweep) * (ey - y0) + rootChord * 0.06
         const eng = new THREE.Mesh(new THREE.CylinderGeometry(engR, engR * 0.8, engLen, 16), SILVER)
         eng.rotation.x = Math.PI / 2
         eng.scale.y = 0.92
@@ -205,8 +208,8 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
         const spin = new THREE.Mesh(new THREE.ConeGeometry(engR * 0.3, engR * 0.55, 12), SILVER)
         spin.rotation.x = Math.PI / 2
         add(spin, ex + engLen / 2 + engR * 0.2, side * ey, wingDrop * 0.55 + engR * 0.75)
-        const pylon = new THREE.Mesh(new THREE.BoxGeometry(engR * 0.3, engR * 0.9, engLen * 0.7), BELLY)
-        add(pylon, ex - engLen * 0.15, side * ey, wingDrop * 0.25)
+        const pylon = new THREE.Mesh(new THREE.BoxGeometry(engR * 0.34, engR * 1.1, engLen * 0.85), BELLY)
+        add(pylon, ex - engLen * 0.2, side * ey, wingDrop * 0.3)
         // Reverser sleeve: aft nacelle ring that translates AFT on deploy,
         // showing a dark cascade band.
         const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(engR * 1.04, engR * 0.86, engLen * 0.4, 16), SILVER)

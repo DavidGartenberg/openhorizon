@@ -60,6 +60,21 @@ export class AircraftLights {
       }
     }
     const a = anchors as Anchors
+    // Physical lens fixtures ON the airframe (user: "put the lights on
+    // the plane") — the additive glows float at these same points; the
+    // lenses make the hardware visible up close and in daylight.
+    const lens = (x: number, y: number, z: number, color: number, r = 0.09): void => {
+      const m = new THREE.Mesh(
+        new THREE.SphereGeometry(r, 8, 6),
+        new THREE.MeshBasicMaterial({ color }),
+      )
+      m.position.set(x, y, z)
+      group.add(m)
+    }
+    lens(a.wingtipL.x, a.wingtipL.y, a.wingtipL.z, 0xff2a2a)
+    lens(a.wingtipR.x, a.wingtipR.y, a.wingtipR.z, 0x27d75a)
+    lens(a.tail.x, a.tail.y, a.tail.z, 0xffffff, 0.07)
+    lens(0, a.tail.y + 0.45, a.tail.z * 0.82, 0xff2020, 0.1)
     const p: THREE.Vector3[] = [
       a.wingtipL,
       a.wingtipR,

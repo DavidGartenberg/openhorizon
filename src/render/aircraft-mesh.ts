@@ -328,9 +328,9 @@ export function buildB738(): AircraftMesh {
     g.add(wingGroup)
 
     // Fowler flaps: inboard + outboard sections, pivot groups at their LE.
+    // ONE continuous Fowler flap per wing (user request).
     for (const [fy0, fy1, chord, leX] of [
-      [2.2, 5.4, 1.75, 3.1 - Math.tan(0.436) * 3.8 - 4.4],
-      [5.8, 12.2, 1.35, 3.1 - Math.tan(0.436) * 9.0 - 3.6],
+      [2.2, 12.0, 1.55, 3.1 - Math.tan(0.436) * 6.5 - 4.0],
     ] as const) {
       const pivot = new THREE.Group()
       placeBody(pivot, leX, 0, 1.05)
@@ -340,14 +340,14 @@ export function buildB738(): AircraftMesh {
       wingGroup.add(pivot)
       flapPivots.push(pivot)
     }
-    // Flight spoilers: 4 thin panels on the upper surface ahead of the flaps.
-    for (let i = 0; i < 4; i++) {
-      const sy = 3.0 + i * 2.3
+    // Flight spoiler: ONE panel per wing ahead of the flap (user request).
+    {
+      const sy = 6.4
       const pivot = new THREE.Group()
       const leX = 3.1 - Math.tan(0.436) * (sy - 1.7) - 4.0
       placeBody(pivot, leX, side * sy, 0.88)
-      const panel = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.05, 0.85), SURFACE)
-      panel.position.set(0, 0.09, 0.43) // clear of the wing top skin (N5)
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(8.6, 0.05, 0.9), SURFACE)
+      panel.position.set(0, 0.09, 0.45) // clear of the wing top skin (N5)
       panel.castShadow = true
       pivot.add(panel)
       wingGroup.add(pivot)
