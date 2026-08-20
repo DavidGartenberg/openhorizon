@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applyDeadzone, axisToUnipolar, detectMovedAxis,
   parseGamepadMap, serializeGamepadMap, DEFAULT_SINGLE_STICK,
+  detectPressedButton, leverWithReverse, tcaPresetFor,
 } from '../src/sim/gamepad-map'
 
 describe('applyDeadzone', () => {
@@ -64,5 +65,55 @@ describe('DEFAULT_SINGLE_STICK', () => {
     expect(DEFAULT_SINGLE_STICK.yaw).toEqual({ pad: 0, axis: 2, sign: 1 })
     // Slider convention: full forward reports −1 on most sticks.
     expect(DEFAULT_SINGLE_STICK.throttle).toEqual({ pad: 0, axis: 3, sign: -1 })
+  })
+})
+
+describe('TCA Captain Pack support (16a-b)', () => {
+  it('leverWithReverse: forward range, idle guard, reverse gate depth', () => {
+    expect(leverWithReverse(1)).toEqual({ power: 1, reverse: false })
+    expect(leverWithReverse(0)).toEqual({ power: 0.5, reverse: false })
+    expect(leverWithReverse(-1)).toEqual({ power: 0, reverse: false }) // exactly idle
+    expect(leverWithReverse(-1.05).power).toBe(0) // wobble below idle stays forward-idle
+    const rev = leverWithReverse(-1.4) // deep in the lifted reverse zone
+    expect(rev.reverse).toBe(true)
+    expect(rev.power).toBeGreaterThan(0.4)
+  })
+
+  it('detectPressedButton finds a new press on any pad', () => {
+    const before = [[false, false], [false, false, false]]
+    const after = [[false, false], [false, false, true]]
+    expect(detectPressedButton(before, after)).toEqual({ pad: 1, btn: 2 })
+    expect(detectPressedButton(after, after)).toBeNull()
+  })
+
+  it('button bindings survive the serialize/parse round-trip; old maps still parse', () => {
+    const m = {
+      pitch: { pad: 0, axis: 1, sign: 1 as const },
+      btn: { gear: { pad: 1, btn: 4 }, reverse: { pad: 1, btn: 0 } },
+    }
+    const back = parseGamepadMap(serializeGamepadMap(m))
+    expect(back?.btn?.gear).toEqual({ pad: 1, btn: 4 })
+    expect(back?.pitch?.axis).toBe(1)
+    const legacy = parseGamepadMap('{"roll":{"pad":0,"axis":0,"sign":1}}')
+    expect(legacy?.roll?.sign).toBe(1)
+  })
+
+  it('tcaPresetFor maps stick axes and BOTH quadrant levers to the right pads', () => {
+    const m = tcaPresetFor([
+      { id: 'TCA STICK X AIRBUS (Thrustmaster)', axes: 4, index: 0 },
+      { id: 'TCA Quadrant Airbus Edition (Thrustmaster)', axes: 2, index: 1 },
+    ])!
+    expect(m.roll).toEqual({ pad: 0, axis: 0, sign: 1 })
+    expect(m.pitch).toEqual({ pad: 0, axis: 1, sign: 1 })
+    expect(m.yaw).toEqual({ pad: 0, axis: 2, sign: 1 })
+    expect(m.throttle).toEqual({ pad: 1, axis: 0, sign: -1 })
+    expect(m.throttle2).toEqual({ pad: 1, axis: 1, sign: -1 })
+  })
+
+  it('stick alone falls back to its base slider for throttle; non-TCA gets nothing', () => {
+    const solo = tcaPresetFor([{ id: 'TCA STICK X AIRBUS', axes: 4, index: 0 }])!
+    expect(solo.throttle).toEqual({ pad: 0, axis: 3, sign: -1 })
+    expect(solo.throttle2).toBeUndefined()
+    expect(tcaPresetFor([{ id: 'Xbox Wireless Controller', axes: 4, index: 0 }])).toBeNull()
   })
 })

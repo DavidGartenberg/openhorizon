@@ -8,7 +8,18 @@
  * polling and control application.
  */
 
-export type BindableAxis = 'pitch' | 'roll' | 'yaw' | 'throttle' | 'mixture' | 'brakes'
+export type BindableAxis = 'pitch' | 'roll' | 'yaw' | 'throttle' | 'throttle2' | 'mixture' | 'brakes'
+
+/** Momentary/toggle functions bindable to gamepad buttons (16a-b: the
+ *  TCA quadrant's switches and the sidestick's buttons). */
+export type BindableButton =
+  | 'gear' | 'flapsUp' | 'flapsDown' | 'trimUp' | 'trimDown'
+  | 'apDisconnect' | 'brakes' | 'reverse'
+
+export interface ButtonBinding {
+  pad: number
+  btn: number
+}
 
 export interface AxisBinding {
   pad: number
@@ -16,9 +27,11 @@ export interface AxisBinding {
   sign: 1 | -1
 }
 
-export type GamepadMap = Partial<Record<BindableAxis, AxisBinding>>
+export type GamepadMap = Partial<Record<BindableAxis, AxisBinding>> & {
+  btn?: Partial<Record<BindableButton, ButtonBinding>>
+}
 
-export const UNIPOLAR: ReadonlySet<BindableAxis> = new Set(['throttle', 'mixture', 'brakes'])
+export const UNIPOLAR: ReadonlySet<BindableAxis> = new Set(['throttle', 'throttle2', 'mixture', 'brakes'])
 
 const DEADZONE = 0.06
 
@@ -61,12 +74,49 @@ export function serializeGamepadMap(m: GamepadMap): string {
   return JSON.stringify(m)
 }
 
+/** Newly-pressed button between two snapshots (any pad). */
+export function detectPressedButton(
+  before: ReadonlyArray<ReadonlyArray<boolean>>,
+  after: ReadonlyArray<ReadonlyArray<boolean>>,
+): ButtonBinding | null {
+  for (let p = 0; p < after.length; p++) {
+    const b = before[p] ?? []
+    const a = after[p] ?? []
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] && !b[i]) return { pad: p, btn: i }
+    }
+  }
+  return null
+}
+
+/** Throttle lever with a reverse gate (TCA quadrant): the capture puts
+ *  idle at unipolar 0 and TOGA at 1; lever travel BELOW idle (the
+ *  lifted reverse zone) reads negative — that engages reverse and its
+ *  depth becomes reverse power. A whisker below idle stays forward-idle
+ *  so a lever resting on the detent can't flicker the buckets. */
+export function leverWithReverse(rawSigned: number): { power: number; reverse: boolean } {
+  const u = (rawSigned + 1) / 2 // UNclamped unipolar
+  if (u >= 0) return { power: Math.min(u, 1), reverse: false }
+  if (u > -0.04) return { power: 0, reverse: false }
+  return { power: Math.min(-u * 3, 1), reverse: true }
+}
+
 export function parseGamepadMap(s: string): GamepadMap | null {
   try {
     const raw = JSON.parse(s) as Record<string, unknown>
     if (typeof raw !== 'object' || raw === null) return null
     const out: GamepadMap = {}
     for (const [k, v] of Object.entries(raw)) {
+      if (k === 'btn') {
+        const btns: NonNullable<GamepadMap['btn']> = {}
+        for (const [bk, bv] of Object.entries(v as Record<string, unknown>)) {
+          const bb = bv as { pad?: unknown; btn?: unknown }
+          if (typeof bb?.pad !== 'number' || typeof bb?.btn !== 'number') return null
+          btns[bk as BindableButton] = { pad: bb.pad, btn: bb.btn }
+        }
+        out.btn = btns
+        continue
+      }
       const b = v as { pad?: unknown; axis?: unknown; sign?: unknown }
       if (
         typeof b?.pad !== 'number' || typeof b?.axis !== 'number' ||
@@ -78,6 +128,34 @@ export function parseGamepadMap(s: string): GamepadMap | null {
   } catch {
     return null
   }
+}
+
+/** Thrustmaster TCA (Airbus edition) device matchers + preset. The
+ *  Captain Pack enumerates as TWO devices: the sidestick (4 axes:
+ *  roll, pitch, twist rudder, base slider) and the quadrant (the two
+ *  thrust levers). The preset covers the axes; signs follow the same
+ *  full-forward-reports-−1 convention as every Thrustmaster slider —
+ *  the JOY capture wizard refines anything the guess gets wrong. */
+export const TCA_DEVICE = /tca|t\.a320|thrustmaster|airbus/i
+export const TCA_QUADRANT = /quadrant|q-eng|throttle/i
+
+export function tcaPresetFor(pads: ReadonlyArray<{ id: string; axes: number; index: number }>): GamepadMap | null {
+  const tca = pads.filter((p) => TCA_DEVICE.test(p.id))
+  if (!tca.length) return null
+  const quadrant = tca.find((p) => TCA_QUADRANT.test(p.id)) ?? tca.find((p) => p.axes <= 3 && p.axes >= 2)
+  const stick = tca.find((p) => p !== quadrant && p.axes >= 4) ?? tca.find((p) => p !== quadrant)
+  const map: GamepadMap = {}
+  if (stick) {
+    map.roll = { pad: stick.index, axis: 0, sign: 1 }
+    map.pitch = { pad: stick.index, axis: 1, sign: 1 }
+    map.yaw = { pad: stick.index, axis: 2, sign: 1 }
+    if (!quadrant) map.throttle = { pad: stick.index, axis: 3, sign: -1 }
+  }
+  if (quadrant) {
+    map.throttle = { pad: quadrant.index, axis: 0, sign: -1 }
+    map.throttle2 = { pad: quadrant.index, axis: 1, sign: -1 }
+  }
+  return Object.keys(map).length ? map : null
 }
 
 /** The near-universal single-stick layout: roll/pitch on 0/1, twist

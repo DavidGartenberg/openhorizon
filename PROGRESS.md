@@ -84,6 +84,36 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## TCA Captain Pack X Airbus Edition support (2026-08-13, user request)
+
+Joystick layer extended for the user's Thrustmaster TCA Captain Pack
+(Airbus sidestick + full two-lever quadrant), which enumerates as TWO
+gamepad devices:
+
+- **TCA auto-preset** — on connect, device ids matching the TCA family
+  map automatically: sidestick roll/pitch/twist-rudder (+ base slider
+  as throttle when the quadrant is absent); the quadrant's TWO thrust
+  levers bind as throttle/throttle2 and are AVERAGED. The preset fills
+  only unbound functions, so a saved custom map always wins.
+- **Reverse gate on the levers** — lever travel below the idle detent
+  (the quadrant's lifted reverse zone) commands reverse thrust with
+  zone depth as reverse power (leverWithReverse, pure + tested), with
+  a small idle guard so a lever resting on the detent can't flicker
+  the buckets. WoW interlock still governs deployment.
+- **Button bindings** — new capture flow for gear, flaps up/down, trim
+  up/down, AP disconnect, brakes (hold), and reverse (hold), each
+  edge/held-driven to the same actions as their keyboard twins.
+- **J wizard** — KeyJ runs the full tour: five axis captures (stick,
+  lever 1, lever 2) chained into the eight button captures; every step
+  auto-skips after 8 s. `JOY BUTTONS` and per-axis `JOY <fn>` verbs
+  also work; map persists in localStorage.
+
+HONEST NOTE: the physical hardware is on the user's desk, not mine —
+the preset follows Thrustmaster's documented HID layout and 12 unit
+tests cover the mapping/reverse/round-trip logic, but the axis indices
+the OS actually reports get their final word from the J wizard.
+Verified in-browser: clean boot with no gamepad, no console errors.
+
 ## Free-text ATC with emergencies + airframe pass (2026-08-13)
 
 **Type-anything ATC** (user goal): new pure module

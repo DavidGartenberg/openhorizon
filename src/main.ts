@@ -57,7 +57,7 @@ import { WorldFrame, TileManager } from './world/tiles'
 import { Airports, type AirportData, type RunwayData } from './world/airports'
 import { makeElectricalState, stepElectrical } from './sim/systems/electrical'
 import { c172WeightBalance, C172S_ENVELOPE } from './sim/weight-balance'
-import { applyDeadzone, axisToUnipolar, detectMovedAxis, parseGamepadMap, serializeGamepadMap, DEFAULT_SINGLE_STICK, type BindableAxis, type GamepadMap } from './sim/gamepad-map'
+import { applyDeadzone, axisToUnipolar, detectMovedAxis, detectPressedButton, leverWithReverse, parseGamepadMap, serializeGamepadMap, tcaPresetFor, DEFAULT_SINGLE_STICK, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
 import { makeFuelState, stepFuel, type FuelSelector } from './sim/systems/fuel'
 import { PitotStaticSystem } from './sim/systems/pitot'
 import { stepEngineStart, type EngineStartState, type MagnetoPosition } from './sim/systems/engine-start'
@@ -623,11 +623,15 @@ function handleSearch(query: string): void {
       toast('PROP lever — INOP: no controllable-pitch model (governed props auto-govern; recorded)')
       return
     }
+    if (parts[1] === 'BUTTONS') {
+      startBtnCapture(['gear', 'flapsUp', 'flapsDown', 'trimUp', 'trimDown', 'apDisconnect', 'brakes', 'reverse'])
+      return
+    }
     const one = parts[1]?.toLowerCase() as BindableAxis | undefined
-    const valid: BindableAxis[] = ['pitch', 'roll', 'yaw', 'throttle', 'mixture', 'brakes']
+    const valid: BindableAxis[] = ['pitch', 'roll', 'yaw', 'throttle', 'throttle2', 'mixture', 'brakes']
     if (one && valid.includes(one)) startJoyCapture([one])
-    else if (!parts[1]) startJoyCapture(['pitch', 'roll', 'yaw', 'throttle'])
-    else toast('JOY [PITCH|ROLL|YAW|THROTTLE|MIXTURE|BRAKES|CLEAR]')
+    else if (!parts[1]) startJoyCapture(['pitch', 'roll', 'yaw', 'throttle', 'throttle2'])
+    else toast('JOY [PITCH|ROLL|YAW|THROTTLE|THROTTLE2|MIXTURE|BRAKES|BUTTONS|CLEAR]')
     return
   }
   if (parts[0] === 'FAIL' && parts[1]) {
@@ -716,10 +720,21 @@ try {
   if (storedJoy) gamepadMap = parseGamepadMap(storedJoy) ?? {}
 } catch { /* private mode */ }
 let joyCapture: { fn: BindableAxis; queue: BindableAxis[]; baseline: number[][]; deadlineMs: number } | null = null
+let btnCapture: { fn: BindableButton; queue: BindableButton[]; baseline: boolean[][]; deadlineMs: number } | null = null
+let btnPrev: boolean[][] = []
+let joyBrakeHeld = false
+let joyWizardChain = false
+let joyReverseHeld = false
 
 const JOY_PROMPT: Record<BindableAxis, string> = {
   pitch: 'PULL — nose UP', roll: 'roll RIGHT', yaw: 'RIGHT rudder',
-  throttle: 'FULL throttle', mixture: 'mixture FULL RICH', brakes: 'brakes full ON',
+  throttle: 'LEVER 1 to TOGA (full forward)', throttle2: 'LEVER 2 to TOGA (full forward)',
+  mixture: 'mixture FULL RICH', brakes: 'brakes full ON',
+}
+const BTN_PROMPT: Record<BindableButton, string> = {
+  gear: 'GEAR toggle', flapsUp: 'FLAPS UP one step', flapsDown: 'FLAPS DOWN one step',
+  trimUp: 'TRIM nose-down (forward)', trimDown: 'TRIM nose-up (back)',
+  apDisconnect: 'AP DISCONNECT', brakes: 'BRAKES (hold)', reverse: 'REVERSE (hold)',
 }
 
 function padsSnapshot(): number[][] {
@@ -727,6 +742,19 @@ function padsSnapshot(): number[][] {
   const out: number[][] = []
   for (const p of pads) out.push(p ? [...p.axes] : [])
   return out
+}
+
+function padsButtonSnapshot(): boolean[][] {
+  const pads = navigator.getGamepads?.() ?? []
+  const out: boolean[][] = []
+  for (const p of pads) out.push(p ? p.buttons.map((b) => b.pressed) : [])
+  return out
+}
+
+function startBtnCapture(queue: BindableButton[]): void {
+  const fn = queue[0]!
+  btnCapture = { fn, queue: queue.slice(1), baseline: padsButtonSnapshot(), deadlineMs: performance.now() + 8000 }
+  toast(`JOY BTN — press: ${BTN_PROMPT[fn]} (8 s to skip)`)
 }
 
 function startJoyCapture(queue: BindableAxis[]): void {
@@ -741,9 +769,30 @@ function saveJoyMap(): void {
 
 window.addEventListener('gamepadconnected', (e) => {
   const g = (e as GamepadEvent).gamepad
+  // TCA Captain Pack (sidestick + quadrant) auto-preset: applied only
+  // over UNBOUND functions so a saved custom map always wins. Re-runs on
+  // each connect so the quadrant slots in whenever it enumerates.
+  const padList = (navigator.getGamepads?.() ?? [])
+    .filter((p): p is Gamepad => !!p)
+    .map((p) => ({ id: p.id, axes: p.axes.length, index: p.index }))
+  const preset = tcaPresetFor(padList)
+  if (preset) {
+    let applied = 0
+    for (const [k, v] of Object.entries(preset)) {
+      if (k !== 'btn' && !gamepadMap[k as BindableAxis]) {
+        gamepadMap[k as BindableAxis] = v as { pad: number; axis: number; sign: 1 | -1 }
+        applied++
+      }
+    }
+    if (applied) {
+      saveJoyMap()
+      toast(`TCA DETECTED: ${g.id.slice(0, 30)} — ${applied} axes mapped (press J to fine-tune)`)
+      return
+    }
+  }
   if (Object.keys(gamepadMap).length === 0 && g.axes.length >= 4) {
     gamepadMap = { ...DEFAULT_SINGLE_STICK }
-    toast(`JOYSTICK: ${g.id.slice(0, 36)} — default map (JOY to rebind)`)
+    toast(`JOYSTICK: ${g.id.slice(0, 36)} — default map (J to rebind)`)
   } else {
     toast(`GAMEPAD CONNECTED: ${g.id.slice(0, 40)}`)
   }
@@ -763,6 +812,23 @@ function joyRead(fn: BindableAxis): number | null {
 
 /** Capture tick: returns true while a capture is consuming input. */
 function pollJoyCapture(nowMs: number): boolean {
+  if (btnCapture) {
+    const hit = detectPressedButton(btnCapture.baseline, padsButtonSnapshot())
+    if (hit) {
+      gamepadMap.btn = { ...(gamepadMap.btn ?? {}), [btnCapture.fn]: hit }
+      saveJoyMap()
+      toast(`JOY: ${btnCapture.fn.toUpperCase()} ← pad${hit.pad} button${hit.btn}`)
+      const q = btnCapture.queue
+      btnCapture = null
+      if (q.length) startBtnCapture(q)
+    } else if (nowMs > btnCapture.deadlineMs) {
+      toast(`JOY: ${btnCapture.fn.toUpperCase()} — skipped`)
+      const q = btnCapture.queue
+      btnCapture = null
+      if (q.length) startBtnCapture(q)
+    }
+    return true
+  }
   if (!joyCapture) return false
   const hit = detectMovedAxis(joyCapture.baseline, padsSnapshot(), 0.45)
   if (hit) {
@@ -772,11 +838,13 @@ function pollJoyCapture(nowMs: number): boolean {
     const q = joyCapture.queue
     joyCapture = null
     if (q.length) startJoyCapture(q)
+    else if (joyWizardChain) { joyWizardChain = false; startBtnCapture(['gear', 'flapsUp', 'flapsDown', 'trimUp', 'trimDown', 'apDisconnect', 'brakes', 'reverse']) }
   } else if (nowMs > joyCapture.deadlineMs) {
     toast(`JOY: ${joyCapture.fn.toUpperCase()} — nothing moved, skipped`)
     const q = joyCapture.queue
     joyCapture = null
     if (q.length) startJoyCapture(q)
+    else if (joyWizardChain) { joyWizardChain = false; startBtnCapture(['gear', 'flapsUp', 'flapsDown', 'trimUp', 'trimDown', 'apDisconnect', 'brakes', 'reverse']) }
   }
   return true
 }
@@ -828,6 +896,13 @@ function handleDiscreteKeys(): void {
     for (const [key, rate] of [['Digit1', 1], ['Digit2', 2], ['Digit3', 4]] as const) {
       if (input.wasPressed(key)) loop.setRate(rate as SimRate)
     }
+  }
+  if (input.wasPressed('KeyJ')) {
+    // Full joystick wizard: axes, then the button tour chained on the
+    // end (each step skips after 8 s of silence). TCA pack: stick axes,
+    // lever 1, lever 2, then gear/flaps/trim/AP-disc/brakes/reverse.
+    joyWizardChain = true
+    startJoyCapture(['pitch', 'roll', 'yaw', 'throttle', 'throttle2'])
   }
   if (input.wasPressed('KeyX')) assistOn = !assistOn
   if (input.wasPressed('KeyQ')) engineSound.muted = !engineSound.muted // mute moved M→Q (M = plane menu)
@@ -911,8 +986,20 @@ function pollControls(dt: number): void {
     if (jy !== null) shaped.yaw = applyDeadzone(jy)
     const jt = joyRead('throttle')
     if (jt !== null) {
-      const lever = axisToUnipolar(jt)
-      c.throttle = lever < 0.02 ? 0 : lever > 0.98 ? 1 : lever
+      // Two-lever quadrant (TCA): average both levers; travel below the
+      // idle detent (the lifted reverse gate) commands reverse thrust
+      // with zone depth as reverse power — jets only, WoW-interlocked
+      // downstream like the Z key.
+      const jt2 = joyRead('throttle2')
+      const raw = jt2 !== null ? (jt + jt2) / 2 : jt
+      const lev = leverWithReverse(raw)
+      if (lev.reverse && aircraft.P.reversers) {
+        aircraft.reverseCmd = true
+        c.throttle = lev.power < 0.02 ? 0 : lev.power
+      } else {
+        if (aircraft.P.reversers && !joyReverseHeld) aircraft.reverseCmd = false
+        c.throttle = lev.power < 0.02 ? 0 : lev.power > 0.98 ? 1 : lev.power
+      }
     }
     const jm = joyRead('mixture')
     if (jm !== null) {
@@ -924,6 +1011,40 @@ function pollControls(dt: number): void {
       const brake = axisToUnipolar(jb)
       c.brakeLeft = Math.max(c.brakeLeft, brake)
       c.brakeRight = Math.max(c.brakeRight, brake)
+    }
+    // 16a-b: bound BUTTONS (TCA stick/quadrant switches). Edge-triggered
+    // toggles + held functions, same actions as their keyboard twins.
+    const btns = gamepadMap.btn
+    if (btns) {
+      const now = padsButtonSnapshot()
+      const down = (fn: BindableButton): boolean => {
+        const b = btns[fn]
+        return !!b && !!now[b.pad]?.[b.btn]
+      }
+      const pressed = (fn: BindableButton): boolean => {
+        const b = btns[fn]
+        return !!b && !!now[b.pad]?.[b.btn] && !btnPrev[b.pad]?.[b.btn]
+      }
+      if (pressed('gear') && aircraft.P.gearRetractable) {
+        aircraft.gearDownCommanded = !aircraft.gearDownCommanded
+        toast(aircraft.gearDownCommanded ? 'GEAR DOWN' : 'GEAR UP')
+      }
+      if (pressed('flapsDown')) c.flapsIndex = Math.min(c.flapsIndex + 1, aircraft.P.flapDetentsDeg.length - 1)
+      if (pressed('flapsUp')) c.flapsIndex = Math.max(c.flapsIndex - 1, 0)
+      if (pressed('trimUp')) c.trim = Math.min(Math.max(c.trim - 0.02, -1), 1)
+      if (pressed('trimDown')) c.trim = Math.min(Math.max(c.trim + 0.02, -1), 1)
+      if (pressed('apDisconnect') && systemsControls.apMaster) {
+        systemsControls.apMaster = false
+        toast('AP DISCONNECT')
+      }
+      joyBrakeHeld = down('brakes')
+      if (joyBrakeHeld) {
+        c.brakeLeft = Math.max(c.brakeLeft, 1)
+        c.brakeRight = Math.max(c.brakeRight, 1)
+      }
+      joyReverseHeld = down('reverse')
+      if (aircraft.P.reversers && joyReverseHeld) aircraft.reverseCmd = true
+      btnPrev = now
     }
   }
   // Expo curve: fine control near center, full authority at the stops.
