@@ -84,6 +84,33 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Cockpit frame + painted fuselage liveries (2026-08-13)
+
+**Cockpit structure**: the cockpit view no longer floats in the sky —
+every layout gets a windshield frame (roof beam, angled A-pillars,
+side walls, floor), sized per cabin (GA half-width so the posts stay
+inside the C172's fuselage); transports add the two-piece windshield
+center post and a center pedestal.
+
+**Liveries (goal: "add textures to the plane")**: new
+src/render/livery.ts paints a per-type fuselage wrap — base coat with
+belly tone, accent cheatlines, a real cabin-window row per side
+(pitch scaled from fuselage length, wrap-seam-safe painting), door
+outlines, faint panel seams, fictional OPENHORIZON titles and an
+N-number (deliberately no real airline's trade dress). Four stable
+accent palettes assigned by designator hash. Applied to the family
+airliner builder (designator now flows through AirlinerCfg) and the
+bespoke Tier-A 737; the old box window strips remain only for
+unpainted traffic silhouettes. Textures are cached per designator;
+glossy paint (roughness 0.3) picks up the sky-baked IBL from G1.
+
+HONESTY NOTE: browser verification of the livery ORIENTATION (window
+rows level, cockpit end forward) and of the new cockpit frame was
+interrupted mid-check — the wrap's u/v mapping was derived on paper
+from the cylinder rotation and is committed unverified. The next
+browser pass must confirm both and flip the canvas axes if the
+windows run vertically.
+
 ## MSFS-look G3: sun-aware aerial perspective (2026-08-13)
 
 Terrain haze is no longer a flat blue-gray: per-fragment it now warms

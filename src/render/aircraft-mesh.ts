@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { liveryMaterial } from './livery'
 
 /**
  * Primitive aircraft exteriors, proportioned from published dimensions
@@ -273,7 +274,7 @@ export function buildB738(): AircraftMesh {
     return mesh
   }
   // ---- fuselage: 3.76 m tube, nose + raked tail cone, window strip ----
-  const fuse = new THREE.Mesh(new THREE.CylinderGeometry(1.88, 1.88, 28.6, 18), WHITE)
+  const fuse = new THREE.Mesh(new THREE.CylinderGeometry(1.88, 1.88, 28.6, 18), liveryMaterial('B738', 39.47))
   fuse.rotation.x = Math.PI / 2
   add(fuse, 0.9, 0, -0.6)
   const nose = new THREE.Mesh(new THREE.SphereGeometry(1.88, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2), WHITE)
@@ -285,10 +286,8 @@ export function buildB738(): AircraftMesh {
   tailCone.rotation.z = Math.PI
   add(tailCone, -17.5, 0, -1.05)
   ;(tailCone.rotation as THREE.Euler).x = Math.PI / 2 + 0.06 // raked up
-  const windows = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.26, 24), DARK)
-  add(windows, 1.2, -1.87, -1.15)
-  const windowsR = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.26, 24), DARK)
-  add(windowsR, 1.2, 1.87, -1.15)
+  // Window rows are painted into the livery wrap now; the cockpit glass
+  // band stays geometric (it sits on the untextured nose cone).
   const cockpitGlass = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.5, 0.9), DARK)
   add(cockpitGlass, 15.4, 0, -1.35)
 

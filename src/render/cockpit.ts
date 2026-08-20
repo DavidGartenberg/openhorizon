@@ -627,6 +627,42 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     group.add(console)
   }
 
+  // Cockpit structure (goal: "make the cockpit look perfect") — the view
+  // used to float in the sky; real flight decks are FRAMED. Windshield
+  // posts, roof beam, side pillars, floor, and (transports) the center
+  // windshield post + pedestal with throttle levers.
+  {
+    const FRAME = new THREE.MeshStandardMaterial({ color: 0x1d1f22, roughness: 0.85 })
+    const framePart = (w: number, h: number, d: number, x: number, y: number, z: number, rotZ = 0, rotX = 0): void => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), FRAME)
+      placeBody(m, x, y, z)
+      m.rotation.z = rotZ
+      m.rotation.x = rotX
+      group.add(m)
+    }
+    // Frame hugs the cabin: GA cabins are ~half a transport flight deck
+    // wide — oversized posts would poke through the C172's fuselage.
+    const halfW = layout === 'g1000' ? 0.6 : 0.88
+    // Roof beam across the top of the windshield.
+    framePart(halfW * 2 + 0.2, 0.16, 0.9, 0.75, 0, -1.3)
+    // A-pillars: angled side posts from panel corners up to the roof.
+    framePart(0.07, 0.62, 0.3, 1.0, -halfW, -0.95, 0.35)
+    framePart(0.07, 0.62, 0.3, 1.0, halfW, -0.95, -0.35)
+    // Side walls below the windows.
+    framePart(0.06, 0.7, 1.6, 0.35, -halfW - 0.02, -0.5)
+    framePart(0.06, 0.7, 1.6, 0.35, halfW + 0.02, -0.5)
+    // Floor.
+    framePart(halfW * 2 + 0.1, 0.06, 1.8, 0.3, 0, 0.28)
+    if (layout !== 'g1000') {
+      // Two-piece transport windshield: center post.
+      framePart(0.055, 0.5, 0.1, 1.05, 0, -1.05)
+      // Pedestal + twin thrust levers (visual; drag still on the lever).
+      const ped = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.55), FRAME)
+      placeBody(ped, 0.62, 0, -0.15)
+      group.add(ped)
+    }
+  }
+
   parent.add(group)
 
   return {

@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { liveryMaterial } from './livery'
 import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
 
 /**
@@ -11,6 +12,9 @@ import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
  * Model frame matches aircraft-mesh.ts: nose −z, up +y, right +x.
  */
 export interface AirlinerCfg {
+  /** Designator for the painted livery (window rows, cheatline, titles).
+   *  Absent = plain white (traffic silhouettes skip the paint cost). */
+  designator?: string
   lengthM: number
   spanM: number
   fuseRadiusM: number
@@ -70,7 +74,10 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
 
   // ---- fuselage ----
   const tubeLen = L * 0.72
-  const fuse = new THREE.Mesh(new THREE.CylinderGeometry(R, R, tubeLen, 18), WHITE)
+  const fuse = new THREE.Mesh(
+    new THREE.CylinderGeometry(R, R, tubeLen, 18),
+    cfg.designator ? liveryMaterial(cfg.designator, L) : WHITE,
+  )
   fuse.rotation.x = Math.PI / 2
   add(fuse, L * 0.02, 0, -R * 0.32)
   const nose = new THREE.Mesh(new THREE.SphereGeometry(R, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2), WHITE)
@@ -80,9 +87,12 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   const tailCone = new THREE.Mesh(new THREE.ConeGeometry(R * 0.99, L * 0.21, 16), WHITE)
   tailCone.rotation.x = Math.PI / 2 + 0.06
   add(tailCone, L * 0.02 - tubeLen / 2 - L * 0.093, 0, -R * 0.32 - R * 0.22)
-  // window strips + cockpit
-  for (const side of [-1, 1]) {
-    add(new THREE.Mesh(new THREE.BoxGeometry(0.02, R * 0.14, tubeLen * 0.85), DARK), L * 0.03, side * (R - 0.01), -R * 0.6)
+  // window strips (box fallback only when unpainted — livery paints real
+  // window rows into the wrap)
+  if (!cfg.designator) {
+    for (const side of [-1, 1]) {
+      add(new THREE.Mesh(new THREE.BoxGeometry(0.02, R * 0.14, tubeLen * 0.85), DARK), L * 0.03, side * (R - 0.01), -R * 0.6)
+    }
   }
   add(new THREE.Mesh(new THREE.BoxGeometry(R * 1.3, R * 0.27, R * 0.5), DARK), L * 0.02 + tubeLen / 2 + R * 0.1, 0, -R * 0.7)
   // hump (747 forward upper deck / A380 full-length)
@@ -353,6 +363,7 @@ export function airlinerCfgFor(spec: {
     { x: -L * 0.028, y: R * 1.5, z: zGround },
   ]
   return {
+    designator: spec.designator,
     lengthM: L,
     spanM: spec.spanM,
     fuseRadiusM: R,
