@@ -84,6 +84,41 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Free-text ATC with emergencies + airframe pass (2026-08-13)
+
+**Type-anything ATC** (user goal): new pure module
+src/sim/atc/freetext.ts — a deterministic intent engine (13 TDD
+tests) behind a transmit box that rides with the T-key ATC panel.
+Emergencies classify first: mayday/pan-pan with engine, fire,
+medical, and minimum-fuel subtypes get priority phraseology (any-
+runway clearance, fire and rescue, ambulance, number-one), the souls-
+and-fuel follow-up is parsed and read back; normal traffic covers
+takeoff/landing/option/go-around, taxi (REAL idents via the OSM
+registry), altitude and flight-level, headings, direct, weather/
+altimeter, radio check, position reports, frequency changes, and
+readbacks. Unrecognized input gets an honest "say again" — never an
+invented clearance. Keying the mic auto-tunes COM1 to the tower.
+Verified live: typed "MAYDAY MAYDAY engine failure" → "roger your
+mayday, cleared straight-in runway 1L, wind 320 at 9, emergency
+equipment standing by — say souls on board and fuel remaining";
+"4 souls on board, 2 hours fuel" → copied back verbatim. Recorded
+scope: rule engine, not a language model; the structured tower/ground
+strip machines stay authoritative for sequencing.
+
+**Airframe pass** (same goal): engine pods moved from ~7 m ahead of
+the LE to under the wing on beefed pylons; ONE continuous Fowler flap
++ ONE spoiler panel per wing in both builders — and per the follow-up
+("flaps extend from the wings, not go down") the flap motion is now
+translation-dominant (34% chord aft slide; droop/rotation arrive
+frac²-late). Physical nav/tail/beacon lens fixtures mount on the
+airframe at the light anchors. All verified on the 777: flaps-20
+shows panels slid aft with a visible gap; single spoiler panels
+deployed; pods under the wings.
+
+Also: __ohSpoiler/__ohCtl NaN guards (a string argument had poisoned
+the physics to NaN g — found by my own bad call, fixed at the hook
+boundary).
+
 ## User pass: upright tails, real noses, American livery, shape + checks (2026-08-13)
 
 Worked the user's queued list end to end, each item verified on screen:

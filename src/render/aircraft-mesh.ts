@@ -456,9 +456,11 @@ export function buildB738(): AircraftMesh {
     for (const p of flapPivots) {
       p.position.z = p.userData.z0 ?? (p.userData.z0 = p.position.z)
       p.position.y = p.userData.y0 ?? (p.userData.y0 = p.position.y)
-      p.position.z += s.flapFrac * 1.05
-      p.position.y -= s.flapFrac * 0.22
-      p.rotation.x = s.flapFrac * 0.62 // trailing edge DOWN ~35° at flaps 30 (sign was inverted — N0)
+      // Translation-dominant Fowler (user: "flaps extend, not go down").
+      const deep = s.flapFrac * s.flapFrac
+      p.position.z += s.flapFrac * 2.1
+      p.position.y -= deep * 0.2
+      p.rotation.x = deep * 0.42 // droop arrives mostly at deep settings
     }
     for (const p of spoilerPivots) p.rotation.x = -s.spoilerFrac * 0.87 // panel UP ~50° (sign was inverted — N0)
     for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85

@@ -31,6 +31,7 @@ import { PlaneMenu } from './render/plane-menu'
 import { loadIls, ilsLoaded, ilsCount } from './world/ils'
 import { osmIdentSegs } from './world/osm-layout'
 import { routeIdents } from './sim/atc/ground'
+import { interpretTransmission } from './sim/atc/freetext'
 import { buildAirliner, airlinerCfgFor } from './render/airliner-mesh'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
@@ -1354,6 +1355,64 @@ atcMenuDiv.style.cssText =
   'color:#ffd;background:rgba(10,14,4,.85);padding:8px 12px;border-radius:6px;white-space:pre;display:none'
 document.body.appendChild(atcMenuDiv)
 const transcript: string[] = []
+// Free-text ATC (goal: type anything, they respond — emergencies included).
+const atcTypeBox = document.createElement('input')
+atcTypeBox.placeholder = 'transmit to ATC — type anything, Enter to send (T)'
+atcTypeBox.style.cssText =
+  'position:fixed;left:8px;bottom:8px;width:504px;z-index:13;font:12px ui-monospace,monospace;' +
+  'color:#dff;background:rgba(0,16,26,.9);border:1px solid #2a4a5a;border-radius:6px;padding:6px 8px;display:none'
+document.body.appendChild(atcTypeBox)
+atcTypeBox.addEventListener('focus', () => { input.enabled = false })
+atcTypeBox.addEventListener('blur', () => { input.enabled = true })
+atcTypeBox.addEventListener('keydown', (e) => {
+  e.stopPropagation()
+  if (e.key === 'Enter' && atcTypeBox.value.trim()) {
+    const said = atcTypeBox.value.trim()
+    atcTypeBox.value = ''
+    sendFreeTextAtc(said)
+  } else if (e.key === 'Escape') {
+    atcTypeBox.style.display = 'none'
+    input.enabled = true
+    atcTypeBox.blur()
+  }
+})
+function sendFreeTextAtc(said: string): void {
+  if (!activeAtc) return
+  const a = activeAtc
+  // Keying the mic tunes you to the tower if you weren't already (pilot
+  // convenience — same auto-tune the structured menu does).
+  radios.com1.activeMhz = a.twrF
+  comms.transmit({ freqMhz: a.twrF, from: CALLSIGN, text: `${said}, ${CALLSIGN}`, atSimS: loop.simTime })
+  const reply = interpretTransmission(said, {
+    callsign: CALLSIGN,
+    facility: `${a.ident} Tower`,
+    activeRunway: a.atis.activeRunway,
+    windDirDeg: wxBlended?.windDirDeg ?? 0,
+    windKt: wxBlended?.windKt ?? 0,
+    altimeterInHg: wxBlended?.qnhInHg,
+    taxiVia: ((): string[] | undefined => {
+      const segs = osmIdentSegs.get(a.ident)
+      if (!segs?.length) return undefined
+      const rw = airports.find(a.ident)?.r.find((r) => r.li === a.atis.activeRunway || r.hi === a.atis.activeRunway)
+      if (!rw) return undefined
+      const fromHigh = rw.hi === a.atis.activeRunway
+      const thrLl = fromHigh ? { lat: rw.la2, lon: rw.lo2 } : { lat: rw.la1, lon: rw.lo1 }
+      const ap = airports.find(a.ident)!
+      const mLat = 111_320
+      const mLon = 111_320 * Math.cos((ap.la * Math.PI) / 180)
+      const acLl = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+      const from = { x: (acLl.lon - ap.lo) * mLon, z: -(acLl.lat - ap.la) * mLat }
+      const to = { x: (thrLl.lon - ap.lo) * mLon, z: -(thrLl.lat - ap.la) * mLat }
+      const ids = routeIdents(segs, from, to)
+      return ids.length ? ids : undefined
+    })(),
+  })
+  // Controller answers a beat later, prefixed with the callsign.
+  const facility = `${a.ident.startsWith('K') ? a.ident.slice(1) : a.ident} Tower`
+  window.setTimeout(() => {
+    comms.transmit({ freqMhz: a.twrF, from: facility, text: `${CALLSIGN}, ${reply.response}`, atSimS: loop.simTime })
+  }, 1100)
+}
 
 function radioSquelch(): void {
   try {
@@ -1555,10 +1614,14 @@ function atcMenuItems(): AtcMenuItem[] {
 function renderAtcMenu(): void {
   if (!atcMenuOpen || !activeAtc) {
     atcMenuDiv.style.display = 'none'
+    atcTypeBox.style.display = 'none'
+    if (document.activeElement === atcTypeBox) { atcTypeBox.blur(); input.enabled = true }
     return
   }
   const items = atcMenuItems()
   atcMenuDiv.style.display = 'block'
+  // Free-text transmit box rides with the ATC panel (click to type).
+  atcTypeBox.style.display = 'block'
   atcMenuDiv.textContent =
     `ATC — ${activeAtc.ident} (ATIS ${activeAtc.atisF.toFixed(2)})\n` +
     items.map((it, i) => ` ${i + 1}. ${it.label}`).join('\n') +
