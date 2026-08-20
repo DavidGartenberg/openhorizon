@@ -104,12 +104,16 @@ bespoke Tier-A 737; the old box window strips remain only for
 unpainted traffic silhouettes. Textures are cached per designator;
 glossy paint (roughness 0.3) picks up the sky-baked IBL from G1.
 
-HONESTY NOTE: browser verification of the livery ORIENTATION (window
-rows level, cockpit end forward) and of the new cockpit frame was
-interrupted mid-check — the wrap's u/v mapping was derived on paper
-from the cylinder rotation and is committed unverified. The next
-browser pass must confirm both and flip the canvas axes if the
-windows run vertically.
+ORIENTATION VERIFIED (follow-up pass): the paper-derived mapping was
+a quarter-turn off — THREE's CylinderGeometry starts u=0 at local +Z,
+which the builders' rotation sends to the BELLY, not the right side.
+Repainted to the verified frame (belly at the seam edges, sides at
+0.25/0.75, crown 0.5) and confirmed on screen from orbit cam on BOTH
+sides of the 737 and on the A350 (family builder): window rows run
+level under the cheatline, doors upright, OPENHORIZON titles read
+nose-to-tail right side up on both sides. Remaining polish noted:
+nose/tail cones stay unpainted (livery breaks at the tube ends) and
+engine inlets are still flat dark discs — spinner cones queued.
 
 ## MSFS-look G3: sun-aware aerial perspective (2026-08-13)
 

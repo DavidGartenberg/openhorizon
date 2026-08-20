@@ -7,10 +7,11 @@ import * as THREE from 'three'
  * panel seams, airline-neutral "OPENHORIZON" titles and a registration.
  * Branding is deliberately fictional — no real airline's trade dress.
  *
- * UV frame (CylinderGeometry rotated x=π/2 in both jet builders):
- *   u (canvas x): around the barrel — 0/1 = right side, 0.25 = belly,
- *   0.5 = left side, 0.75 = crown. The u seam sits mid-right-side, so
- *   right-side rows are painted twice (once at each edge) to survive it.
+ * UV frame (verified on screen — the first cut was a quarter-turn off):
+ *   THREE's CylinderGeometry starts u=0 at local +Z, which the builders'
+ *   rotation.x = π/2 sends to render −Y. So u (canvas x): 0/1 = BELLY,
+ *   0.25 = right side, 0.5 = crown, 0.75 = left side — the wrap seam
+ *   hides on the belly and each side paints once, seam-free.
  *   v (canvas y): along the fuselage axis.
  */
 
@@ -48,14 +49,16 @@ export function makeLiveryTexture(designator: string, lengthM: number): THREE.Ca
   canvas.height = H
   const c = canvas.getContext('2d')!
 
-  // Base coat + belly tone (u bands: belly centered at x=0.25W).
+  // Base coat + belly tone (belly = both canvas edges, where the seam hides).
   c.fillStyle = '#f4f5f7'
   c.fillRect(0, 0, W, H)
   const belly = c.createLinearGradient(0, 0, W, 0)
-  belly.addColorStop(0.08, 'rgba(160,168,176,0)')
-  belly.addColorStop(0.17, 'rgba(160,168,176,0.85)')
-  belly.addColorStop(0.33, 'rgba(160,168,176,0.85)')
-  belly.addColorStop(0.42, 'rgba(160,168,176,0)')
+  belly.addColorStop(0.0, 'rgba(160,168,176,0.85)')
+  belly.addColorStop(0.12, 'rgba(160,168,176,0.85)')
+  belly.addColorStop(0.2, 'rgba(160,168,176,0)')
+  belly.addColorStop(0.8, 'rgba(160,168,176,0)')
+  belly.addColorStop(0.88, 'rgba(160,168,176,0.85)')
+  belly.addColorStop(1.0, 'rgba(160,168,176,0.85)')
   c.fillStyle = belly
   c.fillRect(0, 0, W, H)
 
@@ -76,9 +79,8 @@ export function makeLiveryTexture(designator: string, lengthM: number): THREE.Ca
     c.fillStyle = pal.b
     c.fillRect(x - 16, 90, 6, H - 180)
   }
-  // left side (u=0.5 → x=512); right side split across the seam.
-  cheat(512)
-  cheat(6); cheat(W - 2) // wrap-safe halves paint past the edges harmlessly
+  cheat(256) // right side
+  cheat(768) // left side
 
   // Cabin windows: rounded near-black marks along the length. Pitch in
   // canvas-y from real ~1 m frame spacing.
@@ -91,8 +93,8 @@ export function makeLiveryTexture(designator: string, lengthM: number): THREE.Ca
       c.fill()
     }
   }
-  winRow(512)
-  winRow(2); winRow(W - 2)
+  winRow(256)
+  winRow(768)
 
   // Door outlines: four per side, spanning the window band height.
   const door = (x: number, y: number): void => {
@@ -103,8 +105,8 @@ export function makeLiveryTexture(designator: string, lengthM: number): THREE.Ca
     c.stroke()
   }
   for (const y of [210, 660, 1260, H - 330]) {
-    door(512, y)
-    door(4, y); door(W - 4, y)
+    door(256, y)
+    door(768, y)
   }
 
   // Titles on the crown sides (rotated to read along the fuselage) —
@@ -112,7 +114,7 @@ export function makeLiveryTexture(designator: string, lengthM: number): THREE.Ca
   c.save()
   c.fillStyle = pal.b
   c.font = 'bold 66px sans-serif'
-  for (const x of [655, 880]) {
+  for (const x of [382, 636]) { // upper sides, just above the window band
     c.save()
     c.translate(x, 330)
     c.rotate(Math.PI / 2)
@@ -125,7 +127,7 @@ export function makeLiveryTexture(designator: string, lengthM: number): THREE.Ca
   const reg = `N${(hashCode(designator) % 900) + 100}OH`
   c.fillStyle = '#3a3f45'
   c.font = 'bold 34px sans-serif'
-  for (const x of [560, 940]) {
+  for (const x of [300, 716]) {
     c.save()
     c.translate(x, H - 420)
     c.rotate(Math.PI / 2)
