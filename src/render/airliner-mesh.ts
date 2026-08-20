@@ -82,9 +82,12 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   add(fuse, L * 0.02, 0, -R * 0.32)
   const nose = new THREE.Mesh(new THREE.SphereGeometry(R, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2), WHITE)
   nose.rotation.x = -Math.PI / 2
-  nose.scale.set(1, 1, 1.7)
+  // Elongate the dome's OWN axis (local Y — scale applies pre-rotation);
+  // scaling local Z made a squashed plug instead of a nose (user: "add a
+  // nose").
+  nose.scale.set(1, 1.7, 1)
   add(nose, L * 0.02 + tubeLen / 2, 0, -R * 0.32)
-  const tailCone = new THREE.Mesh(new THREE.ConeGeometry(R * 0.99, L * 0.21, 16), WHITE)
+  const tailCone = new THREE.Mesh(new THREE.ConeGeometry(R * 0.99, L * 0.26, 16), WHITE)
   tailCone.rotation.x = Math.PI / 2 + 0.06
   add(tailCone, L * 0.02 - tubeLen / 2 - L * 0.093, 0, -R * 0.32 - R * 0.22)
   // window strips (box fallback only when unpainted — livery paints real
@@ -104,6 +107,16 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     const hump = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.78, R * 0.78, tubeLen * 0.92, 14), WHITE)
     hump.rotation.x = Math.PI / 2
     add(hump, L * 0.02, 0, -R * 1.02)
+  }
+
+  // Wing-body fairing: the belly bulge at the wing root (its absence
+  // made wings knife into a bare tube — part of the "shape correct" ask).
+  {
+    const fair = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), BELLY)
+    fair.scale.set(R * 1.12, R * 0.55, L * 0.115)
+    placeBody(fair, L * 0.1 - L * 0.06, 0, R * 0.52)
+    fair.castShadow = true
+    g.add(fair)
   }
 
   // ---- wings + animated surfaces ----
@@ -188,6 +201,10 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
         inlet.rotation.x = Math.PI / 2
         inlet.scale.y = 0.92
         add(inlet, ex + engLen / 2, side * ey, wingDrop * 0.55 + engR * 0.75)
+        // Spinner cone on the fan face (the bare flat disc read as a plug).
+        const spin = new THREE.Mesh(new THREE.ConeGeometry(engR * 0.3, engR * 0.55, 12), SILVER)
+        spin.rotation.x = Math.PI / 2
+        add(spin, ex + engLen / 2 + engR * 0.2, side * ey, wingDrop * 0.55 + engR * 0.75)
         const pylon = new THREE.Mesh(new THREE.BoxGeometry(engR * 0.3, engR * 0.9, engLen * 0.7), BELLY)
         add(pylon, ex - engLen * 0.15, side * ey, wingDrop * 0.25)
         // Reverser sleeve: aft nacelle ring that translates AFT on deploy,
@@ -213,6 +230,9 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       const inlet = new THREE.Mesh(new THREE.CylinderGeometry(engR * 1.02, engR * 1.02, 0.25, 14), DARK)
       inlet.rotation.x = Math.PI / 2
       add(inlet, -tubeLen * 0.36 + engLen / 2, side * (R + engR * 0.9), -R * 0.5)
+      const spin = new THREE.Mesh(new THREE.ConeGeometry(engR * 0.28, engR * 0.5, 12), SILVER)
+      spin.rotation.x = Math.PI / 2
+      add(spin, -tubeLen * 0.36 + engLen / 2 + engR * 0.18, side * (R + engR * 0.9), -R * 0.5)
     }
   }
 
@@ -220,9 +240,30 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   const finRootX = -L * 0.32
   const finH = L * 0.155
   const fin = taperedPanel(finRootX, L * 0.16, finRootX - L * 0.13, L * 0.05, 0, finH, R * 0.13, WHITE)
-  fin.rotation.z = -Math.PI / 2
+  // Rz(+π/2) points the panel's span axis UP — the original −π/2 pointed
+  // it DOWN, burying the whole fin inside/below the fuselage (the same
+  // rotation-sign bug class as the winglets; user: "make the tail
+  // upright").
+  fin.rotation.z = Math.PI / 2
   placeBody(fin, 0, R * 0.03, -R * 0.9)
   g.add(fin)
+  // American-style flag tail: red/white/blue slabs following the fin
+  // sweep, proud of both fin faces.
+  {
+    const sweepAng = Math.atan2(L * 0.13, finH) // LE sweep of the fin
+    const stripeH = finH * 0.94
+    const colors = [0xb61f2e, 0xeef0f2, 0x1f3a93]
+    colors.forEach((col, i) => {
+      const slab = new THREE.Mesh(
+        new THREE.BoxGeometry(R * 0.13 + 0.08, stripeH, L * 0.028),
+        new THREE.MeshStandardMaterial({ color: col, roughness: 0.45 }),
+      )
+      const midX = finRootX - L * 0.045 - i * L * 0.031 // chordwise, aft-stepping
+      placeBody(slab, midX - Math.tan(sweepAng) * 0, 0, -R * 0.9 - stripeH / 2)
+      slab.rotation.x = sweepAng
+      g.add(slab)
+    })
+  }
   const flash = new THREE.Mesh(new THREE.BoxGeometry(R * 0.14, finH * 0.32, L * 0.04), RED)
   add(flash, finRootX - L * 0.115, 0, -R * 0.9 - finH * 0.83)
   // Trijet center engine (MD-11/DC-10 class): S-duct pod at the fin base.

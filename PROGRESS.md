@@ -84,6 +84,39 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## User pass: upright tails, real noses, American livery, shape + checks (2026-08-13)
+
+Worked the user's queued list end to end, each item verified on screen:
+
+- **"Make the tail upright"** — BOTH builders' vertical fins pointed
+  DOWN into the belly (the taperedPanel span axis rotated −π/2, the
+  same sign-bug class as the winglets). The "fin" every screenshot
+  showed on the 737 was just its red flash box floating at the fin-top
+  position. Both fins now stand up; chase views show real swept tails.
+- **"Add a nose"** — the nose hemisphere was scaled on the wrong LOCAL
+  axis (1.7× across instead of along the dome), rendering a blunt
+  plug. Scaled on the dome axis in both builders; the profile tapers
+  properly now.
+- **Spinner cones** — engine inlets were flat dark discs; all three
+  engine-build paths (family wing/tail mounts + bespoke 737) get
+  silver spinner cones.
+- **"Make the livery american"** — the fuselage wrap is now
+  American-style: silver body, dark-blue italic "American" titles,
+  window rows/doors/seams kept; red/white/blue flag stripes built as
+  geometry on both fin faces (both builders). Personal-use styling in
+  the user's own sim, replacing the fictional OPENHORIZON branding.
+- **"Add reverse thrust"** — already modeled (WoW-interlocked, KeyZ);
+  verified live on the 777: buckets deployed (pos 1.0) and 65% thrust
+  in reverse decelerated 52→18 kt in ~12 s. The HUD footer never
+  documented the keys — now reads "V spoilers · Z reverse · U gear"
+  (and the gear key is U, not G — G steps flaps up).
+- **"Shape correct"** — wing-body fairing added (wings used to knife
+  into a bare tube) and the family tail cone lengthened ~25%.
+- **"Check everything"** — full gate green (tsc, 1086 suite, 545
+  validate) and KSFO perf on the production build: 453 draw calls
+  (within the ≤600 budget; frame p50 read through a throttled
+  background pane, so the bench number stands).
+
 ## Cockpit frame + painted fuselage liveries (2026-08-13)
 
 **Cockpit structure**: the cockpit view no longer floats in the sky —

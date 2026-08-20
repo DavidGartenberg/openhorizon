@@ -1,11 +1,12 @@
 import * as THREE from 'three'
 
 /**
- * Painted fuselage liveries (goal: "add textures to the plane"). A canvas
- * texture wraps each fuselage cylinder: base paint + belly tone, accent
- * cheatlines, a real cabin-window row per side, door outlines, faint
- * panel seams, airline-neutral "OPENHORIZON" titles and a registration.
- * Branding is deliberately fictional — no real airline's trade dress.
+ * Painted fuselage liveries (goal: "add textures to the plane", then
+ * "make the livery american"). A canvas texture wraps each fuselage
+ * cylinder: American-style silver body, cabin-window rows, door
+ * outlines, faint panel seams, dark-blue "American" titles and an
+ * N-number; the red/white/blue flag tail is separate geometry on the
+ * fin (see the builders). Personal-use styling in the user's own sim.
  *
  * UV frame (verified on screen — the first cut was a quarter-turn off):
  *   THREE's CylinderGeometry starts u=0 at local +Z, which the builders'
@@ -43,22 +44,22 @@ export function liveryAccent(designator: string): { a: string; b: string } {
 export function makeLiveryTexture(designator: string, lengthM: number): THREE.CanvasTexture {
   const hit = cache.get(designator)
   if (hit) return hit
-  const pal = liveryAccent(designator)
   const canvas = document.createElement('canvas')
   canvas.width = W
   canvas.height = H
   const c = canvas.getContext('2d')!
 
-  // Base coat + belly tone (belly = both canvas edges, where the seam hides).
-  c.fillStyle = '#f4f5f7'
+  // American-style silver body; slightly deeper silver on the belly
+  // (seam hides at the canvas edges = belly).
+  c.fillStyle = '#d7dade'
   c.fillRect(0, 0, W, H)
   const belly = c.createLinearGradient(0, 0, W, 0)
-  belly.addColorStop(0.0, 'rgba(160,168,176,0.85)')
-  belly.addColorStop(0.12, 'rgba(160,168,176,0.85)')
-  belly.addColorStop(0.2, 'rgba(160,168,176,0)')
-  belly.addColorStop(0.8, 'rgba(160,168,176,0)')
-  belly.addColorStop(0.88, 'rgba(160,168,176,0.85)')
-  belly.addColorStop(1.0, 'rgba(160,168,176,0.85)')
+  belly.addColorStop(0.0, 'rgba(148,155,163,0.8)')
+  belly.addColorStop(0.12, 'rgba(148,155,163,0.8)')
+  belly.addColorStop(0.2, 'rgba(148,155,163,0)')
+  belly.addColorStop(0.8, 'rgba(148,155,163,0)')
+  belly.addColorStop(0.88, 'rgba(148,155,163,0.8)')
+  belly.addColorStop(1.0, 'rgba(148,155,163,0.8)')
   c.fillStyle = belly
   c.fillRect(0, 0, W, H)
 
@@ -72,15 +73,6 @@ export function makeLiveryTexture(designator: string, lengthM: number): THREE.Ca
     c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke()
   }
 
-  // Cheatline pair under the window rows, full length.
-  const cheat = (x: number): void => {
-    c.fillStyle = pal.a
-    c.fillRect(x - 34, 90, 14, H - 180)
-    c.fillStyle = pal.b
-    c.fillRect(x - 16, 90, 6, H - 180)
-  }
-  cheat(256) // right side
-  cheat(768) // left side
 
   // Cabin windows: rounded near-black marks along the length. Pitch in
   // canvas-y from real ~1 m frame spacing.
@@ -109,16 +101,15 @@ export function makeLiveryTexture(designator: string, lengthM: number): THREE.Ca
     door(768, y)
   }
 
-  // Titles on the crown sides (rotated to read along the fuselage) —
-  // fictional operator, both sides.
+  // "American"-style titles above the window band, both sides.
   c.save()
-  c.fillStyle = pal.b
-  c.font = 'bold 66px sans-serif'
-  for (const x of [382, 636]) { // upper sides, just above the window band
+  c.fillStyle = '#13294b'
+  c.font = 'bold italic 78px sans-serif'
+  for (const x of [372, 646]) {
     c.save()
-    c.translate(x, 330)
+    c.translate(x, 300)
     c.rotate(Math.PI / 2)
-    c.fillText('OPENHORIZON', 0, 0)
+    c.fillText('American', 0, 0)
     c.restore()
   }
   c.restore()

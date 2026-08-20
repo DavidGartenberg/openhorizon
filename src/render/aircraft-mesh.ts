@@ -279,7 +279,7 @@ export function buildB738(): AircraftMesh {
   add(fuse, 0.9, 0, -0.6)
   const nose = new THREE.Mesh(new THREE.SphereGeometry(1.88, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2), WHITE)
   nose.rotation.x = -Math.PI / 2
-  nose.scale.set(1, 1, 1.7)
+  nose.scale.set(1, 1.7, 1) // dome axis is local Y — see airliner-mesh nose note
   add(nose, 15.2, 0, -0.6)
   const tailCone = new THREE.Mesh(new THREE.ConeGeometry(1.86, 8.2, 16), WHITE)
   tailCone.rotation.x = Math.PI / 2
@@ -363,6 +363,9 @@ export function buildB738(): AircraftMesh {
     inlet.rotation.x = Math.PI / 2
     inlet.scale.y = 0.92
     add(inlet, 6.55, side * 5.75, 1.15)
+    const spin = new THREE.Mesh(new THREE.ConeGeometry(0.4, 0.7, 12), SILVER)
+    spin.rotation.x = Math.PI / 2
+    add(spin, 6.8, side * 5.75, 1.15)
     const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.35, 1.1, 2.6), BELLY)
     add(pylon, 3.4, side * 5.75, 0.15)
     const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(1.36, 1.1, 1.7, 16), SILVER)
@@ -379,11 +382,26 @@ export function buildB738(): AircraftMesh {
 
   // ---- empennage: swept fin to 12.55 m, swept stabs ----
   const fin = taperedPanel(-12.6, 6.4, -18.8, 1.9, 0, 7.7, 0.26, WHITE)
-  fin.rotation.z = -Math.PI / 2 // stand the panel upright
+  // +π/2 stands the span UP — the original −π/2 pointed it down into the
+  // belly; the "fin" every screenshot showed was just the red flash box
+  // at the fin-top position (user: "make the tail upright").
+  fin.rotation.z = Math.PI / 2
   placeBody(fin, 0, 0.05, -2.2)
   g.add(fin)
   const finFlash = new THREE.Mesh(new THREE.BoxGeometry(0.26, 2.2, 1.4), RED)
   add(finFlash, -17.6, 0, -7.6)
+  // American-style flag tail on both fin faces.
+  {
+    const cols = [0xb61f2e, 0xeef0f2, 0x1f3a93]
+    cols.forEach((col, i) => {
+      const slab = new THREE.Mesh(
+        new THREE.BoxGeometry(0.36, 6.9, 1.05),
+        new THREE.MeshStandardMaterial({ color: col, roughness: 0.45 }),
+      )
+      add(slab, -14.6 - i * 1.15, 0, -5.7)
+      slab.rotation.x = 0.62 // follow the fin sweep
+    })
+  }
   for (const side of [-1, 1]) {
     const stab = taperedPanel(-15.6, 3.4, -18.9, 1.2, side * 0.4, side * 7.2, 0.16, BELLY)
     stab.position.y = 0.9
