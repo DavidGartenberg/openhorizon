@@ -80,7 +80,8 @@ export const CORE_ROSTER: RosterEntry[] = [
       vSpeeds: { vyKcas: 101, approachKcas: 85, vneKcas: 205, glideKcas: 88 },
       // Tuning: cruise under-predicted 168 vs 180 — the laminar composite
       // Cirrus is cleaner than the class cd0; set from the cruise anchor.
-      tuning: { cd0: 0.0235 },
+      // rudderMaxRad: SR22 carries a modest 15° rudder (X-Plane tail audit).
+      tuning: { cd0: 0.0235, rudderMaxRad: 0.262 },
     },
     opts: { cd0Class: 'cleanPistonSingle' },
     targets: { cruiseTasKt: 180, cruiseAltFt: 8000, climbFpm: 1270 },
@@ -126,6 +127,9 @@ export const CORE_ROSTER: RosterEntry[] = [
       flapDetentsDeg: [0, 12, 30], flapMaxDClMax: 0.5,
       stallCleanKcas: 84,
       vSpeeds: { vyKcas: 105, approachKcas: 96, vneKcas: 223, glideKcas: 115 },
+      // X-Plane tail audit: Baron ailerons 18/12 (mean 15°) — inherited 20°
+      // was high; rudder 25-27° (twin Vmca sizing) — inherited 20° was low.
+      tuning: { aileronMaxRad: 0.262, rudderMaxRad: 0.436 },
     },
     opts: { cd0Class: 'pistonTwin' },
     targets: { cruiseTasKt: 200, cruiseAltFt: 7000, climbFpm: 1735 },
@@ -282,6 +286,12 @@ export const CORE_ROSTER: RosterEntry[] = [
       flapDetentsDeg: [0], flapMaxDClMax: 0,
       stallCleanKcas: 35,
       vSpeeds: { vyKcas: 49, approachKcas: 49, vneKcas: 151, glideKcas: 49 },
+      // X-Plane tail audit: a 17-m glider carries 2/3 the C172's pitch
+      // volume (cmAlpha ×0.66) and HALF its weathercock (cnBeta ×0.45,
+      // cnR ×0.27) with a huge 35° rudder — the coordination workload IS
+      // the glider experience; inherited C172 values erased it. cmQ stays
+      // (long arm compensates in the arm-squared term).
+      tuning: { cmAlpha: -0.59, cnBeta: 0.029, cnR: -0.027, rudderMaxRad: 0.611 },
     },
     opts: { cd0Class: 'glider' },
     targets: { glideRatio: 34 },

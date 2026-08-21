@@ -84,6 +84,41 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## X-Plane pass 2b: tail volumes, control travels, engines, GA gear (2026-08-13)
+
+Second ACF workflow (9 agents: tail geometry, control travels, engine
+dynamics, gear stations from 8 airframes) + diff against our derived
+handling. The audit was honest in both directions — SR22/Baron tail
+volumes, the C750's engine, the jet gear formula, and both Tier-A
+anchors PASSED (X-Plane's own C172 elevator travel is worse than
+ours vs the maintenance manual). Adopted where flagged:
+
+- **Yaw stiffness**: the B738 carries one of the largest relative
+  fins in civil aviation — scaling every jet's cnBeta from it made
+  the A330 and MD-80 ~2× too stiff in yaw (Dutch roll/decrab wrong).
+  A332 family cnBeta 0.17→0.078 + cnR −0.3→−0.123; MD88 cnBeta→0.085;
+  C750→0.119. The glider was flying like a C172: AS21 cmAlpha ×0.66,
+  cnBeta ×0.45, cnR ×0.27, rudder 35° — the coordination footwork
+  that DEFINES glider flying now exists (propagates to variants).
+- **Control travels** (X-Plane vs inherited anchors, real-world
+  checked): B738 rudder 20°→26.4° (real NG ~26-27°); A330 ail 25°/
+  rudder 31.6°; MD88 ail 25°; C750 elev 24.5°/ail 25°/rud 30°
+  (sportiest jet in the set had airliner travels); SR22 rudder 15°
+  (was over-ruddered); Baron ail 15°/rudder 25°.
+- **Engine dynamics** (new partial jet-tuning deep-merge): Trent 700
+  spools ~2× lazier than the CFM56 anchor (spoolTauS 4.5 — the real
+  A330 go-around gotcha); MD-88's JT8D low-bypass burn was 20-30%
+  low fleet-anchored (TSFC 0.51 static/0.74 cruise, idle N1 27%,
+  spool 1.8 s). B738/C750 kept the anchor — it verifies against
+  reality for both.
+- **GA nose gear**: the 0.38L nose arm was jet-fitted (B738/A333/C750
+  wheelbases verify within ~4%) but gave piston singles a wheelbase
+  2.4× too long (SR22: 11 ft vs the real 4.6). Class split: singles
+  0.13L, twins 0.27L (Baron verifies), jets keep 0.38L.
+
+Full gate green after adoption: 121/121 takeoffs on the new gear
+geometry, lateral screens hold on the softened fins, 1104 + 545.
+
 ## X-Plane pass 2a: real post-stall aerodynamics (2026-08-13)
 
 X-Plane's airfoil library (±180° CL/CD/CM tables per airfoil, four

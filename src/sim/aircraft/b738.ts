@@ -80,7 +80,7 @@ export const B738: AircraftParams = {
   // ---- control travels ----
   elevatorMaxRad: 0.32,
   aileronMaxRad: 0.3,
-  rudderMaxRad: 0.35,
+  rudderMaxRad: 0.46, // real 737NG rudder ~26-27° (X-Plane audit; was 20° — understated decrab authority). cnDr was tuned at 0.35 rad: net yaw authority rises ~31%, within the type's real capability.
   trimMaxRad: 0.22, // trimmable stabilizer authority
 
   // ---- stall shaping ----

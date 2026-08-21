@@ -56,7 +56,7 @@ export interface RosterSpec {
    *  policy) for types whose climb/cruise split misses on the first pass. */
   propThrustScale?: number
   /** Explicit, documented per-type corrections (usually cd0 or e). */
-  tuning?: Partial<AircraftParams>
+  tuning?: Omit<Partial<AircraftParams>, 'jet'> & { jet?: Partial<import('../turbofan').JetParams> }
 }
 
 const FT_PANTS = 0.028 // faired fixed gear (wheel-pants singles)
@@ -118,7 +118,13 @@ function gearLegs(spec: RosterSpec): AircraftParams['gear'] {
   // aft stick). GA keeps 4.5% (C172-class anchor).
   const jetlike = spec.powerplant.kind === 'jet'
   const mainsAft = jetlike ? 0.028 : 0.045
-  const nose: GearLeg = { x: L * 0.38, y: 0, z: zMain * 0.98, k: k * 0.45, c: c * 0.45, steerMaxRad: 0.4, maxNormalN }
+  // X-Plane gear audit (2026-08-13): the 0.38L nose arm was fitted to
+  // jets (B738/A333/C750 wheelbases verify within ~4%) but parked GA
+  // nosewheels absurdly far forward — SR22 wheelbase read 11 ft vs the
+  // real 4.6. Class split: piston/tp singles 0.13L, twins 0.27L (Baron
+  // verifies), jets keep 0.38L.
+  const noseFrac = jetlike ? 0.38 : (spec.powerplant.kind !== 'none' && 'count' in spec.powerplant && spec.powerplant.count >= 2) ? 0.27 : 0.13
+  const nose: GearLeg = { x: L * noseFrac, y: 0, z: zMain * 0.98, k: k * 0.45, c: c * 0.45, steerMaxRad: 0.4, maxNormalN }
   return {
     nose,
     mainL: { x: -L * mainsAft, y: -track / 2, z: zMain, k, c, steerMaxRad: 0, maxNormalN },
@@ -322,5 +328,10 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
     },
     // pitotCal absent: IAS = CAS for every Tier-B type (disclosed).
   }
-  return { ...p, ...(spec.tuning ?? {}) }
+  const { jet: jetTuning, ...flatTuning } = spec.tuning ?? {}
+  const merged: AircraftParams = { ...p, ...flatTuning }
+  // Partial jet-block tuning deep-merges over the derived CFM56-anchored
+  // block (X-Plane engine audit: per-type spool/TSFC/idle overrides).
+  if (jetTuning && p.jet) merged.jet = { ...p.jet, ...jetTuning }
+  return merged
 }

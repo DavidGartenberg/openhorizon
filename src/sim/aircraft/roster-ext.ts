@@ -319,7 +319,9 @@ const WAVE2: RosterEntry[] = [
       stallCleanKcas: 110,
       vSpeeds: { vyKcas: 200, approachKcas: 125, vneKcas: 350, glideKcas: 200 },
       // Tuning: the M0.92-Mmo wing — highest drag divergence in civil aviation.
-      tuning: { machModel: { mdd: 0.9, dragRiseK: 22 } },
+      // + X-Plane tail audit: fighter-like travels (27/22 elev, 25 ail, 30
+      // rud) vs inherited airliner values; fin volume ~0.7× the 737 anchor.
+      tuning: { machModel: { mdd: 0.9, dragRiseK: 22 }, cnBeta: 0.119, elevatorMaxRad: 0.428, aileronMaxRad: 0.436, rudderMaxRad: 0.524 },
     },
     opts: { cd0Class: 'bizjet', sweptJet: true },
     targets: { jetCruise: { mach: 0.86, altFt: 37_000 }, climbFpm: 3500, climbIsMinimum: true },
@@ -393,7 +395,12 @@ const WAVE2: RosterEntry[] = [
       flapDetentsDeg: [0, 1, 8, 14, 22, 32], flapMaxDClMax: 0.85,
       stallCleanKcas: 145,
       vSpeeds: { vyKcas: 250, approachKcas: 137, vneKcas: 330 /* real A330 Vmo (X-Plane audit; was 365 carryover) */, glideKcas: 240 },
-      tuning: { machModel: { mdd: 0.85, dragRiseK: 20 } },
+      // X-Plane tail audit: the A330 fin volume is ~0.45× the 737 anchor's
+      // (the NG carries one of the largest relative fins in the fleet) —
+      // inherited cnBeta/cnR made Dutch roll and decrab twice too stiff.
+      // Travels: real A330 ail 25°, rudder ~31.6°. Trent 700: big fans
+      // spool ~2× lazier than the CFM56 anchor (go-around gotcha).
+      tuning: { machModel: { mdd: 0.85, dragRiseK: 20 }, cnBeta: 0.078, cnR: -0.123, aileronMaxRad: 0.436, rudderMaxRad: 0.552, jet: { spoolTauS: 4.5 } },
     },
     opts: { cd0Class: 'airliner', sweptJet: true },
     targets: { jetCruise: { mach: 0.82, altFt: 38_000 }, climbFpm: 2000, climbIsMinimum: true },
@@ -548,7 +555,7 @@ const WAVE3: RosterEntry[] = [
   variant(a320, { designator: 'A318', label: 'Airbus A318', lengthM: 31.44, emptyKg: 39_500, mtowKg: 68_000, stallCleanKcas: 111 }, { jetCruise: { mach: 0.78, altFt: 37_000 } }),
   variant(a320, { designator: 'BCS3', label: 'Airbus A220-300', wingAreaM2: 112.3, spanM: 35.1, lengthM: 38.71, emptyKg: 37_081, mtowKg: 69_900, powerplant: { kind: 'jet', staticThrustN: 103_600, count: 2 }, stallCleanKcas: 114 }, { jetCruise: { mach: 0.78, altFt: 38_000 } }),
   variant(b752, { designator: 'B753', label: 'Boeing 757-300', lengthM: 54.43, emptyKg: 64_580, mtowKg: 123_600, stallCleanKcas: 135 }, { jetCruise: { mach: 0.8, altFt: 35_000 } }),
-  variant(b739, { designator: 'MD88', label: 'McDonnell Douglas MD-88', wingAreaM2: 112.3, spanM: 32.87, lengthM: 45.06, emptyKg: 35_369, mtowKg: 67_812, fuelKg: 17_740 /* X-Plane audit: was silently inheriting the 737-900ER's 20,894 kg; MD-80 tankage = 5,840 gal */, powerplant: { kind: 'jet', staticThrustN: 93_400, count: 2 }, stallCleanKcas: 118 }, { jetCruise: { mach: 0.76, altFt: 33_000 } }),
+  variant(b739, { designator: 'MD88', label: 'McDonnell Douglas MD-88', wingAreaM2: 112.3, spanM: 32.87, lengthM: 45.06, emptyKg: 35_369, mtowKg: 67_812, fuelKg: 17_740 /* X-Plane audit: was silently inheriting the 737-900ER's 20,894 kg; MD-80 tankage = 5,840 gal */, powerplant: { kind: 'jet', staticThrustN: 93_400, count: 2 }, stallCleanKcas: 118, tuning: { cnBeta: 0.085 /* small T-tail fin, long fuselage: ~0.5× the 737 fin volume (X-Plane tail audit) */, cmQ: -30 /* T-tail arm²: pitch damping was ~33% understated */, aileronMaxRad: 0.436, jet: { tsfcKgPerNs: 1.44e-5 /* JT8D low-bypass: 0.51 lb/lbf/hr static */, tsfcMachSlope: 0.6, n1IdlePct: 27, spoolTauS: 1.8 } } }, { jetCruise: { mach: 0.76, altFt: 33_000 } }),
   // Widebody families
   variant(b763, { designator: 'B762', label: 'Boeing 767-200ER', lengthM: 48.51, emptyKg: 80_130, mtowKg: 156_500, stallCleanKcas: 140 }, { jetCruise: { mach: 0.8, altFt: 37_000 } }),
   variant(b763, { designator: 'B764', label: 'Boeing 767-400ER', lengthM: 61.37, emptyKg: 103_100, mtowKg: 204_120, stallCleanKcas: 148 }, { jetCruise: { mach: 0.8, altFt: 35_000 } }),
