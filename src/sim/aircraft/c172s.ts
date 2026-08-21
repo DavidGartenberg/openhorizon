@@ -39,7 +39,7 @@ export const C172S: AircraftParams = {
   cd0: 0.034,
   // induced factor k = 1/(π e AR)
   cdBeta: 0.17, // sideslip drag ∝ β²
-  postStallCd: 1.9, // flat-plate blend target
+  postStallCd: 1.28, // flat-plate CD at α=90° — X-Plane airfoil-table audit: 1.9 was the 2D-plate value; a finite-AR wing tops out ≈1.28 (XP tables agree across GA and jet airfoils)
 
   // ---- pitch ----
   cm0: 0.02,

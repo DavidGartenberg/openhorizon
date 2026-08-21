@@ -105,7 +105,10 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
   const alphaStallNeg = (P.clMin - cl0f) / P.clAlpha
   const sNeg = sigmoid((alphaStallNeg - alpha) / P.stallBlendWidthRad)
   const stall = Math.max(sPos, sNeg)
-  const clFlatPlate = 1.05 * Math.sin(2 * alpha)
+  // X-Plane airfoil-table audit (2026-08-13): the real post-stall curves
+  // (NACA 2412/23012, Boeing supercritical, ±180° tables) show a second
+  // lift peak ≈1.14-1.17 at α=45° — 1.1 splits the GA/jet families.
+  const clFlatPlate = 1.1 * Math.sin(2 * alpha)
   let cl = (1 - stall) * clAttached + stall * clFlatPlate
   cl += P.clDe * inp.elevatorRad + (P.clQ * qhat + P.clAlphaDot * adot) * (1 - stall)
   cl -= inp.extraClDump ?? 0

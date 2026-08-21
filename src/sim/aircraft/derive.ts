@@ -255,7 +255,7 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
     clAlphaDot: anchor.clAlphaDot,
     cd0: CD0_BY_CLASS[opts.cd0Class],
     cdBeta: anchor.cdBeta,
-    postStallCd: 1.9,
+    postStallCd: 1.28, // X-Plane airfoil-table audit (see c172s.ts note)
     cm0: jet ? 0.03 : 0.02,
     cmAlpha: anchor.cmAlpha,
     cmQ: anchor.cmQ,

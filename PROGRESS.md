@@ -84,6 +84,21 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## X-Plane pass 2a: real post-stall aerodynamics (2026-08-13)
+
+X-Plane's airfoil library (±180° CL/CD/CM tables per airfoil, four
+Reynolds blocks each) audited our post-stall blend. Verdict: our
+flat-plate LIFT shape was already right (within 7% of the NACA
+2412/23012 and Boeing supercritical tables at 25-90° alpha — the
+sin(2α) form holds), but the second lift peak is 1.14-1.17 at 45°
+where we used 1.05 → raised to 1.1. Our post-stall DRAG was 30-50%
+too high: postStallCd 1.9 is the 2D flat-plate value; a finite-AR
+wing tops out ≈1.28 at 90° alpha, and X-Plane's tables agree across
+GA and jet airfoils → adopted 1.28 in the C172 params and the Tier-B
+derive default. Deep stalls now carry physical drag instead of
+molasses. Full gate stayed green — the POH rows probe to the stall
+break, not through it, exactly as designed.
+
 ## X-Plane 12 physics audit: jet stalls were fiction (2026-08-13)
 
 User: "use the xplane to make the physics right." X-Plane 12 is
