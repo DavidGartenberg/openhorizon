@@ -29,7 +29,12 @@ export interface AxisBinding {
 
 export type GamepadMap = Partial<Record<BindableAxis, AxisBinding>> & {
   btn?: Partial<Record<BindableButton, ButtonBinding>>
+  /** Preset schema version — lets a corrected preset overwrite bindings a
+   *  WRONG earlier preset saved (the v1 TCA guess inverted the quadrant). */
+  v?: number
 }
+
+export const TCA_PRESET_VERSION = 2
 
 export const UNIPOLAR: ReadonlySet<BindableAxis> = new Set(['throttle', 'throttle2', 'mixture', 'brakes'])
 
@@ -107,6 +112,7 @@ export function parseGamepadMap(s: string): GamepadMap | null {
     if (typeof raw !== 'object' || raw === null) return null
     const out: GamepadMap = {}
     for (const [k, v] of Object.entries(raw)) {
+      if (k === 'v') { if (typeof v === 'number') out.v = v; continue }
       if (k === 'btn') {
         const btns: NonNullable<GamepadMap['btn']> = {}
         for (const [bk, bv] of Object.entries(v as Record<string, unknown>)) {
@@ -130,12 +136,16 @@ export function parseGamepadMap(s: string): GamepadMap | null {
   }
 }
 
-/** Thrustmaster TCA (Airbus edition) device matchers + preset. The
- *  Captain Pack enumerates as TWO devices: the sidestick (4 axes:
- *  roll, pitch, twist rudder, base slider) and the quadrant (the two
- *  thrust levers). The preset covers the axes; signs follow the same
- *  full-forward-reports-−1 convention as every Thrustmaster slider —
- *  the JOY capture wizard refines anything the guess gets wrong. */
+/** Thrustmaster TCA (Airbus edition) device matchers + preset, set
+ *  from the user's ACTUAL hardware readings (2026-08-13):
+ *    pad "TCA Sidestick X Copilot (044f:040f)": 10 axes — roll 0, pitch
+ *      1, twist rudder 5, base slider 6 (axes 2-4 unused, read 0).
+ *    pad "TCA Q-Eng 1&2 (044f:0407)": 7 axes — lever 1 = axis 0, lever 2
+ *      = axis 1, IDLE reads −1 (so sign +1 maps idle→0, TOGA→1). The v1
+ *      guess used sign −1 and turned idle levers into FULL thrust — the
+ *      source of every "runaway throttle" incident in the log.
+ *  Assumes the levers are parked at idle when the preset applies; the
+ *  J wizard rebinds from real movement if they weren't. */
 export const TCA_DEVICE = /tca|t\.a320|thrustmaster|airbus/i
 export const TCA_QUADRANT = /quadrant|q-eng|throttle/i
 
@@ -148,14 +158,16 @@ export function tcaPresetFor(pads: ReadonlyArray<{ id: string; axes: number; ind
   if (stick) {
     map.roll = { pad: stick.index, axis: 0, sign: 1 }
     map.pitch = { pad: stick.index, axis: 1, sign: 1 }
-    map.yaw = { pad: stick.index, axis: 2, sign: 1 }
-    if (!quadrant) map.throttle = { pad: stick.index, axis: 3, sign: -1 }
+    map.yaw = { pad: stick.index, axis: stick.axes >= 7 ? 5 : 2, sign: 1 }
+    if (!quadrant) map.throttle = { pad: stick.index, axis: stick.axes >= 7 ? 6 : 3, sign: -1 }
   }
   if (quadrant) {
-    map.throttle = { pad: quadrant.index, axis: 0, sign: -1 }
-    map.throttle2 = { pad: quadrant.index, axis: 1, sign: -1 }
+    map.throttle = { pad: quadrant.index, axis: 0, sign: 1 }
+    map.throttle2 = { pad: quadrant.index, axis: 1, sign: 1 }
   }
-  return Object.keys(map).length ? map : null
+  if (!Object.keys(map).length) return null
+  map.v = TCA_PRESET_VERSION
+  return map
 }
 
 /** The near-universal single-stick layout: roll/pitch on 0/1, twist

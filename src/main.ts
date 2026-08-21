@@ -57,7 +57,7 @@ import { WorldFrame, TileManager } from './world/tiles'
 import { Airports, type AirportData, type RunwayData } from './world/airports'
 import { makeElectricalState, stepElectrical } from './sim/systems/electrical'
 import { c172WeightBalance, C172S_ENVELOPE } from './sim/weight-balance'
-import { applyDeadzone, axisToUnipolar, detectMovedAxis, detectPressedButton, leverWithReverse, parseGamepadMap, serializeGamepadMap, tcaPresetFor, DEFAULT_SINGLE_STICK, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
+import { applyDeadzone, axisToUnipolar, detectMovedAxis, detectPressedButton, leverWithReverse, parseGamepadMap, serializeGamepadMap, tcaPresetFor, DEFAULT_SINGLE_STICK, TCA_PRESET_VERSION, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
 import { makeFuelState, stepFuel, type FuelSelector } from './sim/systems/fuel'
 import { PitotStaticSystem } from './sim/systems/pitot'
 import { stepEngineStart, type EngineStartState, type MagnetoPosition } from './sim/systems/engine-start'
@@ -777,16 +777,23 @@ window.addEventListener('gamepadconnected', (e) => {
     .map((p) => ({ id: p.id, axes: p.axes.length, index: p.index }))
   const preset = tcaPresetFor(padList)
   if (preset) {
+    // A stale-version map (the v1 guess inverted the quadrant → idle
+    // levers read as FULL thrust) gets its preset-defined axes OVERWRITTEN;
+    // a current-version map only fills unbound functions so the J wizard's
+    // custom bindings always win.
+    const stale = (gamepadMap.v ?? 0) < TCA_PRESET_VERSION
     let applied = 0
     for (const [k, v] of Object.entries(preset)) {
-      if (k !== 'btn' && !gamepadMap[k as BindableAxis]) {
+      if (k === 'btn' || k === 'v') continue
+      if (stale || !gamepadMap[k as BindableAxis]) {
         gamepadMap[k as BindableAxis] = v as { pad: number; axis: number; sign: 1 | -1 }
         applied++
       }
     }
+    gamepadMap.v = TCA_PRESET_VERSION
     if (applied) {
       saveJoyMap()
-      toast(`TCA DETECTED: ${g.id.slice(0, 30)} — ${applied} axes mapped (press J to fine-tune)`)
+      toast(`TCA DETECTED: ${g.id.slice(0, 30)} — ${applied} axes mapped${stale ? ' (corrected v2 preset)' : ''} (press J to fine-tune)`)
       return
     }
   }

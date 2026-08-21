@@ -84,6 +84,28 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Runaway throttle: root cause FOUND (it was the TCA hardware) (2026-08-13)
+
+CORRECTION to the earlier "time scrub replays control inputs" note —
+that diagnosis was WRONG (scrubSeconds only feeds the clock/sun).
+Empirical bisect on a fresh instance: THR read 100% immediately at
+spawn with no input, and navigator.getGamepads() showed TWO devices —
+the user's TCA Captain Pack (sidestick 044f:040f, 10 axes; quadrant
+"TCA Q-Eng 1&2" 044f:0407, 7 axes) plugged in. The quadrant's levers
+at IDLE report −1 on axes 0/1; the v1 preset (and before it the
+generic single-stick default applied on connect) used sign −1, which
+turned idle levers into FULL thrust whenever no __ohCtl override
+masked it. Every runaway in the log — the user's 737 charging off
+KHAF, the A320 crashes, the "phantom" 50-100% throttles — was this.
+
+Fixed from the real readings: quadrant sign +1 (idle→0, TOGA→1),
+sidestick twist on axis 5 and slider on axis 6 (not 2/3), preset
+schema v2 so the WRONG bindings already saved in the browser get
+overwritten on next connect (current-version maps still only fill
+unbound functions, so J-wizard custom bindings win). Verified live
+with the user's hardware: THR 0% / N1 20% at spawn, levers at idle,
+map auto-upgraded to v2. Tests updated to the real device ids.
+
 ## X-Plane pass 2b: tail volumes, control travels, engines, GA gear (2026-08-13)
 
 Second ACF workflow (9 agents: tail geometry, control travels, engine
@@ -313,15 +335,10 @@ stays cool away from it — the strongest single "MSFS depth" cue.
 Uniform plumbing respects the shared-uniform-object pattern across
 per-tile imagery clones.
 
-**Found while staging (recorded, not yet fixed): the time scrub
-replays control inputs.** Every "runaway throttle" tonight — including
-the user's 737 charging off KHAF's runway — traces to `__ohTime` /
-time-scrub usage: scrubbing re-drives recorded control inputs into the
-live aircraft (throttle observed ramping to 50–100% immediately after
-scrubs on otherwise-clean boots, three separate reproductions).
-Workaround used for staging: hold `__ohCtl` overrides through any
-scrub. A proper fix (scrub must not replay controls into the live
-ship) is queued as follow-up work.
+**Found while staging: runaway throttle** — at the time attributed
+to the time scrub; that was WRONG. See "Runaway throttle: root cause
+FOUND" above: it was the user's connected TCA quadrant with an
+inverted throttle sign in the default/preset mapping.
 
 ## MSFS-look G1+G2: sky-driven reflections, sun glare, golden light (2026-08-13)
 

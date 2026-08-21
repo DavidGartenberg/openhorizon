@@ -91,7 +91,8 @@ describe('TCA Captain Pack support (16a-b)', () => {
       pitch: { pad: 0, axis: 1, sign: 1 as const },
       btn: { gear: { pad: 1, btn: 4 }, reverse: { pad: 1, btn: 0 } },
     }
-    const back = parseGamepadMap(serializeGamepadMap(m))
+    const back = parseGamepadMap(serializeGamepadMap({ ...m, v: 2 }))
+    expect(back?.v).toBe(2)
     expect(back?.btn?.gear).toEqual({ pad: 1, btn: 4 })
     expect(back?.pitch?.axis).toBe(1)
     const legacy = parseGamepadMap('{"roll":{"pad":0,"axis":0,"sign":1}}')
@@ -99,20 +100,24 @@ describe('TCA Captain Pack support (16a-b)', () => {
   })
 
   it('tcaPresetFor maps stick axes and BOTH quadrant levers to the right pads', () => {
+    // Real device ids/axis counts read from the user's Captain Pack.
     const m = tcaPresetFor([
-      { id: 'TCA STICK X AIRBUS (Thrustmaster)', axes: 4, index: 0 },
-      { id: 'TCA Quadrant Airbus Edition (Thrustmaster)', axes: 2, index: 1 },
+      { id: 'TCA Sidestick X Copilot (Vendor: 044f Product: 040f)', axes: 10, index: 0 },
+      { id: 'TCA Q-Eng 1&2 (Vendor: 044f Product: 0407)', axes: 7, index: 1 },
     ])!
     expect(m.roll).toEqual({ pad: 0, axis: 0, sign: 1 })
     expect(m.pitch).toEqual({ pad: 0, axis: 1, sign: 1 })
-    expect(m.yaw).toEqual({ pad: 0, axis: 2, sign: 1 })
-    expect(m.throttle).toEqual({ pad: 1, axis: 0, sign: -1 })
-    expect(m.throttle2).toEqual({ pad: 1, axis: 1, sign: -1 })
+    expect(m.yaw).toEqual({ pad: 0, axis: 5, sign: 1 }) // twist is axis 5 on the real unit
+    expect(m.throttle).toEqual({ pad: 1, axis: 0, sign: 1 }) // idle reads -1 → sign +1
+    expect(m.throttle2).toEqual({ pad: 1, axis: 1, sign: 1 })
+    expect(m.v).toBe(2)
   })
 
   it('stick alone falls back to its base slider for throttle; non-TCA gets nothing', () => {
     const solo = tcaPresetFor([{ id: 'TCA STICK X AIRBUS', axes: 4, index: 0 }])!
-    expect(solo.throttle).toEqual({ pad: 0, axis: 3, sign: -1 })
+    expect(solo.throttle).toEqual({ pad: 0, axis: 3, sign: -1 }) // 4-axis variant keeps the classic layout
+    const solo10 = tcaPresetFor([{ id: 'TCA Sidestick X Copilot', axes: 10, index: 0 }])!
+    expect(solo10.throttle).toEqual({ pad: 0, axis: 6, sign: -1 })
     expect(solo.throttle2).toBeUndefined()
     expect(tcaPresetFor([{ id: 'Xbox Wireless Controller', axes: 4, index: 0 }])).toBeNull()
   })
