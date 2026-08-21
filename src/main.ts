@@ -32,6 +32,7 @@ import { loadIls, ilsLoaded, ilsCount } from './world/ils'
 import { osmIdentSegs } from './world/osm-layout'
 import { routeIdents } from './sim/atc/ground'
 import { interpretTransmission } from './sim/atc/freetext'
+import { ApproachController } from './sim/atc/approach'
 import { buildAirliner, airlinerCfgFor } from './render/airliner-mesh'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
@@ -224,6 +225,8 @@ const cockpitInteraction = new CockpitInteraction(camera)
 
 const wind = new WindModel()
 const chase = new ChaseCamera(camera)
+// Chase camera terrain clamp: render x = east, z = south → NED n = −z, e = x.
+chase.setGroundProbe((x, z) => aircraft.groundElevAt?.(-z, x) ?? 0)
 chase.setSizeScale(Math.max(FLEET_ACTIVE.params.spanM / 11, 1))
 const orbit = new OrbitCamera(camera)
 const freeCam = new FlyCamera(camera)
@@ -1248,6 +1251,9 @@ interface ActiveAtc {
   ll: LatLon
   tower: TowerController
   ground: GroundController
+  /** N7 arrival chain: radar approach facility (real APP/DEP freq). */
+  approach: ApproachController
+  appF: number
   atis: ReturnType<typeof buildAtis>
   twrF: number
   gndF: number
@@ -1631,6 +1637,13 @@ function scanAtc(lat: number, lon: number, now: number): void {
           departureFreqMhz: fs.find((x) => x.t === 'DEP')?.f ?? fs.find((x) => x.t === 'APP')?.f,
         }),
         ground: new GroundController({ facility: `${name} Ground`, freqMhz: gndF, activeRunway: atis.activeRunway }),
+        approach: new ApproachController({
+          facility: `${name} Approach`,
+          freqMhz: fs.find((x) => x.t === 'APP')?.f ?? fs.find((x) => x.t === 'DEP')?.f ?? twrF,
+          activeRunway: atis.activeRunway,
+          towerFreqMhz: twrF,
+        }),
+        appF: fs.find((x) => x.t === 'APP')?.f ?? fs.find((x) => x.t === 'DEP')?.f ?? twrF,
         atis, twrF, gndF, atisF,
       }
       atisPlayedFor = ''
@@ -1677,6 +1690,10 @@ function scanAtc(lat: number, lon: number, now: number): void {
     if (now - lastTowerTickAt > 5000) {
       lastTowerTickAt = now
       for (const t of activeAtc.tower.tick(loop.simTime, [{ callsign: CALLSIGN, view: playerAtcView() }])) comms.transmit(t)
+      {
+        const v = playerAtcView()
+        for (const t of activeAtc.approach.tick(loop.simTime, [{ callsign: CALLSIGN, view: { distanceM: v.distanceM, aglFt: v.aglFt } }])) comms.transmit(t)
+      }
     }
   }
 }
@@ -1733,6 +1750,18 @@ function atcMenuItems(): AtcMenuItem[] {
         })())) })
     items.push({ label: `Ready for departure (Tower ${a.twrF.toFixed(2)})`, run: () => sendPilot('readyTakeoff', a.twrF, () => a.tower.request(CALLSIGN, 'readyTakeoff', playerAtcView(), loop.simTime)) })
   } else {
+    if (!a.approach.handedOff(CALLSIGN) && view.distanceM > 4 * 1852) {
+      items.push({
+        label: `Check in with approach (App ${a.appF.toFixed(2)})`,
+        run: () => {
+          radios.com1.activeMhz = a.appF
+          const v = playerAtcView()
+          comms.transmit({ freqMhz: a.appF, from: CALLSIGN, text: `${Math.max(1, Math.round(v.distanceM / 1852))} miles out, inbound with the ATIS, request ILS runway ${a.atis.activeRunway}, ${CALLSIGN}`, atSimS: loop.simTime })
+          const replies = a.approach.checkIn(CALLSIGN, { distanceM: v.distanceM, aglFt: v.aglFt }, loop.simTime)
+          setTimeout(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
+        },
+      })
+    }
     items.push({ label: `Inbound for landing (Tower ${a.twrF.toFixed(2)})`, run: () => sendPilot('inboundLanding', a.twrF, () => a.tower.request(CALLSIGN, 'inboundLanding', playerAtcView(), loop.simTime)) })
     items.push({ label: 'Going around', run: () => sendPilot('goAround', a.twrF, () => a.tower.request(CALLSIGN, 'goAround', playerAtcView(), loop.simTime)) })
   }
