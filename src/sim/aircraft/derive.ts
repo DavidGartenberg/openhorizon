@@ -135,7 +135,24 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
   const clAlpha = 5.9 / (1 + 5.9 / (Math.PI * e * AR))
   // CALIBRATED: CLmax from the published clean stall at MTOW (see header).
   const vs = spec.stallCleanKcas * KT
-  const clMaxClean = (2 * spec.mtowKg * G) / (RHO0 * vs * vs * spec.wingAreaM2)
+  let clMaxClean = (2 * spec.mtowKg * G) / (RHO0 * vs * vs * spec.wingAreaM2)
+  // X-Plane 12 audit (2026-08-13): jet rows' stallCleanKcas were
+  // systematically optimistic — back-solving gave clean CLmax up to 2.8
+  // where a real clean swept wing tops out ≈1.4-1.5 (X-Plane's B738/A330/
+  // MD-82 files and first principles agree). The calibration now CAPS
+  // clean CLmax per jet class and re-derives the placarded stall from the
+  // effective value; the flap system is simultaneously recalibrated so
+  // LANDING CLmax reaches the slats+flaps physical target (airliner ≈2.9,
+  // bizjet ≈2.2) — approach speeds stay real while clean stall stops
+  // being fictional. GA/turboprop rows audited clean; uncapped.
+  const jetCap = opts.cd0Class === 'airliner' ? { clean: 1.45, land: 2.9 }
+    : opts.cd0Class === 'bizjet' ? { clean: 1.5, land: 2.2 } : null
+  let flapMaxDClMaxEff = spec.flapMaxDClMax
+  if (jetCap && clMaxClean > jetCap.clean) {
+    clMaxClean = jetCap.clean
+    flapMaxDClMaxEff = Math.max(spec.flapMaxDClMax, jetCap.land - jetCap.clean)
+  }
+  const effStallKcas = Math.sqrt((2 * spec.mtowKg * G) / (RHO0 * clMaxClean * spec.wingAreaM2)) / KT
 
   // Anchor for handling derivatives + shape constants (INHERITED, see header).
   const anchor = jet ? B738 : C172S
@@ -147,8 +164,8 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
   const maxDet = detents[detents.length - 1] || 1
   const frac = detents.map((d) => d / maxDet)
   const dCdFull = jet ? 0.09 : 0.065
-  const flapDClMax = frac.map((f) => f * spec.flapMaxDClMax)
-  const flapDCl0 = frac.map((f) => f * spec.flapMaxDClMax * 0.85)
+  const flapDClMax = frac.map((f) => f * flapMaxDClMaxEff)
+  const flapDCl0 = frac.map((f) => f * flapMaxDClMaxEff * 0.85)
   const flapDCd = frac.map((f) => f * f * dCdFull)
   const flapDCm = frac.map((f) => -f * (jet ? 0.19 : 0.09))
 
@@ -290,13 +307,15 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
     tireCorneringPerRad: 8,
     tireLatMuCap: 0.75,
     vSpeeds: {
-      vs0: Math.round(spec.stallCleanKcas * 0.9),
-      vs1: Math.round(spec.stallCleanKcas),
+      // Placards from the EFFECTIVE (physics-capped) stall, not the spec
+      // literal: vs0 from the full-flap CLmax ratio.
+      vs0: Math.round(effStallKcas * Math.sqrt(clMaxClean / (clMaxClean + flapMaxDClMaxEff))),
+      vs1: Math.round(effStallKcas),
       vx: Math.round(spec.vSpeeds.vyKcas * 0.9),
       vy: spec.vSpeeds.vyKcas,
       vfe10: Math.round(spec.vSpeeds.approachKcas * 1.5),
       vfe30: Math.round(spec.vSpeeds.approachKcas * 1.25),
-      va: Math.round(spec.stallCleanKcas * 1.95),
+      va: Math.round(effStallKcas * 1.95),
       vno: Math.round(spec.vSpeeds.vneKcas * 0.83),
       vne: spec.vSpeeds.vneKcas,
       glide: spec.vSpeeds.glideKcas,

@@ -84,6 +84,46 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## X-Plane 12 physics audit: jet stalls were fiction (2026-08-13)
+
+User: "use the xplane to make the physics right." X-Plane 12 is
+installed on this machine — a 9-agent workflow extracted airframe
+truth from eight Laminar ACF files matching our fleet (C172, B738,
+A330-300, MD-82, SR22, Baron 58, Super Cub, ASK 21) and diffed it
+against our definitions with real-world published values as referee.
+
+**Verdict on our data**: masses/geometry hold up well — every case
+where we diverged >5% on mass, span, or area, OUR value matched the
+published spec and X-Plane's was a panel-integration artifact or
+optional tankage (its PA-18 even has a systematic mph-entered-as-
+knots error we correctly do NOT copy). C172 informational rows: ours
+beats X-Plane on both (POH Vno 129, usable fuel).
+
+**Four genuine defects found and fixed**:
+1. **Jet clean-stall speeds were systematically ~25-40 kt optimistic**
+   — back-solving our stallCleanKcas rows gave clean CLmax up to 2.82
+   (A320-family 2.7+, CRJ/E-jet 2.3-2.6) where a real clean swept wing
+   tops out ≈1.45. derive.ts now CAPS clean CLmax per jet class
+   (airliner 1.45, bizjet 1.5), re-derives the placarded vs1/vs0/va
+   from the effective value, and simultaneously recalibrates the flap
+   system to a physical LANDING CLmax (airliner 2.9 slats+flaps,
+   bizjet 2.2) so approach speeds stay real. Jets no longer fly
+   finals 30 kt below physics.
+2. **MD88 fuel inheritance bug** — the variant silently inherited the
+   737-900ER base's 20,894 kg; MD-80 tankage is 5,840 gal ≈ 17,740 kg.
+3. **A330/A340 Vne 365 → 330** (real Vmo 330 KIAS) on the A332 base
+   (A333/A339 inherit) and A343.
+4. **A333 fuel** was the -200's 109 t center-tank capacity; -300
+   standard tankage is 97,530 L ≈ 78,030 kg.
+
+Fallout handled honestly: the roster stall round-trip now asserts
+against the DERIVED placard (physics and placard must agree; the spec
+literal can sit below the cap), and the fleet-takeoff lattice rotates
+off the FLAPPED takeoff-config stall at a realistic mid detent — with
+physical clean stalls, rotating at 1.1× clean Vs1 sent the heavies
+past their energy budget exactly as it would in reality. 121/121
+takeoffs green; full gate 1104 + 545.
+
 ## TCA Captain Pack X Airbus Edition support (2026-08-13, user request)
 
 Joystick layer extended for the user's Thrustmaster TCA Captain Pack

@@ -28,12 +28,19 @@ function takeoff(P: AircraftParams, label: string): { ok: boolean; why: string }
   // Takeoff flaps for jets/heavies only (GA singles use flaps 0 —
   // the C172 browser-proven technique).
   const heavy = !!P.trimIsStabilizer || P.mtowKg > 5000
-  if (heavy && P.flapDetentsDeg.length > 1) ac.controls.flapsIndex = 1
+  // Transports set a realistic MID takeoff detent (X-Plane-audit fix:
+  // clean stalls are physical now, so rotating off the CLEAN Vs1 sent
+  // heavies past their runway/energy budget — real jets rotate relative
+  // to the FLAPPED stall of their takeoff config).
+  const toIdx = P.trimIsStabilizer && P.flapDetentsDeg.length > 3
+    ? Math.ceil((P.flapDetentsDeg.length - 1) / 2)
+    : heavy && P.flapDetentsDeg.length > 1 ? 1 : 0
+  ac.controls.flapsIndex = toIdx
   // Jets: takeoff stabilizer trim, like the real airplane.
   if (P.trimIsStabilizer) ac.controls.trim = 0.4
-  // Transports rotate at ~1.1×Vs1 (1.2 put the 747's Vr at 198 kt,
-  // 3 kt under the ground-impact guard); GA at 1.2.
-  const vr = Math.max(P.vSpeeds.vs1 * (P.trimIsStabilizer ? 1.1 : 1.2), 35)
+  const dClTo = P.flapDClMax[toIdx] ?? 0
+  const vsConfig = P.vSpeeds.vs1 * Math.sqrt(P.clMaxClean / (P.clMaxClean + dClTo))
+  const vr = Math.max(vsConfig * (P.trimIsStabilizer ? 1.15 : 1.2), 35)
   const isTaildragger = !P.gear.nose
   // Transports climb out at ~V2+10 ≈ 1.1×Vr (1.3× gave the 747 a
   // 235-kt target — the law pushed the nose down at 204 chasing it).
