@@ -787,9 +787,15 @@ window.addEventListener('gamepadconnected', (e) => {
     const stale = (gamepadMap.v ?? 0) < TCA_PRESET_VERSION
     let applied = 0
     for (const [k, v] of Object.entries(preset)) {
-      if (k === 'btn' || k === 'v') continue
-      if (stale || !gamepadMap[k as BindableAxis]) {
-        gamepadMap[k as BindableAxis] = v as { pad: number; axis: number; sign: 1 | -1 }
+      if (k === 'btn' || k === 'v' || k === 'btnKeys') continue
+      const nb = v as { pad: number; axis: number; sign: 1 | -1 }
+      const cur = gamepadMap[k as BindableAxis]
+      // Overwrite when unbound, or when upgrading a stale preset AND the
+      // current binding sits on the preset's own pad/axis (a J-wizard
+      // capture on a different axis is the pilot's choice — keep it).
+      const presetSourced = !!cur && cur.pad === nb.pad && cur.axis === nb.axis
+      if (!cur || (stale && presetSourced)) {
+        gamepadMap[k as BindableAxis] = nb
         applied++
       }
     }

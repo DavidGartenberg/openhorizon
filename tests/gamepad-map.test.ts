@@ -108,9 +108,9 @@ describe('TCA Captain Pack support (16a-b)', () => {
     expect(m.roll).toEqual({ pad: 0, axis: 0, sign: 1 })
     expect(m.pitch).toEqual({ pad: 0, axis: 1, sign: 1 })
     expect(m.yaw).toEqual({ pad: 0, axis: 5, sign: 1 }) // twist is axis 5 on the real unit
-    expect(m.throttle).toEqual({ pad: 1, axis: 0, sign: 1 }) // idle reads -1 → sign +1
+    expect(m.throttle).toEqual({ pad: 1, axis: 0, sign: 1 }) // idle=-1, TOGA=+1 (live-verified)
     expect(m.throttle2).toEqual({ pad: 1, axis: 1, sign: 1 })
-    expect(m.v).toBe(4)
+    expect(m.v).toBe(6)
     // Full face bound: trigger = PTT, red = AP disconnect, base buttons = gear/flaps/spoilers…
     expect(m.btnKeys?.['0:0']).toBe('KeyT')
     expect(m.btn?.apDisconnect).toEqual({ pad: 0, btn: 1 })
@@ -125,7 +125,7 @@ describe('TCA Captain Pack support (16a-b)', () => {
     expect(new Set(Object.values(p.keys)).has('KeyB')).toBe(true)
     expect(HELD_ALIASES.has('KeyB')).toBe(true)
     expect(HELD_ALIASES.has('KeyU')).toBe(false)
-    const back = parseGamepadMap(serializeGamepadMap({ btnKeys: p.keys, v: 4 }))
+    const back = parseGamepadMap(serializeGamepadMap({ btnKeys: p.keys, v: 5 }))
     expect(back?.btnKeys?.['0:0']).toBe('KeyT')
   })
 

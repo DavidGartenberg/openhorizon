@@ -38,7 +38,7 @@ export type GamepadMap = Partial<Record<BindableAxis, AxisBinding>> & {
   btnKeys?: Record<string, string>
 }
 
-export const TCA_PRESET_VERSION = 4
+export const TCA_PRESET_VERSION = 6
 
 /** Key aliases that act while HELD (everything else is edge-triggered). */
 export const HELD_ALIASES: ReadonlySet<string> = new Set(['KeyB', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'Comma', 'Period'])
@@ -215,6 +215,12 @@ export function tcaPresetFor(pads: ReadonlyArray<{ id: string; axes: number; ind
     if (!quadrant) map.throttle = { pad: stick.index, axis: stick.axes >= 7 ? 6 : 3, sign: -1 }
   }
   if (quadrant) {
+    // CONFIRMED live (2026-08-13): idle reads axis −1, TOGA reads axis
+    // +1 (the resting/TOGA-detent reads matched sign +1 giving correct
+    // 0%/100%). A LATER uncommitted edit flipped this to −1 on an
+    // unverified guess and shipped a real regression — reported by the
+    // user as "push forward, throttle % goes DOWN". Do not flip this
+    // again without a live axis reading at both idle and TOGA.
     map.throttle = { pad: quadrant.index, axis: 0, sign: 1 }
     map.throttle2 = { pad: quadrant.index, axis: 1, sign: 1 }
   }
