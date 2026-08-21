@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applyDeadzone, axisToUnipolar, detectMovedAxis,
   parseGamepadMap, serializeGamepadMap, DEFAULT_SINGLE_STICK,
-  detectPressedButton, leverWithReverse, tcaPresetFor,
+  detectPressedButton, leverWithReverse, tcaPresetFor, tcaButtonPreset, HELD_ALIASES,
 } from '../src/sim/gamepad-map'
 
 describe('applyDeadzone', () => {
@@ -110,7 +110,23 @@ describe('TCA Captain Pack support (16a-b)', () => {
     expect(m.yaw).toEqual({ pad: 0, axis: 5, sign: 1 }) // twist is axis 5 on the real unit
     expect(m.throttle).toEqual({ pad: 1, axis: 0, sign: 1 }) // idle reads -1 → sign +1
     expect(m.throttle2).toEqual({ pad: 1, axis: 1, sign: 1 })
-    expect(m.v).toBe(2)
+    expect(m.v).toBe(4)
+    // Full face bound: trigger = PTT, red = AP disconnect, base buttons = gear/flaps/spoilers…
+    expect(m.btnKeys?.['0:0']).toBe('KeyT')
+    expect(m.btn?.apDisconnect).toEqual({ pad: 0, btn: 1 })
+    expect(m.btnKeys?.['0:4']).toBe('KeyU')
+    expect(m.btn?.reverse).toEqual({ pad: 1, btn: 0 })
+  })
+
+  it('button preset: every stick face button gets a job; held aliases are the held keys', () => {
+    const p = tcaButtonPreset(0, 1)
+    expect(Object.keys(p.keys).length).toBeGreaterThanOrEqual(16)
+    expect(p.keys['0:16']).toBeUndefined() // no guessed hat/latching-switch aliases
+    expect(new Set(Object.values(p.keys)).has('KeyB')).toBe(true)
+    expect(HELD_ALIASES.has('KeyB')).toBe(true)
+    expect(HELD_ALIASES.has('KeyU')).toBe(false)
+    const back = parseGamepadMap(serializeGamepadMap({ btnKeys: p.keys, v: 4 }))
+    expect(back?.btnKeys?.['0:0']).toBe('KeyT')
   })
 
   it('stick alone falls back to its base slider for throttle; non-TCA gets nothing', () => {

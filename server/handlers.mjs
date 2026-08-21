@@ -1,13 +1,15 @@
 /**
  * Data handlers shared by the Express server and the Vite dev middleware:
  * terrain tile proxy (AWS terrarium, disk-cached) and the OurAirports
- * build pipeline (§22 sources).
+ * build pipeline (§22 sources); /xp/* local X-Plane assets live in
+ * xp-static.mjs and are dispatched from route() below.
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { buildAirports, buildNavaids, buildCifpProcedures, buildUsAirspace, buildFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb , buildIls } from './parse.mjs'
+import { xpRoute } from './xp-static.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 /** Vendored offline fallbacks committed with the repo (Phase 12a). */
@@ -524,6 +526,9 @@ export async function landcoverTile(z, x, y) {
 }
 
 export async function route(url, res) {
+  // Local X-Plane 12 assets (server/xp-static.mjs) carry their own
+  // 403/404 semantics, so they dispatch ahead of the 502-on-throw block.
+  if (url.startsWith('/xp/')) return xpRoute(url, res)
   const terrain = url.match(/^\/proxy\/terrain\/(\d+)\/(\d+)\/(\d+)\.png$/)
   const metar = url.match(/^\/api\/metar\?bbox=([-\d.,]+)$/)
   const nexrad = url.match(/^\/proxy\/nexrad\/(\d+)\/(\d+)\/(\d+)\.png$/)

@@ -32,9 +32,56 @@ export type GamepadMap = Partial<Record<BindableAxis, AxisBinding>> & {
   /** Preset schema version — lets a corrected preset overwrite bindings a
    *  WRONG earlier preset saved (the v1 TCA guess inverted the quadrant). */
   v?: number
+  /** Key-alias buttons: "pad:btn" → KeyboardEvent.code. A press injects a
+   *  one-frame key so the existing discrete handlers serve the stick;
+   *  entries whose code is listed in HELD_ALIASES mirror held state. */
+  btnKeys?: Record<string, string>
 }
 
-export const TCA_PRESET_VERSION = 2
+export const TCA_PRESET_VERSION = 4
+
+/** Key aliases that act while HELD (everything else is edge-triggered). */
+export const HELD_ALIASES: ReadonlySet<string> = new Set(['KeyB', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'Comma', 'Period'])
+
+/** Thrustmaster TCA Sidestick X Airbus button layout (Chrome indices =
+ *  printed button number − 1): 0 trigger, 1 red AP-disconnect (top),
+ *  2 black thumb button, 3 hat push; base 4-15 = L1-L3 / R1-R3 + the
+ *  lower six; 16-21 hat directions where the OS exposes them as buttons.
+ *  Quadrant (TCA Q-Eng 1&2): 0/1 = reverse-lift levers ENG1/ENG2.
+ *  Assignments mirror Thrustmaster's published Airbus profile where the
+ *  sim has the function, mapped onto our keys. */
+export function tcaButtonPreset(stickPad: number | null, quadPad: number | null): { keys: Record<string, string>; fn: Partial<Record<BindableButton, ButtonBinding>> } {
+  const keys: Record<string, string> = {}
+  const fn: Partial<Record<BindableButton, ButtonBinding>> = {}
+  if (stickPad !== null) {
+    const k = (b: number, code: string): void => { keys[`${stickPad}:${b}`] = code }
+    k(0, 'KeyT') // trigger = PTT → ATC panel / transmit box
+    fn.apDisconnect = { pad: stickPad, btn: 1 } // red button
+    k(2, 'KeyX') // black thumb = flight assist toggle
+    k(3, 'KeyC') // hat push = camera cycle
+    k(4, 'KeyU') // L1 gear
+    k(5, 'KeyF') // L2 flaps down a step
+    k(6, 'KeyG') // L3 flaps up a step
+    k(7, 'KeyV') // R1 spoiler lever cycle
+    k(8, 'KeyZ') // R2 reverse toggle
+    k(9, 'KeyB') // R3 brakes (held)
+    k(10, 'KeyM') // plane menu
+    k(11, 'Space') // pause
+    k(12, 'KeyO') // save
+    k(13, 'KeyP') // load
+    k(14, 'KeyR') // reset/respawn
+    k(15, 'KeyQ') // mute
+    // Indices 16+ are NOT preset: on the live unit button 16 read pressed
+    // at rest (a latching base switch or hat-as-button), and a held trim
+    // alias there would run the trim away — the J wizard binds hats from
+    // real motion instead.
+  }
+  if (quadPad !== null) {
+    fn.reverse = { pad: quadPad, btn: 0 } // ENG1 reverse lift (held)
+    keys[`${quadPad}:1`] = 'KeyZ' // ENG2 lift = reverse toggle as well
+  }
+  return { keys, fn }
+}
 
 export const UNIPOLAR: ReadonlySet<BindableAxis> = new Set(['throttle', 'throttle2', 'mixture', 'brakes'])
 
@@ -113,6 +160,12 @@ export function parseGamepadMap(s: string): GamepadMap | null {
     const out: GamepadMap = {}
     for (const [k, v] of Object.entries(raw)) {
       if (k === 'v') { if (typeof v === 'number') out.v = v; continue }
+      if (k === 'btnKeys') {
+        const bk: Record<string, string> = {}
+        for (const [kk, vv] of Object.entries(v as Record<string, unknown>)) if (typeof vv === 'string') bk[kk] = vv
+        out.btnKeys = bk
+        continue
+      }
       if (k === 'btn') {
         const btns: NonNullable<GamepadMap['btn']> = {}
         for (const [bk, bv] of Object.entries(v as Record<string, unknown>)) {
@@ -166,6 +219,9 @@ export function tcaPresetFor(pads: ReadonlyArray<{ id: string; axes: number; ind
     map.throttle2 = { pad: quadrant.index, axis: 1, sign: 1 }
   }
   if (!Object.keys(map).length) return null
+  const btns = tcaButtonPreset(stick ? stick.index : null, quadrant ? quadrant.index : null)
+  map.btnKeys = btns.keys
+  map.btn = btns.fn
   map.v = TCA_PRESET_VERSION
   return map
 }

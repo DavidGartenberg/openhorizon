@@ -58,13 +58,30 @@ export class Input {
     })
   }
 
+  private virtualHeld = new Set<string>()
+
   isHeld(code: string): boolean {
-    return this.held.has(code)
+    return this.held.has(code) || this.virtualHeld.has(code)
   }
 
   /** True once per physical key press, cleared by endFrame(). */
   wasPressed(code: string): boolean {
     return this.pressedSinceLastFrame.has(code)
+  }
+
+  /** Gamepad button → key alias (16a-b): a mapped button edge injects a
+   *  one-frame press of its key code so every existing discrete-key
+   *  handler (gear, flaps, spoilers, ATC panel, menu, camera, pause…)
+   *  serves the stick without a second action table. */
+  injectPress(code: string): void {
+    this.pressedSinceLastFrame.add(code)
+  }
+
+  /** Held-type alias (brakes, throttle nudges): mirrors a button's held
+   *  state into isHeld()/axis(). */
+  setVirtualHeld(code: string, held: boolean): void {
+    if (held) this.virtualHeld.add(code)
+    else this.virtualHeld.delete(code)
   }
 
   /** -1 | 0 | +1 from a pair of keys. */

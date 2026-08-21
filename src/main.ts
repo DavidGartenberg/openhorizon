@@ -58,7 +58,7 @@ import { WorldFrame, TileManager } from './world/tiles'
 import { Airports, type AirportData, type RunwayData } from './world/airports'
 import { makeElectricalState, stepElectrical } from './sim/systems/electrical'
 import { c172WeightBalance, C172S_ENVELOPE } from './sim/weight-balance'
-import { applyDeadzone, axisToUnipolar, detectMovedAxis, detectPressedButton, leverWithReverse, parseGamepadMap, serializeGamepadMap, tcaPresetFor, DEFAULT_SINGLE_STICK, TCA_PRESET_VERSION, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
+import { applyDeadzone, axisToUnipolar, detectMovedAxis, detectPressedButton, leverWithReverse, parseGamepadMap, serializeGamepadMap, tcaPresetFor, DEFAULT_SINGLE_STICK, TCA_PRESET_VERSION, HELD_ALIASES, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
 import { makeFuelState, stepFuel, type FuelSelector } from './sim/systems/fuel'
 import { PitotStaticSystem } from './sim/systems/pitot'
 import { stepEngineStart, type EngineStartState, type MagnetoPosition } from './sim/systems/engine-start'
@@ -793,10 +793,14 @@ window.addEventListener('gamepadconnected', (e) => {
         applied++
       }
     }
+    // Button tables: a stale map takes the full preset; a current one
+    // keeps the pilot's own captures and only fills missing entries.
+    if (preset.btnKeys) gamepadMap.btnKeys = stale ? { ...preset.btnKeys } : { ...preset.btnKeys, ...(gamepadMap.btnKeys ?? {}) }
+    if (preset.btn) gamepadMap.btn = stale ? { ...preset.btn } : { ...preset.btn, ...(gamepadMap.btn ?? {}) }
     gamepadMap.v = TCA_PRESET_VERSION
-    if (applied) {
+    if (applied || stale) {
       saveJoyMap()
-      toast(`TCA DETECTED: ${g.id.slice(0, 30)} — ${applied} axes mapped${stale ? ' (corrected v2 preset)' : ''} (press J to fine-tune)`)
+      toast(`TCA DETECTED: ${g.id.slice(0, 30)} — ${applied} axes + ${Object.keys(gamepadMap.btnKeys ?? {}).length} buttons mapped (J to fine-tune)`)
       return
     }
   }
@@ -1024,7 +1028,7 @@ function pollControls(dt: number): void {
     }
     // 16a-b: bound BUTTONS (TCA stick/quadrant switches). Edge-triggered
     // toggles + held functions, same actions as their keyboard twins.
-    const btns = gamepadMap.btn
+    const btns = gamepadMap.btn ?? (gamepadMap.btnKeys ? {} : null)
     if (btns) {
       const now = padsButtonSnapshot()
       const down = (fn: BindableButton): boolean => {
@@ -1054,6 +1058,18 @@ function pollControls(dt: number): void {
       }
       joyReverseHeld = down('reverse')
       if (aircraft.P.reversers && joyReverseHeld) aircraft.reverseCmd = true
+      // Key-alias buttons: the whole stick/quadrant face drives the
+      // existing key handlers (gear/flaps/spoilers/ATC/menu/camera/pause…).
+      const aliases = gamepadMap.btnKeys
+      if (aliases) {
+        for (const [key, code] of Object.entries(aliases)) {
+          const [padS, btnS] = key.split(':')
+          const p = Number(padS), b = Number(btnS)
+          const isDown = !!now[p]?.[b]
+          if (HELD_ALIASES.has(code)) input.setVirtualHeld(code, isDown)
+          else if (isDown && !btnPrev[p]?.[b]) input.injectPress(code)
+        }
+      }
       btnPrev = now
     }
   }

@@ -84,6 +84,26 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## TCA Captain Pack: every control bound (2026-08-13, user request)
+
+With the user's hardware live, the whole stick/quadrant face is now
+bound through a KEY-ALIAS layer: a mapped button edge injects a one-
+frame key press (Input.injectPress) so every existing discrete handler
+serves the stick — trigger = PTT (ATC panel + transmit box), red top
+button = AP disconnect, black thumb = flight assist, hat push = camera,
+base L1-L3 = gear / flaps down / flaps up, R1-R3 = spoilers / reverse
+toggle / brakes (held alias), lower six = plane menu, pause, save,
+load, respawn, mute; quadrant ENG1 reverse-lift = reverse (held), ENG2
+lift = reverse toggle. Preset schema v4 overwrites stale tables but
+preserves J-wizard captures on current-version maps. Verified live:
+map applied (20 aliases + 2 functional), throttle tracked the user's
+levers (74% with levers advanced, idle-detent switches releasing in
+step), zero console errors. Deliberately NOT preset: indices 16+ — on
+the live unit button 16 read pressed at rest (latching base switch or
+hat-as-button); a held trim alias there would run the trim away, the
+exact failure class of the throttle-sign bug. Hats bind from real
+motion via J.
+
 ## Runaway throttle: root cause FOUND (it was the TCA hardware) (2026-08-13)
 
 CORRECTION to the earlier "time scrub replays control inputs" note —
