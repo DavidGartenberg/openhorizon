@@ -84,6 +84,30 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Flaps extend OUT, then DOWN — Fowler track schedule (2026-08-13, user request)
+
+User: "the flaps go down, they do not extend out then down." Checked
+the reference (737 hooked-track literature: the forward run of the
+track is nearly straight and slopes only slightly down, so early
+travel is aft translation for takeoff settings; the aft end hooks
+down and delivers the big rotation for landing). New pure module
+src/render/fowler.ts encodes that two-phase schedule (ext ≈ 90% done
+by half travel; rotation starts ~35% travel, full at the end) with
+5 unit tests, and ALL THREE animated builders now share it: the C172
+(which was PURE rotation — its single-slotted flaps now slide aft on
+tracks first), the bespoke 737, and the airliner family. Verified on
+screen: 737 at flaps 25 shows the panel slid well aft of the wing
+with only moderate droop — the gap opens before the deflection.
+
+Also fixed: `__ohCtl()` with no argument crashed (Object.entries on
+undefined after the NaN-guard rewrite); it now reads back the current
+overrides.
+
+Sources consulted: Boeing 737 flap-track patents/literature
+(US8684316B2 / EP2572978A3 "compact large fowler motion"), Abbott
+Aerospace support-and-actuation notes, Firgelli Fowler mechanism
+explainer.
+
 ## TCA Captain Pack: every control bound (2026-08-13, user request)
 
 With the user's hardware live, the whole stick/quadrant face is now

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { liveryMaterial } from './livery'
+import { fowlerPose } from './fowler'
 
 /**
  * Primitive aircraft exteriors, proportioned from published dimensions
@@ -174,7 +175,16 @@ export function buildC172(): AircraftMesh {
   g.add(blade)
 
   const surfaces = (s: SurfaceState): void => {
-    for (const p of flapPivots) p.rotation.x = s.flapFrac * 0.52 // trailing edge DOWN 30° (sign was inverted — user report N0)
+    for (const p of flapPivots) {
+      // Single-slotted Fowler-type flap on tracks: slides AFT first (the
+      // slot opens), then rotates to 30° late in the travel (fowler.ts).
+      p.userData.z0 ??= p.position.z
+      p.userData.y0 ??= p.position.y
+      const fp = fowlerPose(s.flapFrac)
+      p.position.z = (p.userData.z0 as number) + fp.ext * 0.2
+      p.position.y = (p.userData.y0 as number) - fp.drop * 0.05
+      p.rotation.x = fp.rot * 0.52 // trailing edge DOWN 30° (sign was inverted — user report N0)
+    }
   }
   return { group: g, propDisc, surfaces }
 }
@@ -456,11 +466,12 @@ export function buildB738(): AircraftMesh {
     for (const p of flapPivots) {
       p.position.z = p.userData.z0 ?? (p.userData.z0 = p.position.z)
       p.position.y = p.userData.y0 ?? (p.userData.y0 = p.position.y)
-      // Translation-dominant Fowler (user: "flaps extend, not go down").
-      const deep = s.flapFrac * s.flapFrac
-      p.position.z += s.flapFrac * 2.1
-      p.position.y -= deep * 0.2
-      p.rotation.x = deep * 0.42 // droop arrives mostly at deep settings
+      // Hooked-track Fowler schedule (fowler.ts): aft extension completes
+      // by mid-travel, the big rotation arrives late — extend OUT, then DOWN.
+      const fp = fowlerPose(s.flapFrac)
+      p.position.z += fp.ext * 2.1
+      p.position.y -= fp.drop * 0.25
+      p.rotation.x = fp.rot * 0.62 // ~35° at flaps 40
     }
     for (const p of spoilerPivots) p.rotation.x = -s.spoilerFrac * 0.87 // panel UP ~50° (sign was inverted — N0)
     for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85

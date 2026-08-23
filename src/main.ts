@@ -2743,7 +2743,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohRate: (r: 0 | 1 | 2 | 4) => {
     loop.setRate(r)
   },
-  __ohCtl: (c: Record<string, number> | null) => {
+  __ohCtl: (c?: Record<string, number> | null) => {
+    if (c === undefined) return ctlOverride ? { ...ctlOverride } : null // no-arg = read back
     if (c === null) { ctlOverride = null; return }
     // Same NaN-guard as __ohSpoiler: drop non-finite fields instead of
     // letting them poison the physics through the override path.

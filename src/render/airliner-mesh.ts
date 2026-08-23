@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { liveryMaterial } from './livery'
+import { fowlerPose } from './fowler'
 import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
 
 /**
@@ -319,13 +320,12 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     for (const p of flapPivots) {
       p.userData.z0 ??= p.position.z
       p.userData.y0 ??= p.position.y
-      // Fowler motion, TRANSLATION-dominant (user: "flaps extend from the
-      // wings, not go down"): the panel slides well aft; droop and
-      // rotation come in mostly at deep settings (frac² shaping).
-      const deep = s.flapFrac * s.flapFrac
-      p.position.z = (p.userData.z0 as number) + s.flapFrac * rootChord * 0.34
-      p.position.y = (p.userData.y0 as number) - deep * R * 0.1
-      p.rotation.x = deep * 0.42
+      // Hooked-track Fowler schedule (fowler.ts): aft extension first
+      // (slot opens by mid-travel), rotation late — extend OUT, then DOWN.
+      const fp = fowlerPose(s.flapFrac)
+      p.position.z = (p.userData.z0 as number) + fp.ext * rootChord * 0.34
+      p.position.y = (p.userData.y0 as number) - fp.drop * R * 0.12
+      p.rotation.x = fp.rot * 0.6
     }
     for (const p of spoilerPivots) p.rotation.x = -s.spoilerFrac * 0.87
     for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85
