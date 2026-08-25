@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fowlerPose } from '../src/render/fowler'
+import { fowlerPose, spoileronRise } from '../src/render/fowler'
 
 describe('fowlerPose — extend out, THEN down', () => {
   it('is closed at 0 and fully extended + rotated at 1', () => {
@@ -10,12 +10,12 @@ describe('fowlerPose — extend out, THEN down', () => {
   })
   it('first phase is translation: at 30% travel the panel is mostly out but barely rotated', () => {
     const p = fowlerPose(0.3)
-    expect(p.ext).toBeGreaterThan(0.7)
+    expect(p.ext).toBeGreaterThan(0.6)
     expect(p.rot).toBe(0) // rotation has not begun at all
   })
   it('by half travel extension is ~done while rotation has only just begun', () => {
     const p = fowlerPose(0.5)
-    expect(p.ext).toBe(1) // extension fully complete before rotation starts
+    expect(p.ext).toBe(1) // extension fully complete exactly as rotation begins
     expect(p.rot).toBe(0)
   })
   it('second phase is rotation: from 50% to 100% rotation grows far more than extension', () => {
@@ -34,5 +34,21 @@ describe('fowlerPose — extend out, THEN down', () => {
       last = p
     }
     expect(fowlerPose(2)).toEqual(fowlerPose(1))
+  })
+})
+
+describe('spoileronRise — real flight-spoiler mixing', () => {
+  it('no roll: both panels follow the speedbrake', () => {
+    expect(spoileronRise(0.5, 0, 0)).toBeCloseTo(0.5)
+    expect(spoileronRise(0.5, 0, 1)).toBeCloseTo(0.5)
+  })
+  it('left roll raises the LEFT panel only', () => {
+    expect(spoileronRise(0, -0.9, 0)).toBeCloseTo(0.315)
+    expect(spoileronRise(0, -0.9, 1)).toBe(0)
+  })
+  it('right roll raises the RIGHT panel only, on top of speedbrake, clamped', () => {
+    expect(spoileronRise(0.3, 1, 1)).toBeCloseTo(0.65)
+    expect(spoileronRise(0.3, 1, 0)).toBeCloseTo(0.3)
+    expect(spoileronRise(0.9, 1, 1)).toBe(1)
   })
 })

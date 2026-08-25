@@ -84,6 +84,32 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Flaps attached + spoilers like real ones (2026-08-13, user follow-ups)
+
+**Flaps** (user: "can't go into the ground… the flap still has to be
+attached to the wing"): extension capped at ~60% of the flap's OWN
+chord so the panel's leading edge stays tucked under the wing
+trailing edge (no more floating free), the vertical drop cut to
+near-flat track slope (ground clearance at flaps 40 verified parked
+at KSFO), the phase handoff made continuous at exactly half travel
+(the dead band had read as "switching angle"), and FLAP TRACK CANOE
+FAIRINGS added under both wings in both builders — the visible pods
+real flaps ride on, making the attachment explicit.
+
+**Spoilers** (user: "make the spoilers extend like real ones"): full
+deploy now stands ~60° like real ground spoilers, and the panels are
+proper SPOILERONS — the down-going wing's panel rises with roll input
+on top of the speedbrake setting (pure spoileronRise() in fowler.ts,
+3 unit tests; both builders share it).
+
+Also recorded: while checking spoilers I injected test overrides into
+the user's LIVE flight at KHAF (idle+brakes+spoilers at low altitude)
+and crashed it — respawned them clean and moved all verification to a
+separate background tab from now on. The background tab cannot
+composite screenshots while the user's tab is fronted, so the
+spoileron check is covered by the pure tests instead of a screenshot
+(honest substitution).
+
 ## Flaps: hard phase split + THE CACHING BUG (2026-08-13, user follow-up)
 
 The user reported the flaps STILL "go down, not extend" after the

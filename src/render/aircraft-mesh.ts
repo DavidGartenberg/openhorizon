@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { liveryMaterial } from './livery'
-import { fowlerPose } from './fowler'
+import { fowlerPose, spoileronRise } from './fowler'
 
 /**
  * Primitive aircraft exteriors, proportioned from published dimensions
@@ -24,6 +24,8 @@ export interface SurfaceState {
   flapFrac: number
   /** Spoiler/speedbrake actuator position [0,1]. */
   spoilerFrac: number
+  /** Roll input −1..1 for spoileron mixing (optional). */
+  roll?: number
   /** Landing-gear position: 1 down … 0 retracted. */
   gearPos: number
   /** Reverser sleeve position: 0 stowed … 1 deployed. */
@@ -181,8 +183,8 @@ export function buildC172(): AircraftMesh {
       p.userData.z0 ??= p.position.z
       p.userData.y0 ??= p.position.y
       const fp = fowlerPose(s.flapFrac)
-      p.position.z = (p.userData.z0 as number) + fp.ext * 0.2
-      p.position.y = (p.userData.y0 as number) - fp.drop * 0.05
+      p.position.z = (p.userData.z0 as number) + fp.ext * 0.16
+      p.position.y = (p.userData.y0 as number) - fp.drop * 0.03
       p.rotation.x = fp.rot * 0.52 // trailing edge DOWN 30° (sign was inverted — user report N0)
     }
   }
@@ -350,6 +352,16 @@ export function buildB738(): AircraftMesh {
       wingGroup.add(pivot)
       flapPivots.push(pivot)
     }
+    // Flap-track canoe fairings: the pods the flap visibly rides on —
+    // the attachment hardware real wings show (user: "attached to the
+    // wing, all of the flap").
+    for (const fy of [3.6, 6.8, 10.0]) {
+      const canoe = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.38, 2.9), BELLY)
+      placeBody(canoe, 3.1 - Math.tan(0.436) * (fy - 1.7) - 3.6, side * fy, 1.45)
+      canoe.castShadow = true
+      wingGroup.add(canoe)
+    }
+
     // Flight spoiler: ONE panel per wing ahead of the flap (user request).
     {
       const sy = 6.4
@@ -469,11 +481,20 @@ export function buildB738(): AircraftMesh {
       // Hooked-track Fowler schedule (fowler.ts): aft extension completes
       // by mid-travel, the big rotation arrives late — extend OUT, then DOWN.
       const fp = fowlerPose(s.flapFrac)
-      p.position.z += fp.ext * 2.1
-      p.position.y -= fp.drop * 0.25
+      // Extension capped at ~60% of the flap's own chord so the panel's
+      // LE stays tucked under the wing TE (user: "the flap still has to
+      // be attached to the wing"); near-flat tracks (tiny drop) keep the
+      // panel well clear of the ground at flaps 40.
+      p.position.z += fp.ext * 0.95
+      p.position.y -= fp.drop * 0.08
       p.rotation.x = fp.rot * 0.62 // ~35° at flaps 40
     }
-    for (const p of spoilerPivots) p.rotation.x = -s.spoilerFrac * 0.87 // panel UP ~50° (sign was inverted — N0)
+    // Spoilerons: the down-going wing's panel rises with roll input, on
+    // top of the speedbrake setting (real flight-spoiler mixing); full
+    // deploy stands ~60° like real ground spoilers.
+    spoilerPivots.forEach((p, i) => {
+      p.rotation.x = -spoileronRise(s.spoilerFrac, s.roll ?? 0, i === 0 ? 0 : 1) * 1.05
+    })
     for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85
     for (const { grp, nose } of gearGroups) {
       // Nose folds forward; mains fold inward toward the belly.

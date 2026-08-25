@@ -28,12 +28,21 @@ function smoothstep(e0: number, e1: number, x: number): number {
 
 export function fowlerPose(frac: number): FowlerPose {
   const f = Math.min(1, Math.max(0, frac))
-  // Pushed harder apart after user feedback: extension is DONE by 45%
-  // travel; rotation does not even begin until 55% — the phases can no
-  // longer read as one blended droop.
-  const ext = smoothstep(0, 0.45, f)
-  const rot = smoothstep(0.55, 1, f)
+  // Continuous handoff at exactly half travel (user: the dead band read
+  // as the flap "switching angle"): extension completes as rotation
+  // begins — no gap, no overlap.
+  const ext = smoothstep(0, 0.5, f)
+  const rot = smoothstep(0.5, 1, f)
   // Track slope: a little drop accompanies the extension, more with rotation.
   const drop = 0.25 * ext + 0.75 * rot
   return { ext, rot, drop }
+}
+
+/** Spoileron mixing (real flight-spoiler behavior): the down-going
+ *  wing's panel rises with roll input on top of the speedbrake setting.
+ *  side: 0 = left panel, 1 = right panel. Returns rise fraction [0,1];
+ *  multiply by the deploy angle (≈60° full). */
+export function spoileronRise(spoilerFrac: number, roll: number, side: 0 | 1): number {
+  const boost = side === 0 ? Math.max(0, -roll) : Math.max(0, roll)
+  return Math.min(1, Math.max(0, spoilerFrac) + boost * 0.35)
 }

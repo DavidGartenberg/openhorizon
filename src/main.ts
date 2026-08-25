@@ -2219,6 +2219,7 @@ function advanceFrame(elapsed: number, now: number): void {
   mesh.surfaces?.({
     flapFrac: aircraft.flapsDeg / Math.max(FLEET_ACTIVE.params.flapDetentsDeg[FLEET_ACTIVE.params.flapDetentsDeg.length - 1] ?? 1, 1),
     spoilerFrac: aircraft.spoilerPos,
+    roll: aircraft.controls.roll,
     gearPos: aircraft.gearPos,
     reverseFrac: aircraft.reversePos,
   })

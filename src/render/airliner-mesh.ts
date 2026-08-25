@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { liveryMaterial } from './livery'
-import { fowlerPose } from './fowler'
+import { fowlerPose, spoileronRise } from './fowler'
 import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
 
 /**
@@ -155,6 +155,15 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     }
     wingGroup.rotation.z = side * -0.105 // dihedral
     g.add(wingGroup)
+
+    // Flap-track canoe fairings (2 per wing) — visible attachment.
+    for (const ff of [0.28, 0.52]) {
+      const fy = y0 + (y1 - y0) * ff
+      const canoe = new THREE.Mesh(new THREE.BoxGeometry(R * 0.16, R * 0.2, rootChord * 0.55), BELLY)
+      placeBody(canoe, wingRootX - Math.tan(sweep) * (fy - y0) - rootChord * 0.75, side * fy, wingDrop + R * 0.12)
+      canoe.castShadow = true
+      wingGroup.add(canoe)
+    }
 
     // ONE continuous Fowler flap per wing + ONE spoiler panel (user:
     // "make the flaps one piece together and spoilers one piece").
@@ -323,11 +332,15 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       // Hooked-track Fowler schedule (fowler.ts): aft extension first
       // (slot opens by mid-travel), rotation late — extend OUT, then DOWN.
       const fp = fowlerPose(s.flapFrac)
-      p.position.z = (p.userData.z0 as number) + fp.ext * rootChord * 0.34
-      p.position.y = (p.userData.y0 as number) - fp.drop * R * 0.12
+      // ~60% of the flap's own chord (0.23·rootChord): stays tucked at
+      // the wing TE; near-flat drop keeps ground clearance at full flaps.
+      p.position.z = (p.userData.z0 as number) + fp.ext * rootChord * 0.14
+      p.position.y = (p.userData.y0 as number) - fp.drop * R * 0.05
       p.rotation.x = fp.rot * 0.6
     }
-    for (const p of spoilerPivots) p.rotation.x = -s.spoilerFrac * 0.87
+    spoilerPivots.forEach((p, i) => {
+      p.rotation.x = -spoileronRise(s.spoilerFrac, s.roll ?? 0, i === 0 ? 0 : 1) * 1.05
+    })
     for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85
     for (const { grp, nose } of gearGroups) {
       if (nose) grp.rotation.x = (1 - s.gearPos) * 1.5
