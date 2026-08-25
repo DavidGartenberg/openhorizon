@@ -10,13 +10,13 @@ describe('fowlerPose — extend out, THEN down', () => {
   })
   it('first phase is translation: at 30% travel the panel is mostly out but barely rotated', () => {
     const p = fowlerPose(0.3)
-    expect(p.ext).toBeGreaterThan(0.55)
-    expect(p.rot).toBeLessThan(0.02)
+    expect(p.ext).toBeGreaterThan(0.7)
+    expect(p.rot).toBe(0) // rotation has not begun at all
   })
   it('by half travel extension is ~done while rotation has only just begun', () => {
     const p = fowlerPose(0.5)
-    expect(p.ext).toBeGreaterThan(0.9)
-    expect(p.rot).toBeLessThan(0.15)
+    expect(p.ext).toBe(1) // extension fully complete before rotation starts
+    expect(p.rot).toBe(0)
   })
   it('second phase is rotation: from 50% to 100% rotation grows far more than extension', () => {
     const a = fowlerPose(0.5)

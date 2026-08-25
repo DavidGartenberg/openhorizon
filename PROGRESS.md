@@ -84,6 +84,24 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Flaps: hard phase split + THE CACHING BUG (2026-08-13, user follow-up)
+
+The user reported the flaps STILL "go down, not extend" after the
+verified Fowler fix. Root cause was not the flaps: the standalone
+server sent index.html with NO cache-control, so the browser served
+heuristically-cached WEEKS-old bundles on plain reloads — the user
+never saw tonight's builds (this also explains the repeat reports of
+already-fixed winglets/lights). index.html now ships
+`no-cache, must-revalidate` and hashed assets `immutable`; verified
+by header inspection and a plain-URL reload flow.
+
+The schedule was also pushed to a strict two-phase split: extension
+COMPLETE at 45% of lever travel, rotation not beginning until 55% —
+they can no longer read as one blended droop. Verified from the
+user's own chase camera through plain reloads: 737 flaps 15 = panels
+fully out behind the wing, dead flat; flaps 40 = same extension, now
+rotated down.
+
 ## Flaps extend OUT, then DOWN — Fowler track schedule (2026-08-13, user request)
 
 User: "the flaps go down, they do not extend out then down." Checked

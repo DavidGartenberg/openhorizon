@@ -28,8 +28,11 @@ function smoothstep(e0: number, e1: number, x: number): number {
 
 export function fowlerPose(frac: number): FowlerPose {
   const f = Math.min(1, Math.max(0, frac))
-  const ext = smoothstep(0, 0.55, f)
-  const rot = smoothstep(0.35, 1, f)
+  // Pushed harder apart after user feedback: extension is DONE by 45%
+  // travel; rotation does not even begin until 55% — the phases can no
+  // longer read as one blended droop.
+  const ext = smoothstep(0, 0.45, f)
+  const rot = smoothstep(0.55, 1, f)
   // Track slope: a little drop accompanies the extension, more with rotation.
   const drop = 0.25 * ext + 0.75 * rot
   return { ext, rot, drop }

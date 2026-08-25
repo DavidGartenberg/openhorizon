@@ -38,9 +38,19 @@ app.use((req, res, next) => {
 
 // Built client (when `npm run build` has run) + SPA fallback.
 if (fs.existsSync(distDir)) {
-  app.use(express.static(distDir))
+  // index.html must revalidate on every load or the browser keeps serving
+  // WEEKS-old builds on plain reloads (the user kept seeing long-fixed
+  // bugs — flaps, winglets, lights — because their pane never fetched the
+  // new bundle). Hashed assets are immutable and can cache forever.
+  app.use(express.static(distDir, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache, must-revalidate')
+      else if (/assets[\/\\]/.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+    },
+  }))
   app.use((req, res, next) => {
     if (req.method !== 'GET' || req.path.includes('.')) return next()
+    res.setHeader('Cache-Control', 'no-cache, must-revalidate')
     res.sendFile(path.join(distDir, 'index.html'))
   })
 }
