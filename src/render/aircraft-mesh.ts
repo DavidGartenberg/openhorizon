@@ -349,17 +349,30 @@ export function buildB738(): AircraftMesh {
       const flap = taperedPanel(0, chord, -Math.tan(0.436) * (fy1 - fy0) * 0.9, chord * 0.85, side * fy0, side * fy1, 0.16, SURFACE)
       flap.position.y = -0.30 // real clearance below the wing skin (N5)
       pivot.add(flap)
+      // Aft canoe halves ride the flap (split-fairing realism).
+      for (const fy of [3.6, 6.8, 10.0]) {
+        const zLE = 0.42 * (fy - fy0)
+        const aftCanoe = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.34, 1.5), BELLY)
+        aftCanoe.position.set(side * fy, -0.5, zLE + 0.55)
+        aftCanoe.castShadow = true
+        pivot.add(aftCanoe)
+      }
       wingGroup.add(pivot)
       flapPivots.push(pivot)
     }
-    // Flap-track canoe fairings: the pods the flap visibly rides on —
-    // the attachment hardware real wings show (user: "attached to the
-    // wing, all of the flap").
+    // Flap-track canoe fairings, SPLIT like the real thing (user: "the
+    // connectors have to be filled in and connected to the wing"): a
+    // fixed forward half whose top is buried in the wing underside, and
+    // an aft half parented to the FLAP so it rides out and tilts with
+    // it — the pair stays visually joined at every setting.
+    // (Aft halves are added as flap-pivot children right after the flap
+    // is built below; see flapCanoeStations.)
     for (const fy of [3.6, 6.8, 10.0]) {
-      const canoe = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.38, 2.9), BELLY)
-      placeBody(canoe, 3.1 - Math.tan(0.436) * (fy - 1.7) - 3.6, side * fy, 1.45)
-      canoe.castShadow = true
-      wingGroup.add(canoe)
+      const zLE = 0.42 * (fy - 2.2) // one-piece flap LE sweep in pivot-local z
+      const fixedCanoe = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.42, 1.8), BELLY)
+      placeBody(fixedCanoe, -3.93 - zLE + 0.75, side * fy, 1.18)
+      fixedCanoe.castShadow = true
+      wingGroup.add(fixedCanoe)
     }
 
     // Flight spoiler: ONE panel per wing ahead of the flap (user request).

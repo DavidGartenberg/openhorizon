@@ -156,13 +156,15 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     wingGroup.rotation.z = side * -0.105 // dihedral
     g.add(wingGroup)
 
-    // Flap-track canoe fairings (2 per wing) — visible attachment.
+    // Flap-track canoe fairings, SPLIT: fixed forward half buried in the
+    // wing underside; aft half parented to the flap (added below) so the
+    // hardware visibly stays connected at every setting.
     for (const ff of [0.28, 0.52]) {
       const fy = y0 + (y1 - y0) * ff
-      const canoe = new THREE.Mesh(new THREE.BoxGeometry(R * 0.16, R * 0.2, rootChord * 0.55), BELLY)
-      placeBody(canoe, wingRootX - Math.tan(sweep) * (fy - y0) - rootChord * 0.75, side * fy, wingDrop + R * 0.12)
-      canoe.castShadow = true
-      wingGroup.add(canoe)
+      const fixedCanoe = new THREE.Mesh(new THREE.BoxGeometry(R * 0.16, R * 0.22, rootChord * 0.4), BELLY)
+      placeBody(fixedCanoe, wingRootX - Math.tan(sweep) * (fy - y0) - rootChord * 0.62, side * fy, wingDrop + R * 0.07)
+      fixedCanoe.castShadow = true
+      wingGroup.add(fixedCanoe)
     }
 
     // ONE continuous Fowler flap per wing + ONE spoiler panel (user:
@@ -179,6 +181,15 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       const flap = taperedPanel(0, chord, -Math.tan(sweep) * (fy1 - fy0) * 0.9, chord * 0.85, side * fy0, side * fy1, R * 0.085, SURFACE)
       flap.position.y = -R * 0.16
       pivot.add(flap)
+      // Aft canoe halves ride the flap.
+      for (const ff of [0.28, 0.52]) {
+        const fy = y0 + (y1 - y0) * ff
+        const zLE = Math.tan(sweep) * 0.9 * (fy - fy0)
+        const aftCanoe = new THREE.Mesh(new THREE.BoxGeometry(R * 0.15, R * 0.18, chord * 0.8), BELLY)
+        aftCanoe.position.set(side * fy, -R * 0.26, zLE + chord * 0.4)
+        aftCanoe.castShadow = true
+        pivot.add(aftCanoe)
+      }
       wingGroup.add(pivot)
       flapPivots.push(pivot)
     }

@@ -84,6 +84,19 @@ KHAF/KSFO (threshold stripes, yellow taxi line, red holding sign,
 buildings, shadows); perf at KSFO: p50 5.8 ms, 140 calls, 31 textures
 (sign/number canvases, cached by text). Suite 833 green.
 
+## Flap connectors: split canoe fairings, joined to wing AND flap (2026-08-13)
+
+User: "the connectors for the flaps have to be filled in and connected
+to the wing." The single fixed canoe boxes floated ~0.2 m below the
+wing skin and stayed behind when the flap slid aft — reading as
+detached hardware. Now split like the real thing in BOTH builders:
+the fixed forward half is taller and its top is buried INTO the wing
+underside (no daylight), and the aft half is parented to the FLAP
+PIVOT so it translates and tilts with the flap at every setting —
+the pair stays visually joined from clean to flaps 40. Verified on
+screen (737, flaps 40 at KSFO): hardware under the wing, aft halves
+ridden out with the panels, nothing floating.
+
 ## Flaps attached + spoilers like real ones (2026-08-13, user follow-ups)
 
 **Flaps** (user: "can't go into the ground… the flap still has to be
