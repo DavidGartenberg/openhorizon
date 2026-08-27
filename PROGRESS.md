@@ -2421,3 +2421,24 @@ browser-verified end-to-end. Verified this session via scripted flights
   when the facility drops out of range. Gate: tsc clean, 1152 tests, 545
   validate. NEXT: geometry prerequisite commit (dihedral + gear fold +
   tire heights + zMain + tail cones), then Slice 1 flaps.
+
+- **Geometry prerequisite (2026-08-27): dihedral, gear fold, tire heights,
+  zMain, tail cones** — five sign/scale bugs cut across both jet builders:
+  (1) wingGroup.rotation.z = side*−0.105 gave every jet 6° of ANHEDRAL
+  (tips dropped); flipped positive in both builders — bespoke 737 wingtip
+  light anchors recomputed for the raised tips (±16.59, +0.49); the family
+  tipUp formula already assumed the fixed sign. (2) Main gear folded
+  OUTBOARD up through the wing; sign swapped → mains fold inboard to the
+  belly (stowed 737 wheel lands at |x|≈1.5, matching the real airplane).
+  (3) Tires sank half their radius: both builders centered the wheel AT
+  the contact point; wheel centers now ride one radius above contact
+  (strut shortened to the axle). (4) Derived jet gear was ~2× too tall
+  (zMain = 0.14·L vs the B738 anchor's real 0.073 ratio — B77W stood
+  10.3 m vs the real ~5.2, halving apparent ground effect in the flare);
+  new shared standardGearZ() = max(0.073·L, 1.1) exported from derive.ts
+  and imported by airliner-mesh so visual zGround and physics agree (the
+  old visual L*0.115 floated family jets 0.45 m above their wheels).
+  (5) Tail cones: bespoke Rz(π) flipped the cone into a rearward-opening
+  trumpet (removed; apex aft, raked up via π/2−0.06); family rake sign
+  flipped up. Gate: tsc, 1152 tests, 545 validate. NEXT: Slice 1 flap
+  clearance/connection verification in-browser.

@@ -294,10 +294,11 @@ export function buildB738(): AircraftMesh {
   nose.scale.set(1, 1.7, 1) // dome axis is local Y — see airliner-mesh nose note
   add(nose, 15.2, 0, -0.6)
   const tailCone = new THREE.Mesh(new THREE.ConeGeometry(1.86, 8.2, 16), WHITE)
-  tailCone.rotation.x = Math.PI / 2
-  tailCone.rotation.z = Math.PI
+  // π/2 alone sends the apex aft; the extra Rz(π) that was here flipped
+  // the apex FORWARD — a rearward-opening trumpet where the tail cone
+  // should taper. MINUS the rake angle tilts the apex up.
+  tailCone.rotation.x = Math.PI / 2 - 0.06 // apex aft, raked up
   add(tailCone, -17.5, 0, -1.05)
-  ;(tailCone.rotation as THREE.Euler).x = Math.PI / 2 + 0.06 // raked up
   // Window rows are painted into the livery wrap now; the cockpit glass
   // band stays geometric (it sits on the untextured nose cone).
   const cockpitGlass = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.5, 0.9), DARK)
@@ -335,8 +336,9 @@ export function buildB738(): AircraftMesh {
     wl.position.set(side * 16.55, -1.25, 0)
     wl.rotation.z = side * -0.26 // ~15° outward cant
     wingGroup.add(wl)
-    // Dihedral for the whole wing side.
-    wingGroup.rotation.z = side * -0.105 // ~6°
+    // Dihedral for the whole wing side: positive side*θ raises the tip
+    // (side * −0.105 DROPPED both tips — 6° of anhedral).
+    wingGroup.rotation.z = side * 0.105 // ~6°
     g.add(wingGroup)
 
     // Fowler flaps: inboard + outboard sections, pivot groups at their LE.
@@ -458,14 +460,19 @@ export function buildB738(): AircraftMesh {
   ] as const) {
     const grp = new THREE.Group()
     placeBody(grp, x, y, z - 1.9) // pivot at the top of the strut
-    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 1.9, 8), SILVER)
-    strut.position.y = -0.95
+    const r = isNose ? 0.38 : 0.55
+    // Strut runs pivot→axle; the wheel CENTER rides one radius above the
+    // physics contact point (body z above) so the tire bottom meets the
+    // runway — wheels used to be centered AT contact, sinking half a
+    // tire (0.55 m mains) into the pavement.
+    const strutLen = 1.9 - r
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, strutLen, 8), SILVER)
+    strut.position.y = -strutLen / 2
     strut.castShadow = true
     grp.add(strut)
     for (const wy of isNose ? [-0.25, 0.25] : [-0.3, 0.3]) {
-      const wheel = mkWheel(isNose ? 0.38 : 0.55, 0.34)
-      wheel.position.set(wy, -1.9 + (isNose ? 0.38 : 0.55) * 0 - 0, 0)
-      wheel.position.y = -1.9
+      const wheel = mkWheel(r, 0.34)
+      wheel.position.set(wy, -(1.9 - r), 0)
       grp.add(wheel)
     }
     g.add(grp)
@@ -514,17 +521,20 @@ export function buildB738(): AircraftMesh {
     })
     for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85
     for (const { grp, nose } of gearGroups) {
-      // Nose folds forward; mains fold inward toward the belly.
+      // Nose folds forward; mains fold INBOARD toward the belly (the old
+      // sign swung them outboard up through the wing).
       if (nose) grp.rotation.x = (1 - s.gearPos) * 1.5
-      else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? 1.5 : -1.5)
+      else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? -1.5 : 1.5)
       grp.visible = s.gearPos > 0.02
     }
   }
   // Real light anchors: winglet bases and fin (the box fallback put the
-  // nav lights metres above the low wing — user-reported).
+  // nav lights metres above the low wing — user-reported). Wingtips
+  // recomputed for the fixed dihedral: (16.55, −1.25) rotated by +0.105
+  // about the root lands the winglet base at (±16.59, +0.49).
   g.userData.lightAnchors = {
-    wingtipL: new THREE.Vector3(-16.7, -1.0, 3.95),
-    wingtipR: new THREE.Vector3(16.7, -1.0, 3.95),
+    wingtipL: new THREE.Vector3(-16.59, 0.49, 4.2),
+    wingtipR: new THREE.Vector3(16.59, 0.49, 4.2),
     tail: new THREE.Vector3(0, 4.4, 19.3),
   }
   return { group: g, propDisc, surfaces }

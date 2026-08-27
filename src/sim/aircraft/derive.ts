@@ -95,6 +95,17 @@ function scaledPropTables(powerW: number, redlineRpm: number, dM: number, thrust
   }
 }
 
+/** Main-gear contact depth below the body origin, from length. Anchored
+ *  on the hand-authored B738 (2.9 m on 39.5 m = 0.073·L — the real 737
+ *  stands ~2.9 m at the mains): the old 0.14·L made every derived jet
+ *  tower at DOUBLE its real height (B77W 10.3 m vs the real ~5.2) and
+ *  halved apparent ground effect through the flare. The 1.1 m floor
+ *  keeps GA singles/twins at their verified stance. The render builders
+ *  import this so wheels and physics agree on where the ground is. */
+export function standardGearZ(lengthM: number): number {
+  return Math.max(lengthM * 0.073, 1.1)
+}
+
 function gearLegs(spec: RosterSpec): AircraftParams['gear'] {
   const m = spec.mtowKg
   const L = spec.lengthM
@@ -102,7 +113,7 @@ function gearLegs(spec: RosterSpec): AircraftParams['gear'] {
   const k = 54 * m // N/m per leg (C172 anchor: 62 kN/m at 1157 kg)
   const c = 4.6 * m
   const maxNormalN = 3.5 * m * G // C172 anchor: 40 kN ≈ 3.5× weight
-  const zMain = Math.max(L * 0.14, 1.1)
+  const zMain = standardGearZ(L)
   if (spec.gear.layout === 'taildragger') {
     return {
       tail: { x: -L * 0.58, y: 0, z: zMain * 0.45, k: k * 0.4, c: c * 0.4, steerMaxRad: 0.31, maxNormalN },

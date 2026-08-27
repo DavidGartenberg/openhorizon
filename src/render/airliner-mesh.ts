@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { liveryMaterial } from './livery'
 import { fowlerPose, spoileronRise } from './fowler'
+import { standardGearZ } from '../sim/aircraft/derive'
 import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
 
 /**
@@ -89,7 +90,9 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   nose.scale.set(1, 1.7, 1)
   add(nose, L * 0.02 + tubeLen / 2, 0, -R * 0.32)
   const tailCone = new THREE.Mesh(new THREE.ConeGeometry(R * 0.99, L * 0.26, 16), WHITE)
-  tailCone.rotation.x = Math.PI / 2 + 0.06
+  // π/2 sends the cone's apex aft; MINUS the rake angle tilts the apex
+  // UP like a real tail cone (+0.06 raked it down into the ground line).
+  tailCone.rotation.x = Math.PI / 2 - 0.06
   add(tailCone, L * 0.02 - tubeLen / 2 - L * 0.093, 0, -R * 0.32 - R * 0.22)
   // window strips (box fallback only when unpainted — livery paints real
   // window rows into the wrap)
@@ -153,7 +156,9 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       wl.rotation.z = side * (cfg.winglet === 'raked' ? -0.9 : -0.26)
       wingGroup.add(wl)
     }
-    wingGroup.rotation.z = side * -0.105 // dihedral
+    // Dihedral: positive side*θ raises the tip. (side * −0.105 DROPPED
+    // both tips — 6° of anhedral on every jet in the fleet.)
+    wingGroup.rotation.z = side * 0.105 // ~6° dihedral
     g.add(wingGroup)
 
     // Flap-track canoe fairings, SPLIT: fixed forward half buried in the
@@ -312,16 +317,20 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   const gearGroups: { grp: THREE.Group; nose: boolean }[] = []
   for (const leg of cfg.gear) {
     const grp = new THREE.Group()
+    const wheelR = leg.nose ? R * 0.2 : R * 0.29
     const strutLen = leg.z * 0.66
     placeBody(grp, leg.x, leg.y, leg.z - strutLen)
-    const strut = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.07, R * 0.07, strutLen, 8), SILVER)
-    strut.position.y = -strutLen / 2
+    // Strut runs pivot→axle; the wheel CENTER rides one radius above the
+    // contact point so the tire bottom meets the runway (wheels used to
+    // be centered AT contact — half a tire under the pavement).
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.07, R * 0.07, strutLen - wheelR, 8), SILVER)
+    strut.position.y = -(strutLen - wheelR) / 2
     strut.castShadow = true
     grp.add(strut)
     for (const wy of leg.nose ? [-R * 0.13, R * 0.13] : [-R * 0.16, R * 0.16]) {
-      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(leg.nose ? R * 0.2 : R * 0.29, leg.nose ? R * 0.2 : R * 0.29, R * 0.18, 14), DARK)
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(wheelR, wheelR, R * 0.18, 14), DARK)
       wheel.rotation.z = Math.PI / 2
-      wheel.position.set(wy, -strutLen, 0)
+      wheel.position.set(wy, -(strutLen - wheelR), 0)
       wheel.castShadow = true
       grp.add(wheel)
     }
@@ -356,8 +365,10 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     })
     for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85
     for (const { grp, nose } of gearGroups) {
+      // Nose folds forward; mains fold INBOARD toward the belly (the old
+      // sign swung them outboard up through the wing).
       if (nose) grp.rotation.x = (1 - s.gearPos) * 1.5
-      else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? 1.5 : -1.5)
+      else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? -1.5 : 1.5)
       grp.visible = s.gearPos > 0.02
     }
   }
@@ -430,7 +441,10 @@ export function airlinerCfgFor(spec: {
   const L = spec.lengthM
   const count = (fam.engines?.count ?? (spec.powerplant.count === 4 ? 4 : 2)) as 2 | 3 | 4
   const mounted = fam.engines?.mounted ?? 'wing'
-  const zGround = L * 0.115
+  // Contact depth = the PHYSICS gear formula (derive.ts) — the old local
+  // L*0.115 disagreed with the sim's max(L*0.14, 1.1), so every family
+  // jet floated ~0.45 m above its own wheels.
+  const zGround = standardGearZ(L)
   const gear: AirlinerCfg['gear'] = [
     { x: L * 0.37, y: 0, z: zGround, nose: true },
     { x: -L * 0.028, y: -R * 1.5, z: zGround },
