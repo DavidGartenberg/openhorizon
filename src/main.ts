@@ -72,6 +72,7 @@ import {
   ilsOnFinal, NO_NAV_RESULT, type TunedNavResult,
 } from './sim/nav/tuning'
 import { finiteOr } from './sim/guards'
+import { copilotCallouts, copilotSpeedsFor, makeCopilotLatches, type CopilotObs } from './sim/copilot'
 
 const KHAF = { lat: 37.5134, lon: -122.5011 }
 
@@ -409,6 +410,10 @@ function pickRunway(ap: AirportData, ident?: string): { r: RunwayData; fromHigh:
 function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): void {
   aircraft.crashed = false
   resetSystemsState()
+  // Copilot latches reset with the flight (Slice 4) — a respawn is a new
+  // leg; without this the callouts stay spent from the previous one.
+  copilotLatches = makeCopilotLatches()
+  copilotPrev = null
   const { r, fromHigh } = pickRunway(ap, rwyIdent)
   const thr = fromHigh ? { lat: r.la2, lon: r.lo2, e: r.e2 } : { lat: r.la1, lon: r.lo1, e: r.e1 }
   const far = fromHigh ? { lat: r.la1, lon: r.lo1, e: r.e1 } : { lat: r.la2, lon: r.lo2, e: r.e2 }
@@ -1352,6 +1357,7 @@ let lastOnGround = true
 let flightStartSimS: number | null = null
 let flightFrom = ''
 let debriefLine = ''
+let debriefUntil = 0
 interface LogEntry {
   date: string; from: string; to: string; durationMin: number
   touchdownFpm: number; grade: string
@@ -1411,6 +1417,7 @@ function updateRecorder(ll: { lat: number; lon: number }): void {
       const a = analyzeLanding(recorder.samples, near.ref)
       if (a) {
         const side = a.centerlineOffsetM >= 0 ? 'R' : 'L'
+        debriefUntil = performance.now() + 45_000 // show, then release the line
         debriefLine =
           `LANDED ${near.icao}: ${Math.round(-a.touchdownVsFpm)} fpm (${a.grade}) · ` +
           `${Math.round(a.pastThresholdM)} m past thr · ${side}${Math.abs(a.centerlineOffsetM).toFixed(0)} m of CL`
@@ -1450,6 +1457,26 @@ let safetyLine = ''
 let trafficDots: Array<{ dNorthM: number; dEastM: number; relAltFt: number; alerted: boolean }> = []
 let lastTcasDebug: { level: string; trackLevels: string[] } = { level: 'NONE', trackLevels: [] }
 
+/** Speech priority gate (Slice 4): the synth is ONE global FIFO with no
+ *  cancel anywhere before this — a TCAS aural could queue behind ATIS.
+ *  Classes: 'safety' cancel()s everything and speaks NOW; 'copilot'
+ *  speaks only into an idle synth (otherwise the caller drops to its
+ *  HUD line — callouts are moment-critical, never queued); 'radio'
+ *  keeps the FIFO behavior it always had. Returns whether it spoke. */
+let synthBusy = false
+function gatedSpeak(u: SpeechSynthesisUtterance, cls: 'safety' | 'copilot' | 'radio'): boolean {
+  const synth = window.speechSynthesis
+  if (!synth) return false
+  if (cls === 'safety') synth.cancel()
+  else if (cls === 'copilot' && (synthBusy || synth.speaking || synth.pending)) return false
+  const chainedEnd = u.onend
+  u.onstart = () => { synthBusy = true }
+  u.onend = (e) => { synthBusy = false; if (chainedEnd) chainedEnd.call(u, e) }
+  u.onerror = () => { synthBusy = false }
+  synth.speak(u)
+  return true
+}
+
 /** Non-radio cockpit annunciation (TCAS/TAWS aurals) — spoken urgently,
  *  never logged to the comms transcript (they aren't transmissions). */
 function annunciate(text: string): void {
@@ -1457,10 +1484,68 @@ function annunciate(text: string): void {
     const u = new SpeechSynthesisUtterance(text.toLowerCase())
     u.rate = 1.25
     u.pitch = 0.9
-    window.speechSynthesis.speak(u)
+    gatedSpeak(u, 'safety')
   } catch {
     // no speech available — HUD/PFD annunciation still shows it
   }
+}
+
+// ---- Slice 4: copilot (pure engine in src/sim/copilot.ts) ----
+const copilotSpeeds = copilotSpeedsFor({
+  vs1Kt: FLEET_ACTIVE.params.vSpeeds.vs1,
+  clMaxClean: FLEET_ACTIVE.params.clMaxClean,
+  flapDClMax: FLEET_ACTIVE.params.flapDClMax,
+  flapDetentsDeg: FLEET_ACTIVE.params.flapDetentsDeg,
+  jet: !!FLEET_ACTIVE.params.jet,
+})
+let copilotLatches = makeCopilotLatches()
+let copilotPrev: CopilotObs | null = null
+let copilotLine = ''
+let copilotUntil = 0
+let copilotVoice: SpeechSynthesisVoice | null = null
+
+/** First-officer voice: FIXED distinct voice (hashed from a constant so
+ *  it never collides with the hashed ATC voices), calmer than the
+ *  safety annunciator. Tolerates an empty getVoices() at boot — the
+ *  pick retries on the next call. */
+function speakCopilot(text: string): void {
+  try {
+    const u = new SpeechSynthesisUtterance(text)
+    const voices = window.speechSynthesis?.getVoices() ?? []
+    if (voices.length > 0) {
+      if (!copilotVoice) {
+        let h = 0
+        for (const c of 'first-officer') h = (h * 31 + c.charCodeAt(0)) | 0
+        copilotVoice = voices[Math.abs(h) % voices.length]!
+      }
+      u.voice = copilotVoice
+    }
+    u.rate = 1.05
+    u.pitch = 1.1
+    gatedSpeak(u, 'copilot') // drops silently if the synth is busy — HUD line still shows
+  } catch { /* no speech — HUD line still shows */ }
+}
+
+function stepCopilot(): void {
+  const d = aircraft.data
+  const o: CopilotObs = {
+    kias: d.kias,
+    aglFt: d.aglFt,
+    vsFpm: d.verticalSpeedFpm,
+    onGround: d.onGround,
+    gearDown: aircraft.P.gearRetractable ? aircraft.gearDownCommanded : true,
+    flapsIndex: aircraft.controls.flapsIndex,
+    throttle: aircraft.controls.throttle,
+  }
+  if (copilotPrev) {
+    const calls = copilotCallouts(o, copilotPrev, copilotSpeeds, copilotLatches, !!aircraft.P.gearRetractable)
+    if (calls.length > 0) {
+      copilotLine = calls.join(' · ')
+      copilotUntil = performance.now() + 5000
+      speakCopilot(calls.join(', '))
+    }
+  }
+  copilotPrev = o
 }
 
 function updateSafety(now: number): void {
@@ -1542,6 +1627,10 @@ function updateSafety(now: number): void {
   if (tc.level === 'TA' || tc.level === 'RA') parts.push(`⚠ ${tc.aural}`)
   if (tw.level !== 'NONE' && tw.aural) parts.push(`${tw.level === 'WARNING' ? '⛰' : '△'} ${tw.aural}`)
   safetyLine = parts.join('  ')
+
+  // Copilot monitors on the same 2 Hz cadence (crossing detection needs
+  // a stable prev sample, and callouts don't need frame rate).
+  stepCopilot()
 }
 let lastAtcScanAt = -Infinity
 let lastTowerTickAt = -Infinity
@@ -1651,7 +1740,7 @@ function speak(t: Transmission): void {
   u.rate = 1.15
   radioSquelch()
   u.onend = () => radioSquelch()
-  synth.speak(u)
+  gatedSpeak(u, 'radio')
 }
 
 comms.subscribe((t) => {
@@ -2500,7 +2589,11 @@ function advanceFrame(elapsed: number, now: number): void {
       cameraMode,
       tilesReady: tiles.readyCount,
       wx: wxDesc || undefined,
-      safety: (performance.now() < toastUntil ? toastLine : '') || safetyLine || debriefLine || undefined,
+      // Safety strict priority (9A): a live TCAS/TAWS line must never be
+      // blanked by a gear/spoiler toast; the debrief line expires instead
+      // of squatting the slot forever.
+      safety: safetyLine || (performance.now() < toastUntil ? toastLine : '') || (performance.now() < debriefUntil ? debriefLine : '') || undefined,
+      copilot: performance.now() < copilotUntil ? copilotLine : undefined,
       spawnDesc,
       lat: ll.lat,
       lon: ll.lon,

@@ -2511,3 +2511,31 @@ browser-verified end-to-end. Verified this session via scripted flights
   View bands now ≈ −7°…+29° (transport) / −3°…+22° (GA) vs the old
   +31°…+40°. Gate: tsc, 1152 tests, 545 validate. NEXT: 9A safety-line
   fix + Slice 4 copilot.
+
+- **Everything-plan Slice 4 + 9A safety line (2026-08-27): copilot that
+  speaks** — new pure src/sim/copilot.ts (TDD, 7 tests): takeoff roll
+  (airspeed alive / eighty knots / vee one / rotate), climb-out (positive
+  rate, gear-up acknowledgment, flaps-up schedule call), arrival ("one
+  thousand", "sixty knots" on rollout). Callout ownership recorded: TAWS
+  keeps "five hundred" + FIFTY…TEN — the copilot never duplicates an
+  aural. Vr = 1.15 × the takeoff-detent stall via the derive.ts CLmax
+  ratio at the mid detent; V1 = Vr − 5 kt (recorded approximation, jets
+  only); acceleration gate keeps roll calls from re-firing on a reverse-
+  thrust rollout. Latches: per-phase, touchdown re-arms the takeoff
+  family, liftoff the landing family, respawn resets wholesale. Wiring:
+  speech priority gate gatedSpeak() — the synth was ONE global FIFO with
+  no cancel (TCAS could queue behind ATIS): safety now cancel()s and
+  preempts, copilot speaks only into an idle synth else drops to its HUD
+  line, radio unchanged; copilot voice fixed via constant-hash (empty
+  getVoices() at boot tolerated). NEW dedicated HUD "FO:" line with its
+  own 5-s expiry. 9A safety-line fix: safetyLine now has strict priority
+  over toasts (a gear toast used to blank live TCAS/TAWS for 6 s) and
+  the landing debrief expires after 45 s instead of squatting forever.
+  LIVE VERIFIED (background tab, real-time metronome advance — __ohStep
+  loops can't drive the 2 Hz real-time copilot cadence, noted): 737 full-
+  thrust roll produced FO: airspeed alive@46 / eighty knots@87 / vee one ·
+  rotate@142; airborne family covered by unit tests through the same
+  path (unattended test plane ran off the runway end before rotation
+  input — crash guard worked; callouts already captured). Gate: tsc,
+  1159 tests, 545 validate. NEXT: 9A ATC timers + 9B tower strips +
+  Slice 5 smart ATC.
