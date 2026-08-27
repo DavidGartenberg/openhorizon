@@ -232,32 +232,37 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
         // chord hung the engine in space ahead of the wing (user: "make
         // the engines actually on the plane").
         const ex = wingRootX - Math.tan(sweep) * (ey - y0) + rootChord * 0.06
+        // Pod depth: close-coupled under the LE with the nacelle top
+        // proud of the wing plane, so the bottom clears the runway by
+        // ~0.5 m at the REAL 0.073L stance (the old 0.55/0.75 constants
+        // were tuned for gear twice as tall — pods touched the ground).
+        const engZ = wingDrop * 0.35 + engR * 0.45
         const eng = new THREE.Mesh(new THREE.CylinderGeometry(engR, engR * 0.8, engLen, 16), SILVER)
         eng.rotation.x = Math.PI / 2
         eng.scale.y = 0.92
-        add(eng, ex, side * ey, wingDrop * 0.55 + engR * 0.75)
+        add(eng, ex, side * ey, engZ)
         const inlet = new THREE.Mesh(new THREE.CylinderGeometry(engR * 1.02, engR * 1.02, 0.3, 16), DARK)
         inlet.rotation.x = Math.PI / 2
         inlet.scale.y = 0.92
-        add(inlet, ex + engLen / 2, side * ey, wingDrop * 0.55 + engR * 0.75)
+        add(inlet, ex + engLen / 2, side * ey, engZ)
         // Spinner cone on the fan face (the bare flat disc read as a plug).
         const spin = new THREE.Mesh(new THREE.ConeGeometry(engR * 0.3, engR * 0.55, 12), SILVER)
         spin.rotation.x = Math.PI / 2
-        add(spin, ex + engLen / 2 + engR * 0.2, side * ey, wingDrop * 0.55 + engR * 0.75)
+        add(spin, ex + engLen / 2 + engR * 0.2, side * ey, engZ)
         const pylon = new THREE.Mesh(new THREE.BoxGeometry(engR * 0.34, engR * 1.1, engLen * 0.85), BELLY)
-        add(pylon, ex - engLen * 0.2, side * ey, wingDrop * 0.3)
+        add(pylon, ex - engLen * 0.2, side * ey, wingDrop * 0.5)
         // Reverser sleeve: aft nacelle ring that translates AFT on deploy,
         // showing a dark cascade band.
         const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(engR * 1.04, engR * 0.86, engLen * 0.4, 16), SILVER)
         sleeve.rotation.x = Math.PI / 2
         sleeve.scale.y = 0.92
-        add(sleeve, ex - engLen * 0.32, side * ey, wingDrop * 0.55 + engR * 0.75)
+        add(sleeve, ex - engLen * 0.32, side * ey, engZ)
         sleeve.userData.stowZ = sleeve.position.z
         reverserSleeves.push(sleeve)
         const cascade = new THREE.Mesh(new THREE.CylinderGeometry(engR * 0.98, engR * 0.98, engLen * 0.36, 16), DARK)
         cascade.rotation.x = Math.PI / 2
         cascade.scale.y = 0.92
-        add(cascade, ex - engLen * 0.32, side * ey, wingDrop * 0.55 + engR * 0.75)
+        add(cascade, ex - engLen * 0.32, side * ey, engZ)
       }
     } else {
       // tail-mounted pods (MD-80/CRJ class)
@@ -323,29 +328,72 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     g.add(stab)
   }
 
-  // ---- gear (animated) ----
-  const gearGroups: { grp: THREE.Group; nose: boolean }[] = []
+  // ---- gear (animated) + bay doors (Slice 2) ----
+  // Doors are SIBLINGS of the leg group (never children) so they don't
+  // inherit the stowed-leg visibility pop; doorFrac = clamp(gearPos*3)
+  // means they trail the retraction and cover the pop (≤6% crack).
+  const zBelly = R * 0.68 // tube bottom: fuse center sits 0.32R above origin
+  const gearGroups: { grp: THREE.Group; nose: boolean; fold: number }[] = []
+  const doorPivots: { pivot: THREE.Group; open: number }[] = []
   for (const leg of cfg.gear) {
     const grp = new THREE.Group()
     const wheelR = leg.nose ? R * 0.2 : R * 0.29
     const strutLen = leg.z * 0.66
+    const wheelArm = strutLen - wheelR // pivot → wheel center
     placeBody(grp, leg.x, leg.y, leg.z - strutLen)
     // Strut runs pivot→axle; the wheel CENTER rides one radius above the
     // contact point so the tire bottom meets the runway (wheels used to
     // be centered AT contact — half a tire under the pavement).
-    const strut = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.07, R * 0.07, strutLen - wheelR, 8), SILVER)
-    strut.position.y = -(strutLen - wheelR) / 2
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.07, R * 0.07, wheelArm, 8), SILVER)
+    strut.position.y = -wheelArm / 2
     strut.castShadow = true
     grp.add(strut)
     for (const wy of leg.nose ? [-R * 0.13, R * 0.13] : [-R * 0.16, R * 0.16]) {
       const wheel = new THREE.Mesh(new THREE.CylinderGeometry(wheelR, wheelR, R * 0.18, 14), DARK)
       wheel.rotation.z = Math.PI / 2
-      wheel.position.set(wy, -(strutLen - wheelR), 0)
+      wheel.position.set(wy, -wheelArm, 0)
       wheel.castShadow = true
       grp.add(wheel)
     }
     g.add(grp)
-    gearGroups.push({ grp, nose: !!leg.nose })
+    // Per-leg fold angle: swing the wheel inboard until it sits just
+    // short of the centerline; an arm shorter than the span means a full
+    // 90° horizontal stow (A320-class) — a fixed angle would either
+    // under-fold long legs or cross short-armed wheels past the keel.
+    const fold = leg.nose ? 1.5 : Math.asin(Math.min((Math.abs(leg.y) - wheelR * 0.4) / wheelArm, 1))
+    gearGroups.push({ grp, nose: !!leg.nose, fold })
+    if (!leg.nose) {
+      // Main bay door: hinged on the KEEL side (an outboard hinge would
+      // sweep through the fixed canoe fairing on CRJ-scale types),
+      // swinging about the fore-aft axis, closed flush with the belly.
+      const sgn = leg.y > 0 ? 1 : -1
+      const w = Math.abs(leg.y) - R * 0.18 + wheelR * 0.5
+      const doorPivot = new THREE.Group()
+      placeBody(doorPivot, leg.x, sgn * R * 0.18, zBelly)
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(w, 0.05, wheelR * 2.6), BELLY)
+      panel.position.set(sgn * w / 2, 0, 0)
+      panel.castShadow = true
+      doorPivot.add(panel)
+      g.add(doorPivot)
+      doorPivots.push({ pivot: doorPivot, open: -sgn * 1.35 })
+    } else {
+      // Nose clamshell halves: hinged at the bay's outboard edges along
+      // the fore-aft axis (the leg itself folds forward about X — the
+      // two motions are independent). Bay runs forward of the pivot to
+      // cover the stowed leg + wheel.
+      const bayLen = wheelArm + wheelR * 2
+      for (const sgn of [-1, 1] as const) {
+        const doorPivot = new THREE.Group()
+        placeBody(doorPivot, leg.x + (wheelArm + wheelR) / 2, sgn * R * 0.17, zBelly)
+        const w = R * 0.17
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(w, 0.04, bayLen), BELLY)
+        panel.position.set(-sgn * w / 2, 0, 0)
+        panel.castShadow = true
+        doorPivot.add(panel)
+        g.add(doorPivot)
+        doorPivots.push({ pivot: doorPivot, open: sgn * 1.5 })
+      }
+    }
   }
 
   // invisible prop slot (interface uniformity)
@@ -374,13 +422,17 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       p.rotation.x = -spoileronRise(s.spoilerFrac, s.roll ?? 0, i === 0 ? 0 : 1) * 1.05
     })
     for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85
-    for (const { grp, nose } of gearGroups) {
+    for (const { grp, nose, fold } of gearGroups) {
       // Nose folds forward; mains fold INBOARD toward the belly (the old
       // sign swung them outboard up through the wing).
-      if (nose) grp.rotation.x = (1 - s.gearPos) * 1.5
-      else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? -1.5 : 1.5)
+      if (nose) grp.rotation.x = (1 - s.gearPos) * fold
+      else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? -fold : fold)
       grp.visible = s.gearPos > 0.02
     }
+    // Doors trail the gear: fully open through most of the travel, then
+    // close over the bay as the leg reaches its stowed position.
+    const doorFrac = Math.min(Math.max(s.gearPos * 3, 0), 1)
+    for (const d of doorPivots) d.pivot.rotation.z = d.open * doorFrac
   }
   // Real exterior-light anchors (nav/strobe at the wingtips, tail/beacon
   // on the fin) — the bounding-box fallback floats lights mid-air on

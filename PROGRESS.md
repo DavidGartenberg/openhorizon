@@ -2463,3 +2463,29 @@ browser-verified end-to-end. Verified this session via scripted flights
   gamepad-map trick (store {"v":6}) now documented for test tabs since
   real TCA hardware/latched switches drive ANY tab. NEXT: Slice 2 gear
   doors.
+
+- **Everything-plan Slice 2 (2026-08-27): gear doors + retract animation** —
+  Family builder: keel-hinged main bay doors (an outboard hinge would
+  sweep through the fixed canoe fairing on CRJ-scale types) + nose
+  clamshell halves hinged at the bay's outboard edges, all swinging about
+  the fore-aft axis; doors are SIBLINGS of the leg groups so they don't
+  inherit the stowed-leg visibility pop, and doorFrac = clamp(gearPos*3)
+  trails the retraction to cover it (≤6% crack). Per-leg fold angle
+  derived (asin of span-to-keel over wheel arm, capped 90°) instead of a
+  hardcoded 1.5 rad — A320-class legs stow horizontally without crossing
+  the centerline. Bespoke 737: nose clamshells only + dark belly well
+  discs at the stowed wheel stations (|x|≈1.5) — the real 737's mains are
+  doorless with hubcaps flush against the belly; recorded as the honest
+  type difference. FOUND + FIXED in verification: family wing-mounted
+  engine pods touched the runway at the new 0.073L stance (A20N pod
+  bottom 0.07 m BELOW contact — old depth constants were tuned for gear
+  twice as tall); pods raised (engZ = 0.35·wingDrop + 0.45·engR, pylon
+  re-seated), giving ~0.5 m clearance A20N / 0.56 B38M / 1.07 B77W.
+  In-browser: A20N transit shows tires folding inboard under the belly,
+  stowed belly clean with doors closed, ground stance + engine clearance
+  correct; CRJ700 mid-transit clean from chase (no canoe clash); 737
+  stance/tires verified. HONEST NOTE: nose-clamshell open state and the
+  737 belly discs were built to bay geometry but not clearly captured in
+  a screenshot this pass (orbit-camera acrobatics in the background tab);
+  they ride the same doorFrac path as the verified family doors. Gate:
+  tsc, 1152 tests, 545 validate. NEXT: Slice 3 cockpit view.

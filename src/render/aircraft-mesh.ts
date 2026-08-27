@@ -459,13 +459,14 @@ export function buildB738(): AircraftMesh {
   }
 
   // ---- gear: retracting; twin-wheel nose, twin-wheel main bogies ----
-  const gearGroups: { grp: THREE.Group; nose: boolean }[] = []
+  const gearGroups: { grp: THREE.Group; nose: boolean; fold: number }[] = []
   const mkWheel = (r: number, w: number): THREE.Mesh => {
     const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, w, 14), DARK)
     m.rotation.z = Math.PI / 2
     m.castShadow = true
     return m
   }
+  const doorPivots: { pivot: THREE.Group; open: number }[] = []
   for (const [x, y, z, isNose] of [
     [14.6, 0, 2.84, true],
     [-1.0, -2.86, 2.9, false],
@@ -489,7 +490,35 @@ export function buildB738(): AircraftMesh {
       grp.add(wheel)
     }
     g.add(grp)
-    gearGroups.push({ grp, nose: isNose })
+    // Per-leg fold: swing inboard to just short of the centerline; the
+    // short 737 arm caps at 90° so the stowed wheel lands at |x|≈1.5,
+    // its face near-flush with the belly (the real 737 look).
+    const fold = isNose ? 1.5 : Math.asin(Math.min((Math.abs(y) - r * 0.4) / strutLen, 1))
+    gearGroups.push({ grp, nose: isNose, fold })
+    if (isNose) {
+      // Nose clamshell doors (the ONLY doors on a real 737 — the mains
+      // ride exposed with hubcaps flush against the belly, recorded as
+      // the honest type difference). Hinged at the bay's outboard edges,
+      // swinging about the fore-aft axis; the leg folds forward about X.
+      const bayLen = strutLen + r * 2
+      for (const sgn of [-1, 1] as const) {
+        const doorPivot = new THREE.Group()
+        placeBody(doorPivot, x + (strutLen + r) / 2, sgn * 0.4, 1.15)
+        const panel = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.05, bayLen), BELLY)
+        panel.position.set(-sgn * 0.21, 0, 0)
+        panel.castShadow = true
+        doorPivot.add(panel)
+        g.add(doorPivot)
+        doorPivots.push({ pivot: doorPivot, open: sgn * 1.5 })
+      }
+    }
+  }
+  // Doorless main wells: dark discs on the belly at the stowed wheel
+  // stations — open wells with the gear down, flush hubcaps with it up.
+  for (const sgn of [-1, 1]) {
+    const well = new THREE.Mesh(new THREE.CylinderGeometry(0.56, 0.56, 0.03, 16), DARK)
+    placeBody(well, -1.0, sgn * 1.51, 1.27)
+    g.add(well)
   }
 
   // Invisible prop-disc slot (interface uniformity; jets spin nothing).
@@ -533,13 +562,17 @@ export function buildB738(): AircraftMesh {
       p.rotation.x = -spoileronRise(s.spoilerFrac, s.roll ?? 0, i === 0 ? 0 : 1) * 1.05
     })
     for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85
-    for (const { grp, nose } of gearGroups) {
+    for (const { grp, nose, fold } of gearGroups) {
       // Nose folds forward; mains fold INBOARD toward the belly (the old
       // sign swung them outboard up through the wing).
-      if (nose) grp.rotation.x = (1 - s.gearPos) * 1.5
-      else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? -1.5 : 1.5)
+      if (nose) grp.rotation.x = (1 - s.gearPos) * fold
+      else grp.rotation.z = (1 - s.gearPos) * (grp.position.x > 0 ? -fold : fold)
       grp.visible = s.gearPos > 0.02
     }
+    // Nose doors trail the gear (clamp(gearPos*3)): open through most of
+    // the travel, closing over the bay as the leg stows.
+    const doorFrac = Math.min(Math.max(s.gearPos * 3, 0), 1)
+    for (const d of doorPivots) d.pivot.rotation.z = d.open * doorFrac
   }
   // Real light anchors: winglet bases and fin (the box fallback put the
   // nav lights metres above the low wing — user-reported). Wingtips
