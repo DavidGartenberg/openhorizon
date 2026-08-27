@@ -70,3 +70,22 @@ describe('FixedTimestepLoop', () => {
     expect(loop.ticks).toBe(0)
   })
 })
+
+describe('rate-scaled step budget (Slice 7)', () => {
+  it('a 0.25 s frame at 4x yields a full second of sim time (was silently 1x)', () => {
+    const loop = new FixedTimestepLoop(120)
+    loop.setRate(4)
+    let ticks = 0
+    loop.advance(0.25, () => ticks++)
+    // 0.25 real x 4 = 1.0 s of sim = 120 ticks at 120 Hz.
+    expect(ticks).toBe(120)
+    expect(loop.simTime).toBeCloseTo(1.0, 6)
+  })
+
+  it('rate 1 keeps the original spiral-of-death guard (0.25 s cap per advance)', () => {
+    const loop = new FixedTimestepLoop(120)
+    let ticks = 0
+    loop.advance(3.0, () => ticks++) // huge frame clamps to 0.25
+    expect(ticks).toBe(30)
+  })
+})

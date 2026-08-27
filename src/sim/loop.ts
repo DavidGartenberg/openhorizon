@@ -55,8 +55,13 @@ export class FixedTimestepLoop {
     if (!(elapsed >= 0)) return this.accumulator / this.dt
     this.accumulator += Math.min(elapsed, MAX_FRAME_SECONDS) * this.rate
 
+    // The step budget scales with the rate (Slice 7): a fixed budget of
+    // maxSubSteps consumed at most 0.25 s of sim time per advance, so on
+    // long frames (background ticks, low fps) 2×/4× silently clamped to
+    // 1× — the surplus accumulated and was dropped as "backlog".
+    const budget = this.maxSubSteps * Math.max(1, this.rate)
     let steps = 0
-    while (this.accumulator >= this.dt && steps < this.maxSubSteps) {
+    while (this.accumulator >= this.dt && steps < budget) {
       step(this.dt)
       this.simTime += this.dt
       this.ticks += 1
@@ -66,7 +71,7 @@ export class FixedTimestepLoop {
 
     // If we hit the sub-step ceiling the sim cannot keep up with real time
     // at this rate; drop the backlog rather than death-spiral.
-    if (steps >= this.maxSubSteps && this.accumulator >= this.dt) {
+    if (steps >= budget && this.accumulator >= this.dt) {
       this.accumulator = 0
     }
 

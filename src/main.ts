@@ -2385,7 +2385,11 @@ function advanceFrame(elapsed: number, now: number): void {
     (la, lo) => tiles.elevationAt(la, lo),
     camera,
     now / 1000,
-    Math.min((now - lastFrame) / 1000 || 1 / 60, 0.5),
+    // Real frame dt (Slice 7): `now - lastFrame` was ALWAYS 0 here
+    // (lastFrame is re-stamped before advanceFrame runs), so the || made
+    // every frame 1/60 — ADS-B targets drifted at the wrong rate at any
+    // fps other than 60.
+    Math.min(elapsed || 1 / 60, 0.5),
   )
   updateRadar(ll.lat, ll.lon, now)
   scanAtc(ll.lat, ll.lon, now)
@@ -2394,8 +2398,15 @@ function advanceFrame(elapsed: number, now: number): void {
   if (atcMenuOpen) renderAtcMenu()
   for (const { pilot: p, mesh: m } of aiShips) {
     // 15c: AI steps with SIM dt — wall-dt made time-accel leave the
-    // pattern ships behind (Phase-6 quirk, noted at 14e).
-    p.step(Math.min(elapsed, 0.25) * loop.getRate(), loop.simTime)
+    // pattern ships behind. Slice 7: step the SAME total sim time the
+    // physics consumed, in bounded chunks — the old single clamped
+    // 0.25 s step fell 4× behind on long background ticks.
+    let aiRem = elapsed * loop.getRate()
+    while (aiRem > 1e-6) {
+      const c = Math.min(aiRem, 0.25)
+      p.step(c, loop.simTime)
+      aiRem -= c
+    }
     const lp = frame.toLocal(p.plane.lat, p.plane.lon)
     m.group.position.set(lp.e, p.plane.altFt * 0.3048, -lp.n)
     m.group.rotation.order = 'YXZ'

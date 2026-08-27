@@ -2591,3 +2591,23 @@ browser-verified end-to-end. Verified this session via scripted flights
   real ground traffic across the field (BAW2X/UAL809/UAL1723/CKS536…)
   beside the player 737 on 28R. Gate: tsc, 1169 tests, 545 validate.
   NEXT: Slice 7 time-scale fixes + ground-scale verification record.
+
+- **Everything-plan Slice 7 (2026-08-27): ground scale VERIFIED CORRECT;
+  the real time-scale bugs fixed** — Scale verification recorded (the
+  user's "scaling with the ground" ask): runway widths parse from
+  OurAirports in FEET and convert exactly once (r.w × 0.3048) — KSFO 28R
+  renders 60.96 m vs the real 200 ft = 60.96 m, exact; every aircraft
+  mesh is built in true meters (737 span 35.8 m ≈ 59% of that width,
+  matching reality); physics flatten corridors use the same numbers. No
+  scale defect exists — the "feel" traced to the 2× gear heights + tire
+  sink (fixed in the geometry commit) and these time bugs: (1) traffic-
+  layer dt was ALWAYS 1/60 (lastFrame re-stamped before advanceFrame →
+  now−lastFrame = 0 → ||1/60) — ADS-B targets drifted at the wrong rate
+  at any fps ≠ 60; now the real frame elapsed. (2) FixedTimestepLoop's
+  step budget now scales with rate — a fixed 30-step budget consumed at
+  most 0.25 s sim per advance, so 2×/4× silently ran at 1× on long
+  frames (background tabs, low fps); regression tests added (0.25 s at
+  4× = 120 ticks; rate-1 spiral guard unchanged). (3) AI pattern ships
+  step the SAME total sim time physics consumed, chunked ≤0.25 s (a
+  single clamped step fell 4× behind on background ticks). Gate: tsc,
+  1171 tests, 545 validate. NEXT: Slice 8 lights.
