@@ -2573,3 +2573,21 @@ browser-verified end-to-end. Verified this session via scripted flights
   (tower preservation/occupancy/priority, approach idempotence/ladder,
   freetext traps + bridge flags). Gate: tsc, 1169 tests, 545 validate.
   NEXT: Slice 6 live traffic.
+
+- **Everything-plan Slice 6 (2026-08-27): live traffic — ROOT CAUSE of the
+  flapping feed found and fixed** — the month of intermittent-to-dead
+  ADS-B was NOT upstream flakiness: adsb.lol (and friends) now reject
+  requests without a User-Agent header. Node's fetch sends none (curl
+  sends one, which is why manual probes always "worked"), the error body
+  is non-JSON, the parse threw, and the provider chain cooled all three
+  providers down forever — returning {ac:[]} with a FRESH timestamp
+  (indistinguishable from an empty sky). Fixes: User-Agent header on all
+  upstream traffic fetches; the all-failed/no-cache path now returns
+  ts 0 so client age displays are honest; new HUD status line — "LIVE
+  TFC n" / "LIVE TFC STALE ns" / "LIVE TFC NO FEED" (Slice 6's honest-
+  surface requirement). Server restarted to load the fix. VERIFIED
+  end-to-end at KSFO: proxy returns 116 aircraft fresh, client store 40
+  targets in keep radius, HUD "LIVE TFC 40", screenshot shows labeled
+  real ground traffic across the field (BAW2X/UAL809/UAL1723/CKS536…)
+  beside the player 737 on 28R. Gate: tsc, 1169 tests, 545 validate.
+  NEXT: Slice 7 time-scale fixes + ground-scale verification record.

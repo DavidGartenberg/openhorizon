@@ -23,6 +23,8 @@ export interface HudStats {
   safety?: string
   /** Copilot callout line (Slice 4) — own slot, never the safety line. */
   copilot?: string
+  /** Live-traffic status (Slice 6): count, or an honest STALE/NO FEED. */
+  tfc?: string
   spawnDesc: string
   lat: number
   lon: number
@@ -97,7 +99,7 @@ export class Hud {
       `AoA ${f.alphaDeg.toFixed(1)}°   ${f.loadFactorG.toFixed(1)}g` +
       `${f.onGround ? '   [GND]' : ''}\n` +
       `${stats.lat.toFixed(4)}, ${stats.lon.toFixed(4)} · tiles ${stats.tilesReady}` +
-      `${stats.wx ? ` · wx ${stats.wx}` : ''}${stats.safety ? `\n${stats.safety}` : ''}${stats.copilot ? `\nFO: ${stats.copilot}` : ''}\n` +
+      `${stats.wx ? ` · wx ${stats.wx}` : ''}${stats.tfc ? ` · ${stats.tfc}` : ''}${stats.safety ? `\n${stats.safety}` : ''}${stats.copilot ? `\nFO: ${stats.copilot}` : ''}\n` +
       `${this.fps.toFixed(0)} fps · sim ${formatUTC(stats.simDate)} [${rate}] · cam ${stats.cameraMode}\n` +
       `↑↓←→ fly · A/D rudder · W/S throttle · F/G flaps · ,/. trim · B brakes\n` +
       `/ airport search · C camera · R reset · Space pause · 1/2/3 rate · [ ] time · M planes · Q mute · V spoilers · Z reverse · U gear · J joystick · O/P save/load`

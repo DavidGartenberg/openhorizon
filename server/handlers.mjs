@@ -114,7 +114,15 @@ async function fetchTrafficProvider(provider, lat, lon) {
     const dLon = dLat / Math.cos((lat * Math.PI) / 180)
     url = `https://opensky-network.org/api/states/all?lamin=${(lat - dLat).toFixed(3)}&lomin=${(lon - dLon).toFixed(3)}&lamax=${(lat + dLat).toFixed(3)}&lomax=${(lon + dLon).toFixed(3)}`
   }
-  const res = await fetch(url, { signal: AbortSignal.timeout(8000) })
+  // adsb.lol (2026-08) rejects requests without a User-Agent — node's
+  // fetch sends none by default, so every provider call failed while
+  // curl (which sends one) worked. THE root cause of the month's
+  // "flapping feed": the error body ("User-Agent required…") is not
+  // JSON, so parsing threw and the chain cooled every provider down.
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(8000),
+    headers: { 'User-Agent': 'OpenHorizon-flightsim/1.0 (hobby project; local sim client)' },
+  })
   if (!res.ok) throw new Error(`traffic ${provider}: ${res.status}`)
   return normalizeAdsb(await res.json(), provider)
 }
@@ -148,7 +156,10 @@ export async function trafficData(latStr, lonStr) {
         }
       }
       if (cached) return cached.payload // stale-while-error
-      return { ac: [], ts: Date.now() }
+      // Every provider failed and nothing is cached: ts 0 keeps the
+      // client's age display honest (a fresh ts here made "all feeds
+      // down" indistinguishable from "genuinely empty sky").
+      return { ac: [], ts: 0 }
     } finally {
       trafficInFlight.delete(bucket)
     }

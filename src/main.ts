@@ -2658,6 +2658,14 @@ function advanceFrame(elapsed: number, now: number): void {
       // of squatting the slot forever.
       safety: safetyLine || (performance.now() < toastUntil ? toastLine : '') || (performance.now() < debriefUntil ? debriefLine : '') || undefined,
       copilot: performance.now() < copilotUntil ? copilotLine : undefined,
+      // Slice 6: honest live-traffic status — silent emptiness used to be
+      // indistinguishable from a dead feed (which flapped all month).
+      tfc: ((): string | undefined => {
+        if (!liveTrafficOn) return undefined
+        if (!lastTrafficPayloadTs) return 'LIVE TFC NO FEED'
+        const ageS = (Date.now() - lastTrafficPayloadTs) / 1000
+        return ageS > 30 ? `LIVE TFC STALE ${Math.round(ageS)}s` : `LIVE TFC ${liveTraffic.targets.size}`
+      })(),
       spawnDesc,
       lat: ll.lat,
       lon: ll.lon,
