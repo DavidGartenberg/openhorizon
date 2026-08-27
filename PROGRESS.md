@@ -2399,3 +2399,25 @@ browser-verified end-to-end. Verified this session via scripted flights
   (was the ATC facility), threshold = course-matched end (was nearest end
   after rollout). Suite 384/384. NEXT: 8d landing challenges + debrief/
   logbook overlay UI, then Phase 9.
+
+- **Everything-plan Slice 0 (2026-08-27): crash-class stability fixes** —
+  the sim can no longer die silently: (1) rAF error boundary — a throw in
+  advanceFrame used to unwind past requestAnimationFrame and freeze the
+  loop forever; now logged + toasted once + re-armed (metronome path too).
+  (2) localStorage guards: module-scope read at boot (private-mode aborted
+  the whole boot → black screen) replaced with the validated fleetKey;
+  saveSnapshot setItem wrapped (honest SAVE FAILED toast). (3) Debug-hook
+  finite guard sweep via new pure src/sim/guards.ts finiteOr() (TDD,
+  tests/guards.test.ts): __ohStep/__ohRate/__ohTime/__ohWind/__ohTune/
+  __ohApMode/__ohSpawn/__ohCam/__ohMfdPage all reject NaN/Infinity/garbage
+  (a NaN through __ohRate froze the accumulator unhealably; strings threw
+  inside the render loop). (4) Search-box focus trap: blur now closes the
+  box and re-enables input (clicking away used to leave every key dead);
+  disableSimInput() drops held keys/aliases + recenters shaped axes +
+  releases non-parking brakes (a held brake alias latched across focus
+  loss); Input.clearHeld() also clears virtualHeld on window blur.
+  (5) T with no ATC in range no longer opens an invisible menu that ate
+  the 1/2/3 rate keys — honest NO ATC IN RANGE toast; menu auto-closes
+  when the facility drops out of range. Gate: tsc clean, 1152 tests, 545
+  validate. NEXT: geometry prerequisite commit (dihedral + gear fold +
+  tire heights + zMain + tail cones), then Slice 1 flaps.

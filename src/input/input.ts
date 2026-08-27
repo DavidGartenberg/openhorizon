@@ -30,7 +30,7 @@ export class Input {
     })
     window.addEventListener('keyup', (e) => this.held.delete(e.code))
     window.addEventListener('blur', () => {
-      this.held.clear()
+      this.clearHeld()
       this.dragging = false
     })
 
@@ -82,6 +82,16 @@ export class Input {
   setVirtualHeld(code: string, held: boolean): void {
     if (held) this.virtualHeld.add(code)
     else this.virtualHeld.delete(code)
+  }
+
+  /** Drop all transient key state — real holds, gamepad key-aliases, and
+   *  pending one-frame presses. Called when keyboard focus leaves the sim
+   *  (window blur, a text box taking focus) so a key or button held at
+   *  that instant can't stay latched while events are no longer heard. */
+  clearHeld(): void {
+    this.held.clear()
+    this.virtualHeld.clear()
+    this.pressedSinceLastFrame.clear()
   }
 
   /** -1 | 0 | +1 from a pair of keys. */

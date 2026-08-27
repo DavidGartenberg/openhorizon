@@ -71,6 +71,7 @@ import {
   findTunedVor, vorCdiFraction, ilsRefFromRunwayThreshold, localizerFraction, glideslopeFraction, findKnownIls,
   ilsOnFinal, NO_NAV_RESULT, type TunedNavResult,
 } from './sim/nav/tuning'
+import { finiteOr } from './sim/guards'
 
 const KHAF = { lat: 37.5134, lon: -122.5011 }
 
@@ -199,7 +200,7 @@ const mesh = FLEET_ACTIVE.build()
 const planeMenu = new PlaneMenu((key) => {
   try { localStorage.setItem('oh-aircraft', key) } catch { /* private mode */ }
   location.reload()
-}, FLEET_ACTIVE.params === C172S ? '172' : (localStorage.getItem('oh-aircraft') ?? '172'))
+}, fleetKey) // fleetKey is the validated, private-mode-safe read of 'oh-aircraft'
 window.addEventListener('keydown', (e) => {
   if (planeMenu.isOpen) {
     if (planeMenu.handleKey(e.code)) { e.preventDefault(); e.stopImmediatePropagation() }
@@ -522,8 +523,13 @@ function saveSnapshot(): void {
     simMs: baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000,
     onGround: d.onGround, spawn: spawnDesc,
   }
-  localStorage.setItem('oh-save', JSON.stringify(snap))
-  toast(`SAVED — ${snap.spawn || 'airborne'} ${Math.round(snap.altFt)} ft`)
+  try {
+    localStorage.setItem('oh-save', JSON.stringify(snap))
+    toast(`SAVED — ${snap.spawn || 'airborne'} ${Math.round(snap.altFt)} ft`)
+  } catch {
+    // Private-mode/full storage: the save is unavailable, the sim is not.
+    toast('SAVE FAILED — STORAGE UNAVAILABLE')
+  }
 }
 
 function loadSnapshot(): boolean {
@@ -706,9 +712,35 @@ searchBox.addEventListener('keydown', (e) => {
     input.enabled = true
   }
 })
+// Focus trap fix (Slice 0): clicking away from the open search box used
+// to leave it invisible-but-focused with sim input disabled — every key
+// dead until the pilot rediscovered the box. Blur = close + re-enable.
+searchBox.addEventListener('blur', () => {
+  searchBox.style.display = 'none'
+  searchBox.value = ''
+  input.enabled = true
+})
 
 // ---- controls ----
 const shaped = { pitch: 0, roll: 0, yaw: 0 }
+
+/** Keyboard focus is leaving the sim (search/ATC text box). Drop every
+ *  transient: held keys, gamepad key-aliases, pending presses, and the
+ *  shaped control axes — pollControls() stops running while disabled, so
+ *  anything held at this instant would otherwise latch (a brake alias
+ *  held while a box opened once kept the brakes dragging for a whole
+ *  takeoff roll). Absolute levers (throttle/trim) stay put on purpose. */
+function disableSimInput(): void {
+  input.enabled = false
+  input.clearHeld()
+  shaped.pitch = 0
+  shaped.roll = 0
+  shaped.yaw = 0
+  if (!parkingBrake) {
+    aircraft.controls.brakeLeft = 0
+    aircraft.controls.brakeRight = 0
+  }
+}
 
 // ---- 16a: joystick / throttle quadrant ----
 // Bound axes OWN their control absolutely while the device is
@@ -894,11 +926,23 @@ function handleDiscreteKeys(): void {
   if (input.wasPressed('Slash')) {
     searchBox.style.display = 'block'
     searchBox.focus()
-    input.enabled = false
+    disableSimInput()
     return
   }
   if (input.wasPressed('KeyT')) {
-    atcMenuOpen = !atcMenuOpen
+    // Slice 0: with no facility in range the menu used to open with
+    // nothing rendered — an invisible mode that silently ate the 1/2/3
+    // sim-rate keys. Only toggle when there is actually a menu to show.
+    if (activeAtc) {
+      atcMenuOpen = !atcMenuOpen
+      renderAtcMenu()
+    } else {
+      toast('NO ATC IN RANGE')
+    }
+  }
+  if (atcMenuOpen && !activeAtc) {
+    // Facility went out of range while the menu was up.
+    atcMenuOpen = false
     renderAtcMenu()
   }
   if (atcMenuOpen) {
@@ -1518,7 +1562,7 @@ atcTypeBox.style.cssText =
   'position:fixed;left:8px;bottom:8px;width:504px;z-index:13;font:12px ui-monospace,monospace;' +
   'color:#dff;background:rgba(0,16,26,.9);border:1px solid #2a4a5a;border-radius:6px;padding:6px 8px;display:none'
 document.body.appendChild(atcTypeBox)
-atcTypeBox.addEventListener('focus', () => { input.enabled = false })
+atcTypeBox.addEventListener('focus', () => { disableSimInput() })
 atcTypeBox.addEventListener('blur', () => { input.enabled = true })
 atcTypeBox.addEventListener('keydown', (e) => {
   e.stopPropagation()
@@ -2464,11 +2508,26 @@ function advanceFrame(elapsed: number, now: number): void {
 }
 
 let lastRafAt = 0
+let frameErrorToasted = false
+/** Error boundary for the sim loop (Slice 0): before this, any throw in
+ *  advanceFrame unwound past requestAnimationFrame and the loop was
+ *  never re-armed — one bad frame froze the whole sim silently. */
+function safeAdvance(elapsed: number, now: number): void {
+  try {
+    advanceFrame(elapsed, now)
+  } catch (err) {
+    console.error('frame error (loop re-armed):', err)
+    if (!frameErrorToasted) {
+      frameErrorToasted = true
+      toast('FRAME ERROR — SEE CONSOLE (SIM CONTINUES)')
+    }
+  }
+}
 function frame_(now: number): void {
   lastRafAt = now
   const elapsed = (now - lastFrame) / 1000
   lastFrame = now
-  advanceFrame(elapsed, now)
+  safeAdvance(elapsed, now)
   requestAnimationFrame(frame_)
 }
 
@@ -2485,7 +2544,7 @@ metronome.onmessage = () => {
   const elapsed = Math.min((now - lastFrame) / 1000, 1)
   if (elapsed < 0.2) return
   lastFrame = now
-  advanceFrame(elapsed, now)
+  safeAdvance(elapsed, now)
 }
 
 // ---- boot ----
@@ -2499,13 +2558,17 @@ airports
 
 requestAnimationFrame(frame_)
 
-// Deterministic verification hooks (see PROGRESS.md).
+// Deterministic verification hooks (see PROGRESS.md). Every numeric
+// argument passes through finiteOr(): garbage from the console (NaN,
+// Infinity, strings) once froze physics permanently via one bad hook.
 Object.assign(window as unknown as Record<string, unknown>, {
   __ohStep: (seconds: number) => {
+    const s = finiteOr(seconds)
+    if (s === null) return
     const now = performance.now()
     lastFrame = now
     lastRafAt = now
-    advanceFrame(Math.max(seconds, 1 / 120), now)
+    advanceFrame(Math.max(s, 1 / 120), now)
   },
   __ohData: () => {
     const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
@@ -2548,11 +2611,12 @@ Object.assign(window as unknown as Record<string, unknown>, {
    *  cockpit knobs) and/or the OBS1 course, for headless verification. Any
    *  omitted field is left unchanged. */
   __ohTune: (freqs: { nav1Active?: number; nav1Standby?: number; com1Active?: number; com1Standby?: number; obs1Deg?: number }) => {
-    if (freqs.nav1Active !== undefined) radios.nav1.activeMhz = freqs.nav1Active
-    if (freqs.nav1Standby !== undefined) radios.nav1.standbyMhz = freqs.nav1Standby
-    if (freqs.com1Active !== undefined) radios.com1.activeMhz = freqs.com1Active
-    if (freqs.com1Standby !== undefined) radios.com1.standbyMhz = freqs.com1Standby
-    if (freqs.obs1Deg !== undefined) radios.obs1Deg = freqs.obs1Deg
+    if (!freqs || typeof freqs !== 'object') return
+    const n1a = finiteOr(freqs.nav1Active); if (n1a !== null) radios.nav1.activeMhz = n1a
+    const n1s = finiteOr(freqs.nav1Standby); if (n1s !== null) radios.nav1.standbyMhz = n1s
+    const c1a = finiteOr(freqs.com1Active); if (c1a !== null) radios.com1.activeMhz = c1a
+    const c1s = finiteOr(freqs.com1Standby); if (c1s !== null) radios.com1.standbyMhz = c1s
+    const obs = finiteOr(freqs.obs1Deg); if (obs !== null) radios.obs1Deg = obs
   },
   /** Load a flight plan directly as a waypoint list (no FPL-entry UI this
    *  task — see task report). Also usable to load a CIFP procedure's legs
@@ -2578,9 +2642,14 @@ Object.assign(window as unknown as Record<string, unknown>, {
     vertical?: VerticalMode,
     targets?: Partial<{ headingBugDeg: number; altitudeBugFt: number; vsTargetFpm: number; iasTargetKt: number; bankCommandDeg: number; pitchCommandDeg: number }>,
   ) => {
-    if (lateral) apTargets.lateralMode = lateral
-    if (vertical) apTargets.verticalMode = vertical
-    if (targets) Object.assign(apTargets, targets)
+    if (lateral && ['ROL', 'HDG', 'NAV', 'APR', 'BC'].includes(lateral)) apTargets.lateralMode = lateral
+    if (vertical && ['PIT', 'ALT', 'ALTS', 'VS', 'FLC', 'GS'].includes(vertical)) apTargets.verticalMode = vertical
+    if (targets && typeof targets === 'object') {
+      for (const k of ['headingBugDeg', 'altitudeBugFt', 'vsTargetFpm', 'iasTargetKt', 'bankCommandDeg', 'pitchCommandDeg'] as const) {
+        const v = finiteOr(targets[k])
+        if (v !== null) (apTargets as unknown as Record<string, number>)[k] = v
+      }
+    }
   },
   __ohApState: () => ({ ...apState }),
   __ohSafety: () => ({ safetyLine, dots: trafficDots, tcas: lastTcasDebug }),
@@ -2693,7 +2762,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohMags: (pos: 'off' | 'both') => {
     systemsControls.magneto = pos
   },
-  __ohSave: () => { saveSnapshot(); return localStorage.getItem('oh-save') },
+  __ohSave: () => { saveSnapshot(); try { return localStorage.getItem('oh-save') } catch { return null } },
   __ohLoad: () => loadSnapshot(),
   __ohDebrief: () => ({ debriefLine, samples: recorder.samples.length }),
   __ohLogbook: () => logbook,
@@ -2709,15 +2778,15 @@ Object.assign(window as unknown as Record<string, unknown>, {
    *  airspace/glide-ring wiring (Phase 4 Tasks 5/6) is visible without
    *  needing this hook at all. */
   __ohMfdPage: (page: 'map' | 'lean' | 'fpl' | 'wb') => {
-    mfdPage = page
+    if (page === 'map' || page === 'lean' || page === 'fpl' || page === 'wb') mfdPage = page
   },
   /** Verification-only camera-mode switch (mirrors pressing 'C' repeatedly)
    *  — useful for headless/automated cockpit-camera checks where dispatching
    *  a real keyboard event isn't reliable. */
   __ohCam: (mode: 'chase' | 'orbit' | 'free' | 'cockpit') => {
-    cameraMode = mode
+    if (mode === 'chase' || mode === 'orbit' || mode === 'free' || mode === 'cockpit') cameraMode = mode
   },
-  __ohSpawn: (q: string) => handleSearch(q),
+  __ohSpawn: (q: string) => { if (typeof q === 'string') handleSearch(q) },
   __ohAtc: (kindOrIndex?: string | number) => {
     if (typeof kindOrIndex === 'number') {
       const it = atcMenuItems()[kindOrIndex]
@@ -2742,7 +2811,9 @@ Object.assign(window as unknown as Record<string, unknown>, {
    *  calls or the plane flies unattended on stale targets (found by the
    *  §27 flight). */
   __ohRate: (r: 0 | 1 | 2 | 4) => {
-    loop.setRate(r)
+    // Strict whitelist: a NaN here poisons the loop accumulator and no
+    // later value heals it — the sim freezes for good.
+    if (r === 0 || r === 1 || r === 2 || r === 4) loop.setRate(r)
   },
   __ohCtl: (c?: Record<string, number> | null) => {
     if (c === undefined) return ctlOverride ? { ...ctlOverride } : null // no-arg = read back
@@ -2763,6 +2834,11 @@ Object.assign(window as unknown as Record<string, unknown>, {
     wxSlabs = slabs as typeof wxSlabs
   },
   __ohWind: (dirDeg: number, kt: number) => {
+    const d = finiteOr(dirDeg)
+    const k = finiteOr(kt)
+    if (d === null || k === null) return
+    dirDeg = d
+    kt = k
     // Manual weather: live METAR application stops so it can't overwrite.
     liveWeatherOn = false
     wxDesc = ''
@@ -2802,7 +2878,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
     if (on) lastWxFetchAt = -Infinity
   },
   __ohTime: (hours: number) => {
-    scrubSeconds += hours * 3600
+    const h = finiteOr(hours)
+    if (h !== null) scrubSeconds += h * 3600
   },
   /** Debug hook (Phase 3 §8 plan) to trigger a systems failure for
    *  verification, ahead of a real failures-menu UI (Phase 9). Recognized
