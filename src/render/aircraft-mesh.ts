@@ -312,6 +312,12 @@ export function buildB738(): AircraftMesh {
     // Panel in body coords from the root: LE at x 3.1 sweeping back.
     const y0 = 1.7, y1 = 16.6
     const rootChord = 7.2, tipChord = 1.55
+    // Wing chord / trailing-edge locus at a span station — the taper
+    // nearly cancels the LE sweep, so the TE sweeps only ~0.087 m/m.
+    // Everything that must hug the TE (flaps, canoe fairings) derives
+    // from these instead of the LE sweep.
+    const chordAt = (fy: number): number => rootChord - (rootChord - tipChord) * (fy - y0) / (y1 - y0)
+    const teX = (fy: number): number => 3.1 - Math.tan(0.436) * (fy - y0) - chordAt(fy)
     const panel = taperedPanel(3.1, rootChord, 3.1 - Math.tan(0.436) * (y1 - y0), tipChord, side * y0, side * y1, 0.3, BELLY)
     panel.position.y = -1.25 // low wing: plane near the belly line
     wingGroup.add(panel)
@@ -341,21 +347,27 @@ export function buildB738(): AircraftMesh {
     wingGroup.rotation.z = side * 0.105 // ~6°
     g.add(wingGroup)
 
-    // Fowler flaps: inboard + outboard sections, pivot groups at their LE.
-    // ONE continuous Fowler flap per wing (user request).
-    for (const [fy0, fy1, chord, leX] of [
-      [2.2, 12.0, 1.55, 3.1 - Math.tan(0.436) * 6.5 - 4.0],
+    // Fowler flaps: ONE continuous Fowler flap per wing (user request).
+    // The flap follows the wing TRAILING-EDGE sweep, not the LE sweep —
+    // the old 0.9·LE-sweep panel dragged the outboard end ~3 m behind
+    // the wing at every setting (user: "every part of the flaps" must
+    // stay connected). The LE nests 90% of the flap chord under the
+    // wing, so even at full extension (35% chord) it never leaves the
+    // TE shadow anywhere along the span.
+    for (const [fy0, fy1, chord] of [
+      [2.2, 12.0, 1.55],
     ] as const) {
       const pivot = new THREE.Group()
+      const leX = teX(fy0) + chord * 0.9
       placeBody(pivot, leX, 0, 1.05)
-      const flap = taperedPanel(0, chord, -Math.tan(0.436) * (fy1 - fy0) * 0.9, chord * 0.85, side * fy0, side * fy1, 0.16, SURFACE)
+      const flap = taperedPanel(0, chord, teX(fy1) - teX(fy0), chord * 0.85, side * fy0, side * fy1, 0.16, SURFACE)
       flap.position.y = -0.30 // real clearance below the wing skin (N5)
       pivot.add(flap)
       // Aft canoe halves ride the flap (split-fairing realism).
       for (const fy of [3.6, 6.8, 10.0]) {
-        const zLE = 0.42 * (fy - fy0)
+        const zLE = teX(fy0) - teX(fy) // pivot-local aft offset of the flap LE here
         const aftCanoe = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.34, 1.5), BELLY)
-        aftCanoe.position.set(side * fy, -0.5, zLE + 0.55)
+        aftCanoe.position.set(side * fy, -0.5, zLE + chord * 0.45)
         aftCanoe.castShadow = true
         pivot.add(aftCanoe)
       }
@@ -370,9 +382,10 @@ export function buildB738(): AircraftMesh {
     // (Aft halves are added as flap-pivot children right after the flap
     // is built below; see flapCanoeStations.)
     for (const fy of [3.6, 6.8, 10.0]) {
-      const zLE = 0.42 * (fy - 2.2) // one-piece flap LE sweep in pivot-local z
+      // Center just ahead of the TE locus: buried in the wing underside,
+      // protruding ~0.4 m aft to meet the flap-riding aft half.
       const fixedCanoe = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.42, 1.8), BELLY)
-      placeBody(fixedCanoe, -3.93 - zLE + 0.75, side * fy, 1.18)
+      placeBody(fixedCanoe, teX(fy) + 0.5, side * fy, 1.18)
       fixedCanoe.castShadow = true
       wingGroup.add(fixedCanoe)
     }

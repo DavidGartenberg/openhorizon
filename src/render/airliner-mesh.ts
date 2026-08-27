@@ -135,6 +135,10 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     const y0 = R * 0.85
     const y1 = halfSpan - (cfg.winglet === 'none' ? 0 : 0.4)
     const tipLeX = wingRootX - Math.tan(sweep) * (y1 - y0)
+    // Chord / trailing-edge locus at a span station (taper nearly cancels
+    // the LE sweep) — flaps and canoe fairings hug the TE, not the LE.
+    const chordAt = (fy: number): number => rootChord - (rootChord - tipChord) * (fy - y0) / (y1 - y0)
+    const teXAt = (fy: number): number => wingRootX - Math.tan(sweep) * (fy - y0) - chordAt(fy)
     const panel = taperedPanel(wingRootX, rootChord, tipLeX, tipChord, side * y0, side * y1, R * 0.16, BELLY)
     panel.position.y = -wingDrop
     wingGroup.add(panel)
@@ -167,31 +171,37 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     for (const ff of [0.28, 0.52]) {
       const fy = y0 + (y1 - y0) * ff
       const fixedCanoe = new THREE.Mesh(new THREE.BoxGeometry(R * 0.16, R * 0.22, rootChord * 0.4), BELLY)
-      placeBody(fixedCanoe, wingRootX - Math.tan(sweep) * (fy - y0) - rootChord * 0.62, side * fy, wingDrop + R * 0.07)
+      // Centered just ahead of the TE locus: buried in the wing
+      // underside, protruding aft to meet the flap-riding aft half.
+      placeBody(fixedCanoe, teXAt(fy) + rootChord * 0.11, side * fy, wingDrop + R * 0.07)
       fixedCanoe.castShadow = true
       wingGroup.add(fixedCanoe)
     }
 
     // ONE continuous Fowler flap per wing + ONE spoiler panel (user:
     // "make the flaps one piece together and spoilers one piece").
+    // The flap follows the wing TRAILING-EDGE sweep, not the LE sweep —
+    // the old 0.9·LE-sweep panel detached the outboard end (same fix as
+    // buildB738). LE nests 90% of the flap chord under the wing so full
+    // extension (35% chord) never leaves the TE shadow.
     for (const [f0, f1, cFrac] of [
       [0.14, 0.68, 0.23],
     ] as const) {
       const fy0 = y0 + (y1 - y0) * f0
       const fy1 = y0 + (y1 - y0) * f1
       const chord = rootChord * cFrac
-      const leX = wingRootX - Math.tan(sweep) * ((fy0 + fy1) / 2 - y0) - rootChord * 0.62
+      const leX = teXAt(fy0) + chord * 0.9
       const pivot = new THREE.Group()
       placeBody(pivot, leX, 0, wingDrop * 0.82)
-      const flap = taperedPanel(0, chord, -Math.tan(sweep) * (fy1 - fy0) * 0.9, chord * 0.85, side * fy0, side * fy1, R * 0.085, SURFACE)
+      const flap = taperedPanel(0, chord, teXAt(fy1) - teXAt(fy0), chord * 0.85, side * fy0, side * fy1, R * 0.085, SURFACE)
       flap.position.y = -R * 0.16
       pivot.add(flap)
       // Aft canoe halves ride the flap.
       for (const ff of [0.28, 0.52]) {
         const fy = y0 + (y1 - y0) * ff
-        const zLE = Math.tan(sweep) * 0.9 * (fy - fy0)
+        const zLE = teXAt(fy0) - teXAt(fy) // pivot-local aft offset of the flap LE here
         const aftCanoe = new THREE.Mesh(new THREE.BoxGeometry(R * 0.15, R * 0.18, chord * 0.8), BELLY)
-        aftCanoe.position.set(side * fy, -R * 0.26, zLE + chord * 0.4)
+        aftCanoe.position.set(side * fy, -R * 0.26, zLE + chord * 0.45)
         aftCanoe.castShadow = true
         pivot.add(aftCanoe)
       }
