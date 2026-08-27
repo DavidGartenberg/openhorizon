@@ -2489,3 +2489,25 @@ browser-verified end-to-end. Verified this session via scripted flights
   a screenshot this pass (orbit-camera acrobatics in the background tab);
   they ride the same doorFrac path as the verified family doors. Gate:
   tsc, 1152 tests, 545 validate. NEXT: Slice 3 cockpit view.
+
+- **Everything-plan Slice 3 (2026-08-27): cockpit — see outside, displays
+  visible** — per-layout eyepoints (cockpit-camera.ts EYE_BY_LAYOUT): GA
+  0.75 up / transport 1.00 up, both x 0.45 fwd; transport left seat
+  centered at y −0.5 over the captain's DUs. PLAN DEVIATION recorded: the
+  plan's transport eye of 0.80 would still sit BELOW the re-seated
+  glareshield top (0.92) — no over-nose view at all — so the eye went to
+  1.00 (≈7° down over the shield, the real design-eye idea); GA panel box
+  shortened to top 0.72 (it had 0.28 m of empty bezel above the tallest
+  content) giving ≈3° over the cowl under the 0.75 eye that must stay
+  below the C172's cabin skin (0.80). Co-moved: glareshield cushion
+  →0.865, MCP →0.86, roof beams (GA 1.13 / transport 1.50), A-pillars
+  re-spanned panel→roof, sills below the eye (GA 0.27 / transport 0.55),
+  center post →1.17, look-down clamp widened to −1.25 rad for floor
+  controls. cockpit.group now hidden outside cockpit mode (it used to
+  poke through the C172 roof in chase; also saves draw calls). In-browser
+  verified: 737 cockpit = runway + horizon + live MCP band + panel top in
+  one frame; C172 = runway + horizon + live G1000 PFD/MFD; chase view
+  clean (no shell leak; C172 nav lights red-left/green-right confirmed).
+  View bands now ≈ −7°…+29° (transport) / −3°…+22° (GA) vs the old
+  +31°…+40°. Gate: tsc, 1152 tests, 545 validate. NEXT: 9A safety-line
+  fix + Slice 4 copilot.

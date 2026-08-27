@@ -357,14 +357,16 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     )
     add(faceMesh, 1.0, 0.02, -0.55)
     // Glareshield: dark cushion + the full-width painted MCP/FCU band
-    // (live digit windows + mode lamps redrawn by updateMcp).
-    add(new THREE.Mesh(new THREE.BoxGeometry(1.58, 0.11, 0.14), DU_BEZEL), 1.04, 0.02, -0.925)
+    // (live digit windows + mode lamps redrawn by updateMcp). Top of the
+    // cushion sits at 0.92 up — 8 cm BELOW the transport eyepoint
+    // (cockpit-camera.ts) so the pilot sees over the nose.
+    add(new THREE.Mesh(new THREE.BoxGeometry(1.58, 0.11, 0.14), DU_BEZEL), 1.04, 0.02, -0.865)
     mcp = makeCanvasTexture(2048, 120)
     const mcpMesh = new THREE.Mesh(
       new THREE.PlaneGeometry(1.5, 0.088),
       new THREE.MeshBasicMaterial({ map: mcp.texture, toneMapped: false }),
     )
-    add(mcpMesh, 0.965, 0.02, -0.92)
+    add(mcpMesh, 0.965, 0.02, -0.86)
     // Upper-center DU: live engine display (EICAS/ECAM upper).
     eicas = makeCanvasTexture(256, 256)
     const eicasMesh = new THREE.Mesh(
@@ -373,7 +375,11 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     )
     add(eicasMesh, 0.97, -0.2, -0.61)
   } else {
-    add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.62, 0.06), PANEL_DARK), 1.02, 0.02, -0.55)
+    // GA panel: top at 0.72 up — just below the GA eyepoint (0.75) so a
+    // C172 pilot gets real over-the-nose vision. The old 0.62-tall box
+    // topped at 0.86 with 0.28 m of EMPTY bezel above the displays
+    // (tallest content ≈ 0.67) and blocked the entire forward view.
+    add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.54, 0.06), PANEL_DARK), 1.02, 0.02, -0.45)
   }
 
   // PFD (left) and MFD (center) — canvas-textured planes.
@@ -642,20 +648,25 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     }
     // Frame hugs the cabin: GA cabins are ~half a transport flight deck
     // wide — oversized posts would poke through the C172's fuselage.
-    const halfW = layout === 'g1000' ? 0.6 : 0.88
-    // Roof beam across the top of the windshield.
-    framePart(halfW * 2 + 0.2, 0.16, 0.9, 0.75, 0, -1.3)
-    // A-pillars: angled side posts from panel corners up to the roof.
-    framePart(0.07, 0.62, 0.3, 1.0, -halfW, -0.95, 0.35)
-    framePart(0.07, 0.62, 0.3, 1.0, halfW, -0.95, -0.35)
-    // Side walls below the windows.
-    framePart(0.06, 0.7, 1.6, 0.35, -halfW - 0.02, -0.5)
-    framePart(0.06, 0.7, 1.6, 0.35, halfW + 0.02, -0.5)
+    const ga = layout === 'g1000'
+    const halfW = ga ? 0.6 : 0.88
+    // Windscreen band sized to the per-layout eyepoint (Slice 3): GA eye
+    // 0.75 → roof bottom 1.05 (view band ≈ −3°…+22°); transport eye
+    // 1.00 → roof bottom 1.42 (band ≈ −7°…+29°). The old one-size band
+    // (glareshield 0.98 to roof 1.22 over an eye at 0.52) spanned
+    // +31°…+40° — the horizon was never visible from either seat.
+    framePart(halfW * 2 + 0.2, 0.16, 0.9, 0.75, 0, ga ? -1.13 : -1.5)
+    // A-pillars: angled side posts spanning panel corners to the roof.
+    framePart(0.07, ga ? 0.4 : 0.6, 0.3, 1.0, -halfW, ga ? -0.885 : -1.17, 0.35)
+    framePart(0.07, ga ? 0.4 : 0.6, 0.3, 1.0, halfW, ga ? -0.885 : -1.17, -0.35)
+    // Side walls: sill kept below the eye so side windows read as windows.
+    framePart(0.06, 0.7, 1.6, 0.35, -halfW - 0.02, ga ? -0.27 : -0.55)
+    framePart(0.06, 0.7, 1.6, 0.35, halfW + 0.02, ga ? -0.27 : -0.55)
     // Floor.
     framePart(halfW * 2 + 0.1, 0.06, 1.8, 0.3, 0, 0.28)
-    if (layout !== 'g1000') {
-      // Two-piece transport windshield: center post.
-      framePart(0.055, 0.5, 0.1, 1.05, 0, -1.05)
+    if (!ga) {
+      // Two-piece transport windshield: center post glareshield→roof.
+      framePart(0.055, 0.5, 0.1, 1.05, 0, -1.17)
       // Pedestal + twin thrust levers (visual; drag still on the lever).
       const ped = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.55), FRAME)
       placeBody(ped, 0.62, 0, -0.15)

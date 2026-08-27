@@ -232,6 +232,9 @@ chase.setSizeScale(Math.max(FLEET_ACTIVE.params.spanM / 11, 1))
 const orbit = new OrbitCamera(camera)
 const freeCam = new FlyCamera(camera)
 const cockpitCam = new CockpitCamera(camera)
+// Per-layout eyepoint (Slice 3): GA eye under the C172 cabin top;
+// transport eye above the re-seated 737/Airbus glareshield.
+cockpitCam.setEye(panelLayoutFor(fleetKey, FLEET_ACTIVE.params.trimIsStabilizer ?? false) === 'g1000' ? 'ga' : 'transport')
 let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' = 'chase'
 const DEFAULT_NEAR = camera.near // 0.5 m (scene.ts) — correct for exterior views
 const COCKPIT_NEAR = 0.02 // cockpit controls sit centimeters from the eyepoint
@@ -2287,6 +2290,11 @@ function advanceFrame(elapsed: number, now: number): void {
     engineRunning: aircraft.engineRunning,
   })
 
+  // Slice 3: the cockpit shell (roof beam, pillars, panel) is sized for
+  // the interior eyepoint, not the exterior silhouette — it must never
+  // ride on top of the outside view (it poked through the C172's roof).
+  // Hiding it outside cockpit mode also drops its draw calls.
+  cockpit.group.visible = cameraMode === 'cockpit'
   if (cameraMode === 'chase') chase.update(elapsed, mesh.group.position, (d.headingDeg * Math.PI) / 180)
   else if (cameraMode === 'orbit') orbit.update(input, mesh.group.position)
   else if (cameraMode === 'cockpit') {

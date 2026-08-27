@@ -15,17 +15,29 @@ import type { Input } from '../input/input'
  * not a POH-sourced figure, same status as `aircraft-mesh.ts`'s panel
  * placements.
  */
-const EYE_X = 0.35 // fwd of origin — puts ~0.65-0.7m between eye and panel (a
-                    // realistic GA cockpit eye-to-panel depth), well back from
-                    // the panel (body-x ~1.02) and yoke (body-x ~0.68-0.7)
-const EYE_Y = -0.33 // left seat (y = right, so negative = left)
-const EYE_Z = -0.52 // up (z = down, so negative = up)
+/** Per-layout pilot eyepoints (Slice 3). The one-size eye (up 0.52) sat
+ *  BELOW both panel tops, so the windscreen band started +31° above the
+ *  horizon — zero forward view. The GA eye must stay under the C172's
+ *  exterior cabin top (0.80) while clearing its shortened panel (top
+ *  0.72 → ~3° of over-the-nose vision); the transport eye rides above
+ *  the re-seated 737 glareshield (top 0.92 → ~7° over the nose, the
+ *  real design-eye idea). `up` is render-up metres (body −z). */
+export const EYE_BY_LAYOUT = {
+  ga: { x: 0.45, y: -0.33, up: 0.75 },
+  transport: { x: 0.45, y: -0.5, up: 1.0 },
+} as const
 
 export class CockpitCamera {
   private lookYaw = 0
   private lookPitch = 0
+  private eye: { x: number; y: number; up: number } = EYE_BY_LAYOUT.ga
 
   constructor(private readonly camera: THREE.PerspectiveCamera) {}
+
+  /** Select the eyepoint for the active aircraft's panel layout. */
+  setEye(kind: keyof typeof EYE_BY_LAYOUT): void {
+    this.eye = EYE_BY_LAYOUT[kind]
+  }
 
   /** Keep world-relative state sane across a floating-origin rebase — no-op,
    *  this camera is always positioned relative to the (rebased) aircraft. */
@@ -51,13 +63,15 @@ export class CockpitCamera {
     if (consumeLook) {
       const { dx, dy } = input.consumeMouseDelta()
       this.lookYaw = THREE.MathUtils.clamp(this.lookYaw - dx * 0.003, -1.4, 1.4)
-      this.lookPitch = THREE.MathUtils.clamp(this.lookPitch - dy * 0.003, -1.1, 1.1)
+      // Down-look widened to −1.25 rad: the floor controls (trim wheel,
+      // fuel selector) sit ~80°+ below the raised eyepoint.
+      this.lookPitch = THREE.MathUtils.clamp(this.lookPitch - dy * 0.003, -1.25, 1.1)
     }
 
     const aircraftQuat = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(pitchRad, -headingRad, -rollRad, 'YXZ'),
     )
-    const eyeOffset = new THREE.Vector3(EYE_Y, -EYE_Z, -EYE_X).applyQuaternion(aircraftQuat)
+    const eyeOffset = new THREE.Vector3(this.eye.y, this.eye.up, -this.eye.x).applyQuaternion(aircraftQuat)
     this.camera.position.copy(aircraftPos).add(eyeOffset)
 
     const lookQuat = new THREE.Quaternion().setFromEuler(
