@@ -498,9 +498,13 @@ export function buildB738(): AircraftMesh {
       // LE stays tucked under the wing TE (user: "the flap still has to
       // be attached to the wing"); near-flat tracks (tiny drop) keep the
       // panel well clear of the ground at flaps 40.
-      p.position.z += fp.ext * 0.95
-      p.position.y -= fp.drop * 0.08
-      p.rotation.x = fp.rot * 0.62 // ~35° at flaps 40
+      // Slot stays tight (~35% of flap chord): the panel never leaves the
+      // wing's shadow, and 30° max visual deflection keeps the trailing
+      // edge clear of the runway even tail-down in the flare (user: "the
+      // flaps cannot go into the ground").
+      p.position.z += fp.ext * 0.55
+      p.position.y -= fp.drop * 0.06
+      p.rotation.x = fp.rot * 0.52
     }
     // Spoilerons: the down-going wing's panel rises with roll input, on
     // top of the speedbrake setting (real flight-spoiler mixing); full

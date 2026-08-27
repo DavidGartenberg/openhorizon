@@ -345,9 +345,11 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       const fp = fowlerPose(s.flapFrac)
       // ~60% of the flap's own chord (0.23·rootChord): stays tucked at
       // the wing TE; near-flat drop keeps ground clearance at full flaps.
-      p.position.z = (p.userData.z0 as number) + fp.ext * rootChord * 0.14
-      p.position.y = (p.userData.y0 as number) - fp.drop * R * 0.05
-      p.rotation.x = fp.rot * 0.6
+      // Tight slot (~35% of flap chord) + 29° visual cap: connected at
+      // every setting, clear of the ground tail-down.
+      p.position.z = (p.userData.z0 as number) + fp.ext * rootChord * 0.08
+      p.position.y = (p.userData.y0 as number) - fp.drop * R * 0.04
+      p.rotation.x = fp.rot * 0.5
     }
     spoilerPivots.forEach((p, i) => {
       p.rotation.x = -spoileronRise(s.spoilerFrac, s.roll ?? 0, i === 0 ? 0 : 1) * 1.05
