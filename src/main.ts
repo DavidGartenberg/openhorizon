@@ -32,7 +32,7 @@ import { loadIls, ilsLoaded, ilsCount } from './world/ils'
 import { osmIdentSegs } from './world/osm-layout'
 import { routeIdents } from './sim/atc/ground'
 import { interpretTransmission } from './sim/atc/freetext'
-import { ApproachController } from './sim/atc/approach'
+import { ApproachController, HANDOFF_GATE_M } from './sim/atc/approach'
 import { buildAirliner, airlinerCfgFor } from './render/airliner-mesh'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
@@ -414,6 +414,8 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
   // leg; without this the callouts stay spent from the previous one.
   copilotLatches = makeCopilotLatches()
   copilotPrev = null
+  // 9A: pending controller replies die with the flight they answered.
+  cancelAtcTimers()
   const { r, fromHigh } = pickRunway(ap, rwyIdent)
   const thr = fromHigh ? { lat: r.la2, lon: r.lo2, e: r.e2 } : { lat: r.la1, lon: r.lo1, e: r.e1 }
   const far = fromHigh ? { lat: r.la1, lon: r.lo1, e: r.e1 } : { lat: r.la2, lon: r.lo2, e: r.e2 }
@@ -1636,6 +1638,45 @@ let lastAtcScanAt = -Infinity
 let lastTowerTickAt = -Infinity
 let atcMenuOpen = false
 
+// 9A: tracked ATC reply timers. Raw setTimeout replies used to fire
+// after a respawn or facility change — the old controller answering on
+// the new field's frequency. Cancelled wholesale on both events.
+let atcTimers: number[] = []
+function atcDelay(fn: () => void, ms: number): void {
+  const id = window.setTimeout(() => {
+    atcTimers = atcTimers.filter((t) => t !== id)
+    fn()
+  }, ms)
+  atcTimers.push(id)
+}
+function cancelAtcTimers(): void {
+  for (const id of atcTimers) clearTimeout(id)
+  atcTimers = []
+}
+
+/** Real taxiway idents between the aircraft and the active threshold,
+ *  when the OSM layout knows them (shared by the menu, the free-text
+ *  context, and the ground bridge). */
+function taxiRouteIdents(): string[] | undefined {
+  const a = activeAtc
+  if (!a) return undefined
+  const segs = osmIdentSegs.get(a.ident)
+  if (!segs?.length) return undefined
+  const ap = airports.find(a.ident)
+  const rw = ap?.r.find((r) => r.li === a.atis.activeRunway || r.hi === a.atis.activeRunway)
+  if (!ap || !rw) return undefined
+  const fromHigh = rw.hi === a.atis.activeRunway
+  const thrLat = fromHigh ? rw.la2 : rw.la1
+  const thrLon = fromHigh ? rw.lo2 : rw.lo1
+  const mLat = 111_320
+  const mLon = mLat * Math.cos((ap.la * Math.PI) / 180)
+  const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+  const from = { x: (ll.lon - ap.lo) * mLon, z: -(ll.lat - ap.la) * mLat }
+  const to = { x: (thrLon - ap.lo) * mLon, z: -(thrLat - ap.la) * mLat }
+  const ids = routeIdents(segs, from, to)
+  return ids.length ? ids : undefined
+}
+
 const transcriptDiv = document.createElement('div')
 transcriptDiv.style.cssText =
   'position:fixed;left:8px;bottom:8px;max-width:520px;z-index:12;font:12px/1.5 ui-monospace,monospace;' +
@@ -1671,10 +1712,7 @@ atcTypeBox.addEventListener('keydown', (e) => {
 function sendFreeTextAtc(said: string): void {
   if (!activeAtc) return
   const a = activeAtc
-  // Keying the mic tunes you to the tower if you weren't already (pilot
-  // convenience — same auto-tune the structured menu does).
-  radios.com1.activeMhz = a.twrF
-  comms.transmit({ freqMhz: a.twrF, from: CALLSIGN, text: `${said}, ${CALLSIGN}`, atSimS: loop.simTime })
+  const view = playerAtcView()
   const reply = interpretTransmission(said, {
     callsign: CALLSIGN,
     facility: `${a.ident} Tower`,
@@ -1682,28 +1720,58 @@ function sendFreeTextAtc(said: string): void {
     windDirDeg: wxBlended?.windDirDeg ?? 0,
     windKt: wxBlended?.windKt ?? 0,
     altimeterInHg: wxBlended?.qnhInHg,
-    taxiVia: ((): string[] | undefined => {
-      const segs = osmIdentSegs.get(a.ident)
-      if (!segs?.length) return undefined
-      const rw = airports.find(a.ident)?.r.find((r) => r.li === a.atis.activeRunway || r.hi === a.atis.activeRunway)
-      if (!rw) return undefined
-      const fromHigh = rw.hi === a.atis.activeRunway
-      const thrLl = fromHigh ? { lat: rw.la2, lon: rw.lo2 } : { lat: rw.la1, lon: rw.lo1 }
-      const ap = airports.find(a.ident)!
-      const mLat = 111_320
-      const mLon = 111_320 * Math.cos((ap.la * Math.PI) / 180)
-      const acLl = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
-      const from = { x: (acLl.lon - ap.lo) * mLon, z: -(acLl.lat - ap.la) * mLat }
-      const to = { x: (thrLl.lon - ap.lo) * mLon, z: -(thrLl.lat - ap.la) * mLat }
-      const ids = routeIdents(segs, from, to)
-      return ids.length ? ids : undefined
-    })(),
+    taxiVia: taxiRouteIdents(),
   })
-  // Controller answers a beat later, prefixed with the callsign.
   const facility = `${a.ident.startsWith('K') ? a.ident.slice(1) : a.ident} Tower`
-  window.setTimeout(() => {
-    comms.transmit({ freqMhz: a.twrF, from: facility, text: `${CALLSIGN}, ${reply.response}`, atSimS: loop.simTime })
-  }, 1100)
+  const keyUp = (freq: number): void => {
+    // Keying the mic tunes the right facility (same auto-tune as the menu).
+    radios.com1.activeMhz = freq
+    comms.transmit({ freqMhz: freq, from: CALLSIGN, text: `${said}, ${CALLSIGN}`, atSimS: loop.simTime })
+  }
+  const sendMachine = (replies: Transmission[]): void => {
+    atcDelay(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
+  }
+
+  // Emergency: the free-text controller transmits its richer emergency
+  // phraseology AND flags the tower strip — the flagged tick() issues
+  // the landing clearance (no double request, no contradictions).
+  if (reply.emergency) {
+    keyUp(a.twrF)
+    a.tower.declareEmergency(CALLSIGN, view)
+    atcDelay(() => comms.transmit({ freqMhz: a.twrF, from: facility, text: `${CALLSIGN}, ${reply.response}`, atSimS: loop.simTime }), 1100)
+    return
+  }
+
+  // Single-reply rule (Slice 5): for intents the strip machines own the
+  // free-text engine is a CLASSIFIER only — the sequencing authority is
+  // the ONLY transmitter (the free-text reply always cleared while the
+  // tower might say "hold short": two contradictory clearances).
+  const bridged: Partial<Record<string, PilotRequestKind>> = {
+    takeoff: 'readyTakeoff', landing: 'inboundLanding', position: 'inboundLanding', goAround: 'goAround', taxi: 'taxiOut',
+  }
+  const kind = reply.bridge ? bridged[reply.intent] : undefined
+  if (kind === 'taxiOut' && view.onGround) {
+    keyUp(a.gndF)
+    sendMachine(a.ground.request(CALLSIGN, 'taxiOut', loop.simTime, taxiRouteIdents()))
+    return
+  }
+  if (kind && kind !== 'taxiOut') {
+    // Airborne outside the approach handoff gate, an inbound call is
+    // approach's business — check in there, not with the tower.
+    if (kind === 'inboundLanding' && !view.onGround && view.distanceM > HANDOFF_GATE_M && !a.approach.handedOff(CALLSIGN)) {
+      keyUp(a.appF)
+      sendMachine(a.approach.checkIn(CALLSIGN, { distanceM: view.distanceM, aglFt: view.aglFt }, loop.simTime))
+      return
+    }
+    keyUp(a.twrF)
+    sendMachine(a.tower.request(CALLSIGN, kind, view, loop.simTime))
+    return
+  }
+
+  // Non-strip intents (weather/heading/altitude/direct/radio-check/…)
+  // keep the free-text controller's own reply.
+  keyUp(a.twrF)
+  atcDelay(() => comms.transmit({ freqMhz: a.twrF, from: facility, text: `${CALLSIGN}, ${reply.response}`, atSimS: loop.simTime }), 1100)
 }
 
 function radioSquelch(): void {
@@ -1785,6 +1853,9 @@ function scanAtc(lat: number, lon: number, now: number): void {
       })
       const name = nearest.n.replace(/ (Airport|Field|Municipal.*|Regional.*|International.*)$/i, '')
       const atis = buildAtis(name, wxBlended, runwayHeadings, Math.floor(now / 3_600_000) % 26)
+      // A facility change abandons the old controller's pending replies.
+      cancelAtcTimers()
+      const actRw = nearest.r.find((r) => r.li === atis.activeRunway || r.hi === atis.activeRunway)
       activeAtc = {
         ident: nearest.i,
         ll: { lat: nearest.la, lon: nearest.lo },
@@ -1793,6 +1864,9 @@ function scanAtc(lat: number, lon: number, now: number): void {
           freqMhz: twrF,
           activeRunway: atis.activeRunway,
           departureFreqMhz: fs.find((x) => x.t === 'DEP')?.f ?? fs.find((x) => x.t === 'APP')?.f,
+          runwayLengthM: actRw
+            ? distanceM({ lat: actRw.la1, lon: actRw.lo1 }, { lat: actRw.la2, lon: actRw.lo2 })
+            : undefined,
         }),
         ground: new GroundController({ facility: `${name} Ground`, freqMhz: gndF, activeRunway: atis.activeRunway }),
         approach: new ApproachController({
@@ -1833,6 +1907,7 @@ function scanAtc(lat: number, lon: number, now: number): void {
         }
       }
     } else if (!nearest) {
+      if (activeAtc) cancelAtcTimers()
       activeAtc = null
       for (const s of aiShips) scene.remove(s.mesh.group)
       aiShips = []
@@ -1870,7 +1945,7 @@ function atcMenuItems(): AtcMenuItem[] {
     comms.transmit({ freqMhz: radios.com1.activeMhz, from: CALLSIGN, text: pilotPhrase(CALLSIGN, kind, a.atis.activeRunway), atSimS: loop.simTime })
     if (isAudible(freq, radios.com1.activeMhz)) {
       const replies = handle()
-      setTimeout(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
+      atcDelay(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
     }
   }
   if (view.onGround && a.ground.awaitingReadback(CALLSIGN)) {
@@ -1885,30 +1960,19 @@ function atcMenuItems(): AtcMenuItem[] {
         })
         if (isAudible(a.gndF, radios.com1.activeMhz)) {
           const replies = a.ground.readback(CALLSIGN, 'taxiOut', loop.simTime)
-          setTimeout(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
+          atcDelay(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
         }
       },
     })
   } else if (view.onGround) {
-    items.push({ label: `Request taxi (Ground ${a.gndF.toFixed(2)})`, run: () => sendPilot('taxiOut', a.gndF, () => a.ground.request(CALLSIGN, 'taxiOut', loop.simTime, (() => {
-          // N7: name REAL taxiways when the OSM layout knows them —
-          // corridor idents between the aircraft and the active threshold.
-          const segs = activeAtc ? osmIdentSegs.get(activeAtc.ident) : undefined
-          if (!segs || !segs.length || !activeAtc) return undefined
-          const ap = airports.find(activeAtc.ident)
-          const rwy = ap?.r.find((r) => r.li === activeAtc!.atis.activeRunway || r.hi === activeAtc!.atis.activeRunway)
-          if (!ap || !rwy) return undefined
-          const thrLat = rwy.li === activeAtc.atis.activeRunway ? rwy.la1 : rwy.la2
-          const thrLon = rwy.li === activeAtc.atis.activeRunway ? rwy.lo1 : rwy.lo2
-          const mLon = 111_320 * Math.cos((ap.la * Math.PI) / 180)
-          const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
-          const from = { x: (ll.lon - ap.lo) * mLon, z: -(ll.lat - ap.la) * 111_320 }
-          const to = { x: (thrLon - ap.lo) * mLon, z: -(thrLat - ap.la) * 111_320 }
-          return routeIdents(segs, from, to)
-        })())) })
+    // N7: name REAL taxiways when the OSM layout knows them (shared
+    // helper — same route the free-text bridge names).
+    items.push({ label: `Request taxi (Ground ${a.gndF.toFixed(2)})`, run: () => sendPilot('taxiOut', a.gndF, () => a.ground.request(CALLSIGN, 'taxiOut', loop.simTime, taxiRouteIdents())) })
     items.push({ label: `Ready for departure (Tower ${a.twrF.toFixed(2)})`, run: () => sendPilot('readyTakeoff', a.twrF, () => a.tower.request(CALLSIGN, 'readyTakeoff', playerAtcView(), loop.simTime)) })
   } else {
-    if (!a.approach.handedOff(CALLSIGN) && view.distanceM > 4 * 1852) {
+    // Gate aligned OUTSIDE the 8 nm handoff gate (the old 4 nm menu gate
+    // sat inside it — a late check-in fired the whole ladder in one tick).
+    if (!a.approach.handedOff(CALLSIGN) && view.distanceM > HANDOFF_GATE_M) {
       items.push({
         label: `Check in with approach (App ${a.appF.toFixed(2)})`,
         run: () => {
@@ -1916,7 +1980,7 @@ function atcMenuItems(): AtcMenuItem[] {
           const v = playerAtcView()
           comms.transmit({ freqMhz: a.appF, from: CALLSIGN, text: `${Math.max(1, Math.round(v.distanceM / 1852))} miles out, inbound with the ATIS, request ILS runway ${a.atis.activeRunway}, ${CALLSIGN}`, atSimS: loop.simTime })
           const replies = a.approach.checkIn(CALLSIGN, { distanceM: v.distanceM, aglFt: v.aglFt }, loop.simTime)
-          setTimeout(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
+          atcDelay(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
         },
       })
     }

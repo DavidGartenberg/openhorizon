@@ -2539,3 +2539,37 @@ browser-verified end-to-end. Verified this session via scripted flights
   input — crash guard worked; callouts already captured). Gate: tsc,
   1159 tests, 545 validate. NEXT: 9A ATC timers + 9B tower strips +
   Slice 5 smart ATC.
+
+- **Everything-plan Slice 5 + 9A timers + 9B strips (2026-08-27): smart
+  ATC** — Single-reply rule: for strip-machine intents {takeoff, landing,
+  position, goAround, taxi} the free-text engine is now a CLASSIFIER
+  (new AtcReply.bridge flag) and ONLY the sequencing authority transmits
+  — the free-text reply used to always clear while the tower might say
+  hold short (two contradictory clearances in one breath). Context
+  routing in sendFreeTextAtc: taxi on the ground → Ground on its real
+  freq; inbound while airborne outside the 8 nm handoff gate → Approach
+  check-in; else Tower. Emergencies: free-text transmits its richer
+  phraseology AND flags the tower strip (new declareEmergency) — the
+  flagged tick() clears the emergency from up to 15 nm out, queue-jumped,
+  with equipment standing by (no double request). Freetext traps fixed:
+  landing now requires intent words ("oakland center" / "check landing
+  gear" no longer get cleared-to-land), "no emergency" is negation-aware,
+  readback reordered ABOVE landing (a typed clearance readback used to
+  re-request landing). Tower (9B): request() updates strips IN PLACE —
+  the rebuild dropped handedOff/landedAtS (repeated "contact departure",
+  restarted vacate timers); re-pressing inbound confirms an existing
+  clearance instead of revoking + re-queuing; runwayOccupied() scales
+  with real runway length (fixed 1500 m cleared arrivals onto rolling
+  departures on long runways); go-around single seq bump. Approach (9B):
+  checkIn idempotent (no ladder reset), one ladder step per tick (the
+  old both-in-one-tick test updated — recorded behavior change), menu
+  check-in gate aligned outside the 8 nm handoff. 9A: all ATC replies on
+  tracked timers (atcDelay), cancelled on respawn + facility change (a
+  stale controller used to answer on the new field's frequency). Shared
+  taxiRouteIdents() helper (menu + freetext ctx + ground bridge). LIVE
+  at KSFO: "ready for takeoff" → exactly ONE reply from the tower strip
+  machine ("runway 1L, cleared for takeoff" on the real 120.50); "no
+  emergency, just a radio check" → "read you five by five". Tests: +10
+  (tower preservation/occupancy/priority, approach idempotence/ladder,
+  freetext traps + bridge flags). Gate: tsc, 1169 tests, 545 validate.
+  NEXT: Slice 6 live traffic.

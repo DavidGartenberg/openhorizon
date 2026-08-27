@@ -39,6 +39,8 @@ interface Strip {
   landedAtS?: number
   /** N7: departure handoff already transmitted for this strip. */
   handedOff?: boolean
+  /** Slice 5: declared emergency — jumps the arrival queue, wide gate. */
+  priority?: boolean
 }
 
 export function pilotPhrase(callsign: string, kind: PilotRequestKind, runway: string): string {
@@ -71,6 +73,11 @@ export class TowerController {
        *  drives the airborne handoff. Absent = "frequency change approved"
        *  (the honest phrase at fields with no departure facility). */
       departureFreqMhz?: number
+      /** Runway length: a rolling departure occupies the runway until it
+       *  is off the far end. Absent = the old 1500 m assumption (which
+       *  cleared an arrival to land OVER a departure still rolling on a
+       *  long runway). */
+      runwayLengthM?: number
     },
   ) {}
 
@@ -92,11 +99,25 @@ export class TowerController {
     if (s.phase === 'clearedTakeoff' && !view.onGround && view.aglFt > 100) s.phase = 'departed'
   }
 
-  /** Arrivals still in the air, nearest first. */
+  /** Arrivals still in the air: emergencies first, then FIFO. */
   private arrivalQueue(): Strip[] {
     return [...this.strips.values()]
       .filter((s) => (s.phase === 'inbound' || s.phase === 'clearedLand') && !s.view.onGround)
-      .sort((a, b) => a.seq - b.seq)
+      .sort((a, b) => (b.priority ? 1 : 0) - (a.priority ? 1 : 0) || a.seq - b.seq)
+  }
+
+  /** Slice 5: emergency escalation from the free-text controller. The
+   *  flagged strip jumps the arrival queue and gets its clearance from
+   *  the normal tick() (no double transmission — the free-text reply
+   *  already acknowledged the mayday). */
+  declareEmergency(callsign: string, view: TrafficView): void {
+    let s = this.strips.get(callsign)
+    if (!s || (s.phase !== 'inbound' && s.phase !== 'clearedLand')) {
+      s = { callsign, phase: 'inbound', view, seq: ++this.seqCounter }
+      this.strips.set(callsign, s)
+    }
+    s.view = view
+    s.priority = true
   }
 
   /** Runway blocked by traffic other than `exceptCallsign` (a pilot's own
@@ -104,20 +125,25 @@ export class TowerController {
    *  live at KPAO: "hold short, runway occupied" to the aircraft that had
    *  just been cleared). */
   private runwayOccupied(exceptCallsign?: string): boolean {
+    const occupyM = this.cfg.runwayLengthM ?? 1500
     return [...this.strips.values()].some(
       (s) =>
         s.callsign !== exceptCallsign &&
         (s.phase === 'landed' || s.phase === 'clearedTakeoff') &&
-        s.view.onGround && s.view.distanceM < 1500,
+        s.view.onGround && s.view.distanceM < occupyM,
     )
   }
 
   request(callsign: string, kind: PilotRequestKind, view: TrafficView, atSimS = 0): Transmission[] {
-    const prev = this.strips.get(callsign)
-    this.strips.set(callsign, {
-      callsign, phase: prev?.phase ?? 'holdingShort', view, seq: prev?.seq ?? ++this.seqCounter,
-    })
-    const s = this.strips.get(callsign)!
+    // Update-in-place: rebuilding the strip here used to DROP handedOff/
+    // landedAtS/priority — a menu re-press restarted the vacate timer,
+    // repeated "contact departure", and held the runway forever.
+    let s = this.strips.get(callsign)
+    if (!s) {
+      s = { callsign, phase: 'holdingShort', view, seq: ++this.seqCounter }
+      this.strips.set(callsign, s)
+    }
+    s.view = view
     const rwy = this.cfg.activeRunway
     switch (kind) {
       case 'readyTakeoff': {
@@ -130,8 +156,16 @@ export class TowerController {
         return [this.say(`${callsign}, runway ${rwy}, cleared for takeoff`, atSimS)]
       }
       case 'inboundLanding': {
-        s.phase = 'inbound'
-        s.seq = ++this.seqCounter
+        // Re-pressing inbound used to revoke the pilot's OWN landing
+        // clearance and re-queue them last; a clearance is confirmed,
+        // an existing sequence position kept.
+        if (s.phase === 'clearedLand') {
+          return [this.say(`${callsign}, roger, runway ${rwy}, cleared to land`, atSimS)]
+        }
+        if (s.phase !== 'inbound') {
+          s.phase = 'inbound'
+          s.seq = ++this.seqCounter
+        }
         const ahead = this.arrivalQueue().filter((a) => a.callsign !== callsign && a.seq < s.seq)
         if (ahead.length === 0) {
           s.phase = 'clearedLand'
@@ -194,9 +228,16 @@ export class TowerController {
     }
     const queue = this.arrivalQueue()
     const leader = queue[0]
-    if (leader && leader.phase === 'inbound' && !this.runwayOccupied() && leader.view.distanceM < 4 * 1852) {
+    // Emergencies (priority) get their clearance from much further out.
+    const gateM = leader?.priority ? 15 * 1852 : 4 * 1852
+    if (leader && leader.phase === 'inbound' && !this.runwayOccupied() && leader.view.distanceM < gateM) {
       leader.phase = 'clearedLand'
-      out.push(this.say(`${leader.callsign}, runway ${this.cfg.activeRunway}, cleared to land`, atSimS))
+      out.push(this.say(
+        leader.priority
+          ? `${leader.callsign}, runway ${this.cfg.activeRunway}, cleared to land, emergency equipment standing by`
+          : `${leader.callsign}, runway ${this.cfg.activeRunway}, cleared to land`,
+        atSimS,
+      ))
     }
     return out
   }

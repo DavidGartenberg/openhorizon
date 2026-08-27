@@ -21,7 +21,10 @@ export interface ApproachView {
 type ApproachPhase = 'checkedIn' | 'clearedApproach' | 'handedOff'
 
 const CLEARANCE_GATE_M = 14 * 1852 // cleared for the approach inside 14 nm
-const HANDOFF_GATE_M = 8 * 1852 // tower handoff inside 8 nm
+/** Tower handoff inside 8 nm — exported so the UI's check-in gate can sit
+ *  OUTSIDE it (a check-in between the gates used to fire the whole
+ *  ladder, clearance + handoff, in a single tick). */
+export const HANDOFF_GATE_M = 8 * 1852
 
 export class ApproachController {
   private readonly strips = new Map<string, { phase: ApproachPhase }>()
@@ -40,9 +43,11 @@ export class ApproachController {
   }
 
   /** Inbound check-in: radar contact + expected approach + platform
-   *  altitude. Idempotent — re-checking in repeats the expectation. */
+   *  altitude. Idempotent — re-checking in repeats the expectation
+   *  WITHOUT resetting an already-progressed strip back to the start of
+   *  the ladder (that re-ran clearance + handoff). */
   checkIn(callsign: string, view: ApproachView, atSimS = 0): Transmission[] {
-    this.strips.set(callsign, { phase: 'checkedIn' })
+    if (!this.strips.has(callsign)) this.strips.set(callsign, { phase: 'checkedIn' })
     const miles = Math.max(1, Math.round(view.distanceM / 1852))
     return [
       this.say(
@@ -58,6 +63,8 @@ export class ApproachController {
     for (const { callsign, view } of updates) {
       const s = this.strips.get(callsign)
       if (!s) continue
+      // At most ONE transition per tick: a late check-in inside both
+      // gates used to fire clearance AND handoff in the same breath.
       if (s.phase === 'checkedIn' && view.distanceM < CLEARANCE_GATE_M) {
         s.phase = 'clearedApproach'
         out.push(
@@ -66,8 +73,7 @@ export class ApproachController {
             atSimS,
           ),
         )
-      }
-      if (s.phase === 'clearedApproach' && view.distanceM < HANDOFF_GATE_M) {
+      } else if (s.phase === 'clearedApproach' && view.distanceM < HANDOFF_GATE_M) {
         s.phase = 'handedOff'
         out.push(this.say(`${callsign}, contact tower ${this.cfg.towerFreqMhz.toFixed(2)}, good day`, atSimS))
       }

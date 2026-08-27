@@ -100,3 +100,33 @@ describe('free-text ATC (type anything, they respond)', () => {
     expect(['readback', 'landing']).toContain(r.intent)
   })
 })
+
+describe('Slice 5 / 9B: substring traps, negation, readback precedence, bridge flags', () => {
+  it('"oakland center" and "check landing gear" are NOT landing clearances', () => {
+    expect(interpretTransmission('oakland center with you', CTX).intent).not.toBe('landing')
+    expect(interpretTransmission('can you check landing gear appears down', CTX).intent).not.toBe('landing')
+  })
+
+  it('"no emergency" is not answered as a mayday', () => {
+    const r = interpretTransmission('no emergency, just checking in', CTX)
+    expect(r.emergency).toBeFalsy()
+    expect(r.response).not.toContain('mayday')
+  })
+
+  it('a typed readback of a landing clearance is a readback, never a new request', () => {
+    const r = interpretTransmission('cleared to land 28r, Skyhawk 123AB', CTX)
+    expect(r.intent).toBe('readback')
+    expect(r.bridge).toBeFalsy()
+  })
+
+  it('strip-machine intents carry the bridge flag; advisory intents do not', () => {
+    expect(interpretTransmission('ready for takeoff', CTX).bridge).toBe(true)
+    expect(interpretTransmission('request full stop landing', CTX).bridge).toBe(true)
+    expect(interpretTransmission('left downwind 28R', CTX).bridge).toBe(true)
+    expect(interpretTransmission('going around', CTX).bridge).toBe(true)
+    expect(interpretTransmission('request taxi', CTX).bridge).toBe(true)
+    expect(interpretTransmission('say winds and altimeter', CTX).bridge).toBeFalsy()
+    expect(interpretTransmission('radio check', CTX).bridge).toBeFalsy()
+    expect(interpretTransmission('MAYDAY MAYDAY MAYDAY engine failure', CTX).bridge).toBeFalsy()
+  })
+})

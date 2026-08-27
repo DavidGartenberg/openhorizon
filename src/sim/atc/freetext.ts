@@ -29,6 +29,11 @@ export interface AtcReply {
   response: string
   /** True when the reply declares an emergency in progress. */
   emergency?: boolean
+  /** Slice 5 single-reply rule: this intent is owned by the structured
+   *  strip machines (tower/ground) — the caller should transmit THEIR
+   *  Transmission[] instead of `response` when a facility is active
+   *  (`response` remains the honest fallback for untowered use). */
+  bridge?: boolean
 }
 
 const rx = (p: string): RegExp => new RegExp(p, 'i')
@@ -43,7 +48,10 @@ export function interpretTransmission(text: string, ctx: FreeTextCtx): AtcReply 
   const rwy = ctx.activeRunway
 
   // ---- EMERGENCIES first (any mention wins over other intents) ----
-  const declared = rx('mayday|pan[- ]?pan|declar\\w* (an? )?emergency|emergency').test(t)
+  // Negation-aware: "no emergency" / "negative emergency" / "cancel the
+  // emergency" used to be answered as a mayday (substring trap).
+  const negatedEmergency = rx('\\b(no|not|negative|cancel(l?ing)?|without)\\s+(an?\\s+|the\\s+)?emergency').test(t)
+  const declared = !negatedEmergency && rx('mayday|pan[- ]?pan|declar\\w* (an? )?emergency|emergency').test(t)
   if (declared || rx('engine (fire|failure|failed|out|quit)|on fire|smoke in|fuel emergency|min(imum)? fuel|medical').test(t)) {
     const base = `roger your ${rx('pan[- ]?pan').test(t) ? 'pan-pan' : 'mayday'}, `
     if (rx('fire|smoke').test(t)) {
@@ -92,21 +100,29 @@ export function interpretTransmission(text: string, ctx: FreeTextCtx): AtcReply 
   }
 
   // ---- Normal requests ----
+  // Readback echo FIRST ("cleared to land 28R, N123AB" is the pilot
+  // reading a clearance BACK — matching the landing pattern first
+  // re-requested landing and re-queued the pilot last).
+  if (rx('\\bcleared\\b').test(t) && t.includes(rwy.toLowerCase())) {
+    return { intent: 'readback', response: 'readback correct' }
+  }
   if (rx('ready (for )?(takeoff|departure)|request (takeoff|departure)').test(t)) {
-    return { intent: 'takeoff', response: `runway ${rwy}, ${wind(ctx)}, cleared for takeoff` }
+    return { intent: 'takeoff', bridge: true, response: `runway ${rwy}, ${wind(ctx)}, cleared for takeoff` }
   }
   if (rx('go[- ]?around|going around').test(t)) {
-    return { intent: 'goAround', response: `roger, fly runway heading, climb and maintain 2,000, report downwind runway ${rwy}` }
+    return { intent: 'goAround', bridge: true, response: `roger, fly runway heading, climb and maintain 2,000, report downwind runway ${rwy}` }
   }
   if (rx('touch and go|the option').test(t)) {
     return { intent: 'option', response: `runway ${rwy}, cleared for the option, ${wind(ctx)}` }
   }
-  if (rx('(request|cleared to|inbound.*)?land|full stop|landing').test(t)) {
-    return { intent: 'landing', response: `runway ${rwy}, cleared to land, ${wind(ctx)}` }
+  // Landing needs INTENT, not the substring "land" ("oakland center" and
+  // "check landing gear" both got "cleared to land").
+  if (rx('\\b(request|inbound|ready)\\b[^.]*\\bland(ing)?\\b|\\bfull stop\\b|\\bwant to land\\b|^land(ing)?\\b').test(t)) {
+    return { intent: 'landing', bridge: true, response: `runway ${rwy}, cleared to land, ${wind(ctx)}` }
   }
-  if (rx('taxi').test(t)) {
+  if (rx('\\btaxi\\b').test(t)) {
     const via = ctx.taxiVia?.length ? `taxi via ${ctx.taxiVia.join(', ')}` : 'taxi via the parallel'
-    return { intent: 'taxi', response: `runway ${rwy}, ${via}, hold short runway ${rwy}` }
+    return { intent: 'taxi', bridge: true, response: `runway ${rwy}, ${via}, hold short runway ${rwy}` }
   }
   const alt = t.match(/(?:climb|descend|maintain).*?(\d{3,5})\s*(?:feet|ft)?|(?:fl|flight level)\s*(\d{2,3})/)
   if (alt) {
@@ -130,8 +146,8 @@ export function interpretTransmission(text: string, ctx: FreeTextCtx): AtcReply 
   if (rx('radio check|how do you (read|hear)').test(t)) {
     return { intent: 'radioCheck', response: 'read you five by five' }
   }
-  if (rx('(left|right)?\\s*(downwind|base|final)').test(t)) {
-    return { intent: 'position', response: `roger, number one, runway ${rwy}, cleared to land, ${wind(ctx)}` }
+  if (rx('\\b(left|right)?\\s*(downwind|base|final)\\b').test(t)) {
+    return { intent: 'position', bridge: true, response: `roger, number one, runway ${rwy}, cleared to land, ${wind(ctx)}` }
   }
   if (rx('frequency change|switch(ing)? to|contact (ground|departure|approach)').test(t)) {
     return { intent: 'freqChange', response: 'frequency change approved, good day' }
@@ -142,9 +158,8 @@ export function interpretTransmission(text: string, ctx: FreeTextCtx): AtcReply 
   if (rx('thank|good day|so long').test(t)) {
     return { intent: 'courtesy', response: 'good day' }
   }
-  // Readback-ish echo (contains runway + a clearance verb).
-  if (rx('cleared').test(t) && t.includes(rwy.toLowerCase())) {
-    return { intent: 'readback', response: 'readback correct' }
+  if (negatedEmergency) {
+    return { intent: 'noEmergency', response: 'roger, no emergency' }
   }
 
   return { intent: 'unknown', response: `say again, ${ctx.callsign}` }

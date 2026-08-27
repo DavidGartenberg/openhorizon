@@ -127,3 +127,54 @@ describe('departure handoff (N7)', () => {
     expect(out.some((t) => t.text.includes('N2, frequency change approved'))).toBe(true)
   })
 })
+
+describe('Slice 5 / 9B: strip preservation, occupancy scaling, emergency priority', () => {
+  const V = (distanceM: number, aglFt = 0, onGround = true) => ({ distanceM, aglFt, onGround })
+
+  it('re-pressing inbound confirms an existing landing clearance instead of revoking it', () => {
+    const twr = new TowerController({ facility: 'T', freqMhz: 118.0, activeRunway: '30' })
+    const first = twr.request('N1', 'inboundLanding', V(9000, 1200, false), 0)
+    expect(first[0]!.text).toContain('cleared to land')
+    // Another arrival joins behind.
+    twr.request('N2', 'inboundLanding', V(12_000, 1500, false), 5)
+    // N1 re-presses: must stay #1 and stay cleared — the old rebuild
+    // re-queued them last behind N2.
+    const again = twr.request('N1', 'inboundLanding', V(6000, 900, false), 10)
+    expect(again[0]!.text).toContain('cleared to land')
+    expect(again[0]!.text).not.toContain('number')
+  })
+
+  it('request() preserves handedOff — no repeated "contact departure" after a menu re-press', () => {
+    const twr = new TowerController({ facility: 'T', freqMhz: 120.5, activeRunway: '28R', departureFreqMhz: 135.65 })
+    twr.request('N1', 'readyTakeoff', V(200), 0)
+    let out = twr.tick(5, [{ callsign: 'N1', view: V(900, 300, false) }])
+    expect(out.some((t) => t.text.includes('contact departure'))).toBe(true)
+    // A stray re-press (e.g. goAround later becoming inbound) must not
+    // resurrect the handoff.
+    twr.request('N1', 'goAround', V(1500, 400, false), 10)
+    out = twr.tick(15, [{ callsign: 'N1', view: V(1600, 500, false) }])
+    expect(out.some((t) => t.text.includes('contact departure'))).toBe(false)
+  })
+
+  it('runway occupancy scales with runway length', () => {
+    // 3.2 km runway: a departure still rolling at 2.5 km from the
+    // threshold OCCUPIES it (the fixed 1500 m released them mid-roll).
+    const long = new TowerController({ facility: 'T', freqMhz: 118.0, activeRunway: '28R', runwayLengthM: 3200 })
+    long.request('N1', 'readyTakeoff', V(100), 0)
+    long.tick(1, [{ callsign: 'N1', view: V(2500, 0, true) }])
+    const held = long.request('N2', 'readyTakeoff', V(150), 2)
+    expect(held[0]!.text).toContain('hold short')
+  })
+
+  it('a declared emergency jumps the queue and is cleared from far out by tick()', () => {
+    const twr = new TowerController({ facility: 'T', freqMhz: 118.0, activeRunway: '30' })
+    twr.request('N1', 'inboundLanding', V(9000, 1200, false), 0) // cleared #1
+    twr.request('N2', 'inboundLanding', V(13_000, 1500, false), 5) // number 2
+    twr.declareEmergency('N3', V(20_000, 3000, false))
+    const out = twr.tick(10, [{ callsign: 'N3', view: V(18_000, 2800, false) }])
+    const cleared = out.find((t) => t.text.startsWith('N3'))
+    expect(cleared).toBeDefined()
+    expect(cleared!.text).toContain('cleared to land')
+    expect(cleared!.text).toContain('emergency equipment')
+  })
+})
