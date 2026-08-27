@@ -2442,3 +2442,24 @@ browser-verified end-to-end. Verified this session via scripted flights
   trumpet (removed; apex aft, raked up via π/2−0.06); family rake sign
   flipped up. Gate: tsc, 1152 tests, 545 validate. NEXT: Slice 1 flap
   clearance/connection verification in-browser.
+
+- **Everything-plan Slice 1 (2026-08-27): flaps connected + never in the
+  ground — VERIFIED** — root cause of "every part of the flaps" found by
+  numeric audit: both builders swept the flap at ~90% of the LE sweep
+  (0.42 m/m) while the wing TE, thanks to taper, sweeps only ~0.087 m/m —
+  the outboard flap end trailed up to 3 m behind the wing at EVERY
+  setting. Flaps + canoe fairings now derive from a shared TE-locus
+  helper (chordAt/teX per builder); LE nests 90% of flap chord under the
+  wing so full extension (35% chord) keeps ≥55% of the chord under the
+  TE shadow at every station. Clearance math: parked flap TE ~1.0 m
+  (737) / ~1.1 m (A20N) above the runway; 8° flare worst case ~0.45 /
+  0.55 m — never touches. In-browser (background tab, standalone :8787):
+  737 at flaps 0/27/40 and A20N at flaps 35 screenshots — panels
+  attached full-span, clear of ground; dihedral (tips up), raked-up tail
+  cones, tires ON the pavement, and the lower 0.073·L stance all visible
+  post-geometry-commit. Honest notes: (1) left wingtip glow reads
+  green-ish from some angles — nav-light color/anchor check belongs to
+  Slice 8; (2) verification tab initially self-flew: the neutral
+  gamepad-map trick (store {"v":6}) now documented for test tabs since
+  real TCA hardware/latched switches drive ANY tab. NEXT: Slice 2 gear
+  doors.
