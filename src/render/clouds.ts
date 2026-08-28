@@ -97,7 +97,9 @@ export class Clouds {
     sunDir?: THREE.Vector3,
     dusk = 0,
   ): void {
-    const key = slabs.map((s) => `${s.cover}${s.baseMslFt}`).join('|')
+    // topMslFt in the key (9C): a deck whose TOP moved kept its stale
+    // dark-base shading until the base also changed.
+    const key = slabs.map((s) => `${s.cover}${s.baseMslFt}-${s.topMslFt}`).join('|')
     const cellX = Math.floor((cameraPos.x + worldOffsetE) / CELL_M)
     const cellZ = Math.floor((-cameraPos.z + worldOffsetN) / CELL_M)
     const moved = cellX !== this.lastCellX || cellZ !== this.lastCellZ
@@ -106,7 +108,7 @@ export class Clouds {
       this.layersKey = key
       for (const slab of slabs) this.layers.push(this.buildLayer(slab))
     }
-    if (key !== this.layersKey || moved || true) {
+    {
       // Reposition instances only when the camera crosses a grid cell.
       if (moved || this.layers.some((l) => l.mesh.userData.dirty)) {
         for (const l of this.layers) this.fillLayer(l, cellX, cellZ, worldOffsetE, worldOffsetN)

@@ -98,9 +98,12 @@ export class Airports {
 
   near(lat: number, lon: number, radiusM: number): AirportData[] {
     const dCell = radiusM / 55_000 + 1
+    // Longitude cells shrink with latitude (9C): the flat window missed
+    // airports east/west of a high-latitude position.
+    const dCellLon = radiusM / (55_000 * Math.max(Math.cos((lat * Math.PI) / 180), 0.2)) + 1
     const out: AirportData[] = []
     for (let a = Math.floor((lat - dCell / 2) * 2); a <= Math.floor((lat + dCell / 2) * 2); a++) {
-      for (let b = Math.floor((lon - dCell) * 2); b <= Math.floor((lon + dCell) * 2); b++) {
+      for (let b = Math.floor((lon - dCellLon) * 2); b <= Math.floor((lon + dCellLon) * 2); b++) {
         // 17a: wrap longitude cells across the dateline.
         const bw = b >= 360 ? b - 720 : b < -360 ? b + 720 : b
         for (const ap of this.cells.get(`${a},${bw}`) ?? []) {
@@ -165,7 +168,16 @@ export class Airports {
       if (!wanted.has(icao)) {
         this.scene.remove(group)
         group.traverse((o) => {
-          if (o instanceof THREE.Mesh) o.geometry.dispose()
+          // 9C: THREE.Points children (night lights, beacon, rabbit,
+          // PAPI) leaked geometry + their per-airport materials on every
+          // 60 km eviction cycle. Shared Mesh materials stay (module
+          // constants — three re-initializes a disposed material, churn).
+          if (o instanceof THREE.Mesh || o instanceof THREE.Points) o.geometry.dispose()
+          if (o instanceof THREE.Points) {
+            const m = o.material
+            if (Array.isArray(m)) m.forEach((x) => x.dispose())
+            else m.dispose()
+          }
         })
         this.rendered.delete(icao)
       }

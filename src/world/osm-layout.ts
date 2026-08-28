@@ -23,7 +23,11 @@ export const osmIdentSegs = new Map<string, { ref: string; x: number; z: number 
 const TAXI = new THREE.MeshStandardMaterial({ color: 0x3c4043, roughness: 0.95, envMapIntensity: 0.3 })
 const SIGN_FACE = new THREE.MeshBasicMaterial({ color: 0x1a1a08 })
 const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8b23a })
-const APRON = new THREE.MeshStandardMaterial({ color: 0x55595e, roughness: 0.9, envMapIntensity: 0.3 })
+// DoubleSide (9C): the apron ShapeGeometry's rotateX(+PI/2) points its
+// normal DOWN (the +PI/2 is required for the x/z mapping) — front-side
+// shading lit aprons black from above; DoubleSide flips the shading
+// normal for the visible face.
+const APRON = new THREE.MeshStandardMaterial({ color: 0x55595e, roughness: 0.9, envMapIntensity: 0.3, side: THREE.DoubleSide })
 const TERMINAL = new THREE.MeshStandardMaterial({ color: 0x9aa2ab, roughness: 0.6, metalness: 0.2 })
 
 interface OsmLayout {
@@ -192,7 +196,9 @@ export async function enhanceAirportWithOsm(
         const bx = end.x + backX * setback
         const bz = end.z + backZ * setback
         const ang = Math.atan2(end.x - prev.x, end.z - prev.z)
-        barXf.push({ x: bx, z: bz, ang: ang + Math.PI / 2 })
+        // Yaw `ang` already lays the bar's long axis ACROSS the taxiway;
+        // the old +PI/2 ran every hold-short bar DOWN it instead (9C).
+        barXf.push({ x: bx, z: bz, ang })
         bars++
       }
     }
@@ -292,6 +298,10 @@ export async function enhanceAirportWithOsm(
   // Real layout in — retire the procedural taxiway stand-in.
   const stale: THREE.Object3D[] = []
   group.traverse((o) => { if (o.name === 'proceduralTaxi') stale.push(o) })
-  for (const o of stale) o.removeFromParent()
+  for (const o of stale) {
+    o.removeFromParent()
+    // 9C: the stand-in's geometry leaked on every OSM upgrade.
+    o.traverse((c) => { if (c instanceof THREE.Mesh) c.geometry.dispose() })
+  }
   group.add(osm)
 }

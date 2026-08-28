@@ -306,6 +306,12 @@ export class TileManager {
     if (!tile) return
     if (resp.error) {
       tile.state = 'failed'
+      // 9C: a failed fetch left a PERMANENT terrain hole — the entry
+      // blocked any re-request. Forget it after 15 s so the normal
+      // update pass re-creates and refetches the tile.
+      setTimeout(() => {
+        if (this.tiles.get(resp.key) === tile && tile.state === 'failed') this.tiles.delete(resp.key)
+      }, 15_000)
       return
     }
     const geo = new THREE.BufferGeometry()

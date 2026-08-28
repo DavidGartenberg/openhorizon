@@ -2708,3 +2708,24 @@ browser-verified end-to-end. Verified this session via scripted flights
   live ISA offset (hot/cold-day final spawns arrived mistrimmed) and
   reuses a scratch AirState per residual. Gate: tsc, 1175 tests, 547
   validate.
+
+- **9C world + lifetime purge (2026-08-28)** — Ground truth: hold-short
+  bars no longer run DOWN the taxiway (the +π/2 double-rotated them — the
+  base yaw already lays the bar across); aprons no longer render black
+  from above (the ShapeGeometry's required +π/2 x/z mapping points the
+  normal down — APRON goes DoubleSide so the visible face shades lit); a
+  failed terrain-tile fetch no longer leaves a PERMANENT hole (the failed
+  entry is forgotten after 15 s and refetches); the airport search window
+  latitude-corrects its longitude span (high-latitude fields east/west of
+  the aircraft were invisible to spawn/ATC/TAWS). Leaks: live-traffic
+  despawn now disposes the per-target PointsMaterial (leaked every 25 km
+  boundary crossing); airport eviction disposes THREE.Points children
+  (night lights/beacon/rabbit/PAPI leaked per 60 km cycle) + their
+  per-airport materials; the OSM procedural stand-in disposes its
+  geometry when the real layout replaces it. Clouds: rebuild key now
+  includes topMslFt (a deck whose top moved kept stale dark-base
+  shading) and the leftover `|| true` guard wrapper removed. DEFERRED
+  (recorded): OSM fetch cancellation on eviction, per-frame allocation
+  passes (obj8 not yet in scene, trim-wheel quats, livery window pitch,
+  plane-menu scroll) — perf niceties, no correctness impact. Gate: tsc,
+  1175 tests, 547 validate.

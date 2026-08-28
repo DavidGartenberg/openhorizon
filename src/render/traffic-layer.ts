@@ -193,7 +193,11 @@ export class TrafficLayer {
     for (const [id, e] of this.pool) {
       if (!seen.has(id)) {
         this.scene.remove(e.group)
-        ;(e.group.children[1] as THREE.Points | undefined)?.geometry.dispose()
+        const lights = e.group.children[1] as THREE.Points | undefined
+        lights?.geometry.dispose()
+        // 9C: the per-target PointsMaterial leaked on every despawn
+        // (amplified at the 25 km keep boundary).
+        ;(lights?.material as THREE.Material | undefined)?.dispose()
         this.pool.delete(id)
       }
     }
