@@ -2729,3 +2729,17 @@ browser-verified end-to-end. Verified this session via scripted flights
   passes (obj8 not yet in scene, trim-wheel quats, livery window pitch,
   plane-menu scroll) — perf niceties, no correctness impact. Gate: tsc,
   1175 tests, 547 validate.
+
+- **9A wiring purge (2026-08-28)** — Snapshots: the airborne restore no
+  longer trims every type as a C172 (real flap detents, real params,
+  real pitot cal, live ISA offset); a ground save records the NEAREST
+  airport instead of the stale boot spawn; KeyR resets to YOUR runway
+  (the no-ident respawn re-picked the airport default). ATIS: letter now
+  derives from the SIM clock hour (was process uptime) and a weather
+  change or new broadcast hour retires the facility so the next scan
+  rebuilds a fresh ATIS — the old one was built once and frozen forever.
+  AI pattern ships dispose their merged geometry on every removal path
+  (three sites leaked per facility change/density verb). Airport
+  search/spawn before the database loads gets an honest "still loading"
+  toast instead of failing silently. Gate: tsc, 1175 tests, 547
+  validate.

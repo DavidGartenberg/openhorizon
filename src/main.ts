@@ -550,7 +550,9 @@ function saveSnapshot(): void {
     kias: d.kias, flapsIndex: aircraft.controls.flapsIndex, fuelKg: aircraft.fuelKg,
     payloadKg: aircraft.payloadKg,
     simMs: baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000,
-    onGround: d.onGround, spawn: spawnDesc,
+    // 9A: a ground save restores to where you ARE — spawnDesc is the
+    // last spawn point, wrong after landing somewhere else.
+    onGround: d.onGround, spawn: d.onGround ? (airports.near(ll.lat, ll.lon, 5000)[0]?.i ?? spawnDesc) : spawnDesc,
   }
   try {
     localStorage.setItem('oh-save', JSON.stringify(snap))
@@ -585,10 +587,12 @@ function loadSnapshot(): boolean {
     tiles.onRebase()
     airports.positionAll()
     const altM = snap.altFt * FT
-    const flapsDeg = [0, 10, 20, 30][snap.flapsIndex] ?? 0
+    // 9A: the airborne restore used to trim EVERY type as a C172 —
+    // hardcoded detents, default params, default pitot cal.
+    const flapsDeg = aircraft.P.flapDetentsDeg[snap.flapsIndex] ?? 0
     aircraft.fuelKg = snap.fuelKg // before trim: mass affects the solve
-    const tas = kcasFromKias(Math.max(snap.kias, 55), flapsDeg) * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
-    const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg, gammaRad: 0 })
+    const tas = kcasFromKias(Math.max(snap.kias, 55), flapsDeg, aircraft.P.pitotCal) * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
+    const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg, gammaRad: 0, params: aircraft.P, isaTempOffsetC: aircraft.isaTempOffsetC })
     aircraft.flapsDeg = flapsDeg
     aircraft.controls.flapsIndex = snap.flapsIndex
     aircraft.applyTrimState(tas, t.alphaRad, altM, (snap.hdgDeg * Math.PI) / 180, t.gammaRad, t.elevatorRad, t.throttle, t.rpm)
@@ -624,8 +628,7 @@ function handleSearch(query: string): void {
     aiDensity = parts[1] === 'OFF' ? 0 : parts[1] === 'LIGHT' ? 2 : 5
     try { localStorage.setItem('oh-ai-density', parts[1]) } catch { /* private mode */ }
     // Force the ATC scan to rebuild the pattern ships at the new density.
-    for (const s of aiShips) scene.remove(s.mesh.group)
-    aiShips = []
+    disposeAiShips()
     activeAtc = null
     toast(`AI TRAFFIC ${parts[1]} — ${aiDensity} pattern ship${aiDensity === 1 ? '' : 's'}`)
     return
@@ -713,6 +716,10 @@ function handleSearch(query: string): void {
       challengeActive = parts[1]
       spawnAtAirport(ap, ch.rwy, true)
     }
+    return
+  }
+  if (!airports.loaded) {
+    toast('AIRPORT DATA STILL LOADING — TRY AGAIN IN A MOMENT')
     return
   }
   const onFinal = parts[parts.length - 1] === 'FINAL'
@@ -1031,8 +1038,11 @@ function handleDiscreteKeys(): void {
   if (input.wasPressed('KeyF')) c.flapsIndex = Math.min(c.flapsIndex + 1, aircraft.P.flapDetentsDeg.length - 1)
   if (input.wasPressed('KeyG')) c.flapsIndex = Math.max(c.flapsIndex - 1, 0)
   if (input.wasPressed('KeyR')) {
-    const ap = airports.find(spawnDesc.split(' ')[0] || 'KHAF')
-    if (ap) spawnAtAirport(ap)
+    // 9A: reset returns to YOUR runway — the no-ident call re-picked the
+    // airport's longest/default runway instead.
+    const parts = spawnDesc.split(' ')
+    const ap = airports.find(parts[0] || 'KHAF')
+    if (ap) spawnAtAirport(ap, parts[1])
     aircraft.crashed = false
     c.throttle = 0
     c.trim = 0
@@ -1367,6 +1377,10 @@ interface ActiveAtc {
   twrF: number
   gndF: number
   atisF: number
+  /** Weather + broadcast hour the ATIS was built from (9A) — a change
+   *  forces a facility refresh so the broadcast is never frozen. */
+  atisWx: string
+  atisHour: number
 }
 let activeAtc: ActiveAtc | null = null
 let atisPlayedFor = ''
@@ -1690,6 +1704,18 @@ function cancelAtcTimers(): void {
 /** Real taxiway idents between the aircraft and the active threshold,
  *  when the OSM layout knows them (shared by the menu, the free-text
  *  context, and the ground bridge). */
+/** Remove + dispose the AI pattern ships (9A: three removal sites
+ *  leaked every ship's merged geometry on facility change). */
+function disposeAiShips(): void {
+  for (const s of aiShips) {
+    scene.remove(s.mesh.group)
+    s.mesh.group.traverse((o) => {
+      if (o instanceof THREE.Mesh || o instanceof THREE.Points) o.geometry.dispose()
+    })
+  }
+  aiShips = []
+}
+
 function taxiRouteIdents(): string[] | undefined {
   const a = activeAtc
   if (!a) return undefined
@@ -1897,7 +1923,10 @@ function scanAtc(lat: number, lon: number, now: number): void {
         ]
       })
       const name = nearest.n.replace(/ (Airport|Field|Municipal.*|Regional.*|International.*)$/i, '')
-      const atis = buildAtis(name, wxBlended, runwayHeadings, Math.floor(now / 3_600_000) % 26)
+      // 9A: the letter comes from the SIM clock hour (was process
+      // uptime — meaningless and never advancing with time scrubs).
+      const atisHour = Math.floor((baseDate.getTime() / 1000 + loop.simTime + scrubSeconds) / 3600) % 26
+      const atis = buildAtis(name, wxBlended, runwayHeadings, atisHour)
       // A facility change abandons the old controller's pending replies.
       cancelAtcTimers()
       const actRw = nearest.r.find((r) => r.li === atis.activeRunway || r.hi === atis.activeRunway)
@@ -1922,13 +1951,13 @@ function scanAtc(lat: number, lon: number, now: number): void {
         }),
         appF: fs.find((x) => x.t === 'APP')?.f ?? fs.find((x) => x.t === 'DEP')?.f ?? twrF,
         atis, twrF, gndF, atisF,
+        atisWx: wxDesc, atisHour,
       }
       atisPlayedFor = ''
       // Rebuild AI pattern traffic for the new field's active runway end
       // (14e: aiDensity ships with Tier-C type variety — archetype
       // silhouettes, 1 draw call each vs the old full C172 builds).
-      for (const s of aiShips) scene.remove(s.mesh.group)
-      aiShips = []
+      disposeAiShips()
       const act = atis.activeRunway
       const rw = nearest.r.find((r) => r.li === act || r.hi === act)
       if (rw) {
@@ -1954,11 +1983,20 @@ function scanAtc(lat: number, lon: number, now: number): void {
     } else if (!nearest) {
       if (activeAtc) cancelAtcTimers()
       activeAtc = null
-      for (const s of aiShips) scene.remove(s.mesh.group)
-      aiShips = []
+      disposeAiShips()
     }
   }
   if (activeAtc) {
+    // 9A: a weather change or a new broadcast hour retires the whole
+    // facility — the next scan rebuilds it with a fresh ATIS (the old
+    // one was built once and frozen forever).
+    const hourNow = Math.floor((baseDate.getTime() / 1000 + loop.simTime + scrubSeconds) / 3600) % 26
+    if (activeAtc.atisWx !== wxDesc || activeAtc.atisHour !== hourNow) {
+      cancelAtcTimers()
+      activeAtc = null
+      lastAtcScanAt = -Infinity
+      return
+    }
     // ATIS broadcast on tune-in.
     const key = `${activeAtc.ident}-${activeAtc.atis.letter}`
     if (isAudible(activeAtc.atisF, radios.com1.activeMhz) && atisPlayedFor !== key) {
