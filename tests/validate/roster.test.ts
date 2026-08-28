@@ -117,3 +117,31 @@ describe(`Tier-B roster validation (${ROSTER.length} types)`, () => {
     })
   }
 })
+
+describe('9B: weight-and-balance sanity fleet-wide', () => {
+  it('every roster type lifts a 90 kg pilot with FULL fuel (250 kg for transports)', async () => {
+    // The MD88-class inheritance bug put EIGHT variants over MTOW with
+    // ZERO payload (a variant inherited its base's tankage). The honest
+    // fleet-wide floor is one pilot at full fuel — a real C152 or
+    // Bonanza genuinely cannot take full tanks AND 250 kg, so the
+    // heavier bar applies only to transport-category weights.
+    const { ROSTER } = await import('../../src/sim/aircraft/roster')
+    const over: string[] = []
+    for (const e of ROSTER) {
+      const s = e.spec
+      const payload = s.mtowKg >= 5700 ? 250 : 90
+      if (s.emptyKg + s.fuelKg + payload > s.mtowKg) {
+        over.push(`${s.designator}: ${s.emptyKg}+${s.fuelKg}+${payload} = ${s.emptyKg + s.fuelKg + payload} > MTOW ${s.mtowKg}`)
+      }
+    }
+    expect(over, over.join('; ')).toEqual([])
+  })
+
+  it('va never exceeds vno on any type (MD-11 class)', async () => {
+    const { ROSTER, rosterParams } = await import('../../src/sim/aircraft/roster')
+    for (const e of ROSTER) {
+      const P = rosterParams(e.spec.designator)!
+      expect(P.vSpeeds.va, `${e.spec.designator} va<=vno`).toBeLessThanOrEqual(P.vSpeeds.vno)
+    }
+  })
+})

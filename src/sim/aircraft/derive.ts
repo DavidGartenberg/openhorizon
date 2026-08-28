@@ -312,6 +312,11 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
             ...CFM56_7B26,
             engines: pp.count,
             staticThrustN: pp.staticThrustN,
+            // Windmill drag scales with fan area (∝ per-engine thrust
+            // ratio vs the 117 kN CFM56-7B26 anchor) — the fixed 0.47
+            // gave a Williams FJ44 bizjet a CFM56's dead-engine drag and
+            // a Trent-class widebody a quarter of its real value.
+            windmillCdA: 0.47 * (pp.staticThrustN / 117_000),
           },
           machModel: { mdd: 0.82, dragRiseK: 20 },
           trimIsStabilizer: true,
@@ -332,7 +337,10 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
       vy: spec.vSpeeds.vyKcas,
       vfe10: Math.round(spec.vSpeeds.approachKcas * 1.5),
       vfe30: Math.round(spec.vSpeeds.approachKcas * 1.25),
-      va: Math.round(effStallKcas * 1.95),
+      // Va from the SPEC stall, capped below Vno — the physics-capped
+      // effective stall of a heavy (CLmax floor) pushed 1.95× past Vne
+      // (the MD-11's Va exceeded its own redline).
+      va: Math.min(Math.round(spec.stallCleanKcas * 1.95), Math.round(spec.vSpeeds.vneKcas * 0.8)),
       vno: Math.round(spec.vSpeeds.vneKcas * 0.83),
       vne: spec.vSpeeds.vneKcas,
       glide: spec.vSpeeds.glideKcas,

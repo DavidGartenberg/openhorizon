@@ -42,8 +42,24 @@ export function variant(
   targets: RosterTargets,
   opts?: Partial<DeriveOptions>,
 ): RosterEntry {
+  // Tuning MERGES over the base (one level + the jet block): a variant's
+  // tuning override used to REPLACE the whole object, silently dropping
+  // the base's documented control travels (the DA42 lost the Baron's).
+  // An EXPLICIT `tuning: undefined` still clears it (the Arrow does this
+  // on purpose to shed the Archer's prop tuning).
+  const tuning = 'tuning' in spec
+    ? spec.tuning === undefined
+      ? undefined
+      : {
+          ...base.spec.tuning,
+          ...spec.tuning,
+          ...(base.spec.tuning?.jet || spec.tuning.jet
+            ? { jet: { ...base.spec.tuning?.jet, ...spec.tuning.jet } }
+            : {}),
+        }
+    : base.spec.tuning
   return {
-    spec: { ...base.spec, ...spec },
+    spec: { ...base.spec, ...spec, tuning },
     opts: { ...base.opts, ...(opts ?? {}) },
     targets,
     tier: 'B2',

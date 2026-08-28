@@ -2630,3 +2630,28 @@ browser-verified end-to-end. Verified this session via scripted flights
   assertion floated lights off swept wings — recorded behavior change).
   Gate: tsc, 1171 tests, 545 validate. NEXT: in-browser light check,
   then remaining 9A/9B/9C themed commits.
+
+- **9B fleet-data purge (2026-08-28): the MD88-class inheritance bug ×17 +
+  derive physics** — variant() inheritance had 17 types flying with their
+  BASE's fuel tankage: eight were over MTOW at ZERO payload (A343 +9.7%,
+  MD11, GLF4, E50P +18.8%, HDJT, CRJ2, C525, BE9L), six more with any
+  payload, and several carried half-real loads. Every flagged variant now
+  has explicit real tankage (A343 110 t, MD11 93.9 t, GLF4 13.4 t, FA7X
+  14.4 t, B762 73 t, GL5T 17.6 t, …). PA-28 family redlines fixed (the
+  Arrow/Dakota/Saratoga/Seminole all inherited the Archer's 154-kt Vne;
+  real 183/173/191/202), DA42's inverse case → real 188; PA44 Seminole
+  now RETRACTS (it inherited the Archer's fixed gear while priced as a
+  clean twin); C177 Cardinal gets real fuel/Vy/Vne and sheds the C152's
+  climb-prop thrust scale. variant() now MERGES tuning (one level + jet
+  block) instead of replacing it — the DA42 had silently dropped the
+  Baron's documented control travels (explicit tuning: undefined still
+  clears, as the Arrow intends). derive.ts: Va now from the SPEC stall
+  capped below Vno (the capped effective stall pushed the MD-11's Va past
+  its own Vne); windmillCdA scales with per-engine thrust vs the 117 kN
+  CFM56 anchor (an FJ44 bizjet had a CFM56's dead-engine drag). NEW
+  fleet-wide regression tests: every type lifts a 90 kg pilot at full
+  fuel (250 kg for transport weights) — honest reality note: a C152 or
+  Bonanza genuinely can't take full tanks + 250 kg, so the universal
+  250 kg bar the plan sketched was reality-checked down; va ≤ vno fleet-
+  wide. Slice 8 lights also verified in-browser at night (fin-tip tail
+  light, spine beacon, tip glows). Gate: tsc, 1173 tests, 545+2 validate.
