@@ -109,7 +109,12 @@ export function detectMovedAxis(
   let best: AxisBinding | null = null
   let bestDelta = threshold
   for (let p = 0; p < after.length; p++) {
-    const b = before[p] ?? []
+    // A pad ABSENT from the baseline just connected mid-capture — its
+    // resting axes (sliders park at −1) read as a full-swing "movement"
+    // and insta-bound the wrong axis. Only pads present at capture
+    // start participate.
+    const b = before[p]
+    if (!b) continue
     const a = after[p] ?? []
     for (let i = 0; i < a.length; i++) {
       const d = (a[i] ?? 0) - (b[i] ?? 0)

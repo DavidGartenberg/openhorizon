@@ -2758,3 +2758,14 @@ browser-verified end-to-end. Verified this session via scripted flights
   preview mode has no data routes (unused — dev uses the middleware,
   prod the standalone server); OSM fetch cancellation. Gate: tsc, 1175
   tests, 547 validate.
+
+- **9A gamepad edge cases (2026-08-28)** — (1) a pad connecting MID-
+  capture can no longer insta-bind its resting axes (a quadrant's slider
+  parks at −1 — a full-swing "delta" against an empty baseline; pads
+  absent from the capture baseline are ignored, with test). (2) btnPrev
+  stays fresh through a J-wizard capture (it froze, then fired phantom
+  gear/flap/AP-disconnect edges the frame capture ended). (3) A pad-set
+  change (connect/disconnect/slot move) resyncs the button baseline
+  WITHOUT edge processing + an honest GAMEPAD DISCONNECTED toast —
+  latched base switches read pressed at rest and fired phantom presses
+  the frame a device returned. Gate: tsc, 1176 tests, 547 validate.

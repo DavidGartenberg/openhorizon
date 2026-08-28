@@ -138,3 +138,14 @@ describe('TCA Captain Pack support (16a-b)', () => {
     expect(tcaPresetFor([{ id: 'Xbox Wireless Controller', axes: 4, index: 0 }])).toBeNull()
   })
 })
+
+describe('9A: capture-time device guards', () => {
+  it('a pad that connects MID-capture cannot insta-bind its resting axes', () => {
+    // Baseline had one pad; a quadrant connects during capture with its
+    // slider parked at -1 — a full-swing "delta" against an empty
+    // baseline. Must be ignored.
+    const before = [[0, 0]]
+    const after = [[0, 0.05], [-1, -1]]
+    expect(detectMovedAxis(before, after, 0.35)).toBeNull()
+  })
+})

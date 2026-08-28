@@ -1134,6 +1134,15 @@ function pollControls(dt: number): void {
     const btns = gamepadMap.btn ?? (gamepadMap.btnKeys ? {} : null)
     if (btns) {
       const now = padsButtonSnapshot()
+      // 9A: a pad set change (connect/disconnect/slot move) resyncs
+      // btnPrev WITHOUT edge processing — a stale baseline used to fire
+      // phantom gear/flap/AP-disconnect presses the frame a device came
+      // back (latched base switches read pressed at rest).
+      const padsChanged = now.length !== btnPrev.length || now.some((p, i) => p.length !== (btnPrev[i]?.length ?? -1))
+      if (padsChanged) {
+        if (btnPrev.length > 0 && now.length < btnPrev.length) toast('GAMEPAD DISCONNECTED — bindings idle until it returns')
+        btnPrev = now
+      } else {
       const down = (fn: BindableButton): boolean => {
         const b = btns[fn]
         return !!b && !!now[b.pad]?.[b.btn]
@@ -1174,7 +1183,12 @@ function pollControls(dt: number): void {
         }
       }
       btnPrev = now
+      }
     }
+  } else {
+    // 9A: btnPrev stays FRESH through a J-wizard capture — it used to
+    // freeze, then fire phantom edges the frame capture ended.
+    btnPrev = padsButtonSnapshot()
   }
   // Expo curve: fine control near center, full authority at the stops.
   const expo = (v: number) => v * Math.abs(v) * 0.65 + v * 0.35
