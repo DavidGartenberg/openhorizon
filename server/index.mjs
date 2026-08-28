@@ -23,13 +23,16 @@ app.use((_req, res, next) => {
   next()
 })
 
+// Mount decision is made ONCE at boot — /health reports that decision,
+// not a fresh existsSync that can disagree with what's actually mounted.
+const distMounted = fs.existsSync(distDir)
 app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'openhorizon-server', dist: fs.existsSync(distDir) })
+  res.json({ ok: true, service: 'openhorizon-server', dist: distMounted })
 })
 
 // Data endpoints — identical behavior to the dev middleware.
 app.use((req, res, next) => {
-  route(req.url ?? '', res)
+  route(req.url ?? '', res, req.method)
     .then((handled) => {
       if (!handled) next()
     })
@@ -37,7 +40,7 @@ app.use((req, res, next) => {
 })
 
 // Built client (when `npm run build` has run) + SPA fallback.
-if (fs.existsSync(distDir)) {
+if (distMounted) {
   // index.html must revalidate on every load or the browser keeps serving
   // WEEKS-old builds on plain reloads (the user kept seeing long-fixed
   // bugs — flaps, winglets, lights — because their pane never fetched the
@@ -56,5 +59,5 @@ if (fs.existsSync(distDir)) {
 }
 
 app.listen(PORT, () => {
-  console.log(`[openhorizon-server] listening on http://localhost:${PORT}${fs.existsSync(distDir) ? ' (serving dist/)' : ' (API only — run npm run build for the client)'}`)
+  console.log(`[openhorizon-server] listening on http://localhost:${PORT}${distMounted ? ' (serving dist/)' : ' (API only — run npm run build for the client)'}`)
 })

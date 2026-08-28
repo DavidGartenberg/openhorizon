@@ -536,7 +536,13 @@ export async function landcoverTile(z, x, y) {
   return buf
 }
 
-export async function route(url, res) {
+export async function route(url, res, method = 'GET') {
+  // 9A server hygiene: data routes are read-only — a POST/PUT to a proxy
+  // path used to trigger upstream fetches and disk writes all the same.
+  if (method !== 'GET' && method !== 'HEAD') return false
+  // Exact-match routes tolerate query strings (cache busters, ?v=):
+  // compare against the bare path, regex routes keep the full url.
+  const bare = url.split('?')[0]
   // Local X-Plane 12 assets (server/xp-static.mjs) carry their own
   // 403/404 semantics, so they dispatch ahead of the 502-on-throw block.
   if (url.startsWith('/xp/')) return xpRoute(url, res)
@@ -611,7 +617,7 @@ export async function route(url, res) {
         return true
       }
     }
-    if (url === '/api/aircraft-types.json') {
+    if (bare === '/api/aircraft-types.json') {
       const json = await aircraftTypesData()
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -634,7 +640,7 @@ export async function route(url, res) {
         return true
       }
     }
-    if (url === '/api/ils.json') {
+    if (bare === '/api/ils.json') {
       const json = await ilsData()
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -644,7 +650,7 @@ export async function route(url, res) {
       res.end(json)
       return true
     }
-    if (url === '/api/frequencies.json') {
+    if (bare === '/api/frequencies.json') {
       const json = await frequenciesData()
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -654,7 +660,7 @@ export async function route(url, res) {
       res.end(json)
       return true
     }
-    if (url === '/api/airports.json') {
+    if (bare === '/api/airports.json') {
       const json = await airportsData()
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -664,7 +670,7 @@ export async function route(url, res) {
       res.end(json)
       return true
     }
-    if (url === '/api/navaids.json') {
+    if (bare === '/api/navaids.json') {
       const json = await navaidsData()
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -674,7 +680,7 @@ export async function route(url, res) {
       res.end(json)
       return true
     }
-    if (url === '/api/airspace.json') {
+    if (bare === '/api/airspace.json') {
       const json = await airspaceData()
       res.writeHead(200, {
         'Content-Type': 'application/json',
@@ -696,7 +702,9 @@ export async function route(url, res) {
       return true
     }
   } catch (err) {
-    res.writeHead(502, { 'Content-Type': 'application/json' })
+    // CORS on the error path too (9A): a 502 without the header surfaced
+    // in the client as an opaque network error instead of the JSON body.
+    res.writeHead(502, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
     res.end(JSON.stringify({ error: String(err) }))
     return true
   }

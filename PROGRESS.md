@@ -2743,3 +2743,18 @@ browser-verified end-to-end. Verified this session via scripted flights
   search/spawn before the database loads gets an honest "still loading"
   toast instead of failing silently. Gate: tsc, 1175 tests, 547
   validate.
+
+- **9A server hygiene (2026-08-28)** — route() now (1) refuses non-GET/
+  HEAD methods (a POST to a proxy path used to trigger upstream fetches
+  and disk writes), (2) matches exact API routes against the bare path
+  so any query string (?v= cache busters) no longer falls through to the
+  SPA fallback — the same class as the /api/traffic&nm= probe that
+  masked debugging earlier today, (3) sends CORS on the 502 error path
+  (errors surfaced as opaque network failures instead of their JSON
+  body). /health reports the BOOT-time dist mount decision instead of a
+  fresh existsSync that could disagree with what's actually mounted.
+  Verified live post-restart: /api/ils.json?v=1 serves data, POST
+  /api/airports.json 404s, health true. DEFERRED (recorded): vite
+  preview mode has no data routes (unused — dev uses the middleware,
+  prod the standalone server); OSM fetch cancellation. Gate: tsc, 1175
+  tests, 547 validate.

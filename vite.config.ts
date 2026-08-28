@@ -9,7 +9,7 @@ function dataServer(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         import('./server/handlers.mjs')
-          .then((h) => h.route(req.url ?? '', res))
+          .then((h) => h.route(req.url ?? '', res, req.method))
           .then((handled) => {
             if (!handled) next()
           })
