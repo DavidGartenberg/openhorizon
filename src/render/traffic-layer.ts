@@ -98,7 +98,9 @@ export class TrafficLayer {
     const pts = [
       a.wingtipL, a.wingtipR,
       new THREE.Vector3(0, a.tail.y, a.tail.z),
-      new THREE.Vector3(0, a.tail.y + 0.5, a.tail.z * 0.8),
+      // Beacon just below the fin-tip anchor (the old tail.z*0.8 scaling
+      // floated it off the airframe — same class as the player-ship bug).
+      new THREE.Vector3(0, a.tail.y - 0.35, a.tail.z - 0.6),
       new THREE.Vector3(a.wingtipL.x, a.wingtipL.y + 0.15, a.wingtipL.z),
       new THREE.Vector3(a.wingtipR.x, a.wingtipR.y + 0.15, a.wingtipR.z),
     ]

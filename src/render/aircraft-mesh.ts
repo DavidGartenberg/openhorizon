@@ -581,7 +581,10 @@ export function buildB738(): AircraftMesh {
   g.userData.lightAnchors = {
     wingtipL: new THREE.Vector3(-16.59, 0.49, 4.2),
     wingtipR: new THREE.Vector3(16.59, 0.49, 4.2),
-    tail: new THREE.Vector3(0, 4.4, 19.3),
+    // Tail nav at the FIN TIP (was 55% up, inside the skin); beacon on
+    // the fuselage spine like the real 737's upper anti-collision light.
+    tail: new THREE.Vector3(0, 9.9, 19.7),
+    beacon: new THREE.Vector3(0, 2.55, 3),
   }
   return { group: g, propDisc, surfaces }
 }

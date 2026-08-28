@@ -24,7 +24,16 @@ describe('buildArchetype (12b — merged single-draw silhouettes)', () => {
       const xExtent = bb.max.x - bb.min.x
       expect(xExtent, `${des} span`).toBeGreaterThan(spec.spanM * 0.75)
       expect(xExtent, `${des} span`).toBeLessThan(spec.spanM * 1.3)
-      expect(mesh.userData.lightAnchors.wingtipL.x).toBeCloseTo(-spec.spanM / 2, 1)
+      // Slice 8: the anchor sits at the RENDERED tip (a swept half-wing
+      // box genuinely ends inboard of the nominal S/2 — the old exact
+      // −S/2 assertion floated the light off the geometry), and never
+      // outside the mesh.
+      const tipX = mesh.userData.lightAnchors.wingtipL.x as number
+      expect(tipX, `${des} tip anchor`).toBeLessThan(-spec.spanM * 0.4)
+      expect(tipX, `${des} tip anchor inside mesh`).toBeGreaterThanOrEqual(bb.min.x - 0.3)
+      // Tail light rides the fin, above the centerline, aft of midship.
+      expect(mesh.userData.lightAnchors.tail.y, `${des} tail anchor up`).toBeGreaterThan(0)
+      expect(mesh.userData.lightAnchors.tail.z, `${des} tail anchor aft`).toBeGreaterThan(spec.lengthM * 0.3)
     }
   })
 

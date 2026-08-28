@@ -102,48 +102,66 @@ function propNacelles(parts: Part[], count: number, spanM: number, wingY: number
 export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
   const { archetype: a, spanM: S, lengthM: L } = spec
   const parts: Part[] = []
+  // Wing/fin placement captured per archetype so the light anchors can
+  // be computed from the SAME constants wing()/tail() use — the old
+  // fixed (±S/2, 0, 0)/(0, 0.1L, 0.5L) anchors ignored wing height,
+  // sweep, and fin height on every live-traffic silhouette.
+  let wingAt = { y: 0, z: 0, sweep: 0 }
+  let finAt = { h: L * 0.17, z: L * 0.42 }
 
   switch (a) {
     case 'ga-high-wing':
     case 'taildragger': {
       const body = a === 'taildragger' ? YELLOW : WHITE
       const r = fuselage(parts, L, body)
+      wingAt = { y: r * 0.95, z: -L * 0.05, sweep: 0 }
       wing(parts, S, L * 0.19, r * 0.95, -L * 0.05, 0, body)
+      finAt = { h: L * 0.17, z: L * 0.42 }
       tail(parts, L, L * 0.17, S * 0.33, L * 0.42, body)
       propNacelles(parts, 1, 0, 0, -L * 0.36, L * 0.1, DARK)
       break
     }
     case 'ga-low-wing': {
       const r = fuselage(parts, L, WHITE)
+      wingAt = { y: -r * 0.8, z: -L * 0.02, sweep: 0 }
       wing(parts, S, L * 0.19, -r * 0.8, -L * 0.02, 0, WHITE)
+      finAt = { h: L * 0.17, z: L * 0.42 }
       tail(parts, L, L * 0.17, S * 0.33, L * 0.42, ACCENT)
       propNacelles(parts, 1, 0, 0, -L * 0.36, L * 0.1, DARK)
       break
     }
     case 'twin-piston': {
       const r = fuselage(parts, L, WHITE)
+      wingAt = { y: -r * 0.7, z: -L * 0.02, sweep: 0 }
       wing(parts, S, L * 0.2, -r * 0.7, -L * 0.02, 0, WHITE)
+      finAt = { h: L * 0.18, z: L * 0.42 }
       tail(parts, L, L * 0.18, S * 0.33, L * 0.42, ACCENT)
       propNacelles(parts, 2, S, -r * 0.55, -L * 0.06, L * 0.09, WHITE)
       break
     }
     case 'single-turboprop': {
       const r = fuselage(parts, L, WHITE)
+      wingAt = { y: -r * 0.75, z: -L * 0.02, sweep: 0 }
       wing(parts, S, L * 0.17, -r * 0.75, -L * 0.02, 0, WHITE)
+      finAt = { h: L * 0.2, z: L * 0.42 }
       tail(parts, L, L * 0.2, S * 0.32, L * 0.42, ACCENT)
       propNacelles(parts, 1, 0, 0, -L * 0.4, L * 0.09, DARK)
       break
     }
     case 'twin-turboprop': {
       const r = fuselage(parts, L, WHITE)
+      wingAt = { y: r * 0.85, z: -L * 0.04, sweep: 0 }
       wing(parts, S, L * 0.16, r * 0.85, -L * 0.04, 0, WHITE)
+      finAt = { h: L * 0.22, z: L * 0.43 }
       tail(parts, L, L * 0.22, S * 0.3, L * 0.43, WHITE, true)
       propNacelles(parts, spec.quad ? 4 : 2, S, r * 0.6, -L * 0.08, L * 0.08, GREY)
       break
     }
     case 'bizjet': {
       const r = fuselage(parts, L, WHITE, true)
+      wingAt = { y: -r * 0.7, z: L * 0.02, sweep: 0.35 }
       wing(parts, S, L * 0.16, -r * 0.7, L * 0.02, 0.35, WHITE)
+      finAt = { h: L * 0.2, z: L * 0.42 }
       tail(parts, L, L * 0.2, S * 0.3, L * 0.42, WHITE, true)
       for (const side of [-1, 1]) {
         parts.push({ geo: colored(new THREE.CylinderGeometry(L * 0.028, L * 0.026, L * 0.11, 8), GREY, place(side * r * 1.7, r * 0.5, L * 0.32, { axis: AXIS_X, rad: Math.PI / 2 })), color: GREY })
@@ -155,7 +173,9 @@ export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
       const r = fuselage(parts, L, WHITE)
       const wingY = -r * 0.6
       const wingZ = L * 0.02
+      wingAt = { y: wingY, z: wingZ, sweep: 0.44 }
       wing(parts, S, L * 0.14, wingY, wingZ, 0.44, GREY)
+      finAt = { h: L * 0.17, z: L * 0.43 }
       tail(parts, L, L * 0.17, S * 0.36, L * 0.43, WHITE)
       podEngines(parts, spec.quad ? 4 : Math.max(spec.engines, 2) === 3 ? 2 : 2, S, wingY, wingZ, L * 0.1, GREY)
       if (spec.engines === 3) {
@@ -165,7 +185,9 @@ export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
     }
     case 'glider': {
       const r = fuselage(parts, L, WHITE, true)
+      wingAt = { y: r * 0.3, z: -L * 0.05, sweep: 0 }
       wing(parts, S, Math.max(L * 0.1, 0.5), r * 0.3, -L * 0.05, 0, WHITE)
+      finAt = { h: L * 0.18, z: L * 0.44 }
       tail(parts, L, L * 0.18, S * 0.16, L * 0.44, WHITE, true)
       break
     }
@@ -184,7 +206,9 @@ export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
     case 'generic':
     default: {
       const r = fuselage(parts, L, GENERIC)
+      wingAt = { y: 0, z: -L * 0.02, sweep: 0 }
       wing(parts, S, L * 0.2, 0, -L * 0.02, 0, GENERIC)
+      finAt = { h: L * 0.16, z: L * 0.42 }
       tail(parts, L, L * 0.16, S * 0.3, L * 0.42, GENERIC)
       void r
       break
@@ -194,10 +218,15 @@ export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
   const merged = mergeGeometries(parts.map((p) => p.geo), false)
   const mesh = new THREE.Mesh(merged ?? new THREE.BufferGeometry(), SHARED_MAT)
   mesh.castShadow = true
+  // Tip position from the swept-half geometry in wing(): half center at
+  // side*S/4 offset z + tan(sweep)*S/8, tip a further S/4 out along the
+  // rotated half. Fin-tip tail light from tail()'s fin box (top = finH).
+  const tipX = (S / 4) * (1 + Math.cos(wingAt.sweep))
+  const tipZ = wingAt.z + Math.tan(wingAt.sweep) * (S / 8) + Math.sin(wingAt.sweep) * (S / 4)
   mesh.userData.lightAnchors = {
-    wingtipL: new THREE.Vector3(-S / 2, 0, 0),
-    wingtipR: new THREE.Vector3(S / 2, 0, 0),
-    tail: new THREE.Vector3(0, L * 0.1, L * 0.5),
+    wingtipL: new THREE.Vector3(-tipX, wingAt.y, tipZ),
+    wingtipR: new THREE.Vector3(tipX, wingAt.y, tipZ),
+    tail: new THREE.Vector3(0, finAt.h, finAt.z),
   }
   for (const p of parts) p.geo.dispose()
   return mesh

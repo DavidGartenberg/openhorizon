@@ -2611,3 +2611,22 @@ browser-verified end-to-end. Verified this session via scripted flights
   step the SAME total sim time physics consumed, chunked ≤0.25 s (a
   single clamped step fell 4× behind on background ticks). Gate: tsc,
   1171 tests, 545 validate. NEXT: Slice 8 lights.
+
+- **Everything-plan Slice 8 (2026-08-27): lights connected to the plane** —
+  post-dihedral light-anchor corrections across all four light surfaces:
+  (1) bespoke 737 tail nav → the FIN TIP (0, 9.9, 19.7) (was 55% height,
+  inside the skin) + beacon on the fuselage spine like the real upper
+  anti-collision light; (2) family tail → fin tip (0, R·0.9+finH, 0.5·L)
+  + spine beacon; (3) beacon formula everywhere: the old tail.z·0.82
+  absolute-z scaling landed it 5 m below the 737's fin — now the
+  builder's beacon fixture, or just under the tail anchor as fallback
+  (aircraft-lights + the traffic-layer duplicate); (4) archetype anchors
+  (every live-traffic silhouette) recomputed from the SAME wing()/tail()
+  constants the geometry uses — wing height, sweep-shortened tip, real
+  fin top — instead of fixed (±S/2, 0, 0)/(0, 0.1L, 0.5L); (5) bbox
+  fallback clamps its vertical reference for below-origin models (X-Plane
+  OBJ8). Test updated to the truthful contract: anchor at the RENDERED
+  tip, inside the mesh bounds, tail light on the fin (the old exact −S/2
+  assertion floated lights off swept wings — recorded behavior change).
+  Gate: tsc, 1171 tests, 545 validate. NEXT: in-browser light check,
+  then remaining 9A/9B/9C themed commits.

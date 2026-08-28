@@ -444,7 +444,10 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     g.userData.lightAnchors = {
       wingtipL: new THREE.Vector3(-yTip, tipUp, zTip),
       wingtipR: new THREE.Vector3(yTip, tipUp, zTip),
-      tail: new THREE.Vector3(0, R * 0.9 + finH * 0.55, -finRootX + L * 0.1),
+      // Fin TIP (the old 55%-height point sat inside the fin skin);
+      // beacon on the fuselage spine.
+      tail: new THREE.Vector3(0, R * 0.9 + finH, 0.5 * L),
+      beacon: new THREE.Vector3(0, R * 1.35, 0),
     }
   }
   return { group: g, propDisc, surfaces }

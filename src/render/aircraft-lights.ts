@@ -21,6 +21,9 @@ interface Anchors {
   wingtipL: THREE.Vector3
   wingtipR: THREE.Vector3
   tail: THREE.Vector3
+  /** Rotating-beacon fixture (fuselage spine on transports). Absent =
+   *  just below the tail/fin-tip anchor. */
+  beacon?: THREE.Vector3
 }
 
 export class AircraftLights {
@@ -53,13 +56,21 @@ export class AircraftLights {
       group.updateWorldMatrix(true, true)
       const box = new THREE.Box3().setFromObject(group)
       const wingZ = (box.min.z + box.max.z) * 0.3
+      // Clamp the vertical reference: a model built below the origin
+      // (X-Plane OBJ8 exports) has box.max.y ≈ 0, and scaling it put
+      // every light at the belly line.
+      const topY = Math.max(box.max.y, 0.4)
       anchors = {
-        wingtipL: new THREE.Vector3(box.min.x + 0.08, box.max.y * 0.62, wingZ),
-        wingtipR: new THREE.Vector3(box.max.x - 0.08, box.max.y * 0.62, wingZ),
-        tail: new THREE.Vector3(0, box.max.y * 0.55, box.max.z - 0.05),
+        wingtipL: new THREE.Vector3(box.min.x + 0.08, topY * 0.62, wingZ),
+        wingtipR: new THREE.Vector3(box.max.x - 0.08, topY * 0.62, wingZ),
+        tail: new THREE.Vector3(0, topY * 0.55, box.max.z - 0.05),
       }
     }
     const a = anchors as Anchors
+    // Beacon: at the builder's fixture when given, else just under the
+    // tail anchor (the old tail.z*0.82 scaling landed it 5 m below the
+    // 737's fin tip, buried mid-fin).
+    const beacon = a.beacon ?? new THREE.Vector3(0, a.tail.y - 0.35, a.tail.z - 0.6)
     // Physical lens fixtures ON the airframe (user: "put the lights on
     // the plane") — the additive glows float at these same points; the
     // lenses make the hardware visible up close and in daylight.
@@ -74,12 +85,12 @@ export class AircraftLights {
     lens(a.wingtipL.x, a.wingtipL.y, a.wingtipL.z, 0xff2a2a)
     lens(a.wingtipR.x, a.wingtipR.y, a.wingtipR.z, 0x27d75a)
     lens(a.tail.x, a.tail.y, a.tail.z, 0xffffff, 0.07)
-    lens(0, a.tail.y + 0.45, a.tail.z * 0.82, 0xff2020, 0.1)
+    lens(beacon.x, beacon.y, beacon.z, 0xff2020, 0.1)
     const p: THREE.Vector3[] = [
       a.wingtipL,
       a.wingtipR,
       new THREE.Vector3(a.tail.x, a.tail.y, a.tail.z),
-      new THREE.Vector3(0, a.tail.y + 0.45, a.tail.z * 0.82), // beacon: fin top
+      beacon,
       new THREE.Vector3(a.wingtipL.x, a.wingtipL.y + 0.14, a.wingtipL.z),
       new THREE.Vector3(a.wingtipR.x, a.wingtipR.y + 0.14, a.wingtipR.z),
     ]
