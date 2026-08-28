@@ -196,6 +196,20 @@ export class Aircraft {
     v3set(this.velBody, 0, 0, 0)
     v3set(this.rates, 0, 0, 0)
     this.prop.omegaRadS = (700 * Math.PI) / 30
+    // Respawn hygiene (9B): a respawned jet used to come back at the
+    // last flight's N1 against the brakes, with speedbrakes armed and
+    // reversers still commanded; interlocks also read one step of stale
+    // flight data.
+    this.spoilerCmd = 0
+    this.spoilerPos = 0
+    this.spoilerArmed = false
+    this.reverseCmd = false
+    this.reversePos = 0
+    this.alphaDotFilt = 0
+    if (this.jetState && this.P.jet) Object.assign(this.jetState, makeTurbofanState(this.P.jet))
+    this.data.onGround = true
+    this.data.kias = 0
+    this.data.verticalSpeedFpm = 0
   }
 
   /** Set on structural-impact or numeric blowup; freezes physics until reset. */
@@ -266,7 +280,10 @@ export class Aircraft {
       this.prop.thrustN = running ? this.jetState.thrustN : -windmillDragN(rho, vAir, this.P.jet)
       // Reversers: cascade redirect — effective thrust swings negative as
       // the sleeves translate (weight-on-wheels interlocked upstream).
-      if (this.P.reversers && this.reversePos > 0) {
+      // RUNNING engines only: a dead engine's thrust is already negative
+      // windmill drag, and the negative reverse multiplier turned it into
+      // FORWARD thrust from a flamed-out engine.
+      if (this.P.reversers && this.reversePos > 0 && running) {
         this.prop.thrustN *= 1 - this.reversePos * (1 + this.P.reversers.effectiveness)
       }
       this.prop.torqueNm = 0
@@ -338,7 +355,11 @@ export class Aircraft {
       // (no belly-slide model — honest simplification, recorded).
       this.gearOut.onGround = false
       this.gearOut.maxCompressionM = 0
-      if (ai.heightAglM < 0.3) this.crashed = true
+      // Belly height, not CG height: a heavy's CG sits metres above its
+      // skin, so the old 0.3 m CG test let it sink visibly through the
+      // runway before "crashing". Belly ≈ 45% of the main-gear leg below
+      // the origin (737: 1.28 m vs 2.9 m legs).
+      if (ai.heightAglM < Math.max(this.P.gear.mainL.z * 0.45, 0.3)) this.crashed = true
     }
 
     // ---- gravity ----
@@ -418,7 +439,9 @@ export class Aircraft {
     d.alphaDeg = (alpha * 180) / Math.PI
     d.betaDeg = (beta * 180) / Math.PI
     d.rpm = this.prop.rpm
-    d.fuelFlowGph = (this.prop.fuelFlowKgS / 2.72155) * 3600 // kg/s → USG/hr avgas
+    // kg/s → USG/hr at the RIGHT density: Jet-A is 3.03 kg/gal, avgas
+    // 2.72 — jets read ~12% high on the old avgas constant.
+    d.fuelFlowGph = (this.prop.fuelFlowKgS / (this.P.jet ? 3.03 : 2.72155)) * 3600
     d.n1Pct = this.jetState ? this.jetState.n1Pct : 0
     d.gearPos = this.gearPos
     d.stallFraction = this.aeroOut.stallFraction

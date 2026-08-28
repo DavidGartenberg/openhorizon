@@ -2655,3 +2655,25 @@ browser-verified end-to-end. Verified this session via scripted flights
   250 kg bar the plan sketched was reality-checked down; va ≤ vno fleet-
   wide. Slice 8 lights also verified in-browser at night (fin-tip tail
   light, spine beacon, tip glows). Gate: tsc, 1173 tests, 545+2 validate.
+
+- **9A/9B reverse-thrust + respawn purge (2026-08-28)** — Reverse trio:
+  (1) dead-engine + reverse no longer produces FORWARD thrust (the
+  negative windmill drag times the negative reverse multiplier — the
+  multiplier now applies to running engines only, aircraft.ts); (2) the
+  TCA quadrant's lifted reverse zone commands IDLE in flight (sleeves
+  were WoW-gated but the throttle wasn't — airborne reverse gave full
+  forward N1); (3) the lever poll no longer cancels the KeyZ reverse
+  toggle every frame — new leverReverseActive latch means the lever
+  rescinds only its OWN engagement (this was why keyboard reverse "did
+  nothing" with the quadrant plugged in). Respawn purge: spawnOnGround
+  resets spoilers/armed/reversers/N1-to-idle/alphaDotFilt + stale data
+  flags (a respawned jet sat at last flight's N1 against the brakes);
+  resetSystemsState adds carb ice + carb heat (a fully-iced engine
+  survived respawn silently powerless), ctlOverride, wing-leveler, baro,
+  landing light; spawnAtAirport calls recorder.reset() + clears
+  flightStartSimS/debrief — an airborne respawn used to FABRICATE a
+  logbook landing from the teleport discontinuity. Gear-up crash guard
+  now measures the BELLY (45% of main-leg z), not the CG — heavies sank
+  metres through the runway before "crashing". Jet fuel-flow GPH uses
+  Jet-A density (was ~12% high on the avgas constant). Gate: tsc, 1173
+  tests, 547 validate.

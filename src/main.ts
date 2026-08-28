@@ -378,6 +378,18 @@ function resetSystemsState(): void {
   failures.icingConditions = false
   failures.staticBlocked = false
   disconnectAutopilot(apState)
+  // 9A/9B respawn leaks: a fully-iced carburetor survived respawn
+  // (silently powerless engine), and control overrides / wing-leveler /
+  // baro / landing light all carried into the new flight.
+  Object.assign(carbIceState, makeCarbIceState())
+  carbHeatOn = false
+  aircraft.spoilerCmd = 0
+  aircraft.spoilerArmed = false
+  aircraft.reverseCmd = false
+  aircraftLights.landingOn = false
+  baroSetInHg = 29.92
+  ctlOverride = null
+  holdWingsLevel = false
 }
 let parkingBrake = false
 // Default OFF per §17 ("assists default OFF") — the ground-yaw hold is
@@ -416,6 +428,13 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
   copilotPrev = null
   // 9A: pending controller replies die with the flight they answered.
   cancelAtcTimers()
+  // 9A: an airborne respawn used to LOG A LANDING — the teleport
+  // discontinuity read as a touchdown and fabricated a logbook entry
+  // (and challenge best). The recorder starts clean with the flight.
+  recorder.reset()
+  flightStartSimS = null
+  lastOnGround = true
+  debriefLine = ''
   const { r, fromHigh } = pickRunway(ap, rwyIdent)
   const thr = fromHigh ? { lat: r.la2, lon: r.lo2, e: r.e2 } : { lat: r.la1, lon: r.lo1, e: r.e1 }
   const far = fromHigh ? { lat: r.la1, lon: r.lo1, e: r.e1 } : { lat: r.la2, lon: r.lo2, e: r.e2 }
@@ -770,6 +789,10 @@ let btnPrev: boolean[][] = []
 let joyBrakeHeld = false
 let joyWizardChain = false
 let joyReverseHeld = false
+/** True while the QUADRANT's lifted reverse zone is the thing holding
+ *  reverseCmd — so the lever leaving the zone rescinds only its OWN
+ *  engagement and can no longer cancel the KeyZ toggle every frame. */
+let leverReverseActive = false
 
 const JOY_PROMPT: Record<BindableAxis, string> = {
   pitch: 'PULL — nose UP', roll: 'roll RIGHT', yaw: 'RIGHT rudder',
@@ -1069,9 +1092,19 @@ function pollControls(dt: number): void {
       const lev = leverWithReverse(raw)
       if (lev.reverse && aircraft.P.reversers) {
         aircraft.reverseCmd = true
-        c.throttle = lev.power < 0.02 ? 0 : lev.power
+        leverReverseActive = true
+        // Airborne, the reverse zone commands IDLE — the sleeves are
+        // WoW-gated but the throttle wasn't, so a lifted lever in
+        // flight used to command full FORWARD N1.
+        c.throttle = aircraft.data.onGround && lev.power >= 0.02 ? lev.power : 0
       } else {
-        if (aircraft.P.reversers && !joyReverseHeld) aircraft.reverseCmd = false
+        // Only the lever's OWN engagement is rescinded when it leaves
+        // the zone — this branch used to clear reverseCmd EVERY frame,
+        // cancelling the KeyZ toggle the same frame it was pressed.
+        if (aircraft.P.reversers && leverReverseActive && !joyReverseHeld) {
+          aircraft.reverseCmd = false
+          leverReverseActive = false
+        }
         c.throttle = lev.power < 0.02 ? 0 : lev.power > 0.98 ? 1 : lev.power
       }
     }
