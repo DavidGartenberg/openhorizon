@@ -36,6 +36,9 @@ export interface TrimSpec {
   params?: AircraftParams
   /** Extra parasite drag in the trim condition (extended gear). Default 0. */
   extraCd?: number
+  /** Live ISA temperature offset, °C (9B): a hot/cold-day final spawn was
+   *  trimmed for the standard atmosphere and arrived mistrimmed. */
+  isaTempOffsetC?: number
 }
 
 interface Propelled {
@@ -89,12 +92,23 @@ function propAt(throttle: number, vAxial: number, rho: number, P: AircraftParams
  *  fz: L + T·sinα − W·cosγ   (normal to flight path)
  *  m:  pitching moment
  */
+// Scratch AirState reused across residual evaluations (the solver calls
+// residuals dozens of times per solve — a fresh object each time was
+// pure allocation churn).
+const R_AIR_TRIM = 287.05287
+const AIR_SCRATCH = { temperatureK: 0, pressurePa: 0, densityKgM3: 0, speedOfSoundMs: 0 }
+
 function residuals(
   s: TrimSpec, alpha: number, elevator: number, throttle: number, gamma: number,
   aeroOut = makeAeroOutput(),
 ): { fx: number; fz: number; m: number; prop: Propelled } {
   const P = s.params ?? C172S
-  const air = isa(s.altM)
+  const air = isa(s.altM, AIR_SCRATCH)
+  if (s.isaTempOffsetC) {
+    air.temperatureK += s.isaTempOffsetC
+    air.densityKgM3 = air.pressurePa / (R_AIR_TRIM * air.temperatureK)
+    air.speedOfSoundMs = Math.sqrt(1.4 * R_AIR_TRIM * air.temperatureK)
+  }
   const rho = air.densityKgM3
   const W = s.massKg * G
   const prop = P.jet

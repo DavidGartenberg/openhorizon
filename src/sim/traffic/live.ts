@@ -47,7 +47,12 @@ export interface LiveTarget {
 }
 
 const KT = 0.514444
-const M_PER_DEG_LAT = 111_319.5
+// 111,132 m per degree of LATITUDE (spherical mean — the old 111,319.5
+// was the EQUATORIAL longitude figure, ~0.17% off in latitude);
+// longitude scales by cos(lat), clamped so one bad polar ADS-B row
+// can't divide position by ~0.
+const M_PER_DEG_LAT = 111_132
+const lonScale = (latDeg: number): number => Math.max(Math.cos((latDeg * Math.PI) / 180), 0.05)
 const EXPIRE_MS = 30_000
 const CAP = 40
 const BLEND_TAU_S = 0.6 // ~95% of a fix jump absorbed inside 2 s
@@ -62,7 +67,7 @@ export class LiveTrafficStore {
         r,
         d2:
           ((r.lat - ownLat) * M_PER_DEG_LAT) ** 2 +
-          ((r.lon - ownLon) * M_PER_DEG_LAT * Math.cos((ownLat * Math.PI) / 180)) ** 2,
+          ((r.lon - ownLon) * M_PER_DEG_LAT * lonScale(ownLat)) ** 2,
       }))
       .sort((a, b) => a.d2 - b.d2)
       .slice(0, CAP)
@@ -70,7 +75,7 @@ export class LiveTrafficStore {
     for (const { r } of kept) {
       seen.add(r.id)
       // Lead the fix forward by its reported age along its track.
-      const mPerDegLon = M_PER_DEG_LAT * Math.cos((r.lat * Math.PI) / 180)
+      const mPerDegLon = M_PER_DEG_LAT * lonScale(r.lat)
       const leadM = r.gsKt * KT * r.ageS
       const trkRad = (r.trk * Math.PI) / 180
       const aLat = r.lat + (Math.cos(trkRad) * leadM) / M_PER_DEG_LAT
@@ -121,7 +126,7 @@ export class LiveTrafficStore {
         this.targets.delete(id)
         continue
       }
-      const mPerDegLon = M_PER_DEG_LAT * Math.cos((t.aLat * Math.PI) / 180)
+      const mPerDegLon = M_PER_DEG_LAT * lonScale(t.aLat)
       const stepM = t.gsKt * KT * dtS
       const trkRad = (t.trkDeg * Math.PI) / 180
       t.aLat += (Math.cos(trkRad) * stepM) / M_PER_DEG_LAT

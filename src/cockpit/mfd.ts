@@ -67,10 +67,13 @@ export function rpmGaugeFractions(rpm: number, redlineRpm: number): { valueFrac:
   }
 }
 
-/** Fuel quantity (kg) -> a display gallons + gauge fraction pair, reusing fuel.ts's own kg/gal conversion. */
-export function fuelQtyGauge(kg: number): { gal: number; frac: number } {
+/** Fuel quantity (kg) -> a display gallons + gauge fraction pair, reusing
+ *  fuel.ts's own kg/gal conversion. Full-scale defaults to C172 tanks;
+ *  pass the active type's per-side capacity for the fleet (9B). */
+export function fuelQtyGauge(kg: number, capPerSideKg?: number): { gal: number; frac: number } {
   const gal = kgToGal(kg)
-  return { gal, frac: barGaugeFraction(gal, 0, TANK_CAPACITY_GAL) }
+  const fullGal = capPerSideKg !== undefined && capPerSideKg > 0 ? kgToGal(capPerSideKg) : TANK_CAPACITY_GAL
+  return { gal, frac: barGaugeFraction(gal, 0, fullGal) }
 }
 
 /** How close (°C) the current EGT is to the modeled peak-EGT point — the
@@ -322,6 +325,10 @@ export interface MfdInput {
   engineTemps: EngineTemps
   fuelLeftKg: number
   fuelRightKg: number
+  /** Per-side tank capacity (kg) for the gauge full-scale (9B): the
+   *  C172 constant pegged every larger type's needles at full. Absent =
+   *  C172 tanks. */
+  fuelCapPerSideKg?: number
   electrical: {
     busVoltage: number
     alternatorAmps: number
@@ -454,8 +461,8 @@ function drawEis(ctx: CanvasRenderingContext2D, x: number, y: number, w: number,
   gy += rowH * 1.3
 
   // Fuel qty L/R.
-  const left = fuelQtyGauge(data.fuelLeftKg)
-  const right = fuelQtyGauge(data.fuelRightKg)
+  const left = fuelQtyGauge(data.fuelLeftKg, data.fuelCapPerSideKg)
+  const right = fuelQtyGauge(data.fuelRightKg, data.fuelCapPerSideKg)
   drawBarGauge(ctx, gx, gy, gw, rowH, 'FUEL L GAL', left.gal.toFixed(1), left.frac, null, COLORS.white)
   gy += rowH * 1.15
   drawBarGauge(ctx, gx, gy, gw, rowH, 'FUEL R GAL', right.gal.toFixed(1), right.frac, null, COLORS.white)

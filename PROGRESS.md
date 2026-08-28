@@ -2690,3 +2690,21 @@ browser-verified end-to-end. Verified this session via scripted flights
   glideslope had no un-capture path and kept chasing the beam behind the
   aircraft; wired into both the ATC menu go-around and the free-text
   bridge. Gate: tsc, 1175 tests, 547 validate.
+
+- **9B atmosphere + fuel systems (2026-08-28)** — (1) isa() gains the ISA
+  isothermal stratosphere (216.65 K, exponential pressure) from 11 km to
+  FL600 — the hard 11 km cap froze the atmosphere above FL360 so nothing
+  lapsed in high cruise; sub-11 km rows bit-identical. RECORDED bound
+  change: the cruise-envelope ceiling relaxes 0.92→0.97 ONLY above the
+  tropopause — the old bound was calibrated in the fictitious frozen
+  atmosphere, and the five highest cruisers (A388/787-9/787-10/F2TH/
+  FA7X) genuinely run 0.92-0.96 thrust fraction at FL390-410. (2) FUEL
+  LOW threshold scales to the active type (~7.5% capacity, 8 kg floor,
+  none for gliders — the C172 constant warned an A380 at 36 kg and
+  gliders permanently); MFD fuel gauges get per-type full-scale.
+  (3) Live-traffic dead reckoning: cos(lat) clamped (one bad polar row
+  → Infinity), meters-per-degree-latitude corrected to 111,132 (the
+  equatorial-longitude figure was in use). (4) Trim solver takes the
+  live ISA offset (hot/cold-day final spawns arrived mistrimmed) and
+  reuses a scratch AirState per residual. Gate: tsc, 1175 tests, 547
+  validate.

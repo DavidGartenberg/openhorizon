@@ -469,7 +469,7 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
     const kcas = aircraft.P.pitotCal ? kcasFromKias(fin.kias, fin.flapsDeg, aircraft.P.pitotCal) : fin.kias
     const tas = kcas * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
     const gearCd = aircraft.P.gearRetractable ? aircraft.P.gearRetractable.dCdExtended : 0
-    const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg: fin.flapsDeg, gammaRad: -0.052, params: aircraft.P, extraCd: gearCd })
+    const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg: fin.flapsDeg, gammaRad: -0.052, params: aircraft.P, extraCd: gearCd, isaTempOffsetC: aircraft.isaTempOffsetC })
     aircraft.flapsDeg = fin.flapsDeg
     aircraft.controls.flapsIndex = fin.flapsIndex
     aircraft.gearDownCommanded = true
@@ -2358,6 +2358,10 @@ function advanceFrame(elapsed: number, now: number): void {
         selector: systemsControls.fuelSelector,
         boostPumpOn: systemsControls.boostPumpOn,
         demandKgS: aircraft.prop.fuelFlowKgS,
+        // FUEL LOW scaled to THIS type's tankage (~7.5% of capacity,
+        // floor 8 kg; none for fuel-less gliders) — the C172 constant
+        // warned an A380 at 36 kg and gliders permanently.
+        lowFuelKg: aircraft.P.fuelCapacityKg < 1 ? 0 : Math.max(aircraft.P.fuelCapacityKg * 0.075, 8),
       })
       // `fuelState.leftKg`/`rightKg` (this file) is the authoritative fuel
       // ledger — it's the only one that knows about the selector/starvation
@@ -2617,6 +2621,7 @@ function advanceFrame(elapsed: number, now: number): void {
       engineTemps,
       fuelLeftKg: fuelState.leftKg,
       fuelRightKg: fuelState.rightKg,
+      fuelCapPerSideKg: aircraft.P.fuelCapacityKg / 2,
       electrical: {
         busVoltage: electricalState.busVoltage,
         alternatorAmps: electricalState.alternatorAmps,

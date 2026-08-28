@@ -23,9 +23,15 @@ export interface AirState {
 }
 
 export function isa(altitudeM: number, out?: AirState): AirState {
-  const h = Math.min(Math.max(altitudeM, -500), 11_000)
-  const T = T0 - LAPSE * h
-  const p = P0 * Math.pow(T / T0, G / (R_AIR * LAPSE))
+  // Troposphere lapse to the 11 km tropopause, then the ISA isothermal
+  // stratosphere (216.65 K, exponential pressure) to FL600 — the old
+  // 11 km hard cap froze the atmosphere above FL360, so nothing lapsed
+  // in high cruise. Rows below 11 km are bit-identical.
+  const h = Math.min(Math.max(altitudeM, -500), 18_300)
+  const hTropo = Math.min(h, 11_000)
+  const T = T0 - LAPSE * hTropo
+  let p = P0 * Math.pow(T / T0, G / (R_AIR * LAPSE))
+  if (h > 11_000) p *= Math.exp((-G * (h - 11_000)) / (R_AIR * T))
   const rho = p / (R_AIR * T)
   const a = Math.sqrt(1.4 * R_AIR * T)
   if (out) {

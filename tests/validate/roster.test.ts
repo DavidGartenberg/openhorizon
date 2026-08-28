@@ -71,7 +71,14 @@ describe(`Tier-B roster validation (${ROSTER.length} types)`, () => {
           const avail = thrustAvailableN(air.densityKgM3, targets.jetCruise!.mach, P.jet!)
           const frac = t.thrustN / avail
           expect(frac).toBeGreaterThan(0.35)
-          expect(frac).toBeLessThan(0.92)
+          // DELIBERATE bound change with the ISA stratosphere fix
+          // (recorded): the 0.92 ceiling was calibrated when isa() froze
+          // at 11 km — a denser, fictitious FL390+. With the real
+          // isothermal stratosphere, thrust available at FL390-410 drops
+          // and the five highest-cruising types (A388/787s/Falcons) run
+          // 0.92-0.96 — thin margins at optimum altitude are physically
+          // real. Below the tropopause the old bound stands unchanged.
+          expect(frac).toBeLessThan(altM > 11_000 ? 0.97 : 0.92)
         })
       }
 

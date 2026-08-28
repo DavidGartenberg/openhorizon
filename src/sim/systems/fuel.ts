@@ -52,6 +52,10 @@ export interface FuelInputs {
   boostPumpOn: boolean
   /** Engine fuel-flow demand, kg/s (from PropulsionState.fuelFlowKgS). */
   demandKgS: number
+  /** FUEL LOW threshold for the ACTIVE type, kg total (9B): the C172
+   *  constant warned an A380 at 36 kg and a glider permanently. Absent =
+   *  the C172 default. */
+  lowFuelKg?: number
 }
 
 export interface FuelState {
@@ -142,5 +146,5 @@ export function stepFuel(st: FuelState, dt: number, inp: FuelInputs): void {
     }
   }
 
-  st.lowFuelFlag = st.leftKg + st.rightKg < LOW_FUEL_TOTAL_KG
+  st.lowFuelFlag = st.leftKg + st.rightKg < (inp.lowFuelKg ?? LOW_FUEL_TOTAL_KG)
 }
