@@ -2677,3 +2677,16 @@ browser-verified end-to-end. Verified this session via scripted flights
   metres through the runway before "crashing". Jet fuel-flow GPH uses
   Jet-A density (was ~12% high on the avgas constant). Gate: tsc, 1173
   tests, 547 validate.
+
+- **9B autopilot engagement (2026-08-28)** — (1) engage-edge integrator
+  reset: the control laws run every frame as a flight director even
+  hand-flown, so integrators wound up while DISENGAGED and dumped their
+  accumulation into the first engaged frames (the documented disconnect-
+  reset covered only half the transition); regression test winds VS mode
+  saturated then engages at zero error. (2) altsLeadFt floors at ±20 ft —
+  the kinematic lead is 0 at zero VS, so ALTS armed in LEVEL flight at
+  the bug could never capture. (3) Go-around drops an approach-coupled
+  AP (GS captured or APR) to manual like a real TOGA press — a captured
+  glideslope had no un-capture path and kept chasing the beam behind the
+  aircraft; wired into both the ATC menu go-around and the free-text
+  bridge. Gate: tsc, 1175 tests, 547 validate.

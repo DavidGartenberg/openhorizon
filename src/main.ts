@@ -1764,6 +1764,7 @@ function sendFreeTextAtc(said: string): void {
   const sendMachine = (replies: Transmission[]): void => {
     atcDelay(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
   }
+  if (reply.intent === 'goAround') pilotGoAround()
 
   // Emergency: the free-text controller transmits its richer emergency
   // phraseology AND flags the tower strip — the flagged tick() issues
@@ -1852,6 +1853,17 @@ comms.subscribe((t) => {
   transcriptDiv.textContent = transcript.join('\n')
   if (t.from !== CALLSIGN) speak(t)
 })
+
+/** Going around (9B): a captured glideslope had no un-capture path — the
+ *  AP kept chasing a beam behind the aircraft. A go-around drops an
+ *  approach-coupled AP to manual, like a real TOGA press. */
+function pilotGoAround(): void {
+  if (apState.verticalMode === 'GS' || apState.lateralMode === 'APR') {
+    disconnectAutopilot(apState)
+    systemsControls.apMaster = false
+    toast('AP DISCONNECT — GO-AROUND')
+  }
+}
 
 function playerAtcView(): TrafficView {
   const d = aircraft.data
@@ -2018,7 +2030,7 @@ function atcMenuItems(): AtcMenuItem[] {
       })
     }
     items.push({ label: `Inbound for landing (Tower ${a.twrF.toFixed(2)})`, run: () => sendPilot('inboundLanding', a.twrF, () => a.tower.request(CALLSIGN, 'inboundLanding', playerAtcView(), loop.simTime)) })
-    items.push({ label: 'Going around', run: () => sendPilot('goAround', a.twrF, () => a.tower.request(CALLSIGN, 'goAround', playerAtcView(), loop.simTime)) })
+    items.push({ label: 'Going around', run: () => { pilotGoAround(); sendPilot('goAround', a.twrF, () => a.tower.request(CALLSIGN, 'goAround', playerAtcView(), loop.simTime)) } })
   }
   return items
 }

@@ -461,7 +461,9 @@ function rateLimit(current: number, target: number, maxRatePerSec: number, dt: n
 export function altsLeadFt(verticalSpeedFpm: number, decelFpmPerS = ALTS_DECEL_FPM_PER_S): number {
   const vFtS = Math.abs(verticalSpeedFpm) / 60
   const aFtS2 = Math.max(decelFpmPerS, 1) / 60
-  return (vFtS * vFtS) / (2 * aFtS2)
+  // ±20 ft floor (9B): the kinematic lead is 0 at zero VS, so ALTS armed
+  // in LEVEL flight at the bugged altitude could never capture.
+  return Math.max((vFtS * vFtS) / (2 * aFtS2), 20)
 }
 
 // ---- vertical pitch-target control laws (outer loops) ----
@@ -500,6 +502,19 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
   if (state.masterEnabled && !inputs.masterEnabled) {
     disconnect(state) // sets justDisconnected = true for this call's caller to observe
   } else {
+    // ENGAGE edge (9B): the control laws run every call as a flight
+    // director even hand-flown, so the integrators wind up while
+    // disengaged and used to dump their whole accumulation into the
+    // first engaged frames. Real APs re-initialize at engagement — the
+    // documented disconnect-reset covered only half the transition.
+    if (!state.masterEnabled && inputs.masterEnabled) {
+      for (const pid of [state.gsPitch, state.altPitch, state.vsPitch, state.flcPitch, state.bankAttitude, state.pitchAttitude]) {
+        pid.integrator = 0
+        pid.prevError = 0
+        pid.prevMeasurement = 0
+      }
+      state.navTrackIntegral = 0
+    }
     state.masterEnabled = inputs.masterEnabled
     if (enteringDisconnectedFromPriorCall) state.justDisconnected = false
   }

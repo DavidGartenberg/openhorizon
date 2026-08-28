@@ -777,3 +777,36 @@ describe('mode identity sanity', () => {
     expect(state.fdBankDeg).toBe(MAX_BANK_DEG)
   })
 })
+
+describe('9B: engagement edge + level ALTS capture', () => {
+  it('altsLeadFt floors at 20 ft so ALTS armed LEVEL at the bug still captures', () => {
+    expect(altsLeadFt(0)).toBe(20)
+    expect(altsLeadFt(-100)).toBeGreaterThanOrEqual(20)
+  })
+
+  it('integrators wound up while hand-flying reset on the engage edge', () => {
+    const s = makeAutopilotState()
+    // Hand-fly in VS mode with a persistent 2000 fpm error: the law runs
+    // as a flight director even disengaged, so the integrator saturates.
+    for (let i = 0; i < 400; i++) {
+      stepAutopilot(s, 0.1, {
+        iasKt: 100, altitudeFt: 3000, verticalSpeedFpm: 0, headingDeg: 90, pitchDeg: 2, rollDeg: 0,
+        masterEnabled: false, lateralMode: 'HDG', verticalMode: 'VS', headingBugDeg: 90,
+        altitudeBugFt: 3000, vsTargetFpm: 2000, iasTargetKt: 100, bankCommandDeg: 0, pitchCommandDeg: 0,
+        navDeviation: 0, glideslopeDeviation: 0,
+      })
+    }
+    const wound = Math.abs(s.vsPitch.integrator)
+    expect(wound).toBeGreaterThan(1)
+    // Engage with ZERO error: the first engaged step must start from a
+    // clean integrator (before the fix it kept the full wound-up value
+    // and dumped it into the servos).
+    stepAutopilot(s, 0.1, {
+      iasKt: 100, altitudeFt: 3000, verticalSpeedFpm: 0, headingDeg: 90, pitchDeg: 2, rollDeg: 0,
+      masterEnabled: true, lateralMode: 'HDG', verticalMode: 'VS', headingBugDeg: 90,
+      altitudeBugFt: 3000, vsTargetFpm: 0, iasTargetKt: 100, bankCommandDeg: 0, pitchCommandDeg: 0,
+      navDeviation: 0, glideslopeDeviation: 0,
+    })
+    expect(Math.abs(s.vsPitch.integrator)).toBeLessThan(wound * 0.05 + 0.1)
+  })
+})
