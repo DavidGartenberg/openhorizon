@@ -2822,3 +2822,24 @@ browser-verified end-to-end. Verified this session via scripted flights
   Verified in-browser: C172 forward + look-down, 737 forward + look-down
   (six live DUs, EICAS, MCP, gear lever), A320 forward (FCU band). Gate:
   tsc, 1181 tests, 547 validate.
+
+- **C172 dampening, round 2 — heading-hold SAS (2026-08-28)** — the
+  yaw-damper SAS held the wings level but a steady prop/rig moment still
+  left a residual turn (headless: 78° of heading in 40 s at full-power Vy
+  with bank ≤7°). Airborne SAS now locks the HEADING the moment yaw and
+  roll are both untouched and holds it on the rudder (gain 2, rate
+  damping, bounded 0.4 SAS / 0.6 FULL), re-locking whenever either axis
+  is touched — same pattern as the verified ground heading hold.
+  Headless survey with the loop closed: glide idle ≤1.9° / bank 1.2°,
+  full-power Vy ≤4.6° / bank 3.4° / rudder ≤0.16, cruise and approach
+  ≤0.2°. LIVE (separate 127.0.0.1 tab, own storage): C172 spawned on
+  KHAF 30 final, hands off 48 s — bank 0.0°, 6.5° total heading wander
+  including the spawn transient, normal 70-kt descent. CORRECTION to the
+  earlier note: the Vy yaw moment is NOT 2× strong — the probe shows only
+  0.11 pedal needed (a real 172 needs ~⅓); the hands-off left roll comes
+  from the dihedral-effect coupling of a realistic ~2.8° slip (clβ
+  −0.089, literature), i.e. real airplane behaviour that the rudder hold
+  now nulls. P-factor/swirl gains left as calibrated. Gate: tsc, 1181
+  tests. NOTE: while inspecting the pane's seed tab I teleported the
+  user's live B748 to KHAF final by mistake (shared tab) — verification
+  moved to a separate-origin tab afterwards.

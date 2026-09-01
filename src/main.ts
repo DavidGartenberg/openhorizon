@@ -415,6 +415,9 @@ let groundHeadingLockDeg: number | null = null
 /** Climb pitch attitude captured when the pilot releases pitch control
  *  airborne (assist holds it — see the airborne assist branch below). */
 let airbornePitchLockDeg: number | null = null
+/** Airborne SAS heading lock: captured when both yaw and roll are
+ *  untouched, released the moment the pilot touches either. */
+let airborneHeadingLockDeg: number | null = null
 let spawnDesc = 'boot'
 
 // ---- spawning ----
@@ -1262,12 +1265,26 @@ function pollControls(dt: number): void {
     } else {
       airbornePitchLockDeg = null
     }
-    if (Math.abs(shaped.yaw) < 0.04) {
+    if (Math.abs(shaped.yaw) < 0.04 && Math.abs(shaped.roll) < 0.04) {
+      // Heading HOLD on the rudder, not just a yaw damper: a damper only
+      // slows the residual turn a steady prop/rig moment produces (the
+      // headless survey still drifted 78° in 40 s at full power with
+      // wings held level). Lock the heading the moment the pilot lets go
+      // of yaw AND roll; re-lock when either is touched. Bounded rudder
+      // (0.4 SAS / 0.6 FULL) — never an autopilot's authority.
+      if (airborneHeadingLockDeg === null) airborneHeadingLockDeg = aircraft.data.headingDeg
+      let errDeg = aircraft.data.headingDeg - airborneHeadingLockDeg
+      errDeg = ((errDeg + 180) % 360 + 360) % 360 - 180
+      const errRad = (errDeg * Math.PI) / 180
       const cap = assistMode === 'sas' ? 0.4 : 0.6
-      c.yaw = Math.min(Math.max(1.6 * betaRad - 0.8 * aircraft.rates.z, -cap), cap)
+      c.yaw = Math.min(Math.max(-2.0 * errRad - 0.8 * aircraft.rates.z, -cap), cap)
+    } else {
+      airborneHeadingLockDeg = null
     }
+    void betaRad
   } else {
     airbornePitchLockDeg = null
+    airborneHeadingLockDeg = null
   }
   const scrub = input.axis('BracketRight', 'BracketLeft')
   if (scrub !== 0) scrubSeconds += scrub * dt * 3600
