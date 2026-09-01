@@ -130,9 +130,11 @@ export class TawsComputer {
 
     // Jet short-final cadence: FIFTY, FORTY, THIRTY, TWENTY, TEN (once per
     // descending crossing; rearmed climbing back through 200).
+    // Gated on flying speed: a parked jet sits ~9 ft AGL at its origin and
+    // used to call "FORTY" on the ramp at spawn.
     if (inp.jetProfile) {
       if (inp.aglFt > 200) this.calloutIdx = 0
-      else if (inp.vsFpm < 0 && this.calloutIdx < JET_CALLOUT_GATES.length) {
+      else if (inp.vsFpm < 0 && inp.gsKt > 40 && this.calloutIdx < JET_CALLOUT_GATES.length) {
         const [gateFt, word] = JET_CALLOUT_GATES[this.calloutIdx]!
         if (inp.aglFt <= gateFt) {
           this.calloutIdx++

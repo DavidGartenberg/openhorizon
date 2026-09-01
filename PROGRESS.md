@@ -2798,3 +2798,27 @@ browser-verified end-to-end. Verified this session via scripted flights
   a sidestick roll — it now gates on the shaped axes (joystick included).
   Regression: tests/c172-handsoff.test.ts pins the physics contract;
   fleet-lateral 9/9 back green. Gate: tsc, 1180 tests, 547 validate.
+
+- **Cockpit polish pass — all three layouts (2026-08-28)** (user: "make
+  the cockpits of each plane look perfect"): screenshot-driven from each
+  eyepoint. G1000 (C172): painted Cessna-grey panel face (drawGaPanel —
+  DU bezels with softkey rows and bezel knobs, audio panel, standby
+  bezels, switch labels, breaker rows, placard, screws; cosmetic and
+  recorded), LIVE standby cluster (ASI with real colored arcs / attitude
+  / three-needle altimeter, drawn every frame from the same PfdInput the
+  PFD uses — the old placeholder discs read as dead gauges), a padded
+  glareshield lip kept under the 0.75 eye, a whiskey compass at the
+  windshield top, and the prop-blur disc toned down (it filled the
+  forward view as a grey dome at 0.2 opacity; now a shimmer). All
+  layouts: slim raked A-pillars (the 0.07×0.3 slabs read as a wall
+  hanging into the view) and tinted windshield glazing (the opening was
+  a bare hole). Transports: painted overhead panel under the roof beam
+  (cosmetic — no overhead systems modeled, recorded), twin pedestal
+  thrust levers that animate with throttle, 737 pedestal trim wheels and
+  a FO yoke mechanically linked to the captain's input, A320 FO
+  sidestick + console (static — independent sticks). Also: TAWS jet
+  FIFTY…TEN cadence now gated on flying speed (>40 kt) — a parked jet at
+  its 9-ft origin called "FORTY" on the ramp at spawn (test added).
+  Verified in-browser: C172 forward + look-down, 737 forward + look-down
+  (six live DUs, EICAS, MCP, gear lever), A320 forward (FCU band). Gate:
+  tsc, 1181 tests, 547 validate.

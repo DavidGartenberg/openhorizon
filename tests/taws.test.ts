@@ -137,3 +137,14 @@ describe('15a: Mode-1 ground inhibition', () => {
     expect(out.aural).toBe('SINK RATE')
   })
 })
+
+describe('jet short-final cadence is inhibited on the ground', () => {
+  it('a parked jet (9 ft AGL, 0 kt) never calls FORTY', async () => {
+    const { TawsComputer } = await import('../src/sim/taws')
+    const taws = new TawsComputer()
+    const base = { altFt: 50, vsFpm: -5, gsKt: 0, headingDeg: 0, rollDeg: 0, flapsDeg: 0, sinceTakeoffS: Infinity, terrainAheadFt: () => 0, nearRunwayFinal: true, gsDeviation: null, jetProfile: true, gearDown: true }
+    let out = taws.step(0.5, { ...base, aglFt: 60 })
+    out = taws.step(0.5, { ...base, aglFt: 9 })
+    expect(out.aural).toBeUndefined()
+  })
+})

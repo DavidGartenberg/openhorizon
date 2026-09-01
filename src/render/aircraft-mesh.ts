@@ -595,7 +595,10 @@ export function updateProp(mesh: AircraftMesh, rpm: number, dt: number): void {
   const blade = mesh.propDisc.userData.blade as THREE.Mesh
   blade.rotation.z += omega * dt
   const blur = Math.min(Math.max((rpm - 400) / 500, 0), 1)
-  ;(mesh.propDisc.material as THREE.MeshBasicMaterial).opacity = 0.05 + 0.16 * blur
+  // Faint: from the cockpit eyepoint the disc fills the forward view and
+  // read as a grey dome at 0.2 opacity (cockpit polish pass); a real
+  // spinning prop is a barely-there shimmer.
+  ;(mesh.propDisc.material as THREE.MeshBasicMaterial).opacity = 0.015 + 0.06 * blur
   ;(blade.material as THREE.MeshStandardMaterial).opacity = 1 - blur * 0.85
   ;(blade.material as THREE.MeshStandardMaterial).transparent = true
 }

@@ -96,7 +96,6 @@ const BLACK_KNOB = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 
 const SWITCH_OFF = new THREE.MeshStandardMaterial({ color: 0x2a2d30, roughness: 0.7 })
 const SWITCH_ON = new THREE.MeshStandardMaterial({ color: 0x1f8a3a, roughness: 0.4, emissive: 0x0a3d16 })
 const YOKE_MAT = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6 })
-const GAUGE_FACE = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.4 })
 
 
 /** N3 photo-match: paint the transport main-panel face onto a canvas —
@@ -226,6 +225,210 @@ function drawTransportPanel(c: CanvasRenderingContext2D, layout: PanelLayout): v
   for (let x = 60; x < W; x += 320) { screw(x, 18); screw(x, H - 16) }
 }
 
+/** Cockpit glazing: a faint blue-grey tint so the windshield reads as
+ *  GLASS (an empty hole read as a missing wall — user: "make the cockpits
+ *  look perfect"). Additive-free, depthWrite off so it never occludes. */
+const GLAZING = new THREE.MeshStandardMaterial({
+  color: 0x9fb4c4, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.13, depthWrite: false, side: THREE.DoubleSide,
+})
+
+/** G1000 panel face painter (C172S): the flat black box read as "no
+ *  panel". Cessna-grey face, DU bezels with painted softkey rows and
+ *  bezel knobs, the audio panel between the displays, standby-cluster
+ *  bezels, the switch/breaker rows with labels, placard and screws —
+ *  cosmetic and recorded as such; the LIVE PFD/MFD/standby planes render
+ *  just proud of the painted glass regions. Panel plane: 1.13 m wide
+ *  centered lat 0.02, 0.52 m tall centered up 0.43. */
+function drawGaPanel(c: CanvasRenderingContext2D): void {
+  const W = 1536
+  const H = 704
+  const px = (lat: number): number => ((lat - 0.02 + 0.565) / 1.13) * W
+  const py = (up: number): number => ((0.26 - (up - 0.43)) / 0.52) * H
+  const sx = (m: number): number => (m / 1.13) * W
+  const sy = (m: number): number => (m / 0.52) * H
+  c.fillStyle = '#8b8d88'
+  c.fillRect(0, 0, W, H)
+  const grad = c.createLinearGradient(0, 0, 0, H)
+  grad.addColorStop(0, 'rgba(255,255,255,0.08)')
+  grad.addColorStop(1, 'rgba(0,0,0,0.16)')
+  c.fillStyle = grad
+  c.fillRect(0, 0, W, H)
+  const screw = (x: number, y: number): void => {
+    c.fillStyle = 'rgba(35,35,35,0.9)'
+    c.beginPath(); c.arc(x, y, 5, 0, Math.PI * 2); c.fill()
+    c.strokeStyle = 'rgba(210,210,210,0.55)'; c.lineWidth = 1.5
+    c.beginPath(); c.moveTo(x - 3, y); c.lineTo(x + 3, y); c.stroke()
+  }
+  // DU bezels: glass 0.42×0.32 centered (lat, up 0.42); frame + softkeys.
+  for (const lat of [-0.24, 0.15]) {
+    const w = sx(0.42), h = sy(0.32)
+    const x = px(lat) - w / 2, y = py(0.42) - h / 2
+    c.fillStyle = '#2a2c2e'
+    c.beginPath(); c.roundRect(x - 26, y - 22, w + 52, h + 62, 12); c.fill()
+    c.fillStyle = '#0a0b0c'
+    c.beginPath(); c.roundRect(x, y, w, h, 6); c.fill()
+    // softkey row under the glass
+    for (let i = 0; i < 12; i++) {
+      const bx = x + 14 + i * ((w - 28) / 12)
+      c.fillStyle = '#4a4d50'
+      c.beginPath(); c.roundRect(bx, y + h + 12, (w - 28) / 12 - 6, 20, 3); c.fill()
+    }
+    // bezel knobs left/right (NAV/COM, FMS)
+    for (const kx of [x - 14, x + w + 14]) {
+      for (const ky of [y + 34, y + h - 34]) {
+        c.fillStyle = '#1e1f21'
+        c.beginPath(); c.arc(kx, ky, 14, 0, Math.PI * 2); c.fill()
+        c.fillStyle = '#5a5d60'
+        c.beginPath(); c.arc(kx, ky, 8, 0, Math.PI * 2); c.fill()
+      }
+    }
+    screw(x - 20, y - 16); screw(x + w + 20, y - 16); screw(x - 20, y + h + 48); screw(x + w + 20, y + h + 48)
+  }
+  // Audio panel strip between the displays.
+  {
+    const x0 = px(-0.045), x1 = px(-0.005)
+    const y0 = py(0.58), y1 = py(0.27)
+    c.fillStyle = '#2a2c2e'
+    c.beginPath(); c.roundRect(x0, y0, x1 - x0, y1 - y0, 6); c.fill()
+    for (let i = 0; i < 9; i++) {
+      c.fillStyle = i % 3 === 0 ? '#6fbf73' : '#4a4d50'
+      c.fillRect(x0 + 6, y0 + 10 + i * ((y1 - y0 - 20) / 9), x1 - x0 - 12, 10)
+    }
+  }
+  // Standby cluster bezels (live faces render on a plane over these).
+  for (const up of [0.62, 0.5, 0.38]) {
+    const x = px(-0.5), y = py(up)
+    c.fillStyle = '#1c1d1f'
+    c.beginPath(); c.arc(x, y, sx(0.056), 0, Math.PI * 2); c.fill()
+    c.strokeStyle = '#c9cac6'; c.lineWidth = 4
+    c.beginPath(); c.arc(x, y, sx(0.056), 0, Math.PI * 2); c.stroke()
+  }
+  // Switch row labels + breaker rows along the bottom.
+  c.fillStyle = '#1f2124'
+  c.font = 'bold 15px sans-serif'
+  c.textAlign = 'center'
+  const labels = ['MASTER', 'ALT', 'AVION', 'PITOT', 'AP', 'PUMP']
+  labels.forEach((l, i) => c.fillText(l, px(-0.5 + i * 0.045), py(0.185)))
+  c.fillText('BREAKERS', px(0.55), py(0.34))
+  for (let r = 0; r < 2; r++) {
+    for (let i = 0; i < 9; i++) {
+      c.fillStyle = '#d8d9d5'
+      c.beginPath(); c.arc(px(0.42 + i * 0.03), py(0.3 - r * 0.045), 7, 0, Math.PI * 2); c.fill()
+      c.strokeStyle = '#333'; c.lineWidth = 1.5
+      c.beginPath(); c.arc(px(0.42 + i * 0.03), py(0.3 - r * 0.045), 7, 0, Math.PI * 2); c.stroke()
+    }
+  }
+  c.fillStyle = '#2b2d30'
+  c.font = 'bold 20px sans-serif'
+  c.fillText('CESSNA 172S  ·  NAV III', px(0.02), py(0.185))
+  c.font = 'bold 13px sans-serif'
+  c.fillText('IGNITION', px(0.33), py(0.29))
+  for (let x = 40; x < W; x += 300) { screw(x, 16); screw(x, H - 14) }
+}
+
+/** LIVE standby instruments for the G1000 layout — three stacked
+ *  faces (airspeed / attitude / altimeter) read from the same PfdInput
+ *  the PFD uses (§1: nothing synthesized). Canvas 256×768, one face per
+ *  256×256 cell: top ASI, middle AI, bottom ALT. */
+function drawStandbyCluster(c: CanvasRenderingContext2D, d: { iasKt: number; pitchDeg: number; rollDeg: number; altitudeFt: number }): void {
+  const S = 256
+  c.clearRect(0, 0, S, S * 3)
+  const face = (cy: number): void => {
+    c.fillStyle = '#111214'
+    c.beginPath(); c.arc(S / 2, cy, S / 2 - 6, 0, Math.PI * 2); c.fill()
+  }
+  const tick = (cx: number, cy: number, ang: number, r0: number, r1: number, w: number, col: string): void => {
+    c.strokeStyle = col; c.lineWidth = w
+    c.beginPath(); c.moveTo(cx + Math.sin(ang) * r0, cy - Math.cos(ang) * r0); c.lineTo(cx + Math.sin(ang) * r1, cy - Math.cos(ang) * r1); c.stroke()
+  }
+  // ---- ASI (top): 40–160 kt over 300° ----
+  {
+    const cy = S / 2
+    face(cy)
+    const angOf = (kt: number): number => ((kt - 40) / 120) * (Math.PI * 5 / 3) - Math.PI * 5 / 6
+    // arcs: white 40-85, green 48-129, yellow 129-163, red 163
+    const arc = (a: number, b: number, col: string, r: number, w: number): void => {
+      c.strokeStyle = col; c.lineWidth = w
+      c.beginPath(); c.arc(S / 2, cy, r, angOf(a) - Math.PI / 2, angOf(b) - Math.PI / 2); c.stroke()
+    }
+    arc(48, 129, '#2ecc40', 104, 8); arc(40, 85, '#ffffff', 92, 6); arc(129, 160, '#f1c40f', 104, 8)
+    for (let kt = 40; kt <= 160; kt += 10) {
+      tick(S / 2, cy, angOf(kt), 96, kt % 20 === 0 ? 76 : 86, kt % 20 === 0 ? 4 : 2, '#eee')
+      if (kt % 20 === 0) { c.fillStyle = '#eee'; c.font = 'bold 20px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(String(kt), S / 2 + Math.sin(angOf(kt)) * 60, cy - Math.cos(angOf(kt)) * 60) }
+    }
+    c.fillStyle = '#ccc'; c.font = 'bold 16px sans-serif'; c.fillText('KNOTS', S / 2, cy + 40)
+    tick(S / 2, cy, angOf(Math.min(Math.max(d.iasKt, 40), 160)), -14, 90, 5, '#fff')
+    c.fillStyle = '#ddd'; c.beginPath(); c.arc(S / 2, cy, 9, 0, Math.PI * 2); c.fill()
+  }
+  // ---- Attitude (middle) ----
+  {
+    const cy = S / 2 + S
+    face(cy)
+    c.save()
+    c.beginPath(); c.arc(S / 2, cy, S / 2 - 14, 0, Math.PI * 2); c.clip()
+    c.translate(S / 2, cy)
+    c.rotate((-d.rollDeg * Math.PI) / 180)
+    const shift = Math.max(Math.min(d.pitchDeg, 30), -30) * 3.2 // px per degree
+    c.fillStyle = '#2e86de'; c.fillRect(-200, -200 + shift, 400, 200)
+    c.fillStyle = '#8d5a2b'; c.fillRect(-200, shift, 400, 200)
+    c.strokeStyle = '#fff'; c.lineWidth = 3
+    c.beginPath(); c.moveTo(-200, shift); c.lineTo(200, shift); c.stroke()
+    for (const pd of [-20, -10, 10, 20]) {
+      const y = shift - pd * 3.2
+      const len = pd % 20 === 0 ? 44 : 26
+      c.lineWidth = 2
+      c.beginPath(); c.moveTo(-len, y); c.lineTo(len, y); c.stroke()
+    }
+    c.restore()
+    // fixed aircraft symbol + roll pointer
+    c.strokeStyle = '#ffd166'; c.lineWidth = 5
+    c.beginPath(); c.moveTo(S / 2 - 60, cy); c.lineTo(S / 2 - 22, cy); c.lineTo(S / 2 - 22, cy + 14); c.stroke()
+    c.beginPath(); c.moveTo(S / 2 + 60, cy); c.lineTo(S / 2 + 22, cy); c.lineTo(S / 2 + 22, cy + 14); c.stroke()
+    c.fillStyle = '#ffd166'; c.beginPath(); c.arc(S / 2, cy, 5, 0, Math.PI * 2); c.fill()
+    for (const b of [-60, -30, -20, -10, 0, 10, 20, 30, 60]) tick(S / 2, cy, (b * Math.PI) / 180, 104, b % 30 === 0 ? 88 : 96, b === 0 ? 4 : 2, '#eee')
+  }
+  // ---- Altimeter (bottom): 100-ft needle + 1000-ft needle + digital ----
+  {
+    const cy = S / 2 + 2 * S
+    face(cy)
+    for (let i = 0; i < 50; i++) {
+      const a = (i / 50) * Math.PI * 2
+      tick(S / 2, cy, a, 108, i % 5 === 0 ? 90 : 100, i % 5 === 0 ? 4 : 2, '#eee')
+      if (i % 5 === 0) { c.fillStyle = '#eee'; c.font = 'bold 22px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(String(i / 5), S / 2 + Math.sin(a) * 70, cy - Math.cos(a) * 70) }
+    }
+    const alt = d.altitudeFt
+    tick(S / 2, cy, ((alt % 10_000) / 10_000) * Math.PI * 2, -8, 52, 8, '#fff') // 1000s (short)
+    tick(S / 2, cy, ((alt % 1000) / 1000) * Math.PI * 2, -12, 92, 4, '#fff') // 100s (long)
+    c.fillStyle = '#ddd'; c.beginPath(); c.arc(S / 2, cy, 8, 0, Math.PI * 2); c.fill()
+    c.fillStyle = '#000'; c.fillRect(S / 2 - 46, cy + 38, 92, 26)
+    c.fillStyle = '#fff'; c.font = 'bold 20px monospace'; c.textAlign = 'center'; c.textBaseline = 'middle'
+    c.fillText(String(Math.round(alt)).padStart(5, ' '), S / 2, cy + 51)
+  }
+}
+
+/** Transport overhead panel painter: rows of guarded switches, annunciator
+ *  strips, the dark grey plate seen above the glareshield — cosmetic and
+ *  recorded (no overhead systems are modeled). */
+function drawOverhead(c: CanvasRenderingContext2D, airbus: boolean): void {
+  const W = 1024, H = 384
+  c.fillStyle = airbus ? '#4a4d52' : '#3d3f42'
+  c.fillRect(0, 0, W, H)
+  c.strokeStyle = 'rgba(0,0,0,0.35)'; c.lineWidth = 2
+  for (let x = 0; x < W; x += 128) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke() }
+  for (let y = 0; y < H; y += 96) { c.beginPath(); c.moveTo(0, y); c.lineTo(W, y); c.stroke() }
+  for (let r = 0; r < 4; r++) {
+    for (let i = 0; i < 8; i++) {
+      const x = 24 + i * 128, y = 20 + r * 96
+      c.fillStyle = '#2a2c2f'
+      c.beginPath(); c.roundRect(x, y, 80, 56, 6); c.fill()
+      c.fillStyle = (r + i) % 5 === 0 ? '#e8b923' : (r + i) % 7 === 0 ? '#3fc36b' : '#d9dad5'
+      c.beginPath(); c.roundRect(x + 24, y + 8, 32, 40, 4); c.fill()
+      c.fillStyle = '#c9cac6'; c.font = 'bold 11px sans-serif'; c.textAlign = 'center'
+      c.fillText(['FUEL PUMP', 'HYD', 'ANTI ICE', 'BLEED', 'PACK', 'GEN', 'BATT', 'APU'][i]!, x + 40, y + 70)
+    }
+  }
+}
+
 /** Place a mesh using BODY coordinates (x fwd, y right, z down) — same
  *  convention/helper as `aircraft-mesh.ts`'s `placeBody`, duplicated here to
  *  keep the two render modules independent. */
@@ -253,6 +456,12 @@ export interface CockpitMeshes {
   /** N3: yoke slots hold a sidestick (Airbus layout) — the control
    *  animation tilts instead of translating. */
   sidestick?: true
+  /** G1000 layout: LIVE standby cluster (ASI/AI/ALT) canvas. */
+  standby?: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture }
+  /** Transport pedestal thrust levers (cosmetic; animate with throttle). */
+  thrustLevers?: THREE.Mesh[]
+  /** Boeing FO yoke (mechanically linked — mirrors the captain's input). */
+  foYoke?: { column: THREE.Mesh; wheel: THREE.Mesh }
   switches: Record<SwitchId, THREE.Mesh>
   ignitionKey: THREE.Mesh
   starterButton: THREE.Mesh
@@ -319,6 +528,8 @@ export function panelLayoutFor(designator: string, trimIsStabilizer: boolean): P
 export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g1000'): CockpitMeshes {
   const group = new THREE.Group()
   const interactive: THREE.Object3D[] = []
+  const thrustLevers: THREE.Mesh[] = []
+  let foYoke: { column: THREE.Mesh; wheel: THREE.Mesh } | undefined
   let mcp: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } | undefined
   let eicas: { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } | undefined
   const add = (mesh: THREE.Mesh, x: number, y: number, z: number): THREE.Mesh => {
@@ -379,7 +590,19 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     // C172 pilot gets real over-the-nose vision. The old 0.62-tall box
     // topped at 0.86 with 0.28 m of EMPTY bezel above the displays
     // (tallest content ≈ 0.67) and blocked the entire forward view.
-    add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.54, 0.06), PANEL_DARK), 1.02, 0.02, -0.45)
+    add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.54, 0.06), PANEL_DARK), 1.02, 0.02, -0.43)
+    // Painted G1000 panel face just proud of the box (see drawGaPanel).
+    const face = makeCanvasTexture(1536, 704)
+    drawGaPanel(face.ctx)
+    face.texture.needsUpdate = true
+    add(new THREE.Mesh(new THREE.PlaneGeometry(1.13, 0.52), new THREE.MeshBasicMaterial({ map: face.texture, toneMapped: false })), 0.988, 0.02, -0.43)
+    // Padded glareshield lip along the panel top (kept under the 0.75 eye).
+    add(new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.03, 0.2), BEZEL), 0.98, 0.02, -0.715)
+    // Whiskey compass on the windshield center-post position.
+    const compass = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.06, 0.08), BEZEL)
+    add(compass, 1.02, 0.0, -0.98)
+    const card = new THREE.Mesh(new THREE.PlaneGeometry(0.05, 0.03), new THREE.MeshBasicMaterial({ color: 0xe8e8e2 }))
+    add(card, 0.978, 0.0, -0.98)
   }
 
   // PFD (left) and MFD (center) — canvas-textured planes.
@@ -441,11 +664,14 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   // full standby-gauge canvas renderer wasn't in this task's committed
   // scope (Task 2d spec explicitly allows placeholder shapes here).
   // G1000 shell only: the transport panels paint their own standbys.
-  for (let i = 0; i < (layout === 'g1000' ? 3 : 0); i++) {
-    const gauge = new THREE.Mesh(new THREE.CircleGeometry(0.05, 20), GAUGE_FACE)
-    add(gauge, 0.98, -0.5, -0.62 + i * 0.12)
-    const bezelRing = new THREE.Mesh(new THREE.RingGeometry(0.05, 0.058, 20), BEZEL)
-    add(bezelRing, 0.975, -0.5, -0.62 + i * 0.12)
+  // Live standby cluster (G1000): ASI/AI/ALT faces drawn from the same
+  // PfdInput every frame — the old placeholder discs read as dead gauges.
+  let standby: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } | undefined
+  if (layout === 'g1000') {
+    const sb = makeCanvasTexture(256, 768)
+    standby = { ctx: sb.ctx, texture: sb.texture }
+    const sbMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.11, 0.33), new THREE.MeshBasicMaterial({ map: sb.texture, toneMapped: false, transparent: true }))
+    add(sbMesh, 0.975, -0.5, -0.5)
   }
 
   // Switch row, bottom-left of the panel: master battery/alt, avionics,
@@ -656,9 +882,35 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     // (glareshield 0.98 to roof 1.22 over an eye at 0.52) spanned
     // +31°…+40° — the horizon was never visible from either seat.
     framePart(halfW * 2 + 0.2, 0.16, 0.9, 0.75, 0, ga ? -1.13 : -1.5)
-    // A-pillars: angled side posts spanning panel corners to the roof.
-    framePart(0.07, ga ? 0.4 : 0.6, 0.3, 1.0, -halfW, ga ? -0.885 : -1.17, 0.35)
-    framePart(0.07, ga ? 0.4 : 0.6, 0.3, 1.0, halfW, ga ? -0.885 : -1.17, -0.35)
+    // A-pillars: slim raked posts spanning panel corners to the roof (the
+    // old 0.07×0.3 slabs at 20° read as a wall hanging into the view).
+    framePart(0.045, ga ? 0.42 : 0.62, 0.12, 1.0, -halfW, ga ? -0.885 : -1.17, 0.22)
+    framePart(0.045, ga ? 0.42 : 0.62, 0.12, 1.0, halfW, ga ? -0.885 : -1.17, -0.22)
+    // Glazing: raked windshield pane(s) between glareshield top and roof —
+    // the opening used to be a bare hole.
+    const paneH = ga ? 0.36 : 0.56
+    const paneMid = ga ? -0.9 : -1.17
+    if (ga) {
+      const pane = new THREE.Mesh(new THREE.PlaneGeometry(halfW * 2 + 0.05, paneH), GLAZING)
+      placeBody(pane, 1.06, 0, paneMid)
+      pane.rotation.x = -0.45 // raked back at the top
+      group.add(pane)
+    } else {
+      for (const side of [-1, 1]) {
+        const pane = new THREE.Mesh(new THREE.PlaneGeometry(halfW - 0.03, paneH), GLAZING)
+        placeBody(pane, 1.06, side * (halfW / 2 + 0.015), paneMid)
+        pane.rotation.x = -0.4
+        group.add(pane)
+      }
+      // Overhead panel under the roof beam, ahead of the eye.
+      const oh = makeCanvasTexture(1024, 384)
+      drawOverhead(oh.ctx, layout === 'airbusFcu')
+      oh.texture.needsUpdate = true
+      const ohMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.56), new THREE.MeshBasicMaterial({ map: oh.texture, toneMapped: false }))
+      placeBody(ohMesh, 0.72, 0, -1.4)
+      ohMesh.rotation.x = Math.PI / 2 + 0.25 // faces down-aft toward the pilot
+      group.add(ohMesh)
+    }
     // Side walls: sill kept below the eye so side windows read as windows.
     framePart(0.06, 0.7, 1.6, 0.35, -halfW - 0.02, ga ? -0.27 : -0.55)
     framePart(0.06, 0.7, 1.6, 0.35, halfW + 0.02, ga ? -0.27 : -0.55)
@@ -671,6 +923,44 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
       const ped = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.55), FRAME)
       placeBody(ped, 0.62, 0, -0.15)
       group.add(ped)
+      // Twin thrust levers on the pedestal top: pivot at the base, animate
+      // with throttle (updateCockpitControls). 737 also carries the big
+      // black trim wheels on the pedestal flanks.
+      for (const side of [-1, 1]) {
+        const pivot = new THREE.Group()
+        placeBody(pivot, 0.66, side * 0.035, -0.3)
+        const stem = new THREE.Mesh(new THREE.BoxGeometry(0.018, 0.11, 0.018), YOKE_MAT)
+        stem.position.y = 0.055
+        pivot.add(stem)
+        const knob = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.03, 0.045), layout === 'airbusFcu' ? KNOB : BLACK_KNOB)
+        knob.position.y = 0.115
+        pivot.add(knob)
+        group.add(pivot)
+        thrustLevers.push(pivot as unknown as THREE.Mesh)
+      }
+      if (layout === 'boeingNG') {
+        for (const side of [-1, 1]) {
+          const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.025, 24), BLACK_KNOB)
+          wheel.rotation.z = Math.PI / 2
+          placeBody(wheel, 0.62, side * 0.165, -0.25)
+          group.add(wheel)
+        }
+        // FO yoke, mechanically linked to the captain's (mirrors input).
+        const foCol = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.35, 8), YOKE_MAT)
+        add(foCol, 0.7, 0.3, -0.16)
+        const foWheel = buildYokeAssembly()
+        add(foWheel, 0.68, 0.3, -0.26)
+        foYoke = { column: foCol, wheel: foWheel }
+      } else {
+        // FO sidestick on the right console (independent — static).
+        const foConsole = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.22), BEZEL)
+        placeBody(foConsole, 0.68, 0.54, -0.2)
+        group.add(foConsole)
+        const foStick = buildStickGrip()
+        add(foStick, 0.68, 0.54, -0.41)
+        const foStem = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.026, 0.19, 10), YOKE_MAT)
+        add(foStem, 0.68, 0.54, -0.3)
+      }
     }
   }
 
@@ -697,6 +987,9 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     yokeColumn,
     yokeWheel,
     ...(layout === 'airbusFcu' ? { sidestick: true as const } : {}),
+    ...(standby ? { standby } : {}),
+    ...(thrustLevers.length ? { thrustLevers } : {}),
+    ...(foYoke ? { foYoke } : {}),
     nav1TuneUp,
     nav1TuneDown,
     nav1FlipFlop,
@@ -872,6 +1165,10 @@ export function updateCockpitDisplays(meshes: CockpitMeshes, pfdInput: PfdInput,
   meshes.pfdTexture.needsUpdate = true
   drawMfd(meshes.mfdCtx, MFD_CANVAS_W, MFD_CANVAS_H, mfdInput)
   meshes.mfdTexture.needsUpdate = true
+  if (meshes.standby) {
+    drawStandbyCluster(meshes.standby.ctx, pfdInput)
+    meshes.standby.texture.needsUpdate = true
+  }
 }
 
 /** Animate switch colors, knob positions, and the yoke to reflect current
@@ -925,6 +1222,13 @@ export function updateCockpitControls(
   const pitchThrow = p * 0.07
   placeBody(meshes.yokeColumn, 0.7 - pitchThrow, -0.3, -0.16)
   placeBody(meshes.yokeWheel, 0.68 - pitchThrow, -0.3, -0.26)
+  if (meshes.foYoke) {
+    meshes.foYoke.wheel.rotation.z = -r * 1.3
+    placeBody(meshes.foYoke.column, 0.7 - pitchThrow, 0.3, -0.16)
+    placeBody(meshes.foYoke.wheel, 0.68 - pitchThrow, 0.3, -0.26)
+  }
+  // Pedestal thrust levers: idle raked aft, full forward (~50° of travel).
+  if (meshes.thrustLevers) for (const l of meshes.thrustLevers) l.rotation.x = 0.35 - throttle * 0.85
 }
 
 // ============================================================================
