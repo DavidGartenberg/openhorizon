@@ -398,7 +398,16 @@ let parkingBrake = false
 // a hands-off rotation (phugoid-like — needs a staged attitude→airspeed
 // controller, not more gain tuning). Don't default-on an assist that can
 // still fly a hands-off climb into the ground.
-let assistOn = false
+// Stability assist modes (user: "dampen the C172 — it glides to the
+// side"): 'sas' = the VERIFIED lateral subset (ground heading hold, yaw
+// damper, gentle wing leveler on untouched axes) and is the default —
+// the airplane's real hands-off tendencies (rig-vs-power drift, the
+// full-power left roll) are honest physics, but a real pilot's
+// subconscious foot/hand pressure isn't in the loop here. 'full' adds
+// the pitch-attitude hold, which stays opt-in (see the note above).
+// Gating reads the SHAPED axes so a sidestick counts as pilot input —
+// the old keyboard-only gate would have fought a joystick roll.
+let assistMode: 'off' | 'sas' | 'full' = 'sas'
 /** Runway heading captured at the start of the takeoff roll (ground assist
  *  holds it — a pure yaw-rate damper can't null the P-factor/torque bias,
  *  it only slows the turn, so heading still drifts under constant torque). */
@@ -1008,7 +1017,10 @@ function handleDiscreteKeys(): void {
     joyWizardChain = true
     startJoyCapture(['pitch', 'roll', 'yaw', 'throttle', 'throttle2'])
   }
-  if (input.wasPressed('KeyX')) assistOn = !assistOn
+  if (input.wasPressed('KeyX')) {
+    assistMode = assistMode === 'sas' ? 'full' : assistMode === 'full' ? 'off' : 'sas'
+    toast(assistMode === 'sas' ? 'STABILITY ASSIST: SAS (yaw damper + wing leveler)' : assistMode === 'full' ? 'STABILITY ASSIST: FULL (adds pitch hold)' : 'STABILITY ASSIST: OFF')
+  }
   if (input.wasPressed('KeyQ')) engineSound.muted = !engineSound.muted // mute moved M→Q (M = plane menu)
   if (input.wasPressed('KeyO')) saveSnapshot()
   if (input.wasPressed('KeyP')) loadSnapshot()
@@ -1198,7 +1210,7 @@ function pollControls(dt: number): void {
   // Flight assist (X toggles): untouched axes get stability help — wing
   // leveler, pitch-rate damping, auto-coordinated rudder. Pilot-side aid;
   // the flight model itself is untouched.
-  if (assistOn && aircraft.data.onGround && yawKey === 0) {
+  if (assistMode !== 'off' && aircraft.data.onGround && Math.abs(shaped.yaw) < 0.04) {
     // Ground assist: hold the heading captured the moment this condition
     // first arms (a pure yaw-rate damper only slows the P-factor/torque
     // swerve, it can't null a steady disturbance — heading still drifts).
@@ -1218,11 +1230,16 @@ function pollControls(dt: number): void {
   } else {
     groundHeadingLockDeg = null
   }
-  if (assistOn && !aircraft.data.onGround) {
+  if (assistMode !== 'off' && !aircraft.data.onGround) {
     const rollRad = (aircraft.data.rollDeg * Math.PI) / 180
     const betaRad = (aircraft.data.betaDeg * Math.PI) / 180
-    if (rollKey === 0) {
-      c.roll = Math.min(Math.max(-0.9 * rollRad - 0.35 * aircraft.rates.x, -0.5), 0.5)
+    if (Math.abs(shaped.roll) < 0.04) {
+      // SAS: a GENTLE leveler (it must never feel like an autopilot);
+      // FULL keeps the firmer original gains.
+      const kPhi = assistMode === 'sas' ? 0.6 : 0.9
+      const kP = assistMode === 'sas' ? 0.3 : 0.35
+      const cap = assistMode === 'sas' ? 0.35 : 0.5
+      c.roll = Math.min(Math.max(-kPhi * rollRad - kP * aircraft.rates.x, -cap), cap)
     }
     // Pitch: hold the attitude captured the moment the pilot lets go, not
     // just damp rate — a pure rate damper has no target, so releasing the
@@ -1230,7 +1247,7 @@ function pollControls(dt: number): void {
     // (near-level) attitude and settle back onto the runway instead of
     // sustaining the climb. Re-locks fresh each time the pilot takes pitch
     // control back (or after a fresh liftoff — see the on-ground branch).
-    if (pitchKey === 0) {
+    if (assistMode === 'full' && Math.abs(shaped.pitch) < 0.04) {
       if (airbornePitchLockDeg === null) airbornePitchLockDeg = aircraft.data.pitchDeg
       const pitchErrRad = ((aircraft.data.pitchDeg - airbornePitchLockDeg) * Math.PI) / 180
       const pitchCmd = Math.min(Math.max(-1.2 * pitchErrRad - 1.8 * aircraft.rates.y, -0.4), 0.4)
@@ -1245,8 +1262,9 @@ function pollControls(dt: number): void {
     } else {
       airbornePitchLockDeg = null
     }
-    if (yawKey === 0) {
-      c.yaw = Math.min(Math.max(1.6 * betaRad - 0.8 * aircraft.rates.z, -0.6), 0.6)
+    if (Math.abs(shaped.yaw) < 0.04) {
+      const cap = assistMode === 'sas' ? 0.4 : 0.6
+      c.yaw = Math.min(Math.max(1.6 * betaRad - 0.8 * aircraft.rates.z, -cap), cap)
     }
   } else {
     airbornePitchLockDeg = null
@@ -2771,6 +2789,7 @@ function advanceFrame(elapsed: number, now: number): void {
       // of squatting the slot forever.
       safety: safetyLine || (performance.now() < toastUntil ? toastLine : '') || (performance.now() < debriefUntil ? debriefLine : '') || undefined,
       copilot: performance.now() < copilotUntil ? copilotLine : undefined,
+      assist: assistMode === 'off' ? undefined : assistMode === 'sas' ? 'SAS' : 'ASSIST FULL',
       // Slice 6: honest live-traffic status — silent emptiness used to be
       // indistinguishable from a dead feed (which flapped all month).
       tfc: ((): string | undefined => {
@@ -3087,6 +3106,11 @@ Object.assign(window as unknown as Record<string, unknown>, {
       options: atcMenuItems().map((i) => i.label),
       transcript: [...transcript],
     }
+  },
+  /** Stability-assist mode (mirrors X): 'off' | 'sas' | 'full'. */
+  __ohAssist: (m?: 'off' | 'sas' | 'full') => {
+    if (m === 'off' || m === 'sas' || m === 'full') assistMode = m
+    return assistMode
   },
   __ohHold: (on: boolean) => {
     holdWingsLevel = on

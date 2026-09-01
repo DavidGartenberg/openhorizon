@@ -175,6 +175,14 @@ export interface AircraftParams {
    *  touch of left rudder). Omit (0) = unrigged. */
   rigCn?: number
   rigCl?: number
+  /** Fraction of the torque-reaction roll recovered by the airframe
+   *  straightening the slipstream swirl (wing roots/fuselage receive the
+   *  swirl's angular momentum in the OPPOSITE sense to the reaction).
+   *  Order 0.5 for a single with the wing in the slipstream; 0 for jets/
+   *  gliders. Documented estimate — no C172 bench value exists; the model
+   *  applied the FULL engine torque as roll, which forced a cruise-sized
+   *  aileron rig that rolled the airplane 1°/s in an idle glide. */
+  swirlRollRecovery?: number
 
   // gear: three legs; tricycle uses `nose`, taildragger uses `tail`
   gear: {

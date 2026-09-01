@@ -2769,3 +2769,32 @@ browser-verified end-to-end. Verified this session via scripted flights
   WITHOUT edge processing + an honest GAMEPAD DISCONNECTED toast —
   latched base switches read pressed at rest and fired phantom presses
   the frame a device returned. Gate: tsc, 1176 tests, 547 validate.
+
+- **C172 "glides to the side" — slipstream physics + default SAS
+  (2026-08-28)** — Headless survey found the cause: the cruise-sized
+  rigging (offset fin + aileron rig) had nothing to cancel once the prop
+  moments fell away — idle glide rolled to 40° bank / 180° heading in
+  40 s; full-power Vy rolled 24° left in 5 s. Physics fixes (aero.ts,
+  params.ts, c172s.ts, derive.ts + the roster rig audit): (1) NEW
+  swirlRollRecovery — the wing/fuselage straightening the slipstream
+  swirl recovers part of the torque-reaction roll (documented estimate:
+  0.5 singles, 0.3 twins, 0 jets/gliders); the model applied the FULL
+  engine torque, which forced an over-sized aileron rig; (2) the offset
+  fin's yaw now scales with TAIL dynamic pressure (propwash included) so
+  it weakens at idle with the slipstream; (3) rigging re-derived for
+  both (C172 constants, derive.ts, and roster.ts selfAuditRigging — the
+  audit overrides derive and was missed first, which regressed 40 roster
+  types until synced). Result: 30%-power approach now holds heading
+  within 2° over 40 s (was 34°), idle glide ≤35° (was 40°), cruise ±5°.
+  Honest residuals: an idle glide still wants a touch of left rudder and
+  a full-power Vy climb rolls left — real airplane traits (magnitude at
+  Vy is an OPEN ITEM: the P-factor gain is cruise-calibrated and reads
+  ~2× strong there). The user-facing "dampen": stability assist now
+  defaults to 'sas' (ground heading hold + yaw damper + GENTLE wing
+  leveler on untouched axes — the verified subset), 'full' (adds the
+  unverified pitch hold) is opt-in; X cycles sas→full→off with a toast,
+  HUD shows the mode, __ohAssist() hook. Gating BUG fixed en route: the
+  assist read keyboard axes only, so with it enabled it would have fought
+  a sidestick roll — it now gates on the shaped axes (joystick included).
+  Regression: tests/c172-handsoff.test.ts pins the physics contract;
+  fleet-lateral 9/9 back green. Gate: tsc, 1180 tests, 547 validate.

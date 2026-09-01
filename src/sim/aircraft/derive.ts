@@ -233,6 +233,9 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
     : multiEngineProp
       ? { pFactorK: PF_K_SINGLE * 0.5, swirlK: SWIRL_K_SINGLE * 0.5 }
       : { pFactorK: PF_K_SINGLE, swirlK: SWIRL_K_SINGLE }
+  // Slipstream-swirl roll recovery (params.ts): singles have the wing in
+  // the slipstream (0.5); twins only nacelle-adjacent wing (0.3).
+  const swirlRollRecovery = glider || jet ? 0 : multiEngineProp ? 0.3 : 0.5
   const rigging = (() => {
     if (glider || jet) return {}
     const clCruise = 0.35
@@ -247,9 +250,15 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
     const omega = ((redline * Math.PI) / 30) * (governed ? 1 : 0.85)
     const torqueNm = (dragN * vCruise) / (0.78 * omega)
     const yawNm = propEffectsYawNm(propGains, dragN, torqueNm, vCruise, alphaCruise, RHO_3000FT, propD)
+    // Same physics as aero.ts: the fin offset acts in tail q (propwash
+    // included), the aileron rig cancels the NET torque roll.
+    const qCruise = qS / spec.wingAreaM2
+    const diskA = (Math.PI * propD * propD) / 4
+    // aero.ts: dqProp = T / (2·diskArea), tailQ = clamp((q + 0.7·dqProp)/q, 1, 2.5)
+    const tailQ = Math.min(Math.max((qCruise + 0.7 * (dragN / (2 * diskA))) / qCruise, 1), 2.5)
     return {
-      rigCn: -yawNm / (qS * spec.spanM),
-      rigCl: torqueNm / (qS * spec.spanM),
+      rigCn: -yawNm / (qS * spec.spanM) / tailQ,
+      rigCl: (torqueNm * (1 - swirlRollRecovery)) / (qS * spec.spanM),
     }
   })()
 
@@ -303,6 +312,7 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
     carburetor: false,
     propwashTailFactor: glider || jet ? 0 : multiEngineProp ? 0.35 : 0.7,
     ...propGains,
+    swirlRollRecovery,
     ...rigging,
     ...(jet && pp.kind === 'jet'
       ? {

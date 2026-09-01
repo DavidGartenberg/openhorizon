@@ -135,8 +135,15 @@ export const C172S: AircraftParams = {
   // audit point where q·S is 14% smaller — nulling mid-envelope leaves a
   // slight RIGHT tendency at exactly 110/MTOW and a slight LEFT below,
   // like the real airplane's ground-adjustable tab.
-  rigCn: (236.8 / 307_678) * 1.08,
-  rigCl: (317.7 / 307_678) * 1.08,
+  // Re-derived with the slipstream physics (user: "it glides to the
+  // side"): the fin offset now scales with tail q in aero.ts (cruise tail
+  // factor ≈1.11 at the audit point, so the coefficient divides by it to
+  // keep the cruise null), and the aileron rig cancels only the NET
+  // torque roll after 50% swirl recovery — the old full-torque rig rolled
+  // the airplane ~1°/s right in an idle glide (40° bank in 40 s hands-off).
+  swirlRollRecovery: 0.5,
+  rigCn: ((236.8 / 307_678) * 1.08) / 1.11,
+  rigCl: ((317.7 * 0.5) / 307_678) * 1.08,
 
   // ---- gear (positions rel. CG, body frame x fwd / y right / z down) ----
   gear: {

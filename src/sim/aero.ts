@@ -163,7 +163,10 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
   // were re-tuned against exactly that value.
   // Rigging compensation (offset fin / aileron rigging — see params.ts):
   // constant coefficients nulling the prop moments at the type's cruise.
-  cn += P.rigCn ?? 0
+  // The offset fin sits IN the slipstream: its yaw contribution scales
+  // with tail dynamic pressure (so it weakens at idle with the propwash),
+  // the aileron rig sits outboard in freestream and stays constant.
+  cn += (P.rigCn ?? 0) * tailQFactor
   croll += P.rigCl ?? 0
 
   // ---- wind → body axes ----
@@ -189,7 +192,7 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
     : 0
   v3set(
     out.moment,
-    qS * P.spanM * croll - inp.propTorqueNm, // torque reaction: left roll
+    qS * P.spanM * croll - inp.propTorqueNm * (1 - (P.swirlRollRecovery ?? 0)), // torque reaction (net of swirl recovery): left roll
     qS * P.chordM * cm,
     qS * P.spanM * cn + propYawNm,
   )

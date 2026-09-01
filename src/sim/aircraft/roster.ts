@@ -50,10 +50,17 @@ function selfAuditRigging(p: AircraftParams, cruiseTasKt?: number, cruiseAltFt?:
       { pFactorK: p.pFactorK, swirlK: p.swirlK },
       probe.prop.thrustN, probe.prop.torqueNm, pt.tasMs, t.alphaRad, rho, p.propDiameterM,
     )
+    // Same physics as aero.ts (slipstream fixes): the offset fin acts in
+    // TAIL q (freestream + propwash, dqProp = T/(2·disk)), so the
+    // coefficient divides by that factor to null at the audit point; the
+    // aileron rig cancels only the NET torque roll after swirl recovery.
+    const qbar = 0.5 * rho * pt.tasMs * pt.tasMs
+    const diskA = (Math.PI * p.propDiameterM * p.propDiameterM) / 4
+    const tailQ = Math.min(Math.max((qbar + p.propwashTailFactor * (Math.max(probe.prop.thrustN, 0) / (2 * diskA))) / qbar, 1), 2.5)
     return {
       ...p,
-      rigCn: -yawNm / (qS * p.spanM),
-      rigCl: probe.prop.torqueNm / (qS * p.spanM),
+      rigCn: -yawNm / (qS * p.spanM) / tailQ,
+      rigCl: (probe.prop.torqueNm * (1 - (p.swirlRollRecovery ?? 0))) / (qS * p.spanM),
     }
   } catch {
     return p
