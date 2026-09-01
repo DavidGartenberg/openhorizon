@@ -58,6 +58,14 @@ node server/index.mjs
 
 This project is built under a strict rule: never fake an instrument. If something can't be modeled accurately, it's either left honestly unimplemented (and marked INOP in the UI) or the deviation is written down in `PROGRESS.md` — not silently smoothed over. See `docs/FLIGHT-SIM-MASTER-PROMPT.md` for the full contract this codebase is held to.
 
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and note that this project follows a [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## Security
+
+Found a security issue? Please don't open a public issue — see [SECURITY.md](SECURITY.md) for how to report it privately.
+
 ## License
 
-No license file is currently included — all rights reserved by default. Contact the repository owner before reusing this code.
+This project is licensed under the [MIT License](LICENSE).
