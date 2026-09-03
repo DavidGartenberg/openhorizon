@@ -12,7 +12,7 @@
     "validate": "vitest run tests/validate --passWithNoTests"
   },
   "dependencies": {
-    "express": "^4.19.0",
+    "express": "^5.2.1",
     "three": "^0.180.0"
   },
   "devDependencies": {
