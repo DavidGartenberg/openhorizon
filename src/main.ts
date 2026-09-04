@@ -238,7 +238,7 @@ const cockpitCam = new CockpitCamera(camera)
 cockpitCam.setEye(panelLayoutFor(fleetKey, FLEET_ACTIVE.params.trimIsStabilizer ?? false) === 'g1000' ? 'ga' : 'transport')
 let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' = 'chase'
 const DEFAULT_NEAR = camera.near // 0.5 m (scene.ts) — correct for exterior views
-const COCKPIT_NEAR = 0.02 // cockpit controls sit centimeters from the eyepoint
+const COCKPIT_NEAR = 0.08 // nearest cockpit geometry (yoke hub) is ~0.2 m from the eye; 0.02 wrecked far-field depth precision (see scene.ts)
 
 // ---- systems (Phase 3 §8): electrical, fuel, pitot-static, engine-start,
 // engine temps. None of this touches aero/gear/6-DOF math — it only feeds

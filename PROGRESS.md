@@ -2843,3 +2843,24 @@ browser-verified end-to-end. Verified this session via scripted flights
   tests. NOTE: while inspecting the pane's seed tab I teleported the
   user's live B748 to KHAF final by mistake (shared tab) — verification
   moved to a separate-origin tab afterwards.
+
+- **Full-screen flashing on final — reversed-Z depth (2026-09-04)** (user:
+  "when im on final the entire screen is flashing and blinking"): repro'd
+  on a C172 KHAF 30 final in COCKPIT view — giant flat wedges of
+  sky/ocean color changing every frame across the whole windshield.
+  Cause: depth-buffer exhaustion, not an overlay — cockpit mode runs a
+  0.02 m near plane against the 2,000 km far plane (ratio 1e-8); at 3 km
+  the 24-bit depth resolution was ~27 m, so the y=0 ocean plane and the
+  near-sea-level coastal terrain on the KHAF approach z-fought over huge
+  screen areas. It presents "on final" because that's cockpit view, low,
+  over the coast — and cockpit view only became flyable in the Slice-3
+  eyepoint fix, which is why the complaint is new. Fix: (1) renderer
+  reversedDepthBuffer: true (three r180, EXT_clip_control — verified
+  present in this browser) → near-uniform depth precision at every
+  distance; (2) COCKPIT_NEAR 0.02 → 0.08 (nearest cockpit geometry is
+  ~0.2 m from the eye) as the 4× fallback where the extension is missing.
+  Verified: reversed-Z boot clean (no console errors), final flown
+  headless without artifacts flag-able from state; the pane was hidden
+  for the after-screenshot — the honest visual confirm is the user's own
+  next final (dev server picks the change up on reload). Gate: tsc, 1181
+  tests, 547 validate, build.

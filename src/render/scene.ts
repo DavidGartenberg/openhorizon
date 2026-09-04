@@ -7,7 +7,16 @@ export interface SceneContext {
 }
 
 export function createScene(container: HTMLElement): SceneContext {
-  const renderer = new THREE.WebGLRenderer({ antialias: true })
+  // reversedDepthBuffer (user: "the entire screen is flashing on final"):
+  // the scene spans a 0.02 m cockpit near plane to a 2,000 km far plane —
+  // a ratio no 24-bit depth buffer survives. At 3 km the depth resolution
+  // was ~27 m, so the y=0 ocean and near-sea-level coastal terrain on the
+  // KHAF final z-fought as giant flickering wedges across the whole
+  // cockpit view. Reversed-Z (EXT_clip_control, all modern browsers)
+  // makes precision near-uniform at every distance; where the extension
+  // is missing three silently falls back, and the raised COCKPIT_NEAR in
+  // main.ts still buys 4x the old precision.
+  const renderer = new THREE.WebGLRenderer({ antialias: true, reversedDepthBuffer: true })
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
   renderer.setSize(window.innerWidth, window.innerHeight)
   renderer.shadowMap.enabled = true
