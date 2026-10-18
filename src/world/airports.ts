@@ -1,3 +1,4 @@
+import { pavementMaterial } from '../render/surface-materials'
 import * as THREE from 'three'
 import { FT } from '../sim/atmosphere'
 import { distanceM, bearingDeg, flattenForRunway, type LatLon } from '../math/geo'
@@ -6,7 +7,8 @@ import { buildRunwayMarkings, buildDistanceSigns, buildTaxiwayComplex, dimPaintF
 import { airportBeacon, rabbitOn } from '../sim/lights'
 import { lightGlowTexture } from '../render/light-glow'
 import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
-import { enhanceAirportWithOsm } from './osm-layout'
+import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
+import { primaryRunway, planAirportFacilities, buildAirportFacilities, updateAirportServices, disposeAirportObject, mappedApronPlan, footprintObstacle, type SurfaceObstacle, type GroundPoint } from './airport-scenery'
 
 export interface RunwayData {
   li: string
@@ -33,7 +35,7 @@ export interface AirportData {
   r: RunwayData[]
 }
 
-const ASPHALT = new THREE.MeshStandardMaterial({ color: 0x35383c, roughness: 0.95, envMapIntensity: 0.3 }) // damp IBL: pavement was going sky-blue
+const ASPHALT = pavementMaterial(0x484b4d, 'xy', 'runway')
 const TURF = new THREE.MeshStandardMaterial({ color: 0x3c5233, roughness: 1, envMapIntensity: 0.25 })
 const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8d8d0 })
 const EDGE_LIGHT = new THREE.MeshBasicMaterial({ color: 0xffffff })
@@ -46,6 +48,8 @@ const PAPI_MAT = new THREE.PointsMaterial({
   map: lightGlowTexture(), size: 5, sizeAttenuation: false, vertexColors: true,
   transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
 })
+
+PAPI_MAT.userData.airportShared = true
 
 /** 13c: one additive Points cloud per airport (edge white, threshold
  *  green / end red, floodlit windsock) faded in by night, plus the
@@ -166,19 +170,8 @@ export class Airports {
     const wanted = new Set(nearby.map((a) => a.i))
     for (const [icao, group] of this.rendered) {
       if (!wanted.has(icao)) {
-        this.scene.remove(group)
-        group.traverse((o) => {
-          // 9C: THREE.Points children (night lights, beacon, rabbit,
-          // PAPI) leaked geometry + their per-airport materials on every
-          // 60 km eviction cycle. Shared Mesh materials stay (module
-          // constants — three re-initializes a disposed material, churn).
-          if (o instanceof THREE.Mesh || o instanceof THREE.Points) o.geometry.dispose()
-          if (o instanceof THREE.Points) {
-            const m = o.material
-            if (Array.isArray(m)) m.forEach((x) => x.dispose())
-            else m.dispose()
-          }
-        })
+        disposeAirportObject(group)
+        osmIdentSegs.delete(icao)
         this.rendered.delete(icao)
       }
     }
@@ -200,6 +193,8 @@ export class Airports {
     group.userData.latLon = { lat: ap.la, lon: ap.lo }
     // 13c night-light accumulator: [x,y,z] + [r,g,b] per point.
     const nPos: number[] = []
+    const proceduralTaxiLightIndices: number[] = []
+    group.userData.proceduralTaxiLightIndices = proceduralTaxiLightIndices
     const nCol: number[] = []
     const addLight = (x: number, y: number, z: number, r: number, g: number, b: number): void => {
       nPos.push(x, y, z)
@@ -209,6 +204,7 @@ export class Airports {
     const papis: PapiArray[] = []
     const rabbitPos: number[] = []
     const rabbitStations: number[] = []
+    const primary = primaryRunway(ap)
     for (const r of ap.r) {
       const lenM = r.l * FT
       const widM = Math.max(r.w * FT, 8)
@@ -229,6 +225,16 @@ export class Airports {
       for (let v = 0; v < pos.count; v++) {
         const t = pos.getY(v) / lenM // ±0.5 along length
         pos.setZ(v, elevAt(t) - elevM)
+      }
+      // Distances to the two threshold ends interpolate linearly, so the
+      // shared pavement shader can align rubber wear without per-strip uniforms.
+      if (r.s === 0) {
+        const ends = new Float32Array(pos.count * 2)
+        for (let v = 0; v < pos.count; v++) {
+          ends[v * 2] = pos.getY(v) + lenM / 2
+          ends[v * 2 + 1] = lenM / 2 - pos.getY(v)
+        }
+        stripGeo.setAttribute('runwayEnds', new THREE.BufferAttribute(ends, 2))
       }
       stripGeo.computeVertexNormals()
       const strip = new THREE.Mesh(stripGeo, r.s === 0 ? ASPHALT : TURF)
@@ -267,8 +273,7 @@ export class Airports {
         const detail = new THREE.Group()
         detail.add(buildRunwayMarkings(rl))
         detail.add(buildDistanceSigns(rl))
-        const isLongest = ap.r.every((o) => o.l <= r.l)
-        if (isLongest && lenM >= 1100) {
+        if (r === primary && lenM >= 1100) {
           // 16c: collect taxiway blue-edge lights (detail-local frame)
           // and transform them into the airport group's frame.
           const blues: THREE.Vector3[] = []
@@ -277,6 +282,7 @@ export class Airports {
           detail.add(proc)
           const yAxis = new THREE.Vector3(0, 1, 0)
           for (const v of blues) {
+            proceduralTaxiLightIndices.push(nPos.length / 3)
             v.applyAxisAngle(yAxis, -hdg)
             addLight(cx + v.x, elevM + 0.02 + v.y, -cy + v.z, 0.2, 0.35, 1)
           }
@@ -456,6 +462,30 @@ export class Airports {
     }
     group.userData.night = night
     group.userData.papis = papis
+    const rebuildFacilities = (obstacles: SurfaceObstacle[] = [], aprons: GroundPoint[][] = [], realTerminals = false, mappedElevation?: number): void => {
+      if (group.userData.airportDisposed) return
+      for (const child of [...group.children]) {
+        if (child.name === 'airportFacilities' || child.name === 'mappedAirportServices') disposeAirportObject(child)
+      }
+      const mapped = mappedApronPlan(ap, aprons, obstacles, mappedElevation ?? ap.e * FT)
+      const fallback = planAirportFacilities(ap, [...obstacles, ...aprons.map(footprintObstacle)])
+      if (fallback && (!realTerminals || !mapped)) {
+        const facilities = buildAirportFacilities(fallback, !realTerminals)
+        if (mapped) {
+          const oldFleet = facilities.getObjectByName('airportServices')
+          if (oldFleet) disposeAirportObject(oldFleet)
+        }
+        group.add(facilities)
+      }
+      if (mapped) {
+        const wrapper = new THREE.Group()
+        wrapper.name = 'mappedAirportServices'
+        wrapper.add(buildAirportFacilities(mapped, false, false))
+        group.add(wrapper)
+      }
+    }
+    group.userData.rebuildFacilities = rebuildFacilities
+    rebuildFacilities()
     this.scene.add(group)
     return group
   }
@@ -554,6 +584,16 @@ export class Airports {
           col.setXYZ(i, on ? 1 : 0, on ? 1 : 0, on ? 0.95 : 0)
         }
         col.needsUpdate = true
+      }
+    }
+  }
+
+  /** Sim-time-driven traffic is bounded and only updated within 12 km. */
+  updateServices(tS: number, cameraX: number, cameraZ: number): void {
+    for (const group of this.rendered.values()) {
+      if (!group.visible || Math.hypot(group.position.x - cameraX, group.position.z - cameraZ) > 12_000) continue
+      for (const child of group.children) {
+        if (child.name === 'airportFacilities' || child.name === 'mappedAirportServices') updateAirportServices(child, tS)
       }
     }
   }

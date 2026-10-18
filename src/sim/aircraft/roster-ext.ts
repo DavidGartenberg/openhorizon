@@ -152,7 +152,7 @@ const WAVE2: RosterEntry[] = [
       flapDetentsDeg: [0], flapMaxDClMax: 0,
       stallCleanKcas: 55,
       vSpeeds: { vyKcas: 96, approachKcas: 80, vneKcas: 220, glideKcas: 90 },
-      tuning: { cd0: 0.036 }, // fixed gear + struts + flat plates everywhere
+      tuning: { cd0: 0.036, invertedCapable: true }, // fixed gear + struts + flat plates everywhere; Extra = inverted fuel/oil system
       propThrustScale: 1.18, // MT climb prop
     },
     opts: { cd0Class: 'cleanPistonSingle' },
@@ -573,7 +573,19 @@ const WAVE3: RosterEntry[] = [
   // Antiques & oddballs
   variant(WAVE2.find((e) => e.spec.designator === 'DHC2')!, { designator: 'AN2', label: 'Antonov An-2', fuelKg: 650, wingAreaM2: 71.5, spanM: 18.18, lengthM: 12.4, emptyKg: 3300, mtowKg: 5440, powerplant: { kind: 'piston', ratedPowerW: 745_700, count: 1, propDiameterM: 3.6, redlineRpm: 2200, governed: true }, stallCleanKcas: 49, tuning: { cd0: 0.058 } }, { cruiseTasKt: 100, cruiseAltFt: 5000 }),
   // Gliders
-  variant(as21, { designator: 'DG80', label: 'DG-800', wingAreaM2: 11.8, spanM: 18.0, lengthM: 7.0, emptyKg: 305, mtowKg: 525, stallCleanKcas: 37, vSpeeds: { vyKcas: 51, approachKcas: 51, vneKcas: 146, glideKcas: 54 } }, { glideRatio: 48 }),
+  variant(as21, { designator: 'DG80', label: 'DG-800S (18 m)', wingAreaM2: 11.8, spanM: 18.0, lengthM: 7.0, emptyKg: 305, mtowKg: 525, stallCleanKcas: 84 / 1.852,
+    // FM 18 m/525 kg retracted-airbrake stalls; IAS≈CAS is approximate.
+    flapDetentsDeg: [-9,-5,0,5,10,13,Math.asin(38/122)*180/Math.PI], flapMaxDClMax: 0.289948651,
+    tuning: {
+      flapDefaultIndex: 2, flapLabels: ['-9°','-5°','0°','+5°','+10°','+13°','L'],
+      // MM travel measured at zero flap; constant increments elsewhere approximate.
+      flaperons: { upRad: Math.asin(42/122), downRad: Math.asin(21/122), airbrakeFloorMinDeg: -9, airbrakeFloorMaxDeg: 5 },
+      flapDClMax: [-0.116241553,-0.064578640,0,0.095654945,0.191309890,0.248702857,0.289948651],
+      // Estimated whole-wing increments, NOT identified by stall data.
+      flapDCl0: [-0.09,-0.05,0,0.05,0.10,0.13,0.18],
+      flapDCd: [0.0008,0.0003,0,0.0004,0.0016,0.003,0.006],
+      flapDCm: [0.018,0.010,0,-0.010,-0.020,-0.026,-0.036],
+    }, vSpeeds: { vyKcas: 51, approachKcas: 51, vneKcas: 146, glideKcas: 54 } }, { glideRatio: 48 }),
   variant(as21, { designator: 'LS8', label: 'Rolladen-Schneider LS8', wingAreaM2: 10.5, spanM: 15.0, lengthM: 6.66, emptyKg: 250, mtowKg: 525, stallCleanKcas: 36, vSpeeds: { vyKcas: 49, approachKcas: 49, vneKcas: 146, glideKcas: 51 } }, { glideRatio: 43 }),
   variant(as21, { designator: 'DISC', label: 'Schempp-Hirth Discus', wingAreaM2: 10.58, spanM: 15.0, lengthM: 6.58, emptyKg: 233, mtowKg: 525, stallCleanKcas: 35, vSpeeds: { vyKcas: 49, approachKcas: 49, vneKcas: 135, glideKcas: 51 } }, { glideRatio: 42 }),
 ]

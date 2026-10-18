@@ -17,12 +17,13 @@ export function createScene(container: HTMLElement): SceneContext {
   // is missing three silently falls back, and the raised COCKPIT_NEAR in
   // main.ts still buys 4x the old precision.
   const renderer = new THREE.WebGLRenderer({ antialias: true, reversedDepthBuffer: true })
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
   renderer.setSize(window.innerWidth, window.innerHeight)
   renderer.shadowMap.enabled = true
-renderer.shadowMap.type = THREE.PCFSoftShadowMap
-renderer.toneMapping = THREE.ACESFilmicToneMapping
-  renderer.toneMappingExposure = 0.62 // msfs-look: punchier mids (was 0.55)
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap
+  renderer.toneMapping = THREE.ACESFilmicToneMapping
+  renderer.outputColorSpace = THREE.SRGBColorSpace
+  renderer.toneMappingExposure = 0.8
   container.appendChild(renderer.domElement)
 
   const scene = new THREE.Scene()

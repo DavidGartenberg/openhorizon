@@ -169,7 +169,7 @@ export function flapInterp(
   detents: readonly number[] = C172S.flapDetentsDeg,
 ): number {
   if (detents.length < 2) return table[0] ?? 0 // flapless aircraft
-  const f = Math.min(Math.max(flapsDeg, 0), detents[detents.length - 1]!)
+  const f = Math.min(Math.max(Number.isFinite(flapsDeg) ? flapsDeg : 0, detents[0]!), detents[detents.length - 1]!)
   for (let i = 1; i < detents.length; i++) {
     if (f <= detents[i]!) {
       const t = (f - detents[i - 1]!) / (detents[i]! - detents[i - 1]!)

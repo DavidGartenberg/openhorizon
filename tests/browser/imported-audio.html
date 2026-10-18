@@ -1,0 +1,58 @@
+<!doctype html><html lang="en"><meta charset="UTF-8"><title>Imported X-Plane audio inspection</title>
+<style>body{background:#10202b;color:#dfeef7;font:16px system-ui;max-width:700px;margin:40px auto;padding:20px}button{padding:12px;font:inherit}pre{white-space:pre-wrap}</style>
+<h1>Original 737 engine sample</h1><p>Local X-Plane 737 bank · sample “freq N1 75 b” · 48 kHz stereo · 9.091 seconds. Sample conversion check; flight mixing is not yet integrated.</p>
+<button id="play">Play imported engine sample</button><button id="stop">Stop</button><button id="atc">Play imported ATC “zero”</button><pre id="status" aria-live="polite">Ready</pre>
+<p>Offline original FMOD engine-event render: N1 75%, N2 85%, exterior. This checks the authored event mix, not live flight integration.</p>
+<button id="event">Play original engine event mix</button>
+<p>Additional original event renders. Fixed operating conditions; live control changes are not yet connected.</p>
+<label>Aircraft event <select id="family-event" aria-label="Aircraft event"><option value="as21-clean">ASK 21 · 60 kt · airbrakes closed</option><option value="as21-airbrakes">ASK 21 · 60 kt · airbrakes fully extended</option><option value="c172-cruise">C172 · 2400 RPM · exterior</option></select></label>
+<button id="play-family">Play selected aircraft event</button>
+<script type="module">
+const audio=new Audio('/server/cache/speech/xplane-probe/b738-n1-75.wav');audio.volume=.5;
+const status=document.querySelector('#status');const log=text=>status.textContent+='\n'+text;
+audio.onloadedmetadata=()=>log(`Decoded duration ${audio.duration.toFixed(3)} seconds`);
+audio.onplaying=()=>log('Playback started');audio.onended=()=>log('Playback ended');audio.onerror=()=>log(`Media error: ${audio.error?.message}`);
+document.querySelector('#play').onclick=()=>{audio.currentTime=0;audio.play().catch(e=>log(e.message))};
+document.querySelector('#stop').onclick=()=>{audio.pause();audio.currentTime=0;log('Stopped')};const atc=new Audio('/server/cache/speech/xplane-probe/atc-matthew-zero.ogg');atc.volume=.5;
+atc.onloadedmetadata=()=>log(`ATC decoded duration ${atc.duration.toFixed(3)} seconds`);
+atc.onplaying=()=>log('ATC playback started');atc.onended=()=>log('ATC playback ended');
+atc.onerror=()=>log(`ATC media error: ${atc.error?.message}`);
+document.querySelector('#atc').onclick=async()=>{
+ try {
+  const ctx=new AudioContext();
+  try {
+   const response=await fetch(atc.src);if(!response.ok)throw new Error(`HTTP ${response.status}`);
+   const buffer=await ctx.decodeAudioData(await response.arrayBuffer());
+   let peak=0,sum=0;const samples=buffer.getChannelData(0);
+   for(const value of samples){peak=Math.max(peak,Math.abs(value));sum+=value*value;}
+   log(`ATC WebAudio decoded: ${buffer.numberOfChannels} channels, ${buffer.sampleRate} Hz, ${buffer.duration.toFixed(3)} s, peak ${peak.toFixed(4)}, RMS ${Math.sqrt(sum/samples.length).toFixed(4)}`);
+  } finally {await ctx.close();}
+  audio.pause();atc.currentTime=0;await atc.play();
+ } catch(error){log(`ATC decode/play failed: ${error.message}`);}
+};
+document.querySelector('#stop').addEventListener('click',()=>{atc.pause();atc.currentTime=0;});
+const eventAudio=new Audio('/server/cache/speech/xplane-probe/b738-authored-event.wav');eventAudio.volume=.35;
+eventAudio.onloadedmetadata=()=>log(`Original event decoded duration ${eventAudio.duration.toFixed(3)} seconds`);
+eventAudio.onplaying=()=>log('Original event playback started');eventAudio.onended=()=>log('Original event playback ended');
+eventAudio.onerror=()=>log(`Original event media error: ${eventAudio.error?.message}`);
+document.querySelector('#event').onclick=()=>{audio.pause();atc.pause();eventAudio.currentTime=0;eventAudio.play().catch(e=>log(e.message));};
+document.querySelector('#stop').addEventListener('click',()=>{eventAudio.pause();eventAudio.currentTime=0;});
+document.querySelector('#play').addEventListener('click',()=>{eventAudio.pause();atc.pause();});
+document.querySelector('#atc').addEventListener('click',()=>eventAudio.pause());
+window.addEventListener('pagehide',()=>{audio.pause();atc.pause();eventAudio.pause();});
+const familyAudio=new Audio();familyAudio.volume=.35;
+let familyName='';
+familyAudio.onloadedmetadata=()=>log(`${familyName}: decoded ${familyAudio.duration.toFixed(3)} seconds`);
+familyAudio.onplaying=()=>log(`${familyName}: playback started`);
+familyAudio.onended=()=>log(`${familyName}: playback ended`);
+familyAudio.onerror=()=>log(`${familyName}: media error ${familyAudio.error?.message}`);
+document.querySelector('#play-family').onclick=()=>{
+ const choice=document.querySelector('#family-event');familyName=choice.selectedOptions[0].textContent;
+ familyAudio.pause();familyAudio.src=`/server/cache/speech/xplane-probe/${choice.value}-authored-event.wav`;
+ familyAudio.play().catch(error=>log(`${familyName}: ${error.message}`));
+};
+const allMedia=[audio,atc,eventAudio,familyAudio];
+for(const active of allMedia)active.addEventListener('play',()=>{for(const other of allMedia)if(other!==active)other.pause();});
+document.querySelector('#stop').addEventListener('click',()=>{familyAudio.pause();if(familyAudio.src)familyAudio.currentTime=0;});
+window.addEventListener('pagehide',()=>familyAudio.pause());
+</script></html>

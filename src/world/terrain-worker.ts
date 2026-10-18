@@ -9,6 +9,7 @@ import { classifyNlcdPixel } from './nlcd-palette'
 
 export interface TileRequest {
   key: string
+  requestId: number
   url: string
   /** NLCD land-cover tile for biome coloring (§6.2); fetch failure or
    *  off-legend pixels fall back to the elevation/slope ramp. */
@@ -25,6 +26,7 @@ export interface TileRequest {
 
 export interface TileResponse {
   key: string
+  requestId: number
   positions: Float32Array
   normals: Float32Array
   colors: Float32Array
@@ -235,6 +237,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
     const indices = new Uint32Array(quads)
     const resp: TileResponse = {
       key: req.key,
+      requestId: req.requestId,
       positions,
       normals,
       colors,
@@ -254,6 +257,6 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
       heights.buffer,
     ])
   } catch (err) {
-    ;(self as unknown as Worker).postMessage({ key: req.key, error: String(err) })
+    ;(self as unknown as Worker).postMessage({ key: req.key, requestId: req.requestId, error: String(err) })
   }
 }

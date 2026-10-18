@@ -1,0 +1,22 @@
+{
+  "FIFTY": "/audio/safety/fifty.wav",
+  "FORTY": "/audio/safety/forty.wav",
+  "THIRTY": "/audio/safety/thirty.wav",
+  "TWENTY": "/audio/safety/twenty.wav",
+  "TEN": "/audio/safety/ten.wav",
+  "FIVE HUNDRED": "/audio/safety/five-hundred.wav",
+  "PULL UP": "/audio/safety/pull-up.wav",
+  "SINK RATE": "/audio/safety/sink-rate.wav",
+  "TERRAIN AHEAD, PULL UP": "/audio/safety/terrain-ahead-pull-up.wav",
+  "TERRAIN AHEAD": "/audio/safety/terrain-ahead.wav",
+  "DON'T SINK": "/audio/safety/don-t-sink.wav",
+  "TOO LOW, FLAPS": "/audio/safety/too-low-flaps.wav",
+  "TOO LOW, GEAR": "/audio/safety/too-low-gear.wav",
+  "GLIDESLOPE": "/audio/safety/glideslope.wav",
+  "BANK ANGLE": "/audio/safety/bank-angle.wav",
+  "LEVEL OFF, LEVEL OFF": "/audio/safety/level-off-level-off.wav",
+  "CLIMB, CLIMB": "/audio/safety/climb-climb.wav",
+  "DESCEND, DESCEND": "/audio/safety/descend-descend.wav",
+  "TRAFFIC, TRAFFIC": "/audio/safety/traffic-traffic.wav",
+  "CLEAR OF CONFLICT": "/audio/safety/clear-of-conflict.wav"
+}

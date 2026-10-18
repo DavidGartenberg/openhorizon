@@ -1,3 +1,4 @@
+import { mixFlaperons } from './flaperons'
 /**
  * Trim solver (§5.5): given TAS, altitude, and either flight-path angle γ
  * (solve for throttle) or throttle (solve for γ), find α, δe, and the third
@@ -36,6 +37,8 @@ export interface TrimSpec {
   params?: AircraftParams
   /** Extra parasite drag in the trim condition (extended gear). Default 0. */
   extraCd?: number
+  /** Symmetric lift dump in the trim condition (deployed speedbrakes). */
+  extraClDump?: number
   /** Live ISA temperature offset, °C (9B): a hot/cold-day final spawn was
    *  trimmed for the standard atmosphere and arrived mistrimmed. */
   isaTempOffsetC?: number
@@ -121,6 +124,13 @@ function residuals(
     thrustN: prop.thrustN, propTorqueNm: prop.torqueNm, heightAglM: 1000,
     mach: P.machModel ? s.tasMs / air.speedOfSoundMs : 0,
     extraCd: s.extraCd ?? 0,
+    extraClDump: s.extraClDump ?? 0,
+  }
+  if (P.flaperons) {
+    const mixed = {flapsDeg:0,aileronRad:0,flaperonLeftRad:0,flaperonRightRad:0}
+    mixFlaperons(P, Number.isFinite(s.flapsDeg) ? s.flapsDeg : 0, 0, mixed)
+    ai.flapsDeg = mixed.flapsDeg
+    ai.aileronRad = mixed.aileronRad
   }
   computeAero(ai, aeroOut, P)
   const qS = 0.5 * rho * s.tasMs * s.tasMs * P.wingAreaM2

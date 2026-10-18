@@ -1,0 +1,29 @@
+# Stage8a native surface review — corrected snapshot
+
+- **Spec compliance: corrected native mapping and bounded regression changes approved; original exhaustive attachment acceptance remains incomplete.**
+- **Code quality: approved for this correction.** No additional production defect found in the fixed snapshot. Do not interpret this as all Stage8a acceptance complete.
+
+## Resolved findings and strengths
+
+- **PA18 production trim direction corrected.** `src/render/xplane-manifest.ts:143` removes the inverted stabilizer sign. `tests/render/native-surfaces.test.ts:50-60` checks positive and negative actual aft-vertex motion, including stabilizers and authored pitch/rudder tabs. This supersedes the original report's mistaken centroid-based PA18 sign claim. Root reports fresh-browser positive/negative trim verification separately.
+- **Aggregate-contact false-positive mechanism corrected for covered witnesses.** `tests/render/native-surface-interfaces.test.ts:29-38,46-62` resolves frozen source and partner components, confirms vertex/triangle membership, and compares three local-frame coordinates to stored authored profiles within 2 mm. `tests/render/native-interface-geometry.ts:50-56` detects tangential displacement as well as separation. No nearest-any-fixed partner is rediscovered during the test.
+- **The rejection test exercises real geometry.** `tests/render/native-surface-interfaces.test.ts:68-91` changes only the connected C172 flap-panel island by 0.5 m at half deployment and requires its registration to fail while both separate actuator endpoints remain accepted. This addresses the previous one-attached-component-hides-another defect in the test design.
+- **Embedded support tips have specific partner checks.** `tests/render/native-interface-geometry.ts:60-75` intersects only the selected partner component's actual triangles at the tip's x/z position. The test requires finite, nonnegative upper/lower clearances and preservation of each stored profile; an unrelated whole-aircraft box cannot satisfy it.
+- **Fixture scope checked:** 352 registrations and 10 sockets across all eight native types; every registration has a 2 mm regression tolerance. Representative records identify both C172 trim-pushrod ends (`tests/fixtures/native-surface-interfaces.json:8-9`), both left-flap actuator ends (lines 16-17), B738 linkage panel/socket partners (lines 36 and 143), and A333 track panel/socket partners (lines 241 and 250). The 13 fixture states include neutral, quarter/half/three-quarter/full deployment and both endpoints for pitch/roll/yaw/trim (line 3).
+- **Inventory and output findings corrected.** `tests/render/native-surfaces.test.ts:31-35` independently checks required authored refs against the inventory. Diagnostic logging is now opt-in at line 66 and `tests/render/native-surface-interfaces.test.ts:64`.
+- Previous source findings remain valid: `src/main.ts:2475` uses effective applied controls; `src/sim/aircraft.ts:339` separates elevator command and trim without changing aerodynamic calculations; `src/render/local-aircraft.ts:38-49,160,180` preserves trim decomposition, sanitization, and copied state through native swaps. The first review inspected the cut-off swap completion and generic reset paths and found no duplication/stale-state defect.
+
+## Important acceptance work still open
+
+- **Whole original mechanism continuity remains unverified, not disproven.** The new fixture is a meaningful regression against identified authored relationships. Stored pose profiles alone do not establish that every selected geometric neighborhood is a semantic joint, or that every remaining support end is attached. `docs/plans/sept13/native-surfaces-report.md:123-129,142` correctly distinguishes these limits. The original Important acceptance finding is therefore partially resolved, not closed globally.
+- Complete both-end partner identification for the remaining B738/A333/C750 rails, carriages and actuators. The report's A333 backlog at line 128 identifies exact draw/island candidates: `19407/6449`, `19407/6457`, `24693/8112`, `62016/18239`, `62016/18247`, `67302/19902`, `13248/3796`, `95424/27508`, `107925/32278`, `117075/35297`, and `15366/4406`. Identify actual terminal regions and partners before adding records; do not convert large skin distances into permissive joint tolerances.
+- Identify and verify the remaining AS21 airbrake support-arm endpoints and PA18 exposed cable/linkage endpoints (`docs/plans/sept13/native-surfaces-report.md:129`). Preserve legitimate free tips, fairing tails and deployed slots.
+- Root-owned mechanism close-view and flight acceptance remain separate. Root reports all-eight browser inspection and corrected PA18 checks, but this reviewer did not operate the browser or independently certify every pictured mechanism.
+
+## Review boundary and evidence
+
+- Read the updated implementer report and fixed native-only snapshot. Reviewed all changed implementation/test algorithms and the fixture structure plus representative named interfaces/socket identities; did not dump or independently semantically classify every fixture record.
+- No Critical or new Important code-quality defect found in the bounded correction. The outstanding Important item is the explicitly identified original attachment acceptance scope above.
+- No tests rerun. Controller reports final focused validation: four files, 42 tests passed in 19.68 s; TypeScript exit 0. The report and diff present no uncovered runtime doubt requiring another test run.
+- Root owns the separate glider aerodynamic/actuator integration. Its concurrent edits are outside this snapshot and verdict. Stage8b, traffic, audio, terrain GPU checks and physical quadrant completion remain outside this review.
+- No Git, browser, production, test or original-asset edits. Only this review report was updated.

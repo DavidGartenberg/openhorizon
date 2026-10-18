@@ -30,12 +30,11 @@ export interface AircraftParams {
   /** Retractable gear: transit time and the drag increment when extended.
    *  Absent = fixed gear (always down, no extra drag term). */
   gearRetractable?: { transitS: number; dCdExtended: number }
-  /** Flight spoilers / speedbrakes (737-class): drag increment, lift
-   *  dump (ΔCL removed at full deploy), and actuator rate (fraction/s).
-   *  Absent = no spoilers (piston fleet). Simplification (documented):
-   *  symmetric speedbrake only — no roll-spoiler mixing, no ground
-   *  auto-deploy arming. */
-  spoilers?: { dCd: number; dCl: number; ratePerS: number }
+  /** Symmetric flight spoilers / speedbrakes: drag increment, lift dump
+   *  (ΔCL removed at full deploy), actuator rate (fraction/s), and an
+   *  explicit ground-auto-deploy capability. Glider airbrakes use the same
+   *  normalized actuator but never inherit jet touchdown logic. */
+  spoilers?: { dCd: number; dCl: number; ratePerS: number; groundAutoDeploy: boolean }
   /** Thrust reversers (jets): effective reverse thrust as a fraction of
    *  forward thrust at the same N1, and sleeve transit time. Deploy is
    *  interlocked to weight-on-wheels like the real airplane. */
@@ -99,6 +98,9 @@ export interface AircraftParams {
   cnDr: number
 
   // flaps (increments per detent; a flapless aircraft uses single-entry [0])
+  flapDefaultIndex?: number
+  flapLabels?: readonly string[]
+  flaperons?: { upRad: number; downRad: number; airbrakeFloorMinDeg: number; airbrakeFloorMaxDeg: number }
   flapDetentsDeg: readonly number[]
   flapDCl0: readonly number[]
   flapDClMax: readonly number[]
@@ -133,6 +135,10 @@ export interface AircraftParams {
    *  Simplification (documented): no prop lever — governed RPM sags with
    *  throttle instead of holding a set speed. */
   propGoverned?: true
+  /** Aerobatic type with an inverted-capable fuel + oil system (flop-tube
+   *  pickups, inverted sumps): negative g never starves the engine.
+   *  Absent = a gravity-fed airplane (every other type). */
+  invertedCapable?: boolean
   /** Governed-prop efficiency multiplier (per-type documented tuning —
    *  big slow discs beat the class η ramp, stubby props miss it). */
   propEtaScale?: number

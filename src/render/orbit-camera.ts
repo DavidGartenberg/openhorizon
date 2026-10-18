@@ -8,8 +8,18 @@ export class OrbitCamera {
   private azimuth = 2.3 // rad
   private elevation = 0.18
   private distance = 16
+  private minDistance = 2
+  private maxDistance = 150
 
   constructor(private readonly camera: THREE.PerspectiveCamera) {}
+
+  /** Frame large aircraft on entry while allowing close surface inspection. */
+  setSizeScale(scale: number): void {
+    const s = Math.max(1, scale)
+    this.distance = 16 * s
+    this.minDistance = 2 * s
+    this.maxDistance = 150 * s
+  }
 
   update(input: Input, target: THREE.Vector3): void {
     const { dx, dy } = input.consumeMouseDelta()
@@ -19,8 +29,8 @@ export class OrbitCamera {
     if (wheel !== 0) {
       this.distance = THREE.MathUtils.clamp(
         this.distance * Math.pow(1.15, Math.sign(wheel)),
-        7,
-        150,
+        this.minDistance,
+        this.maxDistance,
       )
     }
     const cosEl = Math.cos(this.elevation)

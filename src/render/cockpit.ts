@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { build737Deck, type Deck737 } from './cockpit-737'
 import type { Input } from '../input/input'
 import { drawPfd, type PfdInput } from '../cockpit/pfd'
 import { drawMfd, mfdSoftkeyRegions, type MfdInput } from '../cockpit/mfd'
@@ -486,6 +487,13 @@ export interface CockpitMeshes {
   obs1Down: THREE.Mesh
   /** Every raycast-clickable/draggable object, tagged via `userData.controlId`. */
   interactive: THREE.Object3D[]
+  /** Boeing 737NG flight deck (layout 'boeingNG'): the dedicated deck with
+   *  its own live panels and control rig; displays use the Boeing formats
+   *  (cockpit/boeing-displays.ts) on these square canvases. */
+  deck737?: Deck737
+  boeingScreens?: { eicas: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture }; isfd: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } }
+  /** Flap-lever detent count for drag mapping (default 4: the C172). */
+  flapDetentCount?: number
 }
 
 const CANVAS_W = 1024
@@ -510,6 +518,44 @@ function makeSwitch(label: string): THREE.Mesh {
   return m
 }
 
+/** 737NG flight deck: the dedicated deck (cockpit-737.ts) plus inert,
+ *  hidden stand-ins for the G1000-only slots of `CockpitMeshes`. */
+function build737Cockpit(parent: THREE.Object3D, flapDetentsDeg: readonly number[]): CockpitMeshes {
+  const group = new THREE.Group()
+  const pfd = makeCanvasTexture(768, 768)
+  const nd = makeCanvasTexture(768, 768)
+  const eicas = makeCanvasTexture(768, 768)
+  const isfd = makeCanvasTexture(256, 256)
+  const deck = build737Deck(group, { pfd: pfd.texture, nd: nd.texture, eicas: eicas.texture, isfd: isfd.texture }, flapDetentsDeg)
+  const hidden = (): THREE.Mesh => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(0.001, 0.001, 0.001), SWITCH_OFF)
+    m.visible = false
+    group.add(m)
+    return m
+  }
+  const switches = {
+    masterBattery: hidden(), masterAlternator: hidden(), avionicsSwitch: hidden(),
+    pitotHeat: hidden(), apMaster: hidden(), boostPump: hidden(),
+  } as Record<SwitchId, THREE.Mesh>
+  parent.add(group)
+  return {
+    group,
+    pfdCanvas: pfd.canvas, pfdCtx: pfd.ctx, pfdTexture: pfd.texture,
+    mfdCanvas: nd.canvas, mfdCtx: nd.ctx, mfdTexture: nd.texture,
+    switches,
+    ignitionKey: hidden(), starterButton: hidden(), fuelSelectorKnob: hidden(), mixtureKnob: hidden(),
+    throttleKnob: deck.throttleKnob, flapLever: deck.flapLever, trimWheel: deck.trimWheel,
+    yokeColumn: deck.yokeColumn, yokeWheel: deck.yokeWheel,
+    nav1TuneUp: hidden(), nav1TuneDown: hidden(), nav1FlipFlop: hidden(),
+    com1TuneUp: hidden(), com1TuneDown: hidden(), com1FlipFlop: hidden(),
+    obs1Up: hidden(), obs1Down: hidden(),
+    interactive: deck.interactive,
+    deck737: deck,
+    boeingScreens: { eicas: { ctx: eicas.ctx, texture: eicas.texture }, isfd: { ctx: isfd.ctx, texture: isfd.texture } },
+    flapDetentCount: flapDetentsDeg.length,
+  }
+}
+
 /** Build the 3D cockpit interior and parent it under `parent` (the aircraft
  *  body group from `aircraft-mesh.ts`, so it tracks position/attitude for
  *  free). Returns handles used every frame to redraw the PFD/MFD canvases
@@ -525,7 +571,8 @@ export function panelLayoutFor(designator: string, trimIsStabilizer: boolean): P
   return /^(A[23]|BCS)/.test(designator) ? 'airbusFcu' : 'boeingNG' // A20N/A21N are neo A32x
 }
 
-export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g1000'): CockpitMeshes {
+export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g1000', flapDetentsDeg: readonly number[] = [0, 10, 20, 30]): CockpitMeshes {
+  if (layout === 'boeingNG') return build737Cockpit(parent, flapDetentsDeg)
   const group = new THREE.Group()
   const interactive: THREE.Object3D[] = []
   const thrustLevers: THREE.Mesh[] = []
@@ -554,7 +601,7 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   // tones; both share the six-DU + glareshield-strip arrangement — the
   // Airbus ECAM pair sits where the EICAS pair does).
   const DU_BEZEL = new THREE.MeshStandardMaterial({ color: layout === 'airbusFcu' ? 0x1c1e22 : 0x24262a, roughness: 0.6 })
-  if (layout === 'boeingNG' || layout === 'airbusFcu') {
+  if (layout === 'airbusFcu') {
     // Photo-matched panel face: one painted canvas (drawTransportPanel)
     // over a thin backing box for depth. The live PFD/ND/EICAS planes
     // render just proud of the painted DU glass regions.
@@ -938,20 +985,7 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
         group.add(pivot)
         thrustLevers.push(pivot as unknown as THREE.Mesh)
       }
-      if (layout === 'boeingNG') {
-        for (const side of [-1, 1]) {
-          const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.025, 24), BLACK_KNOB)
-          wheel.rotation.z = Math.PI / 2
-          placeBody(wheel, 0.62, side * 0.165, -0.25)
-          group.add(wheel)
-        }
-        // FO yoke, mechanically linked to the captain's (mirrors input).
-        const foCol = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.35, 8), YOKE_MAT)
-        add(foCol, 0.7, 0.3, -0.16)
-        const foWheel = buildYokeAssembly()
-        add(foWheel, 0.68, 0.3, -0.26)
-        foYoke = { column: foCol, wheel: foWheel }
-      } else {
+      {
         // FO sidestick on the right console (independent — static).
         const foConsole = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.22), BEZEL)
         placeBody(foConsole, 0.68, 0.54, -0.2)
@@ -1161,6 +1195,7 @@ export function updateEicas(meshes: CockpitMeshes, d: { n1Pct: number; ffKgH: nu
 }
 
 export function updateCockpitDisplays(meshes: CockpitMeshes, pfdInput: PfdInput, mfdInput: MfdInput): void {
+  if (meshes.deck737) return // Boeing formats are drawn by the 737 path (main.ts)
   drawPfd(meshes.pfdCtx, CANVAS_W, CANVAS_H, pfdInput)
   meshes.pfdTexture.needsUpdate = true
   drawMfd(meshes.mfdCtx, MFD_CANVAS_W, MFD_CANVAS_H, mfdInput)
@@ -1184,6 +1219,7 @@ export function updateCockpitControls(
   pitchFrac: number, // control DEFLECTION −1..1 (aft positive), not attitude
   rollFrac: number, // control deflection −1..1 (right positive)
 ): void {
+  if (meshes.deck737) return // the 737 rig is animated by animate737
   for (const id of Object.keys(switchStates) as SwitchId[]) {
     meshes.switches[id]!.material = switchStates[id] ? SWITCH_ON : SWITCH_OFF
   }
@@ -1237,6 +1273,8 @@ export function updateCockpitControls(
 
 export type DraggableAxis = 'throttle' | 'mixture' | 'trim' | 'flap'
 
+const DECK_CLICK_IDS = new Set(['fireTest', 'hornCutout', 'mcpCmdA', 'mcpDisengage', 'masterCaution', 'landingLights', 'mcpAtArm', 'mcpSpeed', 'atDisconnect', 'atReset', 'apReset'])
+
 const DRAG_PX_FOR_FULL_RANGE = 220
 
 /** Raycasts the pointer against the cockpit's interactive meshes and routes
@@ -1259,6 +1297,19 @@ export class CockpitInteraction {
   constructor(private readonly camera: THREE.PerspectiveCamera) {}
 
   /** MFD softkey pressed since the last call (15c routing), else null. */
+  /** 737 deck pushbuttons: the last one clicked (consumed once) and the
+   *  one currently held (FIRE WARN test is press-and-hold). */
+  private deckClick: string | null = null
+  private deckHold: string | null = null
+  consumeDeckClick(): string | null {
+    const s = this.deckClick
+    this.deckClick = null
+    return s
+  }
+  get heldDeckControl(): string | null {
+    return this.deckHold
+  }
+
   consumeSoftkey(): string | null {
     const s = this.softkey
     this.softkey = null
@@ -1311,6 +1362,7 @@ export class CockpitInteraction {
       }
       else if (id === 'starterButton') systems.starterEngaged = true
       else if (id === 'fuelSelector') systems.fuelSelector = cycleFuelSelector(systems.fuelSelector)
+      else if (id && DECK_CLICK_IDS.has(id)) { this.deckClick = id; this.deckHold = id }
       else if (id === 'mfdScreen' && hit?.uv) {
         // 15c: hit UV → canvas pixel → softkey bezel region.
         const px = hit.uv.x * MFD_CANVAS_W
@@ -1325,7 +1377,7 @@ export class CockpitInteraction {
       else if (id === 'throttleKnob' || id === 'mixtureKnob' || id === 'trimWheel' || id === 'flapLever') {
         const { x, y } = input.pointerPixels()
         const axis: DraggableAxis = id === 'throttleKnob' ? 'throttle' : id === 'mixtureKnob' ? 'mixture' : id === 'trimWheel' ? 'trim' : 'flap'
-        const startValue = axis === 'throttle' ? controls.throttle : axis === 'mixture' ? controls.mixture : axis === 'trim' ? controls.trim : controls.flapsIndex / 3
+        const startValue = axis === 'throttle' ? controls.throttle : axis === 'mixture' ? controls.mixture : axis === 'trim' ? controls.trim : controls.flapsIndex / Math.max(1, (meshes.flapDetentCount ?? 4) - 1)
         this.activeDrag = { axis, startValue, startPxX: x, startPxY: y }
       } else if (radios) {
         // NAV1/COM1 tuning knobs + flip-flop swap, OBS course knob (Phase 4
@@ -1358,11 +1410,12 @@ export class CockpitInteraction {
         controls.trim = dragToAxisValue(this.activeDrag.startValue, dragPx, DRAG_PX_FOR_FULL_RANGE, -1, 1)
       } else {
         const frac = dragToAxisValue(this.activeDrag.startValue, dragPx, DRAG_PX_FOR_FULL_RANGE, 0, 1)
-        controls.flapsIndex = nearestFlapDetent(frac)
+        controls.flapsIndex = nearestFlapDetent(frac, meshes.flapDetentCount ?? 4)
       }
     }
 
     if (input.wasMouseReleased()) {
+      this.deckHold = null
       this.activeDrag = null
       systems.starterEngaged = false
     }

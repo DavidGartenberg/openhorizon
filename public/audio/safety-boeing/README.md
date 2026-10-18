@@ -1,0 +1,1 @@
+Original synthesized English EGPWS/TCAS callouts for Boeing flight decks: macOS Reed (English (US)) at 178 wpm through an EGPWS-style band-limit + compression chain (scripts/generate-safety-audio.mjs). Mono 16 kHz PCM16 WAV. No Honeywell, Boeing or X-Plane audio copied. Regenerate with node scripts/generate-safety-audio.mjs boeing on macOS.

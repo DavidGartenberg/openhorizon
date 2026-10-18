@@ -2864,3 +2864,77 @@ browser-verified end-to-end. Verified this session via scripted flights
   for the after-screenshot — the honest visual confirm is the user's own
   next final (dev server picks the change up on reload). Gate: tsc, 1181
   tests, 547 validate, build.
+
+
+- **Graphics overhaul (2026-09-08)** — cached HDR atmosphere shared by sky,
+  environment lighting and Fresnel ocean reflections; corrected custom-shader
+  tone/color conversion and reversed-depth sky projection. Bounded volumetric
+  METAR clouds with local-density immersion, quality tiers, and cloud self-shadow.
+  Nearby z16 imagery mosaics supply 16× the base texture pixels with a two-tile
+  memory bound, cancellation and fallback. Procedural pavement grain/joints/wear,
+  clearcoat aircraft paint, self-shadowing, refined C172 cabin/wing/cowl/tail and
+  transparent propeller depth fix. View & graphics panel provides camera, quality,
+  weather and lighting choices. No physics changes or new dependencies.
+  Gate: build, 1,193 tests, 547 aircraft validation checks; 4 existing skips.
+  Browser inspection covered C172/737, runway/coast/KSFO, cockpit, sunset/night and
+  cloud entry. See `docs/plans/graphics-overhaul.md` for measurements, reproducible
+  inspection and explicit procedural/depth/reflection limitations.
+
+
+- **Aircraft surfaces and geometry (2026-09-08)** — shared paint/metal/rubber/
+  fabric PBR finishes with filtered seam/fastener/normal/roughness detail. Detailed
+  C172 livery/wing textures, cockpit seals, fittings, struts, spats and prop;
+  rebuilt Cub fabric airframe, airfoil, open cabin and exposed cylinder fins.
+  Dedicated737 and fleet airliners use profiled panels, shaped glazed noses,
+  recessed turbofan assemblies, rounded fairings and tires, conforming painted
+  tail flags and dimension-correct livery maps. Player archetypes gain profiled
+  wings and smoother surfaces; traffic geometry stays inexpensive. Aircraft-size
+  orbit framing and a development aircraft inspection page aid close QA.
+  Gate: build, 1,205 tests (4 existing skips), including 547 aircraft validation
+  checks; browser shader/visibility/gear/flap review. Physics unchanged.
+  See `docs/plans/aircraft-surfaces.md` for inspection and remaining model limits.
+
+- **Recognizable full player fleet (2026-09-09)** — all 123 selectable aircraft
+  now use dedicated player builders, with 57 explicit prop/glider profiles and 63
+  jet profiles. Continuous fuselages, distinct cabin/wing/tail and engine layouts,
+  proper family diameters, integrated 747/A380 upper decks, corporate cabin/livery
+  layouts, multi-prop animation and multi-axle gear. C172/Cub overall lengths and
+  C172 fittings/lights corrected. Full-fleet inspection page with bounded model
+  and reference-counted texture caches. Gliders use visually appropriate central
+  wheels while retaining unchanged collision data. Gate: 87 test files, 1,277 tests
+  passed (4 existing skips); TypeScript/build passed; representative rendered
+  family/control-surface/cockpit checks and independent review. Fine geometry and
+  variant details remain procedural estimates. See docs/plans/fleet-models.md.
+
+
+## Rudder animation + aviation voices
+- **Rudder**: the C172 and every airliner had a *static* rudder (the C172's was a plain red mesh; airliners were one solid fin). The C172 rudder is now hinged on the fin's trailing edge; airliner fins are cut into fin + rudder from the same skin (cutSkin, UVs restored so the tail livery runs unbroken across the hinge). Sense: +yaw (right pedal) = trailing edge right, same as the Cub/prop fleet. Rudder demand now passes through a slew-limited first-order actuator (`render/surface-smoother.ts`, applied once in main.ts so every airframe incl. loaded X-Plane models is smoothed; mesh builders stay pure). Visual only — never feeds the flight model.
+- **Voice**: was one macOS voice (Samantha) for everything, no radio character. Now role-based: ATC = US male voices picked per facility at 195 wpm, first officer = a distinct crew voice, cockpit warnings keep the female GPWS voice. ATC audio goes through a VHF chain (≈380–2900 Hz band-pass, presence bump, compressor, soft clip, carrier hiss + squelch tail); copilot gets a lighter intercom chain; warnings stay clean. Any filter failure returns the clean clip — a transmission is never silenced. A voice missing on the user's Mac falls back to Samantha.
+- Recorded deviation: the filter is applied offline to the synthesized WAV (OfflineAudioContext) rather than live, because playback goes through an <audio> element; adds ~90 ms for the squelch tail.
+
+## Boeing aurals + 737NG flight deck
+- **Aural-alert system (737NG)** — `sim/boeing-aurals.ts` (pure, 19 tests) decides which non-voice aural sounds from the airplane's real state, per the published 737NG warning conditions: takeoff-config INTERMITTENT horn (ground, thrust ≥ takeoff, flaps outside 1–25 / speedbrake not down / parking brake set), landing-gear STEADY horn (gear not down & locked with flaps ≥15 + idle, flaps >25 at any thrust, or flaps 1–10 + idle below 800 ft RA — only the last silenceable by HORN CUTOUT), CLACKER above Vmo/Mmo, STICK SHAKER near stall (positive AoA only), AP-disconnect WAILER (≥2 s, second press silences), ALTITUDE ALERT tone (>300 ft deviation after capture), FIRE BELL on the FIRE WARN test only. Strict priority: one continuous aural at a time.
+- **Sounds are ORIGINAL synthesis** (`audio/boeing-aural-synth.ts`, deterministic, loop-seam tested). Boeing's actual recordings are proprietary and are not used or shipped. Same for the voice: Boeing types now use a separate male EGPWS/TCAS clip set (`public/audio/safety-boeing/`, macOS "Reed" through an EGPWS-style band-limit/compression chain, `node scripts/generate-safety-audio.mjs boeing`). Other types keep Samantha.
+- **737NG flight deck** (`render/cockpit-737.ts`, painters in `cockpit-737-paint.ts`) replaces the generic transport shell for the `boeingNG` layout. It is built around a 737 design eye (`EYE_BY_LAYOUT.boeing737`, up 1.03) and includes: the six-DU main panel (outboard PFD / inboard ND, upper + lower center), ISFD, gear lever with the live green/red light triangle, live flap indicator, clocks, BELOW G/S, display selectors, N1 SET / SPD REF, autobrake; the sloped glareshield with the live MCP (SPD/HDG/ALT/V/S windows, mode-button lights, CMD A / DISENGAGE clickable), EFIS panels and live FIRE WARN / MASTER CAUTION / six-pack; wrapped No.1, No.2 and No.3 windows with posts, sill, headliner and visors; the forward overhead in its five system columns over the lights/engine-start row, plus the aft overhead; the control stand with curved thrust levers (piggyback reversers, TO/GA, A/T disconnect), speedbrake, gated flap lever, start levers, stab-trim wheels and live trim scale, parking brake and HORN CUTOUT; the aisle stand with two CDUs (live PROGRESS page), live NAV/COMM/ATC panels, the fire panel (handles light on test, held FIRE TEST switch), cargo fire, WXR and live rudder trim; floor-pivoted columns with ram's-horn wheels, pedals, consoles with tiller, and seats. The rig is animated from the controls; tests cover direction senses (thrust forward, pull aft, right roll, flap aft, gear down, right pedal).
+- **Boeing display formats** (`cockpit/boeing-displays.ts`): PFD with FMA columns, Boeing attitude/bank/slip, speed tape with Vmo and stall barber poles, selected-speed bug and trend vector, Mach, altitude tape with selected-altitude bug and baro/STD, non-linear VSI, heading arc, radio altitude, ILS deviation; expanded-MAP ND (route with active leg, airports, TCAS, weather, wind, GS/TAS, ETA); upper-center engine display (N1 with command bug, EGT, FF, fuel 1/2, TAT); ISFD.
+- **Recorded approximations:**
+  - EGT is a documented N1/OAT proxy (no EGT state exists in the engine model).
+  - The stall-warning barber pole is interpolated Vs1→Vs0 by flap, with no weight scheduling.
+  - Stab-trim units map the sim's ±1 trim onto the 737's 0–17 scale.
+  - The stabilizer green-band check reports "in band", because no CG-scheduled limit is modeled.
+  - (Superseded: the 737 now has a real autothrottle, see below.)
+  - The lower DU stays blank.
+  - Station dimensions are estimates from public diagrams and photos; there is no Boeing CAD.
+  - Painted overhead and aisle switchgear is cosmetic unless listed as live above.
+- **Verified in-browser** (separate test tab): forward, F/O-side, pedestal and overhead views; FIRE WARN test rings the bell and lights the annunciators; the takeoff-config horn sounds with flaps up and thrust advanced, and stops at idle; cockpit p50 frame time 6 ms. A sight-line test asserts clear view from −4° to +20° over the glareshield.
+- **Licensed audio pack support:** the project still ships no OEM recordings. A user who owns a licence can drop recordings into `public/audio/boeing-custom/` with a `manifest.json` (format in the folder's README). The 737 deck then plays those for any of the seven aurals and any EGPWS/TCAS phrase, falling back per item to the built-in sound. File names are validated (plain names only, audio extensions, no traversal or URLs). The folder is git-ignored except its README. `__ohAurals().custom` lists which aurals are using user recordings. Tests: `tests/custom-audio-pack.test.ts`.
+- **Overhead live hookup:** the landing-light switches follow the sim's landing lights, and clicking them on the overhead toggles the lights. Logo, position and anti-collision read ON whenever the airplane is powered, which is how the sim runs them; there is no separate switch model. The labels in the painted columns now auto-fit their cells.
+- **Autothrottle (737NG)** — `sim/autothrottle.ts`: A/T ARM switch, then MCP SPD (lever speed hold) or, under LVL CHG, N1 (climb limit) or RETARD to idle descending. The speed loop is velocity-form PI with speed-rate lead and is slew-limited like the servo. Disconnects come from the thrust-lever A/T disconnect switches, pilot lever movement against the servo, or ARM going OFF; each latches the flashing red A/T P/RST light until it is pressed. The A/P P/RST light flashes during the disconnect wailer. Hardware throttle levers only take over (and disconnect) once actually moved. It is clickable on the deck (MCP A/T ARM, SPEED; lever disconnect switches; P/RST lights) and has a `__ohAt` hook. The FMA A/T column and the MCP SPEED/N1 lamps follow the mode. Closed-loop tests on the real 737-800 model: 250→280 kt and 280→240 kt at 10,000 ft settle within ±4 kt with less than 8 kt overshoot. A rate-filter bug (the first-sample speed step slammed the levers) was found by trace and fixed. Verified in the browser: KSFO 28L final, AP ALT HOLD + A/T, MCP SPD accelerating to 170 kt.
+
+## Inverted flight — negative-g fuel/oil starvation
+- **Finding (probed on the real airframes):** the C172 could hold steady level inverted flight for a full minute at −1 g with a perfectly healthy engine (2,600 rpm). Aerodynamically that is plausible — the wing's negative CLmax is modeled and a cambered wing does fly inverted — but gravity-fed fuel pickups and wet-sump oil do not work inverted, so real non-aerobatic airplanes lose the engine within seconds. That was the missing physics.
+- **Model (`sim/systems/fuel.ts`):** exposure builds whenever the airplane's vertical load factor is below +0.3 g (rate 0.3 at 0 g, ≈1.3 at −1 g), drains twice as fast once the seat is loaded again (≥ 0.5 g), and the feed is cut when exposure passes the type's tolerance. While cut, no fuel is drawn and `fuelFlowing` is false, so the existing chain applies unchanged: the piston engine stops (FUEL STARV annunciation), jets flame out through the Captain systems, and recovery is the normal restart (starter / ignition) after the airplane is upright again. The cut releases only once exposure has fully drained.
+- **Tolerances (modeled estimates — there is no published figure for most of the fleet):** gravity-fed piston/turboprop types ≈ 8 s, jets ≈ 25 s (boost pumps, scavenged oil), `invertedCapable` types unlimited. The Extra 300L is `invertedCapable` (flop-tube fuel, inverted oil); gliders have nothing to starve. A one-time "ENGINE QUIT" notice appears when the cut trips.
+- **Measured:** headless closed loop on the C172 — rolled inverted by ≈ 5 s, engine out at 10.7 s; live in the browser — rpm 2,200 → ≈ 800 about 6 s after inverting. Upright flight and a 45° banked turn never trigger it. Extra 300L runs inverted indefinitely.
+- **Not done (recorded):** no structural over-g failure exists in the sim (negative limit load is −1.52 g normal category / −1.0 g transport; ultimate 1.5× that) — inverted level flight at −1 g is within those limits anyway. The wing, elevator and trim model inverted flight as before.
+- Tests: `tests/inverted-flight.test.ts` (closed-loop on C172 / Extra / 737 tolerance), plus 6 new fuel-system cases in `tests/systems/fuel.test.ts`. `tests/controller-main.test.ts`'s systems-tick mirror needed the two new names in its hand-built scope.

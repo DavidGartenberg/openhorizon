@@ -1,0 +1,35 @@
+# DG80 signed flap and flaperon simulation integration
+
+This bounded task follows the generic prop/Cub geometry implementation. Read `dg800-flaperon-design.md` completely, especially the final maintenance-manual correction and subsequent calibration findings. It is the requirements/source record; later verified source corrections supersede the initial neutral-only assumptions. User authorized accurate actual aircraft surfaces, all quadrant controls and X-Plane fidelity. Preserve unrelated aircraft behavior and pending identity-bound TCA calibration; no global throttle preset changes.
+
+## Scope and agreed interface
+
+Implement DG-800S 18 m signed flap capability, authentic one-piece differential flaperon control, a documented approximate airbrake linkage, and lifecycle/UI/hardware plumbing. The procedural renderer task independently adds `SurfaceState.flapsDeg?`, `flaperonLeftRad?`, `flaperonRightRad?`, all trailing-edge-down convention. Inspect its final report before using these fields. This task supplies their actual effective values; no replacement of its geometry and no changes to original native assets. Keep normalized `flapFrac` bounded positive-only compatibility for existing native/Fowler adapters.
+
+Use metadata for neutral/default detent, display labels and optional flaperon capability. Keep legacy index0 defaults, but DG80 neutral/default is its zero-degree detent. Seven sorted settings include source-derived L with label L; provenance distinguishes measured linear travel, derived nominal angle and tolerance. Do not clamp combined flap+roll motion to pure-flap endstops. Differential travel at nonzero flap remains an explicit approximation because the manual only specifies roll travel at zero flap.
+
+Create a small pure mechanism/mixer seam in `src/sim`; no DOM/Three imports. Actual airbrake actuator position constrains common flap angle before aerodynamic evaluation. Implement the explicit linkage/persistence approximation from the design as named DG80 metadata and state. Deliberate selection releases held displacement subject to current airbrake floor; repeated identical hardware polls do not. Default/reset/trimmed snapshot restore must initialize all command, actuator, held linkage and effective output fields coherently. An API for flap selection is preferable to scattering special-case state clears across input paths.
+
+Shared flap interpolation must support negative first detents and neutral fallback for nonfinite values while preserving ordinary aircraft. Sanitize external detent selection and validate coefficient table metadata. Use effective mixed mean for aero flap angle and half-difference for aileron input, and the same physical left/right angles for rendering. Existing aircraft bypass this capability with unchanged equations. Ensure trim uses the same common/differential decomposition at neutral roll; differential mixing is asymmetric and cannot assume zero mean under roll.
+
+## Aerodynamic limits
+
+Use the original FM's correct weight/span/configuration stall table for CLmax anchors. Preserve IAS/CAS distinction and document residuals. Do not present lift-at-zero, drag, pitching moment or a flap-dependent laminar polar as manufacturer-derived when only stall speeds constrain CLmax. Fit a bounded, stable approximation, document it and run actual trim/stall/glide checks. Keep neutral clean behavior unchanged unless the manual specifically demonstrates the prior anchor is wrong; justify any correction quantitatively. Derive vs0 from final coefficient tables, not a scalar ignored by tuning overrides. Do not compensate rendering deficiencies by changing physics.
+
+## Inputs, reset and save
+
+Cover constructor, spawnOnGround, selected-aircraft ground/final spawn, KeyR, keyboard F/G, hardware step buttons, analog axis and five-position lever. All seven detents must remain reachable. The five physical positions necessarily cover a subset; show actual signed labels/angles and preserve step/axis access rather than pretending seven physical notches exist. Make the semantics of `flaps0` explicit for DG80 and do not silently rename other aircraft controls.
+
+Snapshot migration must identify aircraft and commanded physical angle/schema. Legacy DG80 index0 means previous zero-degree/no-flap neutral, not the new negative setting. Foreign aircraft snapshots must not apply arbitrary indices. Persist the held linkage state or explicitly reset it as part of existing trimmed-flight restore, documenting that choice. Invalid and nonfinite data must yield finite neutral state without unwanted flight or hardware activation. Preserve fuel/payload transaction logic.
+
+Use physical flap angle rather than index>0 in copilot logic, avoid invented glider takeoff calls and inapplicable powered-aircraft GPWS flap warnings. Controller diagnostics show selected signed label plus actual mechanically constrained angle when they differ. Correct non-auto glider V toast wording to AIRBRAKES FULL/DOWN; jet ARM wording and behavior remain unchanged.
+
+## Acceptance and handoff
+
+Start with focused failing tests covering signed interpolation and neutral reset, then actual mechanism/aero/render state agreement and input transitions. Cover all seven detents, both roll signs, combined extremes, partial airbrakes, deploy/retract/selection latch behavior, reset and dt subdivision. Test actual Aircraft.step effects and trim, not a separately duplicated mixer. Check keyboard/hardware command helpers through main harness, old/foreign/invalid snapshot migration and unchanged representative C172/B738/J3/other gliders. Existing glider airbrake20-test evidence predates this change; run covering regressions after edits. Run TypeScript and focused serial validation; root owns final full suite/build and browser/physical hardware QA.
+
+No Git/commits (unaccepted Xcode license), original asset writes, network publication or dependency installation. Use a fresh /tmp snapshot before edits. Write `dg800-simulation-report.md` with exact files, RED/GREEN commands/output, source/calibration provenance, simulation approximations and remaining visual/hardware acceptance. Do not call the whole goal or DG80 full-fidelity complete from code tests.
+
+## Root calibration decision
+
+Source follow-up establishes old37KCAS at525kg is wrong (37kt appears at440kg/L). Adopt original18m/525kg retracted-airbrake stall row: -9/0/+13/L =88/84/77/76km/h. Use repository SIconstants and the design's derived CLmax increments, with the explicit IAS≈CAS approximation because the table does not identify its speedbasis and the calibration curves were not digitized. This is a documented correction to the incorrect neutral anchor; do not preserve37 merely to keep the old test green. Update only DG80 stall expectation with sourceprovenance and justified tolerance, then verify its clean trim/glide and controls quantitatively. Interpolated intermediate detents are approximation. Do not force-fit extended-airbrake stall rows without resolving their configuration/actual-linkage ambiguity.

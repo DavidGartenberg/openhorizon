@@ -1,0 +1,22 @@
+{
+  "FIFTY": "/audio/safety-boeing/fifty.wav",
+  "FORTY": "/audio/safety-boeing/forty.wav",
+  "THIRTY": "/audio/safety-boeing/thirty.wav",
+  "TWENTY": "/audio/safety-boeing/twenty.wav",
+  "TEN": "/audio/safety-boeing/ten.wav",
+  "FIVE HUNDRED": "/audio/safety-boeing/five-hundred.wav",
+  "PULL UP": "/audio/safety-boeing/pull-up.wav",
+  "SINK RATE": "/audio/safety-boeing/sink-rate.wav",
+  "TERRAIN AHEAD, PULL UP": "/audio/safety-boeing/terrain-ahead-pull-up.wav",
+  "TERRAIN AHEAD": "/audio/safety-boeing/terrain-ahead.wav",
+  "DON'T SINK": "/audio/safety-boeing/don-t-sink.wav",
+  "TOO LOW, FLAPS": "/audio/safety-boeing/too-low-flaps.wav",
+  "TOO LOW, GEAR": "/audio/safety-boeing/too-low-gear.wav",
+  "GLIDESLOPE": "/audio/safety-boeing/glideslope.wav",
+  "BANK ANGLE": "/audio/safety-boeing/bank-angle.wav",
+  "LEVEL OFF, LEVEL OFF": "/audio/safety-boeing/level-off-level-off.wav",
+  "CLIMB, CLIMB": "/audio/safety-boeing/climb-climb.wav",
+  "DESCEND, DESCEND": "/audio/safety-boeing/descend-descend.wav",
+  "TRAFFIC, TRAFFIC": "/audio/safety-boeing/traffic-traffic.wav",
+  "CLEAR OF CONFLICT": "/audio/safety-boeing/clear-of-conflict.wav"
+}

@@ -209,11 +209,11 @@ describe('parseObj8 — animation tree', () => {
 })
 
 describe('evalObj8Keys', () => {
-  it('interpolates inside the table and clamps outside', () => {
+  it('interpolates inside the table and extrapolates outside', () => {
     const keys: Array<[number, number]> = [[0, 0], [1, 90]]
-    expect(evalObj8Keys(keys, -1)).toBe(0)
+    expect(evalObj8Keys(keys, -1)).toBe(-90)
     expect(evalObj8Keys(keys, 0.5)).toBeCloseTo(45)
-    expect(evalObj8Keys(keys, 2)).toBe(90)
+    expect(evalObj8Keys(keys, 2)).toBe(180)
   })
   it('multi-segment and step on equal values', () => {
     expect(evalObj8Keys([[0, 0], [0.5, 30], [1, 45]], 0.75)).toBeCloseTo(37.5)
@@ -354,4 +354,104 @@ describe('loadObj8 (fetch stubbed, textures off)', () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, text: async () => '' })))
     await expect(loadObj8('/nope.obj', { textureBase: '/' })).rejects.toThrow(/HTTP 404/)
   })
+})
+
+it('decodes X-Plane packed RG normals, inverse-alpha gloss and blue reflectance in the shader', () => {
+  const packed = new THREE.Texture()
+  const material = makeObj8Material({normalMap: packed}, {normalMetalness: true, specular: .8})
+  const shader = { vertexShader: '', fragmentShader: '#include <roughnessmap_fragment>\n#include <metalnessmap_fragment>\n#include <normal_fragment_maps>', uniforms: {} }
+  material.onBeforeCompile(shader as never, {} as never)
+  expect(material.roughnessMap).toBe(packed)
+  expect(material.metalnessMap).toBe(packed)
+  expect(shader.fragmentShader).toContain('1.0 - texelRoughness.a * 0.8')
+  expect(shader.fragmentShader).toContain('( texelMetalness.b - 0.04 ) / 0.96')
+  expect(shader.fragmentShader).toContain('sqrt( max( 1.0 - dot( mapN.xy, mapN.xy ), 0.0 ) )')
+})
+
+it('honors looping propeller keyframes instead of clamping forever after the first turn', () => {
+  const specs: AnimSpec[] = [{kind:'rotate',axis:[0,0,1],keys:[[0,0],[360,360]],loop:360,dataref:'prop'}]
+  const point = new THREE.Vector3(1,0,0).applyMatrix4(obj8AnimMatrix(specs,()=>450))
+  expect(point.x).toBeCloseTo(0);expect(point.y).toBeCloseTo(1)
+})
+
+it('loads XP12 split material/gloss channels independently of normal blue', () => {
+  const parsed = parseObj8('I\n800\nOBJ\nTEXTURE_MAP normal n.png\nTEXTURE_MAP material_gloss m.png\nNORMAL_METALNESS\nGLOBAL_specular 1')
+  expect(parsed.materialGloss).toBe('m.png')
+  const normal = new THREE.Texture(), materialMap = new THREE.Texture()
+  const material = makeObj8Material({normalMap:normal,materialGlossMap:materialMap},parsed)
+  expect(material.roughnessMap).toBe(materialMap)
+  const shader={vertexShader:'',fragmentShader:'#include <roughnessmap_fragment>\n#include <metalnessmap_fragment>',uniforms:{}}
+  material.onBeforeCompile(shader as never,{} as never)
+  expect(shader.fragmentShader).toContain('1.0 - texelRoughness.g * 1.0')
+  expect(shader.fragmentShader).toContain('( texelMetalness.r - 0.04 ) / 0.96')
+})
+
+it('renders authored prop-disc alpha without making the solid airframe transparent', () => {
+ const parsed=parseObj8(FIXTURE+'\nANIM_begin\nANIM_hide 0 0.5 sim/flightmodel2/engines/prop_is_disc[0]\nTRIS 0 6\nANIM_end')
+ const mat=makeObj8Material({map:new THREE.Texture()})
+ const built=buildObj8(parsed,mat)
+ const disc=built.animated.at(-1)!.children[0] as THREE.Mesh<THREE.BufferGeometry,THREE.Material>
+ expect(disc.material.transparent).toBe(true)
+ expect(disc.material.depthWrite).toBe(false)
+ expect(mat.transparent).toBe(false)
+})
+
+it('accepts Blender-exported static ANIM_trans with six coordinates and no dataref range',()=>{
+ const parsed=parseObj8('I\n800\nOBJ\nANIM_begin\nANIM_trans 1 2 3 1 2 3\nANIM_end')
+ expect(parsed.warnings).toEqual([])
+ expect(obj8AnimMatrix(parsed.anims[0]!.specs,()=>0).elements.slice(12,15)).toEqual([1,2,3])
+})
+
+it('accepts constant ANIM_rotate with axis and two angles but no dataref range',()=>{
+ const parsed=parseObj8('I\n800\nOBJ\nANIM_begin\nANIM_rotate 0 0 1 90 90\nANIM_end')
+ expect(parsed.warnings).toEqual([])
+ const point=new THREE.Vector3(1,0,0).applyMatrix4(obj8AnimMatrix(parsed.anims[0]!.specs,()=>0))
+ expect(point.x).toBeCloseTo(0);expect(point.y).toBeCloseTo(1)
+})
+
+it('extrapolates identity degree animations beyond their calibration keys as OBJ8 specifies',()=>{
+ expect(evalObj8Keys([[0,0],[1,1]],52)).toBe(52)
+ expect(evalObj8Keys([[0,0],[1,1]],-20)).toBe(-20)
+})
+
+it('flips top-down DDS atlas coordinates to OBJ8 bottom-left UVs without changing PNG upload semantics',async()=>{
+ const {DDSLoader}=await import('three/examples/jsm/loaders/DDSLoader.js')
+ const texture=new THREE.Texture()
+ const stub=vi.spyOn(DDSLoader.prototype,'loadAsync').mockResolvedValue(texture as never)
+ vi.stubGlobal('fetch',async()=>({ok:true,text:async()=>FIXTURE.replace('foo.png','foo.dds')}))
+ try{
+  const result=await loadObj8('/plane.obj',{textureBase:'/'})
+  expect(result.material.map!.repeat.y).toBe(-1)
+  expect(result.material.map!.offset.y).toBe(1)
+  expect(result.material.map!.flipY).toBe(false)
+ }finally{stub.mockRestore();vi.unstubAllGlobals()}
+})
+
+it('converts OBJ8 clockwise triangles to Three front faces without reversing authored normals',()=>{
+ const p=parseObj8('I\n800\nOBJ\nVT 0 0 0 0 1 0 0 0\nVT 1 0 0 0 1 0 1 0\nVT 0 0 1 0 1 0 0 1\nIDX 0\nIDX 1\nIDX 2\nTRIS 0 3')
+ const {group}=buildObj8(p,makeObj8Material({}));group.updateMatrixWorld(true)
+ expect(new THREE.Raycaster(new THREE.Vector3(.2,1,.2),new THREE.Vector3(0,-1,0)).intersectObject(group)).toHaveLength(1)
+ expect(Array.from(p.indices)).toEqual([0,1,2])
+ const mesh=group.children[0] as THREE.Mesh
+ expect(Array.from(mesh.geometry.index!.array)).toEqual([0,2,1])
+ expect(Array.from(mesh.geometry.getAttribute('normal').array)).toEqual([0,1,0,0,1,0,0,1,0])
+})
+
+it('rejects invalid attribute/index streams and empty selected LOD before building an exterior',()=>{
+ const broken=[()=>{const p=parseObj8(FIXTURE);p.indices[0]=999;return p},()=>{const p=parseObj8(FIXTURE);p.normals[0]=Infinity;return p},()=>{const p=parseObj8(FIXTURE);p.uvs=new Float32Array(1);return p},()=>{const p=parseObj8(FIXTURE);p.draws.forEach(d=>{d.count=0});return p},()=>parseObj8(FIXTURE.replace('VT 0 0 0','VT nope 0 0')),()=>parseObj8(FIXTURE.replace('IDX10 0','IDX10 0.5'))]
+ for(const make of broken)expect(()=>buildObj8(make(),makeObj8Material({}))).toThrow(/Invalid OBJ8/)
+ expect(()=>buildObj8(parseObj8(FIXTURE),makeObj8Material({}),{lod:9})).toThrow(/Invalid OBJ8/)
+})
+
+it('compensates reflected DDS normal-map UVs so their bitangent agrees with PNG normals',()=>{
+ const map=new THREE.Texture();map.repeat.y=-1;map.offset.y=1
+ expect(makeObj8Material({normalMap:map},{normalMetalness:true}).normalScale.y).toBe(-1)
+ expect(makeObj8Material({normalMap:new THREE.Texture()},{normalMetalness:true}).normalScale.y).toBe(1)
+})
+
+it('cuts fully transparent body-atlas windows out of an otherwise opaque exterior',()=>{
+ const material=makeObj8Material({map:new THREE.Texture()})
+ expect(material.transparent).toBe(false)
+ expect(material.alphaTest).toBeGreaterThan(0)
+ expect(makeObj8Material({map:new THREE.Texture()},{noBlend:.4}).alphaTest).toBe(.4)
 })

@@ -1,0 +1,13 @@
+# A333 slat patch regression review
+
+**Spec PASS. Code PASS. No actionable defects found in the supplied two-file diff.**
+
+The fixture freezes exactly the 11 terminal patches, their ordered indexed triangles and named fixed-wing islands, all five flap poses (`0, .25, .5, .75, 1`), and all 12 moving-base witnesses from `native-remaining-a333-interfaces.md`. Independent fixture assertions confirm that each patch's measured vertices exactly cover its listed triangles, all 215 vertex-pose clearance pairs are finite and positive, the reported minimum clearances agree, and all base frames remain registered (maximum baseline coordinate drift `4.8684e-14 m`). The four original nonzero seams are retained. Every retained identity and numeric sample also matches `/tmp/a333-remaining-proposed-witnesses.json` exactly.
+
+The test checks triangle membership in actual indexed draw-range islands; the existing geometry helpers exclude unused shared-buffer vertices and use the named partner's drawn triangles. Clearance and three-axis base registration errors are compared with the frozen `1e-5 m` tolerance. Although the explicit clearance guard accepts zero, the smallest frozen clearance exceeds `0.073 m`, so zero cannot pass the baseline comparison. This does not weaken the required positive-clearance outcome.
+
+The negative control clones the selected draw mesh's geometry and position buffer, moves only island `19407/6449`'s indexed vertices by two local metres, requires its measured error to exceed `0.1 m`, and requires sibling `19407/6457` to retain its baseline. The sibling shares that mesh and therefore observes the mutated buffer; it is not checked against a disconnected pristine copy. Component partitioning gives the two islands disjoint vertex sets. The original geometry is restored and temporary geometry disposed in `finally`.
+
+Review evidence: read the binding specification, both changed files, and the unchanged scene/geometry helpers; independently validated fixture/spec consistency, exact prior-fixture equality, and exact correspondence between current files and the supplied review diff. The root agent reports the focused Vitest run passed `2/2` tests in `3.37 s`; this reviewer did not rerun it. No production files, Git state, browser, or hardware were changed or exercised.
+
+Acceptance remains limited to sampled exterior-envelope containment and frozen visual registration with the installed native asset. The suite skips if that asset is absent. It establishes neither internal bearings/socket walls nor continuous-travel clearance, nonzero-wingflex behavior, or universal physical-joint completeness.

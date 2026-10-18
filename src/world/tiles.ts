@@ -1,8 +1,11 @@
 import * as THREE from 'three'
+import { SKY_LOOKUP } from '../render/atmosphere-shader'
+import { loadDetailedImagery } from './imagery-detail'
 import {
   lonToTileX, latToTileY, tileXToLon, tileYToLat, toNedMeters, fromNedMeters,
-  metersPerDegree, sampleGrid, type LatLon,
+  metersPerDegree, type LatLon,
 } from '../math/geo'
+import { TerrainCoverage, TERRAIN_COVERAGE_GLSL, sampleTerrainTriangles } from './terrain-coverage'
 import type { TileResponse } from './terrain-worker'
 
 /** Floating-origin world frame (§4.3): NED meters around a movable anchor. */
@@ -25,20 +28,15 @@ interface Ring {
   radiusM: number
   grid: number
   skirt: number
-  /** Coarse rings render this many meters low so fine rings win the depth
-   *  test where they overlap. A z9 tile spans ~60 km — its near edge
-   *  reaches under the aircraft even when its center passes the annulus
-   *  skip, and its coarse height sampling used to crest through z13/z11
-   *  (found by 13b imagery, but as old as the rings). Render-only:
-   *  heights/elevationAt are unbiased. */
+  /** Kept in the worker protocol; READY coverage now resolves overlap. */
   depthBiasM: number
 }
 
 const RINGS: Ring[] = [
   { z: 13, radiusM: 10_000, grid: 96, skirt: 45, depthBiasM: 0 },
-  { z: 11, radiusM: 48_000, grid: 96, skirt: 120, depthBiasM: 0.5 },
-  { z: 9, radiusM: 180_000, grid: 64, skirt: 400, depthBiasM: 6 },
-  { z: 7, radiusM: 700_000, grid: 48, skirt: 1200, depthBiasM: 18 },
+  { z: 11, radiusM: 48_000, grid: 96, skirt: 120, depthBiasM: 0 },
+  { z: 9, radiusM: 180_000, grid: 64, skirt: 400, depthBiasM: 0 },
+  { z: 7, radiusM: 700_000, grid: 48, skirt: 1200, depthBiasM: 0 },
 ]
 
 export interface RunwayFlatten {
@@ -53,6 +51,10 @@ export interface RunwayFlatten {
 
 interface Tile {
   key: string
+  requestId: number
+  baseMat?: THREE.ShaderMaterial
+  coverage?: TerrainCoverage
+  coverageTexture?: THREE.DataTexture
   z: number
   latC: number
   lonC: number
@@ -69,81 +71,107 @@ interface Tile {
   lastWanted: number
   /** Satellite imagery (13b) — near rings only (z ≥ 11). */
   imTex?: THREE.Texture
+  detailTex?: THREE.Texture
   imMat?: THREE.ShaderMaterial
   imQueued?: boolean
 }
 
 const TERRAIN_VERT = /* glsl */ `
+  uniform vec2 uNormalScale;
   varying vec3 vColor;
   varying vec3 vNormal;
-  varying float vDist;
+  varying float vDist, vCloudDepth;
   varying vec2 vUv;
   varying float vUrban;
   varying vec2 vWXZ;
+  varying float vAltitude;
   attribute vec3 color;
   attribute float urban;
   void main() {
     vColor = color;
     vUv = uv;
     vUrban = urban;
-    vNormal = normalize(mat3(modelMatrix) * normal);
+    vNormal = normalize(mat3(modelMatrix) * (normal * vec3(uNormalScale.x, 1.0, uNormalScale.y)));
     vec4 wp = modelMatrix * vec4(position, 1.0);
     vWXZ = wp.xz;
+    vAltitude = wp.y;
     float dx = wp.x - cameraPosition.x;
     float dz = wp.z - cameraPosition.z;
     float d2 = dx*dx + dz*dz;
     wp.y -= d2 / (2.0 * 6371000.0); // earth curvature drop
     vDist = sqrt(d2);
+    vCloudDepth = -(viewMatrix * wp).z;
     gl_Position = projectionMatrix * viewMatrix * wp;
   }
 `
 const TERRAIN_FRAG = /* glsl */ `
   uniform vec3 uSunDir;
-  uniform float uDayness;
-  uniform float uLowSun;
-  uniform float uFogDensity;
-  uniform sampler2D uImagery;
-  uniform float uHasImagery;
-  varying vec3 vColor;
-  varying vec3 vNormal;
-  varying float vDist;
-  varying vec2 vUv;
-  varying float vUrban;
-  varying vec2 vWXZ;
+  uniform float uDayness, uLowSun, uFogDensity, uHasImagery, uSunTransmission, uCloudDensity;
+  uniform vec3 uCloudColor;
+  uniform sampler2D uImagery, uSky;
+  uniform vec2 uWorldOffset;
+  varying vec3 vColor, vNormal;
+  varying float vDist, vUrban, vAltitude, vCloudDepth;
+  varying vec2 vUv, vWXZ;
+  ${SKY_LOOKUP}
+  ${TERRAIN_COVERAGE_GLSL}
+  float hash(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx)*0.1031);
+    p3 += dot(p3,p3.yzx+33.33);
+    return fract((p3.x+p3.y)*p3.z);
+  }
+  float noise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f*f*(3.0-2.0*f);
+    return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),
+      mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
+  }
   void main() {
-    float ndl = max(dot(normalize(vNormal), normalize(uSunDir)), 0.0);
-    vec3 lit = vColor * (0.08 + 0.30 * uDayness + 0.85 * uDayness * ndl);
-    // Satellite imagery (13b): the photo albedo has real-sun shading baked
-    // in, so the normal term is flattened to avoid double-shading slopes;
-    // the day/night curve still applies. Weighted by texture alpha (USGS
-    // no-data tiles are transparent — offshore/cross-border pixels fall
-    // back to the stylized ground) and faded out before the textured z11
-    // ring runs out — no hard imagery seam.
-    vec4 tex = texture2D(uImagery, vUv);
-    vec3 litIm = tex.rgb * (0.10 + 0.40 * uDayness + 0.60 * uDayness * mix(1.0, ndl, 0.4));
-    float imW = uHasImagery * tex.a * (1.0 - smoothstep(38000.0, 46000.0, vDist));
-    lit = mix(lit, litIm, imW);
-    // City glow (13c): NLCD developed classes emit a warm speckle at
-    // night — procedural cells, NOT real light points (recorded).
-    float night = clamp(1.0 - uDayness * 1.6, 0.0, 1.0);
-    if (night > 0.001 && vUrban > 0.001) {
-      // Sparse 12 m cells, faded in with distance: from altitude the city
-      // reads as a warm point-field; near the ground it stays dark (the
-      // hard cell edges would otherwise read as glowing tiles).
-      vec2 cell = floor(vWXZ / 12.0);
-      float h = fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
-      float speck = smoothstep(0.86, 0.93, h) * (0.5 + 0.5 * fract(h * 9.7));
-      float far = smoothstep(150.0, 700.0, vDist);
-      lit += vUrban * night * vec3(1.0, 0.72, 0.42) * (0.015 + 0.5 * speck * far);
+    if (coveredByReadyTerrain(vUv)) discard;
+    vec2 ground = vWXZ + uWorldOffset;
+    float ndl = max(dot(normalize(vNormal),normalize(uSunDir)),0.0);
+    vec3 sunTint = vec3(1.0,1.0-0.35*uLowSun,1.0-0.65*uLowSun);
+    // Vertex palette is authored as display RGB; imagery is tagged sRGB
+    // on upload and is decoded by the texture sampler into linear light.
+    vec3 albedo = pow(max(vColor,vec3(0)),vec3(2.2));
+    vec4 tex = texture2D(uImagery,vUv);
+    float imW = uHasImagery*tex.a*(1.0-smoothstep(38000.0,46000.0,vDist));
+    albedo = mix(albedo,tex.rgb,imW);
+    float footprint = max(length(dFdx(ground)),length(dFdy(ground)));
+    float macro = noise(ground*0.018);
+    float detail = noise(ground*0.7);
+    float nearDetail = (1.0-smoothstep(1.0,5.0,footprint));
+    // Broad biome variation is suppressed on photos; fine grain fades by
+    // pixel footprint, keeping low passes detailed and distant hills stable.
+    albedo *= mix(0.82+0.36*macro,1.0,imW*0.9);
+    albedo *= 1.0+(detail-0.5)*0.16*nearDetail;
+    float direct = mix(ndl,mix(1.0,ndl,0.4),imW);
+    vec3 lit = albedo*(vec3(0.015)+vec3(0.35,0.43,0.53)*uDayness+
+      sunTint*0.65*uDayness*direct*uSunTransmission);
+    float night = clamp(1.0-uDayness*1.6,0.0,1.0);
+    if (night>0.001 && vUrban>0.001) {
+      float h = hash(floor(ground/12.0));
+      float speck = smoothstep(0.86,0.93,h)*(0.5+0.5*fract(h*9.7));
+      lit += vUrban*night*vec3(1.0,0.5,0.16)*(0.005+0.4*speck*smoothstep(150.0,700.0,vDist));
     }
-    // MSFS-look G3: sun-aware aerial perspective — the haze warms toward
-    // the sun's azimuth as it drops (golden-hour terrain), stays cool
-    // blue-gray away from it and at high sun.
-    float sunAmt = max(dot(normalize(vWXZ - cameraPosition.xz), normalize(uSunDir.xz + vec2(1e-5))), 0.0);
-    vec3 hazeDay = mix(vec3(0.60, 0.69, 0.81), vec3(1.0, 0.70, 0.42), uLowSun * pow(sunAmt, 3.0) * 0.85);
-    vec3 haze = mix(vec3(0.02, 0.03, 0.05), hazeDay, uDayness);
-    float fog = 1.0 - exp(-vDist * uFogDensity);
-    gl_FragColor = vec4(mix(lit, haze, fog * 0.85), 1.0);
+    vec3 direction = normalize(vec3(vWXZ.x-cameraPosition.x,
+      vAltitude-cameraPosition.y,vWXZ.y-cameraPosition.z)+vec3(1e-5));
+    vec3 hazeDir = normalize(vec3(direction.x,max(direction.y,0.015),direction.z));
+    vec3 haze = skyRadiance(uSky,hazeDir);
+    // Integrate an exponential height density along the viewing segment.
+    float h0 = max(cameraPosition.y,0.0)/8000.0;
+    float h1 = max(vAltitude,0.0)/8000.0;
+    float dh = h1-h0;
+    float meanDensity = abs(dh)<0.01 ? exp(-0.5*(h0+h1)) : (exp(-h0)-exp(-h1))/dh;
+    float distance = length(vec3(vDist,vAltitude-cameraPosition.y,0.0));
+    float fog = 1.0-exp(-distance*uFogDensity*meanDensity);
+    lit = mix(lit,haze,fog);
+    gl_FragColor = vec4(lit,1.0);
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+    // Match standard materials: cloud fog is composed in output color space.
+    gl_FragColor.rgb = mix(gl_FragColor.rgb, linearToOutputTexel(vec4(uCloudColor,1.0)).rgb,
+      1.0-exp(-vCloudDepth*vCloudDepth*uCloudDensity*uCloudDensity));
   }
 `
 
@@ -156,6 +184,7 @@ export class TileManager {
   readonly material: THREE.ShaderMaterial
   private lastUpdatePos = { n: Infinity, e: Infinity }
   private stamp = 0
+  private nextRequestId = 0
   // Satellite imagery (13b): per-tile material clones share the base
   // material's uniform OBJECTS for light/fog (one write updates all) and
   // its GLSL source (three compiles one program for the lot).
@@ -163,6 +192,11 @@ export class TileManager {
   private imLoading = 0
   private readonly imQueue: string[] = []
   private imFailStreak = 0
+  private detailEnabled = true
+  private detailLoading: { key: string; controller: AbortController } | null = null
+  private detailWanted = new Set<string>()
+  private detailRetry = new Map<string, number>()
+  private lastDetailUpdate = -Infinity
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -179,8 +213,13 @@ export class TileManager {
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
         uDayness: { value: 1 },
         uLowSun: { value: 0 },
+        uSunTransmission: { value: 1 },
+        uCloudDensity: { value: 0 },
+        uCloudColor: { value: new THREE.Color(0xc8ccd2) },
         uFogDensity: { value: 9e-6 },
         uImagery: { value: white },
+        uSky: { value: white },
+        uWorldOffset: { value: new THREE.Vector2() },
         uHasImagery: { value: 0 },
       },
       vertexShader: TERRAIN_VERT,
@@ -193,10 +232,58 @@ export class TileManager {
     }
   }
 
-  setLight(sunDir: THREE.Vector3, dayness: number, lowSun = 0): void {
+  setSky(texture: THREE.Texture): void { this.material.uniforms.uSky!.value = texture }
+  setCloudFog(fog: THREE.FogExp2): void {
+    this.material.uniforms.uCloudDensity!.value = fog.density
+    ;(this.material.uniforms.uCloudColor!.value as THREE.Color).copy(fog.color)
+  }
+  setDetailEnabled(enabled: boolean): void { this.detailEnabled = enabled; this.lastDetailUpdate = -Infinity }
+
+  /** At most two 2048px mosaics (~43 MB with mipmaps), loaded one at a
+   * time with four requests in flight. Base photos stay visible on failure. */
+  updateDetail(north: number, east: number, aglM: number, now: number): void {
+    if (now - this.lastDetailUpdate < 2000) return
+    this.lastDetailUpdate = now
+    const near = this.imageryOn && this.detailEnabled && aglM < 1800
+      ? [...this.tiles.values()].filter(t => t.z === 13 && t.imTex && t.imMat)
+        .map(t => { const p = this.frame.toLocal(t.latC, t.lonC); return { t, d: Math.hypot(p.n-north, p.e-east) } })
+        .filter(p => p.d < 4200).sort((a,b) => a.d-b.d).slice(0,2).map(p => p.t)
+      : []
+    this.detailWanted = new Set(near.map(t => t.key))
+    for (const t of this.tiles.values()) if (t.detailTex && !this.detailWanted.has(t.key)) {
+      if (t.imMat) t.imMat.uniforms.uImagery!.value = t.imTex
+      t.detailTex.dispose()
+      t.detailTex = undefined
+    }
+    if (this.detailLoading && !this.detailWanted.has(this.detailLoading.key)) this.detailLoading.controller.abort()
+    if (this.detailLoading) return
+    const tile = near.find(t => !t.detailTex && (this.detailRetry.get(t.key) ?? 0) < now)
+    if (!tile) return
+    const controller = new AbortController()
+    this.detailLoading = { key: tile.key, controller }
+    loadDetailedImagery(tile.key, AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]))
+      .then(texture => {
+        if (this.tiles.get(tile.key) !== tile || !this.detailWanted.has(tile.key) || !tile.imMat || !this.imageryOn) {
+          texture.dispose()
+          return
+        }
+        tile.detailTex = texture
+        tile.imMat.uniforms.uImagery!.value = texture
+        this.detailRetry.delete(tile.key)
+      })
+      .catch(() => { this.detailRetry.set(tile.key, performance.now()+60_000) })
+      .finally(() => { this.detailLoading = null; this.lastDetailUpdate = -Infinity })
+  }
+  get fogDensity(): number { return this.material.uniforms.uFogDensity!.value as number }
+  setWorldOffset(east: number, north: number): void {
+    ;(this.material.uniforms.uWorldOffset!.value as THREE.Vector2).set(east,-north)
+  }
+
+  setLight(sunDir: THREE.Vector3, dayness: number, lowSun = 0, sunTransmission = 1): void {
     ;(this.material.uniforms.uSunDir!.value as THREE.Vector3).copy(sunDir)
     this.material.uniforms.uDayness!.value = dayness
     this.material.uniforms.uLowSun!.value = lowSun
+    this.material.uniforms.uSunTransmission!.value = sunTransmission
   }
 
   /** Meteorological visibility → exponential fog (95% obscuration at the
@@ -227,9 +314,6 @@ export class TileManager {
           const d = this.frame.toLocal(cLat, cLon)
           const dist = Math.hypot(d.n - nedN, d.e - nedE)
           if (dist > ring.radiusM + sizeM) continue
-          // Annulus: skip if a higher-resolution ring owns this area.
-          const prev = RINGS[RINGS.indexOf(ring) - 1]
-          if (prev && dist + sizeM * 0.5 < prev.radiusM * 0.82) continue
           this.want(ring, x, y)
         }
       }
@@ -251,9 +335,9 @@ export class TileManager {
     const lonE = tileXToLon(x + 1, ring.z)
     const latC = (latN + latS) / 2
     const lonC = (lonW + lonE) / 2
-    const m = metersPerDegree(latC)
+    const m = metersPerDegree(this.frame.anchor.lat)
     const tile: Tile = {
-      key, z: ring.z, latC, lonC, latN, latS, lonW, lonE,
+      key, requestId: ++this.nextRequestId, z: ring.z, latC, lonC, latN, latS, lonW, lonE,
       sizeEastM: (lonE - lonW) * m.east,
       sizeNorthM: (latN - latS) * m.north,
       state: 'loading',
@@ -266,9 +350,10 @@ export class TileManager {
   private pump(): void {
     while (this.inFlight < 8 && this.queue.length > 0) {
       const tile = this.queue.shift()!
-      if (!this.tiles.has(tile.key)) continue
+      if (this.tiles.get(tile.key) !== tile) continue
       const ring = RINGS.find((r) => r.z === tile.z)!
-      const m = metersPerDegree(tile.latC)
+      // Preserve the geometry build frame even if queued across a rebase.
+      const m = { east: tile.sizeEastM / (tile.lonE - tile.lonW), north: tile.sizeNorthM / (tile.latN - tile.latS) }
       const runways = this.runwaysInBounds(tile.latS - 0.02, tile.latN + 0.02, tile.lonW - 0.02, tile.lonE + 0.02)
         .map((rw) => ({
           ax: (rw.lo1 - tile.lonC) * m.east,
@@ -284,6 +369,7 @@ export class TileManager {
       const [z, x, y] = tile.key.split('/')
       worker.postMessage({
         key: tile.key,
+        requestId: tile.requestId,
         url: `/proxy/terrain/${z}/${x}/${y}.png`,
         // NLCD biome coloring for the near rings only (z11/z13) — far rings
         // keep the elevation ramp to bound WMS load; the visual difference
@@ -303,7 +389,7 @@ export class TileManager {
     this.inFlight--
     this.pump()
     const tile = this.tiles.get(resp.key)
-    if (!tile) return
+    if (!tile || resp.requestId !== tile.requestId) return
     if (resp.error) {
       tile.state = 'failed'
       // 9C: a failed fetch left a PERMANENT terrain hole — the entry
@@ -321,7 +407,23 @@ export class TileManager {
     geo.setAttribute('uv', new THREE.BufferAttribute(resp.uvs, 2))
     geo.setAttribute('urban', new THREE.BufferAttribute(resp.urban, 1))
     geo.setIndex(new THREE.BufferAttribute(resp.indices, 1))
-    const mesh = new THREE.Mesh(geo, this.material)
+    tile.coverage = new TerrainCoverage(tile.key)
+    tile.coverageTexture = new THREE.DataTexture(tile.coverage.cells, tile.coverage.size, tile.coverage.size, THREE.RedFormat)
+    tile.coverageTexture.minFilter = tile.coverageTexture.magFilter = THREE.NearestFilter
+    tile.coverageTexture.generateMipmaps = false
+    tile.coverageTexture.needsUpdate = true
+    tile.baseMat = new THREE.ShaderMaterial({
+      uniforms: {
+        ...this.material.uniforms,
+        uNormalScale: { value: new THREE.Vector2(1, 1) },
+        uCoverage: { value: tile.coverageTexture },
+        uCoverageSize: { value: tile.coverage.size },
+        uCoverageRows: { value: tile.coverage.rows },
+      },
+      vertexShader: TERRAIN_VERT, fragmentShader: TERRAIN_FRAG,
+    })
+    const mesh = new THREE.Mesh(geo, tile.baseMat)
+    mesh.userData.terrainKey = tile.key
     mesh.frustumCulled = true
     // Lower zooms render first (underneath overlapping high-res tiles).
     mesh.renderOrder = tile.z
@@ -331,6 +433,7 @@ export class TileManager {
     tile.state = 'ready'
     this.placeTile(tile)
     this.scene.add(mesh)
+    this.refreshCoverage(tile)
     this.queueImagery(tile)
   }
 
@@ -346,12 +449,16 @@ export class TileManager {
       for (const t of this.tiles.values()) if (t.state === 'ready') this.queueImagery(t)
     } else {
       this.imQueue.length = 0
+      this.detailLoading?.controller.abort()
+      this.detailWanted.clear()
       for (const t of this.tiles.values()) {
         t.imQueued = false
-        if (t.imMat && t.mesh) t.mesh.material = this.material
+        if (t.imMat && t.mesh) t.mesh.material = t.baseMat!
         t.imTex?.dispose()
+        t.detailTex?.dispose()
         t.imMat?.dispose()
         t.imTex = undefined
+        t.detailTex = undefined
         t.imMat = undefined
       }
     }
@@ -419,7 +526,7 @@ export class TileManager {
             if (v > vMax) vMax = v
           }
         }
-        const img = t.imTex.image as { width?: number; height?: number } | undefined
+        const img = (t.detailTex ?? t.imTex).image as { width?: number; height?: number } | undefined
         sample = {
           key: t.key,
           material: t.mesh.material === t.imMat ? 'imagery' : 'base',
@@ -433,6 +540,8 @@ export class TileManager {
     return {
       on: this.imageryOn, tiles: this.tiles.size, ready, withTex, queued,
       loading: this.imLoading, failStreak: this.imFailStreak, bare, sample,
+      detailed: [...this.tiles.values()].filter(t => t.detailTex).map(t => t.key),
+      detailLoading: this.detailLoading?.key ?? null,
     }
   }
 
@@ -501,16 +610,13 @@ export class TileManager {
           } else {
             tex.wrapS = THREE.ClampToEdgeWrapping
             tex.wrapT = THREE.ClampToEdgeWrapping
-            tex.anisotropy = 4
+            tex.colorSpace = THREE.SRGBColorSpace
+            tex.anisotropy = 8
             t.imTex = tex
             t.imMat = new THREE.ShaderMaterial({
               uniforms: {
-                // Shared objects — TileManager.setLight/setVisibilityM
-                // writes reach every clone through the base material.
-                uSunDir: this.material.uniforms.uSunDir!,
-                uDayness: this.material.uniforms.uDayness!,
-                uLowSun: this.material.uniforms.uLowSun!,
-                uFogDensity: this.material.uniforms.uFogDensity!,
+                // Lighting is shared globally; coverage belongs to this tile.
+                ...t.baseMat!.uniforms,
                 uImagery: { value: tex },
                 uHasImagery: { value: 1 },
               },
@@ -542,6 +648,11 @@ export class TileManager {
     if (!tile.mesh) return
     const p = this.frame.toLocal(tile.latC, tile.lonC)
     tile.mesh.position.set(p.e, 0, -p.n)
+    const m = metersPerDegree(this.frame.anchor.lat)
+    tile.mesh.scale.set((tile.lonE - tile.lonW) * m.east / tile.sizeEastM, 1,
+      (tile.latN - tile.latS) * m.north / tile.sizeNorthM)
+    ;(tile.baseMat!.uniforms.uNormalScale!.value as THREE.Vector2).set(
+      1 / tile.mesh.scale.x ** 2, 1 / tile.mesh.scale.z ** 2)
   }
 
   /** Reposition every tile after an anchor rebase. */
@@ -567,9 +678,38 @@ export class TileManager {
         t.mesh.geometry.dispose()
       }
       t.imTex?.dispose()
+      t.detailTex?.dispose()
       t.imMat?.dispose()
+      t.baseMat?.dispose()
+      t.coverageTexture?.dispose()
       this.tiles.delete(t.key)
+      this.detailRetry.delete(t.key)
     }
+    this.refreshCoverage()
+  }
+
+  private refreshCoverage(changed?: Tile): void {
+    const ready = [...this.tiles.values()].filter(t => t.state === 'ready' && t.mesh).map(t => t.key)
+    for (const tile of this.tiles.values()) {
+      if (!tile.coverage || !tile.coverageTexture) continue
+      // A new READY tile can affect only itself and its loaded ancestors.
+      // Eviction refreshes the retained set once after the entire batch.
+      if (changed && tile !== changed && (tile.z >= changed.z ||
+        changed.lonW < tile.lonW || changed.lonE > tile.lonE ||
+        changed.latS < tile.latS || changed.latN > tile.latN)) continue
+      tile.coverage.rebuild(ready)
+      tile.coverageTexture.needsUpdate = true
+    }
+  }
+
+  /** CPU equivalent of production fragment visibility for terrain inspection.
+   * Ray hits still include hidden geometry, so filter them using this predicate. */
+  isSurfaceVisible(object: THREE.Object3D, lat: number, lon: number): boolean {
+    const tile = this.tiles.get(object.userData.terrainKey as string)
+    if (!tile || tile.mesh !== object || tile.state !== 'ready' || !object.visible) return false
+    const u = (lon - tile.lonW) / (tile.lonE - tile.lonW)
+    const v = (tile.latN - lat) / (tile.latN - tile.latS)
+    return !tile.coverage?.covered(u, v)
   }
 
   /** Terrain elevation (m MSL) at lat/lon from the best loaded tile. */
@@ -581,12 +721,35 @@ export class TileManager {
       if (tile?.state === 'ready' && tile.heights && tile.gridSize) {
         const fx = (lon - tile.lonW) / (tile.lonE - tile.lonW)
         const fy = (tile.latN - lat) / (tile.latN - tile.latS)
-        const h = sampleGrid(tile.heights, tile.gridSize, fx, fy)
+        const h = sampleTerrainTriangles(tile.heights, tile.gridSize, fx, fy)
         // Flaky decode → non-finite sample: fall through to a coarser ring.
         if (Number.isFinite(h)) return h
       }
     }
     return 0
+  }
+
+  /** Release a streamed scene (also used by the isolated inspection harness). */
+  dispose(): void {
+    this.queue.length = 0
+    this.imQueue.length = 0
+    this.setImagery(false)
+    this.detailLoading?.controller.abort()
+    for (const worker of this.workers) worker.terminate()
+    for (const tile of this.tiles.values()) {
+      if (tile.mesh) {
+        this.scene.remove(tile.mesh)
+        tile.mesh.geometry.dispose()
+      }
+      tile.imTex?.dispose()
+      tile.detailTex?.dispose()
+      tile.imMat?.dispose()
+      tile.baseMat?.dispose()
+      tile.coverageTexture?.dispose()
+    }
+    this.tiles.clear()
+    ;(this.material.uniforms.uImagery!.value as THREE.Texture).dispose()
+    this.material.dispose()
   }
 
   get readyCount(): number {

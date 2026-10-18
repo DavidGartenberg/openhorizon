@@ -1,0 +1,13 @@
+# Stage7a — terrain visibility must agree with loaded elevation
+
+Read verification-brief.md for the concrete KHAF reproduction. Own bounded terrain repair in src/world/tiles.ts, related terrain helpers/worker only as necessary, focused tests, and tests/browser/terrain-inspection.{ts,html}. Root owns browser operation. Preserve all existing dirty work; no commits/publishing.
+
+Problem confirmed: at KHAF, z7 visible geometry rises about49m above z13/physics despite existing biases. Coarse rings must be clipped wherever actual ready higher-resolution terrain covers their footprint. Keep coarse fallback when fine tiles are loading, failed, absent, or evicted; do not simply lower geometry farther or skip whole coarse tiles based on desired coverage. Stop deleting requested coarse fallback solely because a desired fine ring should exist.
+
+Use exact tile/geographic coverage boundaries, not a low-resolution world mask that erases kilometers of fallback. Choose a bounded efficient representation; do not loop over hundreds of rectangles per fragment. Keep shader and CPU visibility predicates consistent so the browser inspection filters raw geometry hits by actual production visibility. Pixel/real render confirmation is root's responsibility, not just a mock raycast.
+
+Tile local geometry currently uses metersPerDegree(tile.latC), but WorldFrame placement and elevation queries use anchor scale. Reconcile horizontal footprint with the current frame including rebase, late worker replies and runway flatten input. Adjacent tiles must meet at the same geographic edge. Avoid returning incorrect fine coverage where mesh is not actually present. Ready/fail/eviction/rebase must update coverage; imagery off/on and detail material changes must retain it without one tile's uniforms leaking into others.
+
+Tests first: synthetic coarse height above fine, missing/loading/failure coarse fallback, ready removal/eviction restores fallback, adjacent boundaries, multiple LODs, rebase/late response, imagery toggling/material ownership. Check exact geometry/elevation agreement near runway/edge; existing sampling uses bilinear heights while render uses triangles, quantify/fix material mismatch as needed without unrelated physics refactor. Preserve ocean visibility, curvature, lighting/cloud fog/imagery features and bounded resources.
+
+Deliver terrain-report.md with design, files, focused commands/results, measured limitations, and browser-harness instructions. Keep root informed when code is stable for browser QA. Full-project tests/build are root's separate Stage7 gate; do not repeatedly run entire suite.

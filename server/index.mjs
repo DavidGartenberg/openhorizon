@@ -32,7 +32,7 @@ app.get('/health', (_req, res) => {
 
 // Data endpoints — identical behavior to the dev middleware.
 app.use((req, res, next) => {
-  route(req.url ?? '', res, req.method)
+  route(req.url ?? '', res, req.method, req)
     .then((handled) => {
       if (!handled) next()
     })

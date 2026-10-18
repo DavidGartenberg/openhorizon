@@ -3,3 +3,7 @@ dist/
 server/cache/
 *.log
 .DS_Store
+
+# User-supplied licensed audio (see public/audio/boeing-custom/README.md)
+public/audio/boeing-custom/*
+!public/audio/boeing-custom/README.md

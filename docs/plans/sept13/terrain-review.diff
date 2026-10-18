@@ -1,0 +1,1062 @@
+Snapshot preterrain baseline to finalqueueguard. No commits.
+--- before/src/world/tiles.ts
++++ after/src/world/tiles.ts
+@@ -1,139 +1,142 @@
+ import * as THREE from 'three'
+ import { SKY_LOOKUP } from '../render/atmosphere-shader'
+ import { loadDetailedImagery } from './imagery-detail'
+ import {
+   lonToTileX, latToTileY, tileXToLon, tileYToLat, toNedMeters, fromNedMeters,
+-  metersPerDegree, sampleGrid, type LatLon,
++  metersPerDegree, type LatLon,
+ } from '../math/geo'
++import { TerrainCoverage, TERRAIN_COVERAGE_GLSL, sampleTerrainTriangles } from './terrain-coverage'
+ import type { TileResponse } from './terrain-worker'
+ 
+ /** Floating-origin world frame (§4.3): NED meters around a movable anchor. */
+ export class WorldFrame {
+   anchor: LatLon
+   constructor(anchor: LatLon) {
+     this.anchor = { ...anchor }
+   }
+   toLocal(lat: number, lon: number): { n: number; e: number } {
+     const r = toNedMeters(lat, lon, this.anchor)
+     return { n: r.north, e: r.east }
+   }
+   fromLocal(n: number, e: number): LatLon {
+     return fromNedMeters(n, e, this.anchor)
+   }
+ }
+ 
+ interface Ring {
+   z: number
+   radiusM: number
+   grid: number
+   skirt: number
+-  /** Coarse rings render this many meters low so fine rings win the depth
+-   *  test where they overlap. A z9 tile spans ~60 km — its near edge
+-   *  reaches under the aircraft even when its center passes the annulus
+-   *  skip, and its coarse height sampling used to crest through z13/z11
+-   *  (found by 13b imagery, but as old as the rings). Render-only:
+-   *  heights/elevationAt are unbiased. */
++  /** Kept in the worker protocol; READY coverage now resolves overlap. */
+   depthBiasM: number
+ }
+ 
+ const RINGS: Ring[] = [
+   { z: 13, radiusM: 10_000, grid: 96, skirt: 45, depthBiasM: 0 },
+-  { z: 11, radiusM: 48_000, grid: 96, skirt: 120, depthBiasM: 0.5 },
+-  { z: 9, radiusM: 180_000, grid: 64, skirt: 400, depthBiasM: 6 },
+-  { z: 7, radiusM: 700_000, grid: 48, skirt: 1200, depthBiasM: 18 },
++  { z: 11, radiusM: 48_000, grid: 96, skirt: 120, depthBiasM: 0 },
++  { z: 9, radiusM: 180_000, grid: 64, skirt: 400, depthBiasM: 0 },
++  { z: 7, radiusM: 700_000, grid: 48, skirt: 1200, depthBiasM: 0 },
+ ]
+ 
+ export interface RunwayFlatten {
+   la1: number
+   lo1: number
+   la2: number
+   lo2: number
+   e1M: number
+   e2M: number
+   halfWidthM: number
+ }
+ 
+ interface Tile {
+   key: string
++  requestId: number
++  baseMat?: THREE.ShaderMaterial
++  coverage?: TerrainCoverage
++  coverageTexture?: THREE.DataTexture
+   z: number
+   latC: number
+   lonC: number
+   latN: number
+   latS: number
+   lonW: number
+   lonE: number
+   sizeEastM: number
+   sizeNorthM: number
+   mesh?: THREE.Mesh
+   heights?: Float32Array
+   gridSize?: number
+   state: 'loading' | 'ready' | 'failed'
+   lastWanted: number
+   /** Satellite imagery (13b) — near rings only (z ≥ 11). */
+   imTex?: THREE.Texture
+   detailTex?: THREE.Texture
+   imMat?: THREE.ShaderMaterial
+   imQueued?: boolean
+ }
+ 
+ const TERRAIN_VERT = /* glsl */ `
++  uniform vec2 uNormalScale;
+   varying vec3 vColor;
+   varying vec3 vNormal;
+   varying float vDist, vCloudDepth;
+   varying vec2 vUv;
+   varying float vUrban;
+   varying vec2 vWXZ;
+   varying float vAltitude;
+   attribute vec3 color;
+   attribute float urban;
+   void main() {
+     vColor = color;
+     vUv = uv;
+     vUrban = urban;
+-    vNormal = normalize(mat3(modelMatrix) * normal);
++    vNormal = normalize(mat3(modelMatrix) * (normal * vec3(uNormalScale.x, 1.0, uNormalScale.y)));
+     vec4 wp = modelMatrix * vec4(position, 1.0);
+     vWXZ = wp.xz;
+     vAltitude = wp.y;
+     float dx = wp.x - cameraPosition.x;
+     float dz = wp.z - cameraPosition.z;
+     float d2 = dx*dx + dz*dz;
+     wp.y -= d2 / (2.0 * 6371000.0); // earth curvature drop
+     vDist = sqrt(d2);
+     vCloudDepth = -(viewMatrix * wp).z;
+     gl_Position = projectionMatrix * viewMatrix * wp;
+   }
+ `
+ const TERRAIN_FRAG = /* glsl */ `
+   uniform vec3 uSunDir;
+   uniform float uDayness, uLowSun, uFogDensity, uHasImagery, uSunTransmission, uCloudDensity;
+   uniform vec3 uCloudColor;
+   uniform sampler2D uImagery, uSky;
+   uniform vec2 uWorldOffset;
+   varying vec3 vColor, vNormal;
+   varying float vDist, vUrban, vAltitude, vCloudDepth;
+   varying vec2 vUv, vWXZ;
+   ${SKY_LOOKUP}
++  ${TERRAIN_COVERAGE_GLSL}
+   float hash(vec2 p) {
+     vec3 p3 = fract(vec3(p.xyx)*0.1031);
+     p3 += dot(p3,p3.yzx+33.33);
+     return fract((p3.x+p3.y)*p3.z);
+   }
+   float noise(vec2 p) {
+     vec2 i = floor(p), f = fract(p);
+     f = f*f*(3.0-2.0*f);
+     return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),
+       mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
+   }
+   void main() {
++    if (coveredByReadyTerrain(vUv)) discard;
+     vec2 ground = vWXZ + uWorldOffset;
+     float ndl = max(dot(normalize(vNormal),normalize(uSunDir)),0.0);
+     vec3 sunTint = vec3(1.0,1.0-0.35*uLowSun,1.0-0.65*uLowSun);
+     // Vertex palette is authored as display RGB; imagery is tagged sRGB
+     // on upload and is decoded by the texture sampler into linear light.
+     vec3 albedo = pow(max(vColor,vec3(0)),vec3(2.2));
+     vec4 tex = texture2D(uImagery,vUv);
+     float imW = uHasImagery*tex.a*(1.0-smoothstep(38000.0,46000.0,vDist));
+     albedo = mix(albedo,tex.rgb,imW);
+     float footprint = max(length(dFdx(ground)),length(dFdy(ground)));
+     float macro = noise(ground*0.018);
+     float detail = noise(ground*0.7);
+@@ -172,24 +175,25 @@
+   }
+ `
+ 
+ export class TileManager {
+   private readonly tiles = new Map<string, Tile>()
+   private readonly workers: Worker[] = []
+   private nextWorker = 0
+   private inFlight = 0
+   private readonly queue: Tile[] = []
+   readonly material: THREE.ShaderMaterial
+   private lastUpdatePos = { n: Infinity, e: Infinity }
+   private stamp = 0
++  private nextRequestId = 0
+   // Satellite imagery (13b): per-tile material clones share the base
+   // material's uniform OBJECTS for light/fog (one write updates all) and
+   // its GLSL source (three compiles one program for the lot).
+   private imageryOn = true
+   private imLoading = 0
+   private readonly imQueue: string[] = []
+   private imFailStreak = 0
+   private detailEnabled = true
+   private detailLoading: { key: string; controller: AbortController } | null = null
+   private detailWanted = new Set<string>()
+   private detailRetry = new Map<string, number>()
+   private lastDetailUpdate = -Infinity
+@@ -301,148 +305,164 @@
+       const ty = latToTileY(pos.lat, ring.z)
+       const sizeM = (Math.cos((pos.lat * Math.PI) / 180) * 40_075_017) / 2 ** ring.z
+       const span = Math.ceil(ring.radiusM / sizeM)
+       for (let dy = -span; dy <= span; dy++) {
+         for (let dx = -span; dx <= span; dx++) {
+           const x = Math.floor(tx) + dx
+           const y = Math.floor(ty) + dy
+           const cLat = tileYToLat(y + 0.5, ring.z)
+           const cLon = tileXToLon(x + 0.5, ring.z)
+           const d = this.frame.toLocal(cLat, cLon)
+           const dist = Math.hypot(d.n - nedN, d.e - nedE)
+           if (dist > ring.radiusM + sizeM) continue
+-          // Annulus: skip if a higher-resolution ring owns this area.
+-          const prev = RINGS[RINGS.indexOf(ring) - 1]
+-          if (prev && dist + sizeM * 0.5 < prev.radiusM * 0.82) continue
+           this.want(ring, x, y)
+         }
+       }
+     }
+     this.evict(nedN, nedE)
+     this.pump()
+   }
+ 
+   private want(ring: Ring, x: number, y: number): void {
+     const key = `${ring.z}/${x}/${y}`
+     const existing = this.tiles.get(key)
+     if (existing) {
+       existing.lastWanted = this.stamp
+       return
+     }
+     const latN = tileYToLat(y, ring.z)
+     const latS = tileYToLat(y + 1, ring.z)
+     const lonW = tileXToLon(x, ring.z)
+     const lonE = tileXToLon(x + 1, ring.z)
+     const latC = (latN + latS) / 2
+     const lonC = (lonW + lonE) / 2
+-    const m = metersPerDegree(latC)
++    const m = metersPerDegree(this.frame.anchor.lat)
+     const tile: Tile = {
+-      key, z: ring.z, latC, lonC, latN, latS, lonW, lonE,
++      key, requestId: ++this.nextRequestId, z: ring.z, latC, lonC, latN, latS, lonW, lonE,
+       sizeEastM: (lonE - lonW) * m.east,
+       sizeNorthM: (latN - latS) * m.north,
+       state: 'loading',
+       lastWanted: this.stamp,
+     }
+     this.tiles.set(key, tile)
+     this.queue.push(tile)
+   }
+ 
+   private pump(): void {
+     while (this.inFlight < 8 && this.queue.length > 0) {
+       const tile = this.queue.shift()!
+-      if (!this.tiles.has(tile.key)) continue
++      if (this.tiles.get(tile.key) !== tile) continue
+       const ring = RINGS.find((r) => r.z === tile.z)!
+-      const m = metersPerDegree(tile.latC)
++      // Preserve the geometry build frame even if queued across a rebase.
++      const m = { east: tile.sizeEastM / (tile.lonE - tile.lonW), north: tile.sizeNorthM / (tile.latN - tile.latS) }
+       const runways = this.runwaysInBounds(tile.latS - 0.02, tile.latN + 0.02, tile.lonW - 0.02, tile.lonE + 0.02)
+         .map((rw) => ({
+           ax: (rw.lo1 - tile.lonC) * m.east,
+           ay: (rw.la1 - tile.latC) * m.north,
+           bx: (rw.lo2 - tile.lonC) * m.east,
+           by: (rw.la2 - tile.latC) * m.north,
+           ha: rw.e1M,
+           hb: rw.e2M,
+           halfW: rw.halfWidthM,
+         }))
+       this.inFlight++
+       const worker = this.workers[this.nextWorker++ % this.workers.length]!
+       const [z, x, y] = tile.key.split('/')
+       worker.postMessage({
+         key: tile.key,
++        requestId: tile.requestId,
+         url: `/proxy/terrain/${z}/${x}/${y}.png`,
+         // NLCD biome coloring for the near rings only (z11/z13) — far rings
+         // keep the elevation ramp to bound WMS load; the visual difference
+         // at 60+ km is negligible under haze.
+         landcoverUrl: tile.z >= 11 ? `/proxy/landcover/${z}/${x}/${y}.png` : undefined,
+         gridSize: ring.grid,
+         sizeEastM: tile.sizeEastM,
+         sizeNorthM: tile.sizeNorthM,
+         runways,
+         skirtDepthM: ring.skirt,
+         depthBiasM: ring.depthBiasM,
+       })
+     }
+   }
+ 
+   private onTileBuilt(resp: TileResponse): void {
+     this.inFlight--
+     this.pump()
+     const tile = this.tiles.get(resp.key)
+-    if (!tile) return
++    if (!tile || resp.requestId !== tile.requestId) return
+     if (resp.error) {
+       tile.state = 'failed'
+       // 9C: a failed fetch left a PERMANENT terrain hole — the entry
+       // blocked any re-request. Forget it after 15 s so the normal
+       // update pass re-creates and refetches the tile.
+       setTimeout(() => {
+         if (this.tiles.get(resp.key) === tile && tile.state === 'failed') this.tiles.delete(resp.key)
+       }, 15_000)
+       return
+     }
+     const geo = new THREE.BufferGeometry()
+     geo.setAttribute('position', new THREE.BufferAttribute(resp.positions, 3))
+     geo.setAttribute('normal', new THREE.BufferAttribute(resp.normals, 3))
+     geo.setAttribute('color', new THREE.BufferAttribute(resp.colors, 3))
+     geo.setAttribute('uv', new THREE.BufferAttribute(resp.uvs, 2))
+     geo.setAttribute('urban', new THREE.BufferAttribute(resp.urban, 1))
+     geo.setIndex(new THREE.BufferAttribute(resp.indices, 1))
+-    const mesh = new THREE.Mesh(geo, this.material)
++    tile.coverage = new TerrainCoverage(tile.key)
++    tile.coverageTexture = new THREE.DataTexture(tile.coverage.cells, tile.coverage.size, tile.coverage.size, THREE.RedFormat)
++    tile.coverageTexture.minFilter = tile.coverageTexture.magFilter = THREE.NearestFilter
++    tile.coverageTexture.generateMipmaps = false
++    tile.coverageTexture.needsUpdate = true
++    tile.baseMat = new THREE.ShaderMaterial({
++      uniforms: {
++        ...this.material.uniforms,
++        uNormalScale: { value: new THREE.Vector2(1, 1) },
++        uCoverage: { value: tile.coverageTexture },
++        uCoverageSize: { value: tile.coverage.size },
++        uCoverageRows: { value: tile.coverage.rows },
++      },
++      vertexShader: TERRAIN_VERT, fragmentShader: TERRAIN_FRAG,
++    })
++    const mesh = new THREE.Mesh(geo, tile.baseMat)
++    mesh.userData.terrainKey = tile.key
+     mesh.frustumCulled = true
+     // Lower zooms render first (underneath overlapping high-res tiles).
+     mesh.renderOrder = tile.z
+     tile.mesh = mesh
+     tile.heights = resp.heights
+     tile.gridSize = resp.gridSize
+     tile.state = 'ready'
+     this.placeTile(tile)
+     this.scene.add(mesh)
++    this.refreshCoverage(tile)
+     this.queueImagery(tile)
+   }
+ 
+   // ---- satellite imagery (13b) ----
+ 
+   /** Toggle satellite imagery (near rings). OFF reverts every tile to the
+    *  stylized vertex-color ground and frees textures. */
+   setImagery(on: boolean): void {
+     if (on === this.imageryOn) return
+     this.imageryOn = on
+     this.imFailStreak = 0
+     if (on) {
+       for (const t of this.tiles.values()) if (t.state === 'ready') this.queueImagery(t)
+     } else {
+       this.imQueue.length = 0
+       this.detailLoading?.controller.abort()
+       this.detailWanted.clear()
+       for (const t of this.tiles.values()) {
+         t.imQueued = false
+-        if (t.imMat && t.mesh) t.mesh.material = this.material
++        if (t.imMat && t.mesh) t.mesh.material = t.baseMat!
+         t.imTex?.dispose()
+         t.detailTex?.dispose()
+         t.imMat?.dispose()
+         t.imTex = undefined
+         t.detailTex = undefined
+         t.imMat = undefined
+       }
+     }
+   }
+ 
+   get imageryEnabled(): boolean {
+     return this.imageryOn
+@@ -586,35 +606,26 @@
+           this.imFailStreak = 0
+           const t = this.tiles.get(key)
+           if (!t || !this.imageryOn || t.imTex || !t.mesh) {
+             tex.dispose()
+           } else {
+             tex.wrapS = THREE.ClampToEdgeWrapping
+             tex.wrapT = THREE.ClampToEdgeWrapping
+             tex.colorSpace = THREE.SRGBColorSpace
+             tex.anisotropy = 8
+             t.imTex = tex
+             t.imMat = new THREE.ShaderMaterial({
+               uniforms: {
+-                // Shared objects — TileManager.setLight/setVisibilityM
+-                // writes reach every clone through the base material.
+-                uSunDir: this.material.uniforms.uSunDir!,
+-                uDayness: this.material.uniforms.uDayness!,
+-                uLowSun: this.material.uniforms.uLowSun!,
+-                uSunTransmission: this.material.uniforms.uSunTransmission!,
+-                uCloudDensity: this.material.uniforms.uCloudDensity!,
+-                uCloudColor: this.material.uniforms.uCloudColor!,
+-                uFogDensity: this.material.uniforms.uFogDensity!,
+-                uSky: this.material.uniforms.uSky!,
+-                uWorldOffset: this.material.uniforms.uWorldOffset!,
++                // Lighting is shared globally; coverage belongs to this tile.
++                ...t.baseMat!.uniforms,
+                 uImagery: { value: tex },
+                 uHasImagery: { value: 1 },
+               },
+               vertexShader: TERRAIN_VERT,
+               fragmentShader: TERRAIN_FRAG,
+             })
+             t.mesh.material = t.imMat
+           }
+           if (t) t.imQueued = false
+           this.pumpImagery()
+         })
+         .catch(() => {
+@@ -628,24 +639,29 @@
+             this.imageryOn = false
+             console.warn('[openhorizon] satellite imagery auto-off after repeated failures — stylized terrain fallback (IMAGERY ON to retry)')
+           }
+           this.pumpImagery()
+         })
+     }
+   }
+ 
+   private placeTile(tile: Tile): void {
+     if (!tile.mesh) return
+     const p = this.frame.toLocal(tile.latC, tile.lonC)
+     tile.mesh.position.set(p.e, 0, -p.n)
++    const m = metersPerDegree(this.frame.anchor.lat)
++    tile.mesh.scale.set((tile.lonE - tile.lonW) * m.east / tile.sizeEastM, 1,
++      (tile.latN - tile.latS) * m.north / tile.sizeNorthM)
++    ;(tile.baseMat!.uniforms.uNormalScale!.value as THREE.Vector2).set(
++      1 / tile.mesh.scale.x ** 2, 1 / tile.mesh.scale.z ** 2)
+   }
+ 
+   /** Reposition every tile after an anchor rebase. */
+   onRebase(): void {
+     for (const tile of this.tiles.values()) this.placeTile(tile)
+     this.lastUpdatePos = { n: Infinity, e: Infinity }
+   }
+ 
+   private evict(nedN: number, nedE: number): void {
+     if (this.tiles.size < 340) return
+     const candidates = [...this.tiles.values()]
+       .filter((t) => t.lastWanted < this.stamp)
+@@ -655,40 +671,90 @@
+         return (
+           Math.hypot(db.n - nedN, db.e - nedE) - Math.hypot(da.n - nedN, da.e - nedE)
+         )
+       })
+     for (const t of candidates.slice(0, this.tiles.size - 300)) {
+       if (t.mesh) {
+         this.scene.remove(t.mesh)
+         t.mesh.geometry.dispose()
+       }
+       t.imTex?.dispose()
+       t.detailTex?.dispose()
+       t.imMat?.dispose()
++      t.baseMat?.dispose()
++      t.coverageTexture?.dispose()
+       this.tiles.delete(t.key)
+       this.detailRetry.delete(t.key)
+     }
++    this.refreshCoverage()
++  }
++
++  private refreshCoverage(changed?: Tile): void {
++    const ready = [...this.tiles.values()].filter(t => t.state === 'ready' && t.mesh).map(t => t.key)
++    for (const tile of this.tiles.values()) {
++      if (!tile.coverage || !tile.coverageTexture) continue
++      // A new READY tile can affect only itself and its loaded ancestors.
++      // Eviction refreshes the retained set once after the entire batch.
++      if (changed && tile !== changed && (tile.z >= changed.z ||
++        changed.lonW < tile.lonW || changed.lonE > tile.lonE ||
++        changed.latS < tile.latS || changed.latN > tile.latN)) continue
++      tile.coverage.rebuild(ready)
++      tile.coverageTexture.needsUpdate = true
++    }
++  }
++
++  /** CPU equivalent of production fragment visibility for terrain inspection.
++   * Ray hits still include hidden geometry, so filter them using this predicate. */
++  isSurfaceVisible(object: THREE.Object3D, lat: number, lon: number): boolean {
++    const tile = this.tiles.get(object.userData.terrainKey as string)
++    if (!tile || tile.mesh !== object || tile.state !== 'ready' || !object.visible) return false
++    const u = (lon - tile.lonW) / (tile.lonE - tile.lonW)
++    const v = (tile.latN - lat) / (tile.latN - tile.latS)
++    return !tile.coverage?.covered(u, v)
+   }
+ 
+   /** Terrain elevation (m MSL) at lat/lon from the best loaded tile. */
+   elevationAt(lat: number, lon: number): number {
+     for (const ring of RINGS) {
+       const x = Math.floor(lonToTileX(lon, ring.z))
+       const y = Math.floor(latToTileY(lat, ring.z))
+       const tile = this.tiles.get(`${ring.z}/${x}/${y}`)
+       if (tile?.state === 'ready' && tile.heights && tile.gridSize) {
+         const fx = (lon - tile.lonW) / (tile.lonE - tile.lonW)
+         const fy = (tile.latN - lat) / (tile.latN - tile.latS)
+-        const h = sampleGrid(tile.heights, tile.gridSize, fx, fy)
++        const h = sampleTerrainTriangles(tile.heights, tile.gridSize, fx, fy)
+         // Flaky decode → non-finite sample: fall through to a coarser ring.
+         if (Number.isFinite(h)) return h
+       }
+     }
+     return 0
++  }
++
++  /** Release a streamed scene (also used by the isolated inspection harness). */
++  dispose(): void {
++    this.queue.length = 0
++    this.imQueue.length = 0
++    this.setImagery(false)
++    this.detailLoading?.controller.abort()
++    for (const worker of this.workers) worker.terminate()
++    for (const tile of this.tiles.values()) {
++      if (tile.mesh) {
++        this.scene.remove(tile.mesh)
++        tile.mesh.geometry.dispose()
++      }
++      tile.imTex?.dispose()
++      tile.detailTex?.dispose()
++      tile.imMat?.dispose()
++      tile.baseMat?.dispose()
++      tile.coverageTexture?.dispose()
++    }
++    this.tiles.clear()
++    ;(this.material.uniforms.uImagery!.value as THREE.Texture).dispose()
++    this.material.dispose()
+   }
+ 
+   get readyCount(): number {
+     let n = 0
+     for (const t of this.tiles.values()) if (t.state === 'ready') n++
+     return n
+   }
+ }
+--- before/src/world/terrain-coverage.ts
++++ after/src/world/terrain-coverage.ts
+@@ -0,0 +1,80 @@
++import { tileYToLat } from '../math/geo'
++
++/** One texel per exact z13 child tile, never a rasterized world-space mask.
++ * Latitude rows are nonuniform because the mesh uses linear latitude. */
++export class TerrainCoverage {
++  readonly size: number
++  readonly cells: Uint8Array
++  readonly rows = new Float32Array(65)
++  readonly x: number
++  readonly y: number
++  constructor(readonly key: string) {
++    const [z, x, y] = key.split('/').map(Number) as [number, number, number]
++    this.size = 2 ** (13 - z)
++    this.x = x * this.size
++    this.y = y * this.size
++    this.cells = new Uint8Array(this.size * this.size)
++    const north = tileYToLat(y, z), south = tileYToLat(y + 1, z)
++    for (let row = 0; row <= this.size; row++) {
++      this.rows[row] = (north - tileYToLat(this.y + row, 13)) / (north - south)
++    }
++  }
++  rebuild(readyKeys: readonly string[]): void {
++    this.cells.fill(0)
++    for (const key of readyKeys) {
++      const [z, x, y] = key.split('/').map(Number) as [number, number, number]
++      const span = 2 ** (13 - z)
++      if (span >= this.size) continue
++      const left = x * span - this.x, top = y * span - this.y
++      if (left < 0 || top < 0 || left + span > this.size || top + span > this.size) continue
++      for (let row = top; row < top + span; row++) {
++        this.cells.fill(255, row * this.size + left, row * this.size + left + span)
++      }
++    }
++  }
++  /** Same half-open UV ownership and binary search as the fragment shader. */
++  covered(u: number, northFraction: number): boolean {
++    if (u < 0 || u >= 1 || northFraction < 0 || northFraction >= 1) return false
++    let low = 0, high = this.size
++    for (let i = 0; i < 6; i++) {
++      if (high - low <= 1) break
++      const middle = Math.floor((low + high) / 2)
++      if (northFraction >= this.rows[middle]!) low = middle
++      else high = middle
++    }
++    return this.cells[low * this.size + Math.floor(u * this.size)] !== 0
++  }
++}
++
++export const TERRAIN_COVERAGE_GLSL = /* glsl */ `
++  uniform sampler2D uCoverage;
++  uniform float uCoverageSize;
++  uniform float uCoverageRows[65];
++  bool coveredByReadyTerrain(vec2 uv) {
++    if (uCoverageSize <= 1.0) return false;
++    float northFraction = 1.0 - uv.y;
++    if (uv.x < 0.0 || uv.x >= 1.0 || northFraction < 0.0 || northFraction >= 1.0) return false;
++    int low = 0;
++    int high = int(uCoverageSize);
++    for (int i = 0; i < 6; i++) {
++      if (high - low <= 1) break;
++      int middle = (low + high) / 2;
++      if (northFraction >= uCoverageRows[middle]) low = middle;
++      else high = middle;
++    }
++    return texture2D(uCoverage, vec2((floor(uv.x*uCoverageSize)+0.5)/uCoverageSize,
++      (float(low)+0.5)/uCoverageSize)).r > 0.5;
++  }
++`
++
++/** Matches the worker's (a,d,b), (b,d,e) triangle diagonal exactly. */
++export function sampleTerrainTriangles(heights: Float32Array, size: number, u: number, v: number): number {
++  const x = Math.min(Math.max(u, 0), 1) * (size - 1)
++  const y = Math.min(Math.max(v, 0), 1) * (size - 1)
++  const col = Math.min(Math.floor(x), size - 2), row = Math.min(Math.floor(y), size - 2)
++  const tx = x - col, ty = y - row
++  const a = heights[row * size + col]!, b = heights[row * size + col + 1]!
++  const d = heights[(row + 1) * size + col]!, e = heights[(row + 1) * size + col + 1]!
++  return tx + ty <= 1 ? a + tx * (b - a) + ty * (d - a)
++    : e + (1 - tx) * (d - e) + (1 - ty) * (b - e)
++}
+--- before/src/world/terrain-worker.ts
++++ after/src/world/terrain-worker.ts
+@@ -1,39 +1,41 @@
+ /**
+  * Terrain worker: fetch + decode a terrarium tile, apply runway flattening,
+  * and build mesh buffers (positions/normals/vertex colors + skirt) in the
+  * tile-local frame (x east, y up, z south; origin at tile NW corner's SW...
+  * origin = tile center, y = height meters). Transfers buffers to main.
+  */
+ import { terrariumDecode, flattenForRunway, tileGridUv } from '../math/geo'
+ import { classifyNlcdPixel } from './nlcd-palette'
+ 
+ export interface TileRequest {
+   key: string
++  requestId: number
+   url: string
+   /** NLCD land-cover tile for biome coloring (§6.2); fetch failure or
+    *  off-legend pixels fall back to the elevation/slope ramp. */
+   landcoverUrl?: string
+   gridSize: number
+   sizeEastM: number
+   sizeNorthM: number
+   /** Runways intersecting this tile, in tile-local meters (x east, y north). */
+   runways: Array<{ ax: number; ay: number; bx: number; by: number; ha: number; hb: number; halfW: number }>
+   skirtDepthM: number
+   /** Render-only ring depth bias (coarse rings sit low; see tiles.ts). */
+   depthBiasM: number
+ }
+ 
+ export interface TileResponse {
+   key: string
++  requestId: number
+   positions: Float32Array
+   normals: Float32Array
+   colors: Float32Array
+   uvs: Float32Array // imagery-tile UVs (13b); orientation in tileGridUv
+   urban: Float32Array // 13c city-glow intensity per vertex (NLCD developed classes)
+   indices: Uint32Array
+   heights: Float32Array // gridSize² for elevation queries
+   gridSize: number
+   error?: string
+ }
+ 
+ /** NLCD developed-class → night glow intensity (13c city glow). */
+@@ -226,34 +228,35 @@
+       }
+     }
+     addSkirtEdge(Array.from({ length: G }, (_, i) => edge(i, 0)))
+     addSkirtEdge(Array.from({ length: G }, (_, i) => edge(G - 1 - i, G - 1)))
+     addSkirtEdge(Array.from({ length: G }, (_, j) => edge(0, G - 1 - j)))
+     addSkirtEdge(Array.from({ length: G }, (_, j) => edge(G - 1, j)))
+     void skirtIdx
+     void vertsPerRow
+ 
+     const indices = new Uint32Array(quads)
+     const resp: TileResponse = {
+       key: req.key,
++      requestId: req.requestId,
+       positions,
+       normals,
+       colors,
+       uvs,
+       urban,
+       indices,
+       heights,
+       gridSize: G,
+     }
+     ;(self as unknown as Worker).postMessage(resp, [
+       positions.buffer,
+       normals.buffer,
+       colors.buffer,
+       uvs.buffer,
+       urban.buffer,
+       indices.buffer,
+       heights.buffer,
+     ])
+   } catch (err) {
+-    ;(self as unknown as Worker).postMessage({ key: req.key, error: String(err) })
++    ;(self as unknown as Worker).postMessage({ key: req.key, requestId: req.requestId, error: String(err) })
+   }
+ }
+--- before/tests/terrain-visibility.test.ts
++++ after/tests/terrain-visibility.test.ts
+@@ -0,0 +1,191 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++import * as THREE from 'three'
++import { TileManager, WorldFrame } from '../src/world/tiles'
++import { tileXToLon, tileYToLat, metersPerDegree } from '../src/math/geo'
++
++class WorkerStub { onmessage: unknown; postMessage = vi.fn(); terminate = vi.fn() }
++const ring = (z: number) => ({ z, radiusM: 10000, grid: 2, skirt: 10, depthBiasM: 0 })
++function setup() {
++  const scene = new THREE.Scene(), frame = new WorldFrame({lat:37.5092,lon:-122.4959})
++  const manager = new TileManager(scene, frame, () => [])
++  manager.setImagery(false)
++  const internal = manager as any
++  function want(z: number, x: number, y: number) {
++    internal.want(ring(z),x,y)
++    return internal.tiles.get(`${z}/${x}/${y}`)
++  }
++  function ready(t: any, heights = [100,100,100,100]) {
++    const e=t.sizeEastM/2,n=t.sizeNorthM/2
++    internal.onTileBuilt({key:t.key,requestId:t.requestId,positions:new Float32Array([-e,heights[0]!,-n,e,heights[1]!,-n,-e,heights[2]!,n,e,heights[3]!,n]),normals:new Float32Array(12),colors:new Float32Array(12),uvs:new Float32Array([0,1,1,1,0,0,1,0]),urban:new Float32Array(4),indices:new Uint32Array([0,2,1,1,2,3]),heights:new Float32Array(heights),gridSize:2})
++  }
++  function visible(t: any, lat: number, lon: number) {
++    return manager.isSurfaceVisible(t.mesh,lat,lon)
++  }
++  return {manager,internal,scene,frame,want,ready,visible}
++}
++beforeEach(()=>vi.stubGlobal('Worker',WorkerStub))
++afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks()})
++
++describe('READY terrain visibility',()=>{
++  it('clips a higher coarse surface only after fine geometry is ready, and restores fallback on removal',()=>{
++    const s=setup(), coarse=s.want(7,20,49), fine=s.want(13,1308,3174)
++    s.ready(coarse); const lat=fine.latC,lon=fine.lonC
++    expect(s.visible(coarse,lat,lon)).toBe(true)
++    fine.state='failed'; expect(s.visible(coarse,lat,lon)).toBe(true)
++    fine.state='loading'; s.ready(fine,[10,10,10,10])
++    expect(s.visible(coarse,lat,lon)).toBe(false)
++    expect(s.visible(fine,lat,lon)).toBe(true)
++    // Exercise actual eviction: only the fine tile is stale.
++    coarse.lastWanted=2;fine.lastWanted=0;s.internal.stamp=2
++    for(let i=0;i<340;i++)s.internal.tiles.set(`dummy${i}`,{...coarse,key:`dummy${i}`,mesh:undefined,lastWanted:2})
++    s.internal.evict(0,0)
++    expect(s.internal.tiles.has(fine.key)).toBe(false)
++    expect(s.visible(coarse,lat,lon)).toBe(true)
++  })
++  it('filters an actual 90m-high coarse ray hit above the loaded fine surface',()=>{
++    const s=setup(), coarse=s.want(7,20,49), fine=s.want(13,1308,3174)
++    s.ready(coarse);s.ready(fine,[10,10,10,10]);s.scene.updateMatrixWorld(true)
++    const p=s.frame.toLocal(fine.latC,fine.lonC)
++    const ray=new THREE.Raycaster(new THREE.Vector3(p.e,1000,-p.n),new THREE.Vector3(0,-1,0))
++    const hits=ray.intersectObjects(s.scene.children)
++    expect(hits[0]!.point.y).toBeCloseTo(100)
++    const visible=hits.find(h=>s.manager.isSurfaceVisible(h.object,fine.latC,fine.lonC))
++    expect(visible!.point.y).toBeCloseTo(s.manager.elevationAt(fine.latC,fine.lonC),5)
++  })
++  it('uses exact fine boundaries, preserving fallback ten centimeters outside all four edges',()=>{
++    const s=setup(), coarse=s.want(7,20,49), fine=s.want(13,1308,3174)
++    s.ready(coarse);s.ready(fine)
++    const d=0.1/metersPerDegree(fine.latC).north
++    for(const [lat,lon] of [[fine.latN+d,fine.lonC],[fine.latS-d,fine.lonC],[fine.latC,fine.lonW-d],[fine.latC,fine.lonE+d]])expect(s.visible(coarse,lat!,lon!)).toBe(true)
++    for(const [lat,lon] of [[fine.latN-d,fine.lonC],[fine.latS+d,fine.lonC],[fine.latC,fine.lonW+d],[fine.latC,fine.lonE-d]])expect(s.visible(coarse,lat!,lon!)).toBe(false)
++  })
++  it('clips independently across multiple LODs and retains holes inside the ready envelope',()=>{
++    const s=setup(), coarse=s.want(7,20,49), middle=s.want(11,327,793), fine=s.want(13,1308,3174)
++    s.ready(coarse);s.ready(middle);s.ready(fine)
++    expect(s.visible(coarse,fine.latC,fine.lonC)).toBe(false)
++    expect(s.visible(middle,fine.latC,fine.lonC)).toBe(false)
++    expect(s.visible(middle,tileYToLat(3172.5,13),tileXToLon(1308.5,13))).toBe(true)
++    expect(s.visible(coarse,tileYToLat(3172.5,13),tileXToLon(1308.5,13))).toBe(false)
++    expect(s.visible(coarse,tileYToLat(3178.5,13),tileXToLon(1308.5,13))).toBe(true)
++  })
++  it('places adjacent edges in the current frame, including a late response after rebase',()=>{
++    const s=setup(), north=s.want(7,20,49), south=s.want(7,20,50)
++    s.ready(north)
++    s.frame.anchor={lat:45,lon:-123};s.manager.onRebase();s.ready(south)
++    s.scene.updateMatrixWorld(true)
++    for(const t of [north,south]) {
++      const corner=new THREE.Vector3(-t.sizeEastM/2,100,-t.sizeNorthM/2).applyMatrix4(t.mesh.matrixWorld)
++      const expected=s.frame.toLocal(t.latN,t.lonW)
++      expect(corner.x).toBeCloseTo(expected.e,4);expect(corner.z).toBeCloseTo(-expected.n,4)
++    }
++  })
++  it('samples the actual rendered diagonal rather than a bilinear saddle',()=>{
++    const s=setup(), tile=s.want(13,1308,3174);s.ready(tile,[0,0,0,100])
++    expect(s.manager.elevationAt(tile.latC,tile.lonC)).toBeCloseTo(0,6)
++  })
++  it('keeps requested coarse fallback in desired fine rings',()=>{
++    const s=setup(), p=s.frame.toLocal(tileYToLat(49.5,7),tileXToLon(20.5,7));s.manager.update(p.n,p.e)
++    const t=s.internal.tiles.get('7/20/49')
++    expect(t).toBeDefined()
++  })
++  it('skips stale queued generations without occupying a slot or duplicating resources',()=>{
++    const s=setup()
++    const imagery=vi.spyOn(s.internal,'loadImageryTexture')
++    for(let i=0;i<8;i++)s.want(13,1300+i,3174)
++    const stale=s.want(13,1308,3174)
++    s.internal.pump()
++    const dispatches=()=>s.internal.workers.flatMap((worker:any)=>
++      worker.postMessage.mock.calls.map(([request]:any[])=>({worker,request})))
++      .sort((a:any,b:any)=>a.request.requestId-b.request.requestId)
++    const initial=dispatches()
++    expect(initial).toHaveLength(8)
++    expect(s.internal.inFlight).toBe(8)
++    expect(s.internal.queue).toEqual([stale])
++    // Eviction invalidates the map entry, but its queued object still exists.
++    s.internal.tiles.delete(stale.key)
++    const replacement=s.want(13,1308,3174)
++    const finish=({worker,request}:any)=>worker.onmessage({data:{
++      key:request.key,requestId:request.requestId,
++      positions:new Float32Array(12),normals:new Float32Array(12),colors:new Float32Array(12),
++      uvs:new Float32Array(8),urban:new Float32Array(4),indices:new Uint32Array([0,2,1,1,2,3]),
++      heights:new Float32Array(4),gridSize:2,
++    }})
++    finish(initial[0])
++    const all=dispatches()
++    expect(all).toHaveLength(9)
++    expect(all[8].request.requestId).toBe(replacement.requestId)
++    expect(all.some(({request}:any)=>request.requestId===stale.requestId)).toBe(false)
++    expect(s.internal.queue).toHaveLength(0)
++    expect(s.internal.inFlight).toBe(8)
++    for(const dispatched of all.slice(1))finish(dispatched)
++    expect(s.internal.inFlight).toBe(0)
++    expect(dispatches()).toHaveLength(9)
++    expect(s.manager.readyCount).toBe(9)
++    expect(s.scene.children).toHaveLength(9)
++    expect(new Set(s.scene.children.map(mesh=>mesh.userData.terrainKey)).size).toBe(9)
++    expect(imagery).not.toHaveBeenCalled()
++    expect(s.internal.imLoading).toBe(0)
++    expect(s.internal.imQueue).toHaveLength(0)
++    s.manager.dispose()
++  })
++  it('rejects an evicted request that arrives after the same key has been requested again',()=>{
++    const s=setup(), old=s.want(13,1308,3174)
++    s.internal.tiles.delete(old.key)
++    const replacement=s.want(13,1308,3174)
++    s.ready(old)
++    expect(replacement.state).toBe('loading')
++    expect(replacement.mesh).toBeUndefined()
++    s.ready(replacement)
++    expect(replacement.state).toBe('ready')
++  })
++  it('keeps the visibility predicate valid after rebasing with a pending finer tile',()=>{
++    const s=setup(), coarse=s.want(7,20,49), fine=s.want(13,1308,3174)
++    s.ready(coarse)
++    s.frame.anchor={lat:38,lon:-123};s.manager.onRebase()
++    expect(s.visible(coarse,fine.latC,fine.lonC)).toBe(true)
++    s.ready(fine)
++    expect(s.visible(coarse,fine.latC,fine.lonC)).toBe(false)
++    s.frame.anchor={lat:39,lon:-124};s.manager.onRebase()
++    expect(s.visible(coarse,fine.latC,fine.lonC)).toBe(false)
++  })
++  it('does not upload unrelated coverage textures when a fine tile becomes ready',()=>{
++    const s=setup(), ancestor=s.want(7,20,49), unrelated=s.want(7,21,49),fine=s.want(13,1308,3174)
++    s.ready(ancestor);s.ready(unrelated)
++    const version=unrelated.coverageTexture.version
++    s.ready(fine)
++    expect(unrelated.coverageTexture.version).toBe(version)
++  })
++  it('compensates normals for nonuniform horizontal rebase scaling',()=>{
++    const s=setup(), tile=s.want(7,20,49);s.ready(tile)
++    s.frame.anchor={lat:50,lon:-123};s.manager.onRebase()
++    const correction=tile.baseMat.uniforms.uNormalScale?.value as THREE.Vector2|undefined
++    expect(correction?.x).toBeCloseTo(1/tile.mesh.scale.x**2,8)
++    expect(correction?.y).toBeCloseTo(1/tile.mesh.scale.z**2,8)
++  })
++  it('disposes terrain geometry, coverage, materials and workers when inspection stops',()=>{
++    const s=setup(), tile=s.want(7,20,49);s.ready(tile)
++    const coverageDispose=vi.spyOn(tile.coverageTexture,'dispose')
++    const materialDispose=vi.spyOn(tile.baseMat,'dispose')
++    const geometryDispose=vi.spyOn(tile.mesh.geometry,'dispose')
++    s.internal.dispose?.()
++    expect(s.scene.children).toHaveLength(0)
++    expect(coverageDispose).toHaveBeenCalledOnce()
++    expect(materialDispose).toHaveBeenCalledOnce()
++    expect(geometryDispose).toHaveBeenCalledOnce()
++    for(const worker of s.internal.workers)expect(worker.terminate).toHaveBeenCalledOnce()
++    expect(s.internal.tiles.size).toBe(0)
++  })
++  it('keeps tile coverage owned per material through imagery on/off',async()=>{
++    const s=setup(), coarse=s.want(11,327,793), other=s.want(11,328,793),fine=s.want(13,1308,3174)
++    s.ready(coarse);s.ready(other);s.ready(fine)
++    expect(coarse.mesh.material).not.toBe(other.mesh.material)
++    const coverage=coarse.mesh.material.uniforms.uCoverage
++    expect(coverage).toBeDefined()
++    s.internal.loadImageryTexture=async()=>new THREE.Texture()
++    s.manager.setImagery(true);await Promise.resolve();await Promise.resolve()
++    expect(coarse.mesh.material.uniforms.uCoverage).toBe(coverage)
++    s.manager.setImagery(false)
++    expect(coarse.mesh.material.uniforms.uCoverage).toBe(coverage)
++    expect(s.visible(coarse,fine.latC,fine.lonC)).toBe(false)
++  })
++})
+--- before/tests/browser/terrain-inspection.ts
++++ after/tests/browser/terrain-inspection.ts
+@@ -1,32 +1,149 @@
+ import * as THREE from 'three'
+-import {TileManager,WorldFrame} from '../../src/world/tiles'
+-import {Airports} from '../../src/world/airports'
+-const output=document.querySelector<HTMLPreElement>('#state')!
+-const button=document.querySelector<HTMLButtonElement>('#start')!
+-let timer:ReturnType<typeof setInterval>|undefined
+-button.onclick=async()=>{
+- button.disabled=true;output.textContent='Loading airport runway data and terrain…'
+- try{
+-  const scene=new THREE.Scene(),frame=new WorldFrame({lat:37.5092,lon:-122.4959})
+-  const airports=new Airports(scene,frame);await airports.load()
+-  const tiles=new TileManager(scene,frame,(s,n,w,e)=>airports.runwaysInBounds(s,n,w,e))
+-  tiles.setImagery(false);tiles.setDetailEnabled(false);tiles.update(0,0)
+-  const ray=new THREE.Raycaster(new THREE.Vector3(0,10000,0),new THREE.Vector3(0,-1,0),0,12000)
+-  const sample=()=>{
+-   scene.updateMatrixWorld(true)
+-   const probes=[]
+-   for(const [n,e] of [[0,0],[100,0],[-100,0],[0,100],[0,-100],[250,250],[-250,-250]]){
+-    const ll=frame.fromLocal(n!,e!);ray.ray.origin.set(e!,10000,-n!)
+-    const hits=ray.intersectObjects(scene.children,false)
+-    const layers=new Map<number,number>()
+-    for(const hit of hits)if(!layers.has(hit.object.renderOrder))layers.set(hit.object.renderOrder,hit.point.y)
+-    const raw=tiles.elevationAt(ll.lat,ll.lon),physics=airports.flattenElevation(raw,ll.lat,ll.lon)
+-    const top=hits[0]?.point.y
+-    probes.push({north:n,east:e,physicsM:+physics.toFixed(2),sampledM:+raw.toFixed(2),topMeshM:top===undefined?null:+top.toFixed(2),differenceM:top===undefined?null:+(top-physics).toFixed(2),layers:[...layers].map(([zoom,height])=>({zoom,heightM:+height.toFixed(2)}))})
+-   }
+-   output.textContent=JSON.stringify({stream:tiles.debugImagery(),probes,note:'Raw geometry intersections; close-range curvature below0.02m. These probes do not execute fragment-shader clipping.'},null,2)
++import { TileManager, WorldFrame } from '../../src/world/tiles'
++import { Airports } from '../../src/world/airports'
++
++const output = document.querySelector<HTMLPreElement>('#state')!
++const button = document.querySelector<HTMLButtonElement>('#start')!
++const measure = document.querySelector<HTMLButtonElement>('#measure')!
++const stop = document.querySelector<HTMLButtonElement>('#stop')!
++let cleanup = () => {}
++
++/** Read the depth produced by the unmodified production terrain shaders.
++ * Packing a depth texture through a second pass avoids treating CPU visibility
++ * or a mock raycast as evidence that the GPU actually discarded fragments. */
++function gpuProbe(renderer: THREE.WebGLRenderer, scene: THREE.Scene) {
++  const near = 0.1, far = 20000, altitude = 10000
++  const camera = new THREE.OrthographicCamera(-0.02, 0.02, 0.02, -0.02, near, far)
++  camera.up.set(0, 0, -1)
++  const target = new THREE.WebGLRenderTarget(1, 1)
++  target.depthTexture = new THREE.DepthTexture(1, 1, THREE.UnsignedIntType)
++  const packed = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false })
++  const packingScene = new THREE.Scene()
++  const packingMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
++    uniforms: { depth: { value: target.depthTexture } },
++    depthTest: false, depthWrite: false,
++    vertexShader: 'void main(){gl_Position=vec4(position.xy,0.0,1.0);}',
++    fragmentShader: `uniform sampler2D depth;
++      void main(){float d=texture2D(depth,vec2(0.5)).r;
++      if(d>=1.0){gl_FragColor=vec4(1.0);return;}
++      float n=floor(d*16777215.0+0.5);
++      vec3 b=vec3(floor(n/65536.0),floor(mod(n,65536.0)/256.0),mod(n,256.0));
++      gl_FragColor=vec4(b/255.0,1.0);}`,
++  }))
++  packingScene.add(packingMesh)
++  const pixel = new Uint8Array(4)
++  const read = (north: number, east: number): number | null => {
++    camera.position.set(east, altitude, -north)
++    camera.lookAt(east, 0, -north)
++    renderer.setRenderTarget(target)
++    renderer.render(scene, camera)
++    renderer.setRenderTarget(packed)
++    renderer.render(packingScene, new THREE.Camera())
++    renderer.readRenderTargetPixels(packed, 0, 0, 1, 1, pixel)
++    renderer.setRenderTarget(null)
++    const depth = (pixel[0]! * 65536 + pixel[1]! * 256 + pixel[2]!) / 16777215
++    return depth >= 1 ? null : altitude - (near + depth * (far - near))
+   }
+-  sample();timer=setInterval(sample,3000)
+- }catch(error){output.textContent=String(error);button.disabled=false}
++  return { read, dispose: () => {
++    target.dispose(); packed.dispose(); packingMesh.geometry.dispose(); packingMesh.material.dispose()
++  } }
+ }
+-window.addEventListener('pagehide',()=>{if(timer)clearInterval(timer)})
++
++button.onclick = async () => {
++  button.disabled = true
++  stop.disabled = false
++  let active = true
++  let timer: ReturnType<typeof setInterval> | undefined
++  let tiles: TileManager | undefined
++  let renderer: THREE.WebGLRenderer | undefined
++  let probe: ReturnType<typeof gpuProbe> | undefined
++  cleanup = () => {
++    active = false
++    if (timer) clearInterval(timer)
++    tiles?.dispose()
++    probe?.dispose()
++    renderer?.dispose()
++    renderer?.forceContextLoss()
++    document.querySelector('#view')!.replaceChildren()
++    measure.disabled = true
++    stop.disabled = true
++    button.disabled = false
++  }
++  output.textContent = 'Loading airport runway data and terrain…'
++  try {
++    const scene = new THREE.Scene(), frame = new WorldFrame({ lat: 37.5092, lon: -122.4959 })
++    const airports = new Airports(scene, frame)
++    await airports.load()
++    if (!active) return
++    tiles = new TileManager(scene, frame, (s, n, w, e) => airports.runwaysInBounds(s, n, w, e))
++    const terrain = tiles
++    terrain.setImagery(false)
++    terrain.setDetailEnabled(false)
++    terrain.update(0, 0)
++    const progress = () => {
++      output.textContent = JSON.stringify({ stream: terrain.debugImagery(),
++        note: 'No automatic WebGL work. Wait for READY counts to stabilize, then explicitly measure once.' }, null, 2)
++      measure.disabled = terrain.readyCount === 0
++    }
++    progress()
++    timer = setInterval(progress, 1000)
++    measure.onclick = async () => {
++      measure.disabled = true
++      if (timer) clearInterval(timer)
++      const shaderErrors: string[] = []
++      const probes: Record<string, unknown>[] = []
++      const report = () => {
++        output.textContent = JSON.stringify({ stream: terrain.debugImagery(), shaderErrors, probes,
++          note: 'Explicit single measurement; one production GPU depth probe per animation frame. Physics additionally applies analytic runway flattening. GPU quantization ≈0.0012m. Stop releases workers, meshes, textures and WebGL resources.' }, null, 2)
++      }
++      try {
++        if (!renderer) {
++          renderer = new THREE.WebGLRenderer({ antialias: false })
++          renderer.setSize(768, 432)
++          document.querySelector('#view')!.appendChild(renderer.domElement)
++          probe = gpuProbe(renderer, scene)
++        }
++        renderer.debug.onShaderError = (gl, _program, vertex, fragment) => {
++          shaderErrors.push(gl.getShaderInfoLog(vertex) ?? '', gl.getShaderInfoLog(fragment) ?? '')
++        }
++        const ray = new THREE.Raycaster(new THREE.Vector3(0, 10000, 0), new THREE.Vector3(0, -1, 0), 0, 12000)
++        const round = (n: number | null | undefined) => n == null ? null : +n.toFixed(3)
++        for (const [n, e] of [[0, 0], [100, 0], [-100, 0], [0, 100], [0, -100], [250, 250], [-250, -250]]) {
++          await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
++          if (!active) return
++          scene.updateMatrixWorld(true)
++          const ll = frame.fromLocal(n!, e!)
++          ray.ray.origin.set(e!, 10000, -n!)
++          const hits = ray.intersectObjects(scene.children, false)
++          const layers = new Map<number, number>()
++          for (const hit of hits) if (!layers.has(hit.object.renderOrder)) layers.set(hit.object.renderOrder, hit.point.y)
++          const raw = terrain.elevationAt(ll.lat, ll.lon), physics = airports.flattenElevation(raw, ll.lat, ll.lon)
++          const visible = hits.find(hit => terrain.isSurfaceVisible(hit.object, ll.lat, ll.lon))?.point.y
++          const gpu = probe!.read(n!, e!)
++          probes.push({ north: n, east: e, physicsM: round(physics), sampledM: round(raw),
++            rawTopMeshM: round(hits[0]?.point.y), visibleMeshM: round(visible), gpuHeightM: round(gpu),
++            gpuMinusSampleM: round(gpu == null ? null : gpu - raw),
++            gpuMinusPhysicsM: round(gpu == null ? null : gpu - physics),
++            layers: [...layers].map(([zoom, height]) => ({ zoom, heightM: round(height) })) })
++          report()
++        }
++        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
++        if (!active) return
++        const camera = new THREE.PerspectiveCamera(55, 768 / 432, 1, 100000)
++        camera.position.set(0, 650, 800)
++        camera.lookAt(0, 0, 0)
++        renderer.render(scene, camera)
++      } catch (error) {
++        shaderErrors.push(String(error))
++        report()
++      } finally {
++        if (active) measure.disabled = false
++      }
++    }
++  } catch (error) {
++    output.textContent = String(error)
++    cleanup()
++  }
++}
++stop.onclick = () => { cleanup(); output.textContent += '\nStopped; resources released.' }
++window.addEventListener('pagehide', () => cleanup())
+--- before/tests/browser/terrain-inspection.html
++++ after/tests/browser/terrain-inspection.html
+@@ -1 +1 @@
+-<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>OpenHorizon · Terrain inspection</title><style>body{background:#152431;color:#e8eef4;font:16px system-ui;padding:30px}button{padding:12px}pre{white-space:pre-wrap;font:13px monospace}</style></head><body><h1>Terrain height inspection</h1><p>Compares actual streamed terrain mesh intersections with the simulation’s terrain sampler around KHAF. No flight or hardware input runs on this page.</p><button id="start">Measure KHAF terrain</button><pre id="state">Ready.</pre><script type="module" src="/tests/browser/terrain-inspection.ts"></script></body></html>
++<!doctype html><html lang="en"><head><meta charset="UTF-8"><title>OpenHorizon · Terrain inspection</title><style>body{background:#152431;color:#e8eef4;font:16px system-ui;padding:30px}button{padding:12px}pre{white-space:pre-wrap;font:13px monospace}</style></head><body><h1>Terrain height inspection</h1><p>Compares actual GPU depth, visible terrain intersections, and physics around KHAF. No flight or hardware input runs on this page.</p><button id="start">Load KHAF terrain</button><button id="measure" disabled>Measure GPU once</button><button id="stop" disabled>Stop and release resources</button><div id="view"></div><pre id="state">Ready.</pre><script type="module" src="/tests/browser/terrain-inspection.ts"></script></body></html>

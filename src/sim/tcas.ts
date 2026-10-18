@@ -9,6 +9,7 @@
  */
 
 export interface TcasOwnship {
+  onGround?: boolean
   altFt: number
   aglFt: number
   vsFpm: number
@@ -28,9 +29,11 @@ export type TcasLevel = 'NONE' | 'PROX' | 'TA' | 'RA' | 'CLEAR'
 
 export interface TcasOutput {
   level: TcasLevel
+  advisory?: string
+  clearedRa?: boolean
   aural?: string
   newAural: boolean
-  raSense?: 'CLIMB' | 'DESCEND'
+  raSense?: 'CLIMB' | 'DESCEND' | 'LEVEL_OFF'
   tracks: Array<{ id: string; level: TcasLevel; relAltFt: number; rangeM: number }>
 }
 
@@ -76,6 +79,8 @@ export class TcasComputer {
 
   constructor(private readonly cfg: { taOnly: boolean }) {}
 
+  reset(): void { this.states.clear(); this.lastAural = undefined; this.clearPending = false }
+
   /** Tracked hysteresis states (14c testability). */
   get trackedCount(): number {
     return this.states.size
@@ -96,8 +101,9 @@ export class TcasComputer {
     const dmod = dmodM(sl)
     const zthr = zthrFt(sl)
     let worst: TcasLevel = 'NONE'
-    let raSense: 'CLIMB' | 'DESCEND' | undefined
+    let raSense: 'CLIMB' | 'DESCEND' | 'LEVEL_OFF' | undefined
     const outTracks: TcasOutput['tracks'] = []
+    const threats: Array<{ dz: number; intruderVsFpm: number; time: number }> = []
     let anyActive = false
 
     for (const t of tracks) {
@@ -106,7 +112,10 @@ export class TcasComputer {
       const tau = closure > 0.5 ? range / closure : Infinity
       const dz = t.altFt - own.altFt
       const relVsFpm = t.vsFpm - own.vsFpm
-      const tauForVert = Number.isFinite(tau) ? Math.min(tau, 60) : 0
+      const v2 = t.relVnMs ** 2 + t.relVeMs ** 2
+      const cpaTime = v2 > 0.25 ? Math.max(0, -(t.relNorthM * t.relVnMs + t.relEastM * t.relVeMs) / v2) : 0
+      const miss = Math.hypot(t.relNorthM + t.relVnMs * cpaTime, t.relEastM + t.relVeMs * cpaTime)
+      const tauForVert = Math.min(cpaTime, 60)
       const dzAtCpa = dz + (relVsFpm / 60) * tauForVert
       const vertThreat = (limit: number) => Math.abs(dz) < limit || Math.abs(dzAtCpa) < limit
 
@@ -119,36 +128,39 @@ export class TcasComputer {
       let level: TcasLevel = 'NONE'
       const raRangeHit = raTauS !== null && (tau < raTauS * raHyst || range < dmod.ra * raHyst)
       const taRangeHit = tau < taTauS * taHyst || range < dmod.ta * taHyst
-      if (!this.cfg.taOnly && raRangeHit && vertThreat(zthr.ra)) level = 'RA'
-      else if (taRangeHit && vertThreat(zthr.ta)) level = 'TA'
+      if (!own.onGround && !this.cfg.taOnly && raRangeHit && miss < dmod.ra * raHyst && vertThreat(zthr.ra)) level = 'RA'
+      else if (!own.onGround && taRangeHit && miss < dmod.ta * taHyst && vertThreat(zthr.ta)) level = 'TA'
       else if (range < 6 * 1852 && Math.abs(dz) < 1200) level = 'PROX'
 
       this.states.set(t.id, { level })
       outTracks.push({ id: t.id, level, relAltFt: dz, rangeM: range })
       if (level === 'TA' || level === 'RA') anyActive = true
-      if (level === 'RA' && worst !== 'RA') {
-        worst = 'RA'
-        // Sense: escape away from where the intruder will be at CPA.
-        raSense = dzAtCpa < 0 && dz < 0 ? 'CLIMB' : dzAtCpa >= 0 ? 'DESCEND' : 'CLIMB'
-      } else if (level === 'TA' && worst === 'NONE') worst = 'TA'
-      else if (level === 'PROX' && worst === 'NONE') worst = 'PROX'
+      if (level === 'RA') threats.push({ dz, intruderVsFpm: t.vsFpm, time: Math.min(60, Math.max(2, cpaTime)) })
+      const rank = { NONE: 0, PROX: 1, TA: 2, RA: 3, CLEAR: 0 }
+      if (rank[level] > rank[worst]) worst = level
     }
 
-    // CLEAR OF CONFLICT: one announcement when the last TA/RA ends.
-    if (anyActive) this.clearPending = true
-    let level: TcasLevel = worst
-    if (!anyActive && this.clearPending) {
-      this.clearPending = false
-      level = 'CLEAR'
+    // Approximate uncoordinated multi-threat maximin vertical separation.
+    // Score each target rate from current separation and intruder VS;
+    // current ownship VS belongs only in threat detection, not target prediction.
+    // Never reverse to climb simply because descent is inhibited near terrain.
+    if (threats.length) {
+      const score = (fpm: number) => Math.min(...threats.map(t => Math.abs(t.dz + (t.intruderVsFpm - fpm) / 60 * t.time)))
+      raSense = score(1500) > score(-1500) ? 'CLIMB' : 'DESCEND'
+      if (raSense === 'DESCEND' && own.aglFt < 1100) raSense = 'LEVEL_OFF'
     }
+    const removedRa = this.clearPending && worst !== 'RA'
+    this.clearPending = worst === 'RA'
+    const level: TcasLevel = removedRa && !anyActive ? 'CLEAR' : worst
 
-    const aural =
-      level === 'RA' ? (raSense === 'CLIMB' ? 'CLIMB, CLIMB' : 'DESCEND, DESCEND')
+    const advisory =
+      level === 'RA' ? (raSense === 'LEVEL_OFF' ? 'LEVEL OFF, LEVEL OFF' : raSense === 'CLIMB' ? 'CLIMB, CLIMB' : 'DESCEND, DESCEND')
       : level === 'TA' ? 'TRAFFIC, TRAFFIC'
       : level === 'CLEAR' ? 'CLEAR OF CONFLICT'
       : undefined
+    const aural = own.onGround || own.aglFt < 500 ? undefined : removedRa ? 'CLEAR OF CONFLICT' : advisory
     const newAural = aural !== undefined && aural !== this.lastAural
     this.lastAural = aural
-    return { level, aural, newAural, raSense, tracks: outTracks }
+    return { level, advisory, clearedRa: removedRa, aural, newAural, raSense, tracks: outTracks }
   }
 }

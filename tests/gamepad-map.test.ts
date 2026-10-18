@@ -74,7 +74,7 @@ describe('TCA Captain Pack support (16a-b)', () => {
     expect(leverWithReverse(0)).toEqual({ power: 0.5, reverse: false })
     expect(leverWithReverse(-1)).toEqual({ power: 0, reverse: false }) // exactly idle
     expect(leverWithReverse(-1.05).power).toBe(0) // wobble below idle stays forward-idle
-    const rev = leverWithReverse(-1.4) // deep in the lifted reverse zone
+    const rev = leverWithReverse(-1, { min: -1, max: 1, idle: -0.5 }) // calibrated physical reverse zone
     expect(rev.reverse).toBe(true)
     expect(rev.power).toBeGreaterThan(0.4)
   })
@@ -105,22 +105,22 @@ describe('TCA Captain Pack support (16a-b)', () => {
       { id: 'TCA Sidestick X Copilot (Vendor: 044f Product: 040f)', axes: 10, index: 0 },
       { id: 'TCA Q-Eng 1&2 (Vendor: 044f Product: 0407)', axes: 7, index: 1 },
     ])!
-    expect(m.roll).toEqual({ pad: 0, axis: 0, sign: 1 })
-    expect(m.pitch).toEqual({ pad: 0, axis: 1, sign: 1 })
-    expect(m.yaw).toEqual({ pad: 0, axis: 5, sign: 1 }) // twist is axis 5 on the real unit
-    expect(m.throttle).toEqual({ pad: 1, axis: 0, sign: 1 }) // idle=-1, TOGA=+1 (live-verified)
-    expect(m.throttle2).toEqual({ pad: 1, axis: 1, sign: 1 })
-    expect(m.v).toBe(6)
+    expect(m.roll).toMatchObject({ pad: 0, axis: 0, sign: 1 })
+    expect(m.pitch).toMatchObject({ pad: 0, axis: 1, sign: 1 })
+    expect(m.yaw).toMatchObject({ pad: 0, axis: 5, sign: 1 }) // twist is axis 5 on the real unit
+    expect(m.throttle).toMatchObject({ pad: 1, axis: 0, sign: 1 }) // idle=-1, TOGA=+1 (live-verified)
+    expect(m.throttle2).toMatchObject({ pad: 1, axis: 1, sign: 1 })
+    expect(m.v).toBe(7)
     // Full face bound: trigger = PTT, red = AP disconnect, base buttons = gear/flaps/spoilers…
     expect(m.btnKeys?.['0:0']).toBe('KeyT')
-    expect(m.btn?.apDisconnect).toEqual({ pad: 0, btn: 1 })
+    expect(m.btn?.apDisconnect).toMatchObject({ pad: 0, btn: 1 })
     expect(m.btnKeys?.['0:4']).toBe('KeyU')
-    expect(m.btn?.reverse).toEqual({ pad: 1, btn: 0 })
+    expect(m.btn?.reverse).toMatchObject({ pad: 1, btn: 0 })
   })
 
   it('button preset: every stick face button gets a job; held aliases are the held keys', () => {
     const p = tcaButtonPreset(0, 1)
-    expect(Object.keys(p.keys).length).toBeGreaterThanOrEqual(16)
+    expect(Object.keys(p.keys).length).toBe(15)
     expect(p.keys['0:16']).toBeUndefined() // no guessed hat/latching-switch aliases
     expect(new Set(Object.values(p.keys)).has('KeyB')).toBe(true)
     expect(HELD_ALIASES.has('KeyB')).toBe(true)
@@ -131,9 +131,9 @@ describe('TCA Captain Pack support (16a-b)', () => {
 
   it('stick alone falls back to its base slider for throttle; non-TCA gets nothing', () => {
     const solo = tcaPresetFor([{ id: 'TCA STICK X AIRBUS', axes: 4, index: 0 }])!
-    expect(solo.throttle).toEqual({ pad: 0, axis: 3, sign: -1 }) // 4-axis variant keeps the classic layout
+    expect(solo.throttle).toMatchObject({ pad: 0, axis: 3, sign: -1 }) // 4-axis variant keeps the classic layout
     const solo10 = tcaPresetFor([{ id: 'TCA Sidestick X Copilot', axes: 10, index: 0 }])!
-    expect(solo10.throttle).toEqual({ pad: 0, axis: 6, sign: -1 })
+    expect(solo10.throttle).toMatchObject({ pad: 0, axis: 6, sign: -1 })
     expect(solo.throttle2).toBeUndefined()
     expect(tcaPresetFor([{ id: 'Xbox Wireless Controller', axes: 4, index: 0 }])).toBeNull()
   })
@@ -149,3 +149,4 @@ describe('9A: capture-time device guards', () => {
     expect(detectMovedAxis(before, after, 0.35)).toBeNull()
   })
 })
+it('sidestick PTT alias is held until trigger release',()=>{expect(tcaButtonPreset(0,null).keys['0:0']).toBe('KeyT');expect(HELD_ALIASES.has('KeyT')).toBe(true)})

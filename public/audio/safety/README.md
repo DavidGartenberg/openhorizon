@@ -1,0 +1,1 @@
+Original synthesized English callouts generated locally with macOS Samantha at 190 words/minute. Mono 16 kHz PCM16 WAV. No X-Plane audio copied. Regenerate with node scripts/generate-safety-audio.mjs on macOS.

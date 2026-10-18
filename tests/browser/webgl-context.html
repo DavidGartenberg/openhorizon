@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>OpenHorizon · WebGL context diagnostic</title>
+<style>body{background:#152431;color:#e8eef4;font:16px system-ui;padding:30px}button{padding:12px}pre{white-space:pre-wrap}</style>
+<h1>WebGL context diagnostic</h1><p>Creates one empty WebGL2 context; loads no aircraft or terrain.</p>
+<button id="detached">Create default Three renderer</button><button id="start">Create empty WebGL2 context</button><button id="three" disabled>Initialize Three renderer</button><button id="stop" disabled>Release context</button>
+<pre id="state">Ready; no GPU context</pre><canvas id="view" width="32" height="32"></canvas>
+<script type="module">
+const start=document.querySelector('#start'),stop=document.querySelector('#stop'),state=document.querySelector('#state'),canvas=document.querySelector('#view');let gl,renderer;const three=document.querySelector('#three');
+start.onclick=()=>{start.disabled=true;state.textContent='Requesting WebGL2';try{gl=canvas.getContext('webgl2',{antialias:false});state.textContent=gl?`Context created: ${gl.getParameter(gl.VERSION)}; max texture ${gl.getParameter(gl.MAX_TEXTURE_SIZE)}`:'WebGL2 unavailable';stop.disabled=three.disabled=!gl;}catch(e){state.textContent=String(e)}};
+document.querySelector('#detached').onclick=async()=>{state.textContent='Importing Three for default constructor';try{const THREE=await import('three');renderer=new THREE.WebGLRenderer({antialias:false});renderer.setSize(768,432);document.body.appendChild(renderer.domElement);state.textContent='Default Three renderer initialized and resized';stop.disabled=false;}catch(e){state.textContent=String(e)}};
+three.onclick=async()=>{three.disabled=true;state.textContent+='\nImporting Three';try{const THREE=await import('three');state.textContent+='\nCreating renderer from attached context';renderer=new THREE.WebGLRenderer({canvas,context:gl,antialias:false});state.textContent+='\nThree renderer initialized';}catch(e){state.textContent+='\n'+String(e)}};
+const release=()=>{renderer?.dispose();gl?.getExtension('WEBGL_lose_context')?.loseContext();gl=null;stop.disabled=true;state.textContent+='\nReleased';};stop.onclick=release;window.addEventListener('pagehide',release);
+</script></html>

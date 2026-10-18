@@ -1,0 +1,62 @@
+{
+  "C172": [
+    "sim/cockpit2/controls/elevator_trim",
+    "sim/flightmodel2/controls/elevator_trim",
+    "sim/flightmodel2/wing/aileron1_deg[2]",
+    "sim/flightmodel2/wing/aileron1_deg[3]",
+    "sim/flightmodel2/wing/elevator1_deg[8]",
+    "sim/flightmodel2/wing/rudder1_deg[10]"
+  ],
+  "B738": [
+    "sim/flightmodel2/wing/aileron1_deg[4]",
+    "sim/flightmodel2/wing/aileron1_deg[5]",
+    "sim/flightmodel2/wing/elevator1_deg[8]",
+    "sim/flightmodel2/wing/elevator1_deg[9]",
+    "sim/flightmodel2/wing/rudder1_deg[10]"
+  ],
+  "A333": [
+    "laminar/A333/flight_controls/composite_elevL",
+    "laminar/A333/flight_controls/composite_elevR",
+    "laminar/A333/flight_controls/composite_innerL_ail",
+    "laminar/A333/flight_controls/composite_innerR_ail",
+    "laminar/A333/flight_controls/composite_outerL_ail",
+    "laminar/A333/flight_controls/composite_outerR_ail",
+    "sim/flightmodel2/wing/rudder1_deg[10]",
+    "sim/operation/failures/rel_fcon_elev_1_lft_gone",
+    "sim/operation/failures/rel_fcon_elev_1_rgt_gone"
+  ],
+  "SR22": [
+    "sim/flightmodel2/wing/aileron1_deg[4]",
+    "sim/flightmodel2/wing/aileron1_deg[5]",
+    "sim/flightmodel2/wing/elevator1_deg[8]",
+    "sim/flightmodel2/wing/rudder1_deg[10]"
+  ],
+  "BE58": [
+    "sim/flightmodel2/controls/elevator_trim",
+    "sim/flightmodel2/controls/rudder_trim",
+    "sim/flightmodel2/wing/aileron1_deg[2]",
+    "sim/flightmodel2/wing/aileron1_deg[3]",
+    "sim/flightmodel2/wing/elevator1_deg[8]",
+    "sim/flightmodel2/wing/rudder1_deg[10]"
+  ],
+  "PA18": [
+    "sim/flightmodel2/wing/aileron1_deg[0]",
+    "sim/flightmodel2/wing/aileron1_deg[1]",
+    "sim/flightmodel2/wing/elevator1_deg[8]",
+    "sim/flightmodel2/wing/rudder1_deg[10]"
+  ],
+  "AS21": [
+    "sim/flightmodel2/wing/aileron1_deg[0]",
+    "sim/flightmodel2/wing/aileron1_deg[1]",
+    "sim/flightmodel2/wing/elevator1_deg[8]",
+    "sim/flightmodel2/wing/rudder1_deg[10]"
+  ],
+  "C750": [
+    "sim/flightmodel2/wing/aileron1_deg[2]",
+    "sim/flightmodel2/wing/aileron1_deg[3]",
+    "sim/flightmodel2/wing/elevator1_deg[8]",
+    "sim/flightmodel2/wing/elevator1_deg[9]",
+    "sim/flightmodel2/wing/rudder1_deg[10]",
+    "sim/flightmodel2/wing/rudder2_deg[10]"
+  ]
+}

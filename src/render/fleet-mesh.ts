@@ -13,6 +13,9 @@ import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import type { ArchetypeSpec } from '../world/fleet-map'
 import type { AircraftMesh } from './aircraft-mesh'
+import { aircraftPaint } from './aircraft-materials'
+import { profiledPanelGeometry } from './aircraft-components'
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 
 const SHARED_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.12 })
 
@@ -50,32 +53,33 @@ function place(x: number, y: number, z: number, rot?: { axis: THREE.Vector3; rad
 }
 
 /** Fuselage tube + nose + tail cones along −z; returns radius used. */
-function fuselage(parts: Part[], lengthM: number, color: THREE.Color, slim = false): number {
+function fuselage(parts: Part[], lengthM: number, color: THREE.Color, slim = false, detailed = false): number {
   const r = Math.max(lengthM / (slim ? 30 : 20), 0.35)
   const tube = lengthM * 0.64
-  parts.push({ geo: colored(new THREE.CylinderGeometry(r, r, tube, 12), color, place(0, 0, 0, { axis: AXIS_X, rad: Math.PI / 2 })), color })
-  parts.push({ geo: colored(new THREE.ConeGeometry(r, lengthM * 0.16, 12), color, place(0, 0, -(tube / 2 + lengthM * 0.08), { axis: AXIS_X, rad: -Math.PI / 2 })), color })
-  parts.push({ geo: colored(new THREE.ConeGeometry(r, lengthM * 0.2, 12), color, place(0, 0, tube / 2 + lengthM * 0.1, { axis: AXIS_X, rad: Math.PI / 2 })), color })
+  parts.push({ geo: colored(new THREE.CylinderGeometry(r, r, tube, detailed ? 40 : 12), color, place(0, 0, 0, { axis: AXIS_X, rad: Math.PI / 2 })), color })
+  parts.push({ geo: colored(new THREE.ConeGeometry(r, lengthM * 0.16, detailed ? 40 : 12), color, place(0, 0, -(tube / 2 + lengthM * 0.08), { axis: AXIS_X, rad: -Math.PI / 2 })), color })
+  parts.push({ geo: colored(new THREE.ConeGeometry(r, lengthM * 0.2, detailed ? 40 : 12), color, place(0, 0, tube / 2 + lengthM * 0.1, { axis: AXIS_X, rad: Math.PI / 2 })), color })
   return r
 }
 
-function wing(parts: Part[], spanM: number, chordM: number, y: number, z: number, sweepRad: number, color: THREE.Color): void {
+function wing(parts: Part[], spanM: number, chordM: number, y: number, z: number, sweepRad: number, color: THREE.Color, detailed = false): void {
   const t = Math.max(chordM * 0.09, 0.08)
   if (sweepRad === 0) {
-    parts.push({ geo: colored(new THREE.BoxGeometry(spanM, t, chordM), color, place(0, y, z)), color })
+    parts.push({ geo: colored((detailed ? profiledPanelGeometry(chordM/2,chordM,chordM/2,chordM,-spanM/2,spanM/2,t).translate(0,-t/2,0) : new THREE.BoxGeometry(spanM,t,chordM)), color, place(0, y, z)), color })
   } else {
     for (const side of [-1, 1]) {
-      const half = new THREE.BoxGeometry(spanM / 2, t, chordM)
+      const half = detailed ? profiledPanelGeometry(chordM/2,chordM,chordM/2,chordM,-spanM/4,spanM/4,t).translate(0,-t/2,0) : new THREE.BoxGeometry(spanM / 2, t, chordM)
       const m = place(side * spanM / 4, y, z + Math.tan(sweepRad) * spanM / 8, { axis: AXIS_Y, rad: -side * sweepRad })
       parts.push({ geo: colored(half, color, m), color })
     }
   }
 }
 
-function tail(parts: Part[], lengthM: number, finH: number, stabSpan: number, z: number, color: THREE.Color, tTail = false): void {
-  parts.push({ geo: colored(new THREE.BoxGeometry(Math.max(finH * 0.06, 0.06), finH, finH * 0.75), color, place(0, finH / 2, z)), color })
+function tail(parts: Part[], lengthM: number, finH: number, stabSpan: number, z: number, color: THREE.Color, tTail = false, detailed = false): void {
+  const box=(w:number,h:number,d:number)=>detailed?new RoundedBoxGeometry(w,h,d,3,Math.min(w,h,d)*.3):new THREE.BoxGeometry(w,h,d)
+  parts.push({ geo: colored(box(Math.max(finH * 0.06, 0.06), finH, finH * 0.75), color, place(0, finH / 2, z)), color })
   const stabY = tTail ? finH * 0.95 : lengthM * 0.01
-  parts.push({ geo: colored(new THREE.BoxGeometry(stabSpan, Math.max(stabSpan * 0.035, 0.05), stabSpan * 0.3), color, place(0, stabY, z)), color })
+  parts.push({ geo: colored(box(stabSpan, Math.max(stabSpan * 0.035, 0.05), stabSpan * 0.3), color, place(0, stabY, z)), color })
 }
 
 function podEngines(parts: Part[], count: number, spanM: number, wingY: number, wingZ: number, podLen: number, color: THREE.Color): void {
@@ -99,7 +103,7 @@ function propNacelles(parts: Part[], count: number, spanM: number, wingY: number
 
 /** Build one merged-silhouette mesh. userData.lightAnchors carries wingtip/
  *  tail positions (model frame) for the 13c nav-light pass. */
-export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
+export function buildArchetype(spec: ArchetypeSpec, detailed = false): THREE.Mesh {
   const { archetype: a, spanM: S, lengthM: L } = spec
   const parts: Part[] = []
   // Wing/fin placement captured per archetype so the light anchors can
@@ -113,56 +117,56 @@ export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
     case 'ga-high-wing':
     case 'taildragger': {
       const body = a === 'taildragger' ? YELLOW : WHITE
-      const r = fuselage(parts, L, body)
+      const r = fuselage(parts, L, body, false, detailed)
       wingAt = { y: r * 0.95, z: -L * 0.05, sweep: 0 }
-      wing(parts, S, L * 0.19, r * 0.95, -L * 0.05, 0, body)
+      wing(parts, S, L * 0.19, r * 0.95, -L * 0.05, 0, body, detailed)
       finAt = { h: L * 0.17, z: L * 0.42 }
-      tail(parts, L, L * 0.17, S * 0.33, L * 0.42, body)
+      tail(parts, L, L * 0.17, S * 0.33, L * 0.42, body, false, detailed)
       propNacelles(parts, 1, 0, 0, -L * 0.36, L * 0.1, DARK)
       break
     }
     case 'ga-low-wing': {
-      const r = fuselage(parts, L, WHITE)
+      const r = fuselage(parts, L, WHITE, false, detailed)
       wingAt = { y: -r * 0.8, z: -L * 0.02, sweep: 0 }
-      wing(parts, S, L * 0.19, -r * 0.8, -L * 0.02, 0, WHITE)
+      wing(parts, S, L * 0.19, -r * 0.8, -L * 0.02, 0, WHITE, detailed)
       finAt = { h: L * 0.17, z: L * 0.42 }
-      tail(parts, L, L * 0.17, S * 0.33, L * 0.42, ACCENT)
+      tail(parts, L, L * 0.17, S * 0.33, L * 0.42, ACCENT, false, detailed)
       propNacelles(parts, 1, 0, 0, -L * 0.36, L * 0.1, DARK)
       break
     }
     case 'twin-piston': {
-      const r = fuselage(parts, L, WHITE)
+      const r = fuselage(parts, L, WHITE, false, detailed)
       wingAt = { y: -r * 0.7, z: -L * 0.02, sweep: 0 }
-      wing(parts, S, L * 0.2, -r * 0.7, -L * 0.02, 0, WHITE)
+      wing(parts, S, L * 0.2, -r * 0.7, -L * 0.02, 0, WHITE, detailed)
       finAt = { h: L * 0.18, z: L * 0.42 }
-      tail(parts, L, L * 0.18, S * 0.33, L * 0.42, ACCENT)
+      tail(parts, L, L * 0.18, S * 0.33, L * 0.42, ACCENT, false, detailed)
       propNacelles(parts, 2, S, -r * 0.55, -L * 0.06, L * 0.09, WHITE)
       break
     }
     case 'single-turboprop': {
-      const r = fuselage(parts, L, WHITE)
+      const r = fuselage(parts, L, WHITE, false, detailed)
       wingAt = { y: -r * 0.75, z: -L * 0.02, sweep: 0 }
-      wing(parts, S, L * 0.17, -r * 0.75, -L * 0.02, 0, WHITE)
+      wing(parts, S, L * 0.17, -r * 0.75, -L * 0.02, 0, WHITE, detailed)
       finAt = { h: L * 0.2, z: L * 0.42 }
-      tail(parts, L, L * 0.2, S * 0.32, L * 0.42, ACCENT)
+      tail(parts, L, L * 0.2, S * 0.32, L * 0.42, ACCENT, false, detailed)
       propNacelles(parts, 1, 0, 0, -L * 0.4, L * 0.09, DARK)
       break
     }
     case 'twin-turboprop': {
-      const r = fuselage(parts, L, WHITE)
+      const r = fuselage(parts, L, WHITE, false, detailed)
       wingAt = { y: r * 0.85, z: -L * 0.04, sweep: 0 }
-      wing(parts, S, L * 0.16, r * 0.85, -L * 0.04, 0, WHITE)
+      wing(parts, S, L * 0.16, r * 0.85, -L * 0.04, 0, WHITE, detailed)
       finAt = { h: L * 0.22, z: L * 0.43 }
-      tail(parts, L, L * 0.22, S * 0.3, L * 0.43, WHITE, true)
+      tail(parts, L, L * 0.22, S * 0.3, L * 0.43, WHITE, true, detailed)
       propNacelles(parts, spec.quad ? 4 : 2, S, r * 0.6, -L * 0.08, L * 0.08, GREY)
       break
     }
     case 'bizjet': {
-      const r = fuselage(parts, L, WHITE, true)
+      const r = fuselage(parts, L, WHITE, true, detailed)
       wingAt = { y: -r * 0.7, z: L * 0.02, sweep: 0.35 }
-      wing(parts, S, L * 0.16, -r * 0.7, L * 0.02, 0.35, WHITE)
+      wing(parts, S, L * 0.16, -r * 0.7, L * 0.02, 0.35, WHITE, detailed)
       finAt = { h: L * 0.2, z: L * 0.42 }
-      tail(parts, L, L * 0.2, S * 0.3, L * 0.42, WHITE, true)
+      tail(parts, L, L * 0.2, S * 0.3, L * 0.42, WHITE, true, detailed)
       for (const side of [-1, 1]) {
         parts.push({ geo: colored(new THREE.CylinderGeometry(L * 0.028, L * 0.026, L * 0.11, 8), GREY, place(side * r * 1.7, r * 0.5, L * 0.32, { axis: AXIS_X, rad: Math.PI / 2 })), color: GREY })
       }
@@ -170,13 +174,13 @@ export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
     }
     case 'narrowbody':
     case 'widebody': {
-      const r = fuselage(parts, L, WHITE)
+      const r = fuselage(parts, L, WHITE, false, detailed)
       const wingY = -r * 0.6
       const wingZ = L * 0.02
       wingAt = { y: wingY, z: wingZ, sweep: 0.44 }
-      wing(parts, S, L * 0.14, wingY, wingZ, 0.44, GREY)
+      wing(parts, S, L * 0.14, wingY, wingZ, 0.44, GREY, detailed)
       finAt = { h: L * 0.17, z: L * 0.43 }
-      tail(parts, L, L * 0.17, S * 0.36, L * 0.43, WHITE)
+      tail(parts, L, L * 0.17, S * 0.36, L * 0.43, WHITE, false, detailed)
       podEngines(parts, spec.quad ? 4 : Math.max(spec.engines, 2) === 3 ? 2 : 2, S, wingY, wingZ, L * 0.1, GREY)
       if (spec.engines === 3) {
         parts.push({ geo: colored(new THREE.CylinderGeometry(L * 0.024, L * 0.022, L * 0.1, 10), GREY, place(0, r * 1.4, L * 0.4, { axis: AXIS_X, rad: Math.PI / 2 })), color: GREY })
@@ -184,11 +188,11 @@ export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
       break
     }
     case 'glider': {
-      const r = fuselage(parts, L, WHITE, true)
+      const r = fuselage(parts, L, WHITE, true, detailed)
       wingAt = { y: r * 0.3, z: -L * 0.05, sweep: 0 }
-      wing(parts, S, Math.max(L * 0.1, 0.5), r * 0.3, -L * 0.05, 0, WHITE)
+      wing(parts, S, Math.max(L * 0.1, 0.5), r * 0.3, -L * 0.05, 0, WHITE, detailed)
       finAt = { h: L * 0.18, z: L * 0.44 }
-      tail(parts, L, L * 0.18, S * 0.16, L * 0.44, WHITE, true)
+      tail(parts, L, L * 0.18, S * 0.16, L * 0.44, WHITE, true, detailed)
       break
     }
     case 'rotorcraft': {
@@ -205,18 +209,19 @@ export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
     }
     case 'generic':
     default: {
-      const r = fuselage(parts, L, GENERIC)
+      const r = fuselage(parts, L, GENERIC, false, detailed)
       wingAt = { y: 0, z: -L * 0.02, sweep: 0 }
-      wing(parts, S, L * 0.2, 0, -L * 0.02, 0, GENERIC)
+      wing(parts, S, L * 0.2, 0, -L * 0.02, 0, GENERIC, detailed)
       finAt = { h: L * 0.16, z: L * 0.42 }
-      tail(parts, L, L * 0.16, S * 0.3, L * 0.42, GENERIC)
+      tail(parts, L, L * 0.16, S * 0.3, L * 0.42, GENERIC, false, detailed)
       void r
       break
     }
   }
 
+  if(detailed)for(const part of parts){if(part.geo.index){const old=part.geo;part.geo=old.toNonIndexed();old.dispose()}}
   const merged = mergeGeometries(parts.map((p) => p.geo), false)
-  const mesh = new THREE.Mesh(merged ?? new THREE.BufferGeometry(), SHARED_MAT)
+  const mesh = new THREE.Mesh(merged ?? new THREE.BufferGeometry(), detailed ? aircraftPaint(0xffffff,{vertexColors:true,roughness:.37}) : SHARED_MAT)
   mesh.castShadow = true
   // Tip position from the swept-half geometry in wing(): half center at
   // side*S/4 offset z + tan(sweep)*S/8, tip a further S/4 out along the
@@ -237,15 +242,15 @@ export function buildArchetype(spec: ArchetypeSpec): THREE.Mesh {
  *  exterior exists for them). The prop-disc slot is inert. */
 export function buildArchetypeShip(spec: ArchetypeSpec): AircraftMesh {
   const g = new THREE.Group()
-  const body = buildArchetype(spec)
+  const body = buildArchetype(spec,true)
   g.add(body)
   const propDisc = new THREE.Mesh(
     new THREE.CircleGeometry(0.01, 6),
-    new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 }),
+    new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, opacity: 0 }),
   )
   const blade = new THREE.Mesh(
     new THREE.BoxGeometry(0.01, 0.01, 0.01),
-    new THREE.MeshStandardMaterial({ transparent: true, opacity: 0 }),
+    new THREE.MeshStandardMaterial({ transparent: true, depthWrite: false, opacity: 0 }),
   )
   propDisc.userData.blade = blade
   g.add(propDisc)

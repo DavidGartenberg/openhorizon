@@ -1,0 +1,1924 @@
+Snapshot diff: pre-Stage6 September18 baseline against frozen implementation. Git unavailable; no commits.
+--- before/src/sim/gamepad-map.ts
++++ after/src/sim/gamepad-map.ts
+@@ -1,53 +1,64 @@
+ /**
+  * Gamepad mapping core (16a) — pure, no navigator access. The capture
+  * convention: the pilot moves an axis to the function's POSITIVE
+  * extreme (nose UP, RIGHT roll, RIGHT rudder, full throttle, mixture
+  * RICH, brakes ON) and the observed movement direction becomes the
+  * binding's +1 — inverted hardware never needs a checkbox. Unipolar
+  * functions map the signed axis onto [0,1]. The driver in main.ts owns
+  * polling and control application.
+  */
+ 
+-export type BindableAxis = 'pitch' | 'roll' | 'yaw' | 'throttle' | 'throttle2' | 'mixture' | 'brakes'
++export type BindableAxis = 'pitch' | 'roll' | 'yaw' | 'throttle' | 'throttle2' | 'mixture' | 'brakes' | 'flaps' | 'speedbrake'
+ 
+ /** Momentary/toggle functions bindable to gamepad buttons (16a-b: the
+  *  TCA quadrant's switches and the sidestick's buttons). */
+ export type BindableButton =
+   | 'gear' | 'flapsUp' | 'flapsDown' | 'trimUp' | 'trimDown'
+-  | 'apDisconnect' | 'brakes' | 'reverse'
++  | 'apDisconnect' | 'brakes' | 'reverse' | 'reverse2' | 'ptt'
++  | 'parkingBrake' | 'engineMaster1' | 'engineMaster2' | 'ignitionCrank' | 'ignitionNorm' | 'ignitionStart'
++  | 'gearDown' | 'gearUp' | 'autobrakeOff' | 'autobrakeLow' | 'autobrakeMedium' | 'autobrakeMax' | 'autobrakeRto'
++  | 'rudderTrimLeft' | 'rudderTrimRight' | 'rudderTrimReset' | 'speedbrakeArm'
++  | 'flaps0' | 'flaps1' | 'flaps2' | 'flaps3' | 'flapsFull' | 'speedbrakeDown' | 'speedbrakeFull'
+ 
+ export interface ButtonBinding {
++  deviceId?: string
++  source?: 'preset' | 'user'
+   pad: number
+   btn: number
+ }
+ 
++export interface AxisCalibration { min: number; max: number; idle?: number; cl?: number; flex?: number }
+ export interface AxisBinding {
++  deviceId?: string
++  source?: 'preset' | 'user'
++  calibration?: AxisCalibration
+   pad: number
+   axis: number
+   sign: 1 | -1
+ }
+ 
+ export type GamepadMap = Partial<Record<BindableAxis, AxisBinding>> & {
+   btn?: Partial<Record<BindableButton, ButtonBinding>>
+   /** Preset schema version — lets a corrected preset overwrite bindings a
+    *  WRONG earlier preset saved (the v1 TCA guess inverted the quadrant). */
+   v?: number
++  devices?: Record<string, string>
+   /** Key-alias buttons: "pad:btn" → KeyboardEvent.code. A press injects a
+    *  one-frame key so the existing discrete handlers serve the stick;
+    *  entries whose code is listed in HELD_ALIASES mirror held state. */
+   btnKeys?: Record<string, string>
+ }
+ 
+-export const TCA_PRESET_VERSION = 6
++export const TCA_PRESET_VERSION = 7
+ 
+ /** Key aliases that act while HELD (everything else is edge-triggered). */
+ export const HELD_ALIASES: ReadonlySet<string> = new Set(['KeyT', 'KeyB', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'Comma', 'Period'])
+ 
+ /** Thrustmaster TCA Sidestick X Airbus button layout (Chrome indices =
+  *  printed button number − 1): 0 trigger, 1 red AP-disconnect (top),
+  *  2 black thumb button, 3 hat push; base 4-15 = L1-L3 / R1-R3 + the
+  *  lower six; 16-21 hat directions where the OS exposes them as buttons.
+  *  Quadrant (TCA Q-Eng 1&2): 0/1 = reverse-lift levers ENG1/ENG2.
+  *  Assignments mirror Thrustmaster's published Airbus profile where the
+  *  sim has the function, mapped onto our keys. */
+ export function tcaButtonPreset(stickPad: number | null, quadPad: number | null): { keys: Record<string, string>; fn: Partial<Record<BindableButton, ButtonBinding>> } {
+@@ -69,30 +80,30 @@
+     k(11, 'Space') // pause
+     k(12, 'KeyO') // save
+     k(13, 'KeyP') // load
+     k(14, 'KeyR') // reset/respawn
+     k(15, 'KeyQ') // mute
+     // Indices 16+ are NOT preset: on the live unit button 16 read pressed
+     // at rest (a latching base switch or hat-as-button), and a held trim
+     // alias there would run the trim away — the J wizard binds hats from
+     // real motion instead.
+   }
+   if (quadPad !== null) {
+     fn.reverse = { pad: quadPad, btn: 0 } // ENG1 reverse lift (held)
+-    keys[`${quadPad}:1`] = 'KeyZ' // ENG2 lift = reverse toggle as well
++    fn.reverse2 = { pad: quadPad, btn: 1 } // symmetric held ENG2 lift
+   }
+   return { keys, fn }
+ }
+ 
+-export const UNIPOLAR: ReadonlySet<BindableAxis> = new Set(['throttle', 'throttle2', 'mixture', 'brakes'])
++export const UNIPOLAR: ReadonlySet<BindableAxis> = new Set(['throttle', 'throttle2', 'mixture', 'brakes', 'flaps', 'speedbrake'])
+ 
+ const DEADZONE = 0.06
+ 
+ /** Zero inside the zone; rescale outside so full deflection stays ±1. */
+ export function applyDeadzone(v: number, dz = DEADZONE): number {
+   const a = Math.abs(v)
+   if (a < dz) return 0
+   return Math.sign(v) * ((a - dz) / (1 - dz))
+ }
+ 
+ /** Signed [-1,1] → [0,1] for lever-type functions. */
+ export function axisToUnipolar(v: number): number {
+@@ -108,112 +119,177 @@
+ ): AxisBinding | null {
+   let best: AxisBinding | null = null
+   let bestDelta = threshold
+   for (let p = 0; p < after.length; p++) {
+     // A pad ABSENT from the baseline just connected mid-capture — its
+     // resting axes (sliders park at −1) read as a full-swing "movement"
+     // and insta-bound the wrong axis. Only pads present at capture
+     // start participate.
+     const b = before[p]
+     if (!b) continue
+     const a = after[p] ?? []
+     for (let i = 0; i < a.length; i++) {
+-      const d = (a[i] ?? 0) - (b[i] ?? 0)
++      if (!Number.isFinite(a[i]) || !Number.isFinite(b[i])) continue
++      const d = a[i]! - b[i]!
+       if (Math.abs(d) > bestDelta) {
+         bestDelta = Math.abs(d)
+         best = { pad: p, axis: i, sign: d > 0 ? 1 : -1 }
+       }
+     }
+   }
+   return best
+ }
+ 
+ export function serializeGamepadMap(m: GamepadMap): string {
+   return JSON.stringify(m)
+ }
+ 
+ /** Newly-pressed button between two snapshots (any pad). */
+ export function detectPressedButton(
+   before: ReadonlyArray<ReadonlyArray<boolean>>,
+   after: ReadonlyArray<ReadonlyArray<boolean>>,
+ ): ButtonBinding | null {
+   for (let p = 0; p < after.length; p++) {
+     const b = before[p] ?? []
+     const a = after[p] ?? []
+     for (let i = 0; i < a.length; i++) {
+-      if (a[i] && !b[i]) return { pad: p, btn: i }
++      if (i < b.length && a[i] && !b[i]) return { pad: p, btn: i }
+     }
+   }
+   return null
+ }
+ 
+-/** Throttle lever with a reverse gate (TCA quadrant): the capture puts
+- *  idle at unipolar 0 and TOGA at 1; lever travel BELOW idle (the
+- *  lifted reverse zone) reads negative — that engages reverse and its
+- *  depth becomes reverse power. A whisker below idle stays forward-idle
+- *  so a lever resting on the detent can't flicker the buckets. */
+-export function leverWithReverse(rawSigned: number): { power: number; reverse: boolean } {
+-  const u = (rawSigned + 1) / 2 // UNclamped unipolar
+-  if (u >= 0) return { power: Math.min(u, 1), reverse: false }
+-  if (u > -0.04) return { power: 0, reverse: false }
+-  return { power: Math.min(-u * 3, 1), reverse: true }
+-}
+-
++/** Calibration is in signed physical axis coordinates. A measured IDLE of -1
++ * has no below-idle travel; reverse then comes only from held lift buttons.
++ * Capture a higher IDLE to enable analog reverse within the Gamepad range. */
++export function leverWithReverse(rawSigned: number, cal: AxisCalibration = { min: -1, max: 1, idle: -1 }): { power: number; reverse: boolean } {
++  const idle = cal.idle ?? cal.min
++  if (rawSigned < idle - 0.025 && idle > cal.min + 0.05) {
++    return { power: clamp((idle - rawSigned) / (idle - cal.min)), reverse: true }
++  }
++  return { power: clamp((rawSigned - idle) / (cal.max - idle)), reverse: false }
++}
++const clamp = (v: number): number => Math.min(1, Math.max(0, v))
++export interface LeverCommand { power: number; reverse: boolean }
++/** One common thrust/reverser model: opposing levers command idle, never
++ * convert reverse power into forward thrust. Individual readings remain visible. */
++export function combineLevers(levers: LeverCommand[]): LeverCommand & { mixed: boolean } {
++  const powered = levers.filter(l => l.power > .02)
++  const mixed = levers.some(l => l.reverse) && powered.some(l => !l.reverse)
++  return { power: mixed || !levers.length ? 0 : levers.reduce((s,l)=>s+l.power,0)/levers.length,
++    reverse: !mixed && levers.some(l=>l.reverse), mixed }
++}
++export const AXIS_FUNCTIONS: BindableAxis[] = ['pitch','roll','yaw','throttle','throttle2','mixture','brakes','flaps','speedbrake']
++export const BUTTON_FUNCTIONS: BindableButton[] = ['gear','flapsUp','flapsDown','trimUp','trimDown','apDisconnect','brakes','reverse','reverse2','ptt','parkingBrake','engineMaster1','engineMaster2','ignitionCrank','ignitionNorm','ignitionStart','gearDown','gearUp','autobrakeOff','autobrakeLow','autobrakeMedium','autobrakeMax','autobrakeRto','rudderTrimLeft','rudderTrimRight','rudderTrimReset','speedbrakeArm','flaps0','flaps1','flaps2','flaps3','flapsFull','speedbrakeDown','speedbrakeFull']
++const validIndex = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n < 256
++const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
++export function validCalibration(c: unknown): c is AxisCalibration {
++  if (!record(c)) return false
++  const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= -1 && n <= 1
++  if (!finite(c.min) || !finite(c.max) || c.max - c.min < .1) return false
++  if (c.idle !== undefined && (!finite(c.idle) || c.idle < c.min || c.idle > c.max - .1)) return false
++  for (const k of ['cl','flex']) if(c[k] !== undefined && (!finite(c[k]) || (c[k] as number) < (c.idle as number ?? c.min) || (c[k] as number) > c.max)) return false
++  return c.cl === undefined || c.flex === undefined || (c.cl as number) < (c.flex as number)
++}
+ export function parseGamepadMap(s: string): GamepadMap | null {
+   try {
+-    const raw = JSON.parse(s) as Record<string, unknown>
+-    if (typeof raw !== 'object' || raw === null) return null
+-    const out: GamepadMap = {}
+-    for (const [k, v] of Object.entries(raw)) {
+-      if (k === 'v') { if (typeof v === 'number') out.v = v; continue }
+-      if (k === 'btnKeys') {
+-        const bk: Record<string, string> = {}
+-        for (const [kk, vv] of Object.entries(v as Record<string, unknown>)) if (typeof vv === 'string') bk[kk] = vv
+-        out.btnKeys = bk
++    const raw: unknown = JSON.parse(s)
++    if (!record(raw)) return null
++    for (const [key,value] of Object.entries(raw)) {
++      if (key === 'v') { if(!validIndex(value)) return null; continue }
++      if (key === 'devices') {
++        if(!record(value) || Object.entries(value).some(([k,v])=>!validIndex(Number(k)) || typeof v!=='string' || !v)) return null
+         continue
+       }
+-      if (k === 'btn') {
+-        const btns: NonNullable<GamepadMap['btn']> = {}
+-        for (const [bk, bv] of Object.entries(v as Record<string, unknown>)) {
+-          const bb = bv as { pad?: unknown; btn?: unknown }
+-          if (typeof bb?.pad !== 'number' || typeof bb?.btn !== 'number') return null
+-          btns[bk as BindableButton] = { pad: bb.pad, btn: bb.btn }
+-        }
+-        out.btn = btns
++      if (key === 'btnKeys') {
++        if(!record(value) || Object.entries(value).some(([k,v])=>!/^\d+:\d+$/.test(k) || k.split(':').some(n=>!validIndex(Number(n))) || typeof v!=='string' || !/^(Key[A-Z]|Digit[0-9]|Arrow(Up|Down|Left|Right)|Space|Comma|Period|Backquote)$/.test(v))) return null
+         continue
+       }
+-      const b = v as { pad?: unknown; axis?: unknown; sign?: unknown }
+-      if (
+-        typeof b?.pad !== 'number' || typeof b?.axis !== 'number' ||
+-        (b?.sign !== 1 && b?.sign !== -1)
+-      ) return null
+-      out[k as BindableAxis] = { pad: b.pad, axis: b.axis, sign: b.sign }
++      const validBinding = (v: unknown, axis: boolean): boolean => record(v) && (v.source===undefined || v.source==='preset' || v.source==='user') && validIndex(v.pad) && validIndex(v[axis?'axis':'btn']) && (v.deviceId === undefined || typeof v.deviceId==='string' && !!v.deviceId) && (!axis || (v.sign===1 || v.sign===-1) && (v.calibration===undefined || validCalibration(v.calibration)))
++      if (key === 'btn') {
++        if(!record(value) || Object.entries(value).some(([k,v])=>!BUTTON_FUNCTIONS.includes(k as BindableButton) || !validBinding(v,false))) return null
++      } else if(!AXIS_FUNCTIONS.includes(key as BindableAxis) || !validBinding(value,true)) return null
+     }
+-    return out
+-  } catch {
+-    return null
+-  }
++    return raw as GamepadMap
++  } catch { return null }
++}
++export interface PadReading { id: string; index: number; connected?: boolean; axes: readonly number[]; buttons: readonly { pressed: boolean }[] }
++export function resolvePad(map: GamepadMap, b: {pad:number;deviceId?:string}, pads: readonly (PadReading|null)[]): PadReading | null {
++  const id = b.deviceId ?? map.devices?.[String(b.pad)]
++  if(!id) return null // legacy custom maps must be explicitly identified/captured
++  const found = pads.filter((p):p is PadReading=>!!p && p.connected!==false && p.id===id)
++  return found.length===1 ? found[0]! : null // identical duplicate IDs are ambiguous
++}
++export function readAxis(map: GamepadMap, fn: BindableAxis, pads: readonly (PadReading|null)[]): number|null {
++  const b=map[fn]; if(!b?.deviceId) return null
++  const raw=resolvePad(map,b,pads)?.axes[b.axis]
++  return typeof raw==='number' && Number.isFinite(raw) && Math.abs(raw)<=1.001 ? Math.min(1,Math.max(-1,raw))*b.sign : null
++}
++export function readButton(map: GamepadMap, fn: BindableButton, pads: readonly (PadReading|null)[]): boolean|null {
++  const b=map.btn?.[fn]; if(!b?.deviceId) return null
++  return resolvePad(map,b,pads)?.buttons[b.btn]?.pressed ?? null
++}
++export function readAlias(map: GamepadMap,key:string,pads:readonly(PadReading|null)[]):boolean|null {
++  const [pad,btn]=key.split(':').map(Number)
++  return resolvePad(map,{pad:pad!},pads)?.buttons[btn!]?.pressed ?? null
++}
++export function calibratedUnipolar(raw:number,b?:AxisBinding):number {
++  const c=b?.calibration
++  return c ? clamp((raw-c.min)/(c.max-c.min)) : axisToUnipolar(raw)
++}
++export function mergePreset(saved: GamepadMap, incoming: GamepadMap): GamepadMap {
++  const devices={...saved.devices}
++  const slots=new Map<number,number>()
++  for(const [slot,id] of Object.entries(incoming.devices??{})){
++    const known=Object.entries(devices).find(([,v])=>v===id)?.[0]
++    let target=known===undefined?Number(slot):Number(known)
++    if(known===undefined && devices[String(target)]){target=0;while(devices[String(target)])target++}
++    devices[String(target)]=id;slots.set(Number(slot),target)
++  }
++  const remap=<T extends {pad:number}>(b:T):T=>({...b,pad:slots.get(b.pad)??b.pad})
++  const preset:GamepadMap={...incoming,btn:{},btnKeys:{},devices}
++  for(const fn of AXIS_FUNCTIONS)if(incoming[fn])preset[fn]=remap(incoming[fn]!)
++  for(const [fn,b] of Object.entries(incoming.btn??{}))preset.btn![fn as BindableButton]=remap(b)
++  for(const [key,code] of Object.entries(incoming.btnKeys??{})){const [pad,btn]=key.split(':');preset.btnKeys![`${slots.get(Number(pad))??pad}:${btn}`]=code}
++  const out:GamepadMap={...saved,btn:{...saved.btn},btnKeys:{...saved.btnKeys},devices,v:TCA_PRESET_VERSION}
++  for(const fn of AXIS_FUNCTIONS){
++    const p=preset[fn],s=saved[fn]; if(!p)continue
++    if(!s || fn==='throttle' && s.source==='preset' && !s.calibration && /q-eng|quadrant/i.test(p.deviceId??'')) out[fn]=p
++    else if(!s.deviceId && s.pad===p.pad && s.axis===p.axis){
++      out[fn]={...s,deviceId:p.deviceId,sign:s.calibration?s.sign:(saved.v??0)<2?p.sign:s.sign}
++    }
++  }
++  for(const fn of BUTTON_FUNCTIONS){const p=preset.btn?.[fn],s=saved.btn?.[fn];if(!p)continue;const occupied=Object.entries(saved.btn??{}).some(([other,b])=>other!==fn && b.deviceId===p.deviceId && b.btn===p.btn);if(!occupied && (!s || !s.deviceId && s.pad===p.pad && s.btn===p.btn))out.btn![fn]={...p,...s,deviceId:p.deviceId}}
++  // Never give a captured physical button a second preset action on reconnect.
++  for(const [k,v] of Object.entries(preset.btnKeys??{})){
++    const [slot,btn]=k.split(':');const id=devices[slot!]
++    const captured=Object.values(saved.btn??{}).some(b=>b.deviceId===id && b.btn===Number(btn))
++    if(!out.btnKeys![k] && !captured)out.btnKeys![k]=v
++  }
++  const r2=preset.btn?.reverse2
++  if(r2 && (saved.v??0)<7 && out.btnKeys![`${r2.pad}:${r2.btn}`]==='KeyZ')delete out.btnKeys![`${r2.pad}:${r2.btn}`]
++  return out
+ }
+ 
+ /** Thrustmaster TCA (Airbus edition) device matchers + preset, set
+  *  from the user's ACTUAL hardware readings (2026-08-13):
+  *    pad "TCA Sidestick X Copilot (044f:040f)": 10 axes — roll 0, pitch
+  *      1, twist rudder 5, base slider 6 (axes 2-4 unused, read 0).
+  *    pad "TCA Q-Eng 1&2 (044f:0407)": 7 axes — lever 1 = axis 0, lever 2
+  *      = axis 1, IDLE reads −1 (so sign +1 maps idle→0, TOGA→1). The v1
+  *      guess used sign −1 and turned idle levers into FULL thrust — the
+  *      source of every "runaway throttle" incident in the log.
+  *  Assumes the levers are parked at idle when the preset applies; the
+  *  J wizard rebinds from real movement if they weren't. */
+-export const TCA_DEVICE = /tca|t\.a320|thrustmaster|airbus/i
++export const TCA_DEVICE = /(?:tca.*(?:sidestick|stick.*airbus|q-eng)|t\.a320)/i
+ export const TCA_QUADRANT = /quadrant|q-eng|throttle/i
+ 
+ export function tcaPresetFor(pads: ReadonlyArray<{ id: string; axes: number; index: number }>): GamepadMap | null {
+   const tca = pads.filter((p) => TCA_DEVICE.test(p.id))
+   if (!tca.length) return null
+   const quadrant = tca.find((p) => TCA_QUADRANT.test(p.id)) ?? tca.find((p) => p.axes <= 3 && p.axes >= 2)
+   const stick = tca.find((p) => p !== quadrant && p.axes >= 4) ?? tca.find((p) => p !== quadrant)
+   const map: GamepadMap = {}
+   if (stick) {
+     map.roll = { pad: stick.index, axis: 0, sign: 1 }
+     map.pitch = { pad: stick.index, axis: 1, sign: 1 }
+     map.yaw = { pad: stick.index, axis: stick.axes >= 7 ? 5 : 2, sign: 1 }
+@@ -224,24 +300,27 @@
+     // +1 (the resting/TOGA-detent reads matched sign +1 giving correct
+     // 0%/100%). A LATER uncommitted edit flipped this to −1 on an
+     // unverified guess and shipped a real regression — reported by the
+     // user as "push forward, throttle % goes DOWN". Do not flip this
+     // again without a live axis reading at both idle and TOGA.
+     map.throttle = { pad: quadrant.index, axis: 0, sign: 1 }
+     map.throttle2 = { pad: quadrant.index, axis: 1, sign: 1 }
+   }
+   if (!Object.keys(map).length) return null
+   const btns = tcaButtonPreset(stick ? stick.index : null, quadrant ? quadrant.index : null)
+   map.btnKeys = btns.keys
+   map.btn = btns.fn
++  map.devices = Object.fromEntries(tca.map(p=>[String(p.index),p.id]))
++  for(const fn of AXIS_FUNCTIONS)if(map[fn]){map[fn]!.deviceId=map.devices[String(map[fn]!.pad)];map[fn]!.source='preset'}
++  for(const b of Object.values(map.btn??{})){b.deviceId=map.devices[String(b.pad)];b.source='preset'}
+   map.v = TCA_PRESET_VERSION
+   return map
+ }
+ 
+ /** The near-universal single-stick layout: roll/pitch on 0/1, twist
+  *  rudder on 2, throttle slider on 3 (full forward reports −1). */
+ export const DEFAULT_SINGLE_STICK: GamepadMap = {
+   roll: { pad: 0, axis: 0, sign: 1 },
+   pitch: { pad: 0, axis: 1, sign: 1 },
+   yaw: { pad: 0, axis: 2, sign: 1 },
+   throttle: { pad: 0, axis: 3, sign: -1 },
+ }
+--- before/src/sim/captain-systems.ts
++++ after/src/sim/captain-systems.ts
+@@ -0,0 +1,118 @@
++/** Captain controls, independent of DOM/hardware. Engine starts and brake
++ * demands are deliberately simplified, not aircraft-specific certified logic.
++ * The two masters control equal engine groups; physics retains shared N1 and
++ * aggregate thrust, with no asymmetric engine-out yaw or separate fuel tanks. */
++export type IgnitionMode = 'crank' | 'norm' | 'start'
++export type AutobrakeMode = 'off' | 'low' | 'medium' | 'max' | 'rto'
++
++export interface CaptainSystemsState {
++  engineMaster1: boolean
++  engineMaster2: boolean
++  ignitionMode: IgnitionMode
++  engine1Running: boolean
++  engine2Running: boolean
++  engine1StartS: number
++  engine2StartS: number
++  enginePowerFraction: number
++  /** Add to pedal yaw then clamp [-1,1], for physics AND rendered rudder. */
++  rudderTrim: number
++  autobrakeMode: AutobrakeMode
++  autobrakeDemand: number
++  autobrakeActive: boolean
++  autobrakeDisarmed: boolean
++  landingArmed: boolean
++  rtoArmed: boolean
++}
++
++export interface CaptainSystemsInput {
++  /** Undefined leaves a latched command unchanged (disconnect is not OFF). */
++  engineMaster1?: boolean
++  engineMaster2?: boolean
++  ignitionMode?: IgnitionMode
++  autobrakeMode?: AutobrakeMode
++  trimLeft?: boolean
++  trimRight?: boolean
++  trimReset?: boolean
++  fuelAvailable: boolean
++  electricalPower: boolean
++  onGround: boolean
++  groundSpeedKt: number
++  throttle: number
++  /** Maximum of the pilot's left/right brake, before adding autobrake. */
++  manualBrake: number
++}
++
++export function createCaptainSystems(running = true): CaptainSystemsState {
++  return {
++    engineMaster1: running, engineMaster2: running, ignitionMode: 'norm',
++    engine1Running: running, engine2Running: running, engine1StartS: 0, engine2StartS: 0,
++    enginePowerFraction: running ? 1 : 0, rudderTrim: 0,
++    autobrakeMode: 'off', autobrakeDemand: 0, autobrakeActive: false,
++    autobrakeDisarmed: false, landingArmed: false, rtoArmed: false,
++  }
++}
++
++/** Pure transition. Call once per simulation tick. START takes six seconds
++ * with power/fuel; CRANK cannot light fuel, NORM sustains a running engine. */
++export function stepCaptainSystems(previous: CaptainSystemsState, input: CaptainSystemsInput, dt: number): CaptainSystemsState {
++  const s = { ...previous }
++  const elapsed = Number.isFinite(dt) ? Math.max(dt, 0) : 0
++  s.engineMaster1 = input.engineMaster1 ?? s.engineMaster1
++  s.engineMaster2 = input.engineMaster2 ?? s.engineMaster2
++  s.ignitionMode = input.ignitionMode ?? s.ignitionMode
++  for (const engine of [1, 2] as const) {
++    const master = engine === 1 ? s.engineMaster1 : s.engineMaster2
++    const runningKey = engine === 1 ? 'engine1Running' : 'engine2Running'
++    const timeKey = engine === 1 ? 'engine1StartS' : 'engine2StartS'
++    if (!master || !input.fuelAvailable) s[runningKey] = false
++    if (!s[runningKey] && master && input.fuelAvailable && input.electricalPower && s.ignitionMode === 'start') {
++      s[timeKey] = Math.min(s[timeKey] + elapsed, 6)
++      if (s[timeKey] >= 6) s[runningKey] = true
++    } else s[timeKey] = 0
++  }
++  s.enginePowerFraction = (Number(s.engine1Running) + Number(s.engine2Running)) / 2
++  s.rudderTrim = input.trimReset ? 0 : Math.min(0.3, Math.max(-0.3,
++    s.rudderTrim + (Number(!!input.trimRight) - Number(!!input.trimLeft)) * elapsed * 0.04))
++
++  s.autobrakeMode = input.autobrakeMode ?? s.autobrakeMode
++  if (s.autobrakeMode !== previous.autobrakeMode) {
++    s.autobrakeDisarmed = false
++    s.autobrakeActive = false
++    s.rtoArmed = false
++    s.landingArmed = false
++  }
++  s.autobrakeDemand = 0
++  const speed = Number.isFinite(input.groundSpeedKt) ? Math.max(0, input.groundSpeedKt) : 0
++  if (s.autobrakeMode === 'off') {
++    s.autobrakeActive = s.landingArmed = s.rtoArmed = false
++    return s
++  }
++  // Pilot intervention inhibits the latched selector until deliberately cycled.
++  if (input.manualBrake > 0.05 || (s.autobrakeActive && input.throttle > 0.15)) {
++    s.autobrakeDisarmed = true
++    s.autobrakeActive = s.landingArmed = s.rtoArmed = false
++  }
++  if (s.autobrakeDisarmed) return s
++  if (s.autobrakeMode === 'rto') {
++    if (!input.onGround) s.rtoArmed = s.autobrakeActive = false
++    else {
++      if (input.throttle >= 0.8 && speed >= 40) s.rtoArmed = true
++      if (s.rtoArmed && input.throttle <= 0.1 && speed >= 40) s.autobrakeActive = true
++    }
++  } else {
++    if (!input.onGround) {
++      s.landingArmed = true
++      s.autobrakeActive = false
++    } else if (s.landingArmed && speed >= 30 && input.throttle <= 0.1) {
++      s.autobrakeActive = true
++    }
++  }
++  if (input.onGround && speed < 5 && s.autobrakeActive) {
++    s.autobrakeActive = s.landingArmed = s.rtoArmed = false
++    s.autobrakeDisarmed = true
++  }
++  if (s.autobrakeActive && input.onGround && speed >= 5 && input.throttle <= 0.1) {
++    s.autobrakeDemand = s.autobrakeMode === 'low' ? 0.25 : s.autobrakeMode === 'medium' ? 0.5 : 1
++  }
++  return s
++}
+--- before/src/sim/aircraft.ts
++++ after/src/sim/aircraft.ts
+@@ -101,44 +101,52 @@
+     this.fuelKg = params.fuelCapacityKg
+     // Preserve the established 250 kg default where it fits, while small
+     // aircraft and gliders cannot boot heavier than their published MTOW.
+     this.payloadKg = Math.min(250, Math.max(params.mtowKg - params.emptyMassKg - this.fuelKg, 0))
+     this.jetState = params.jet ? makeTurbofanState(params.jet) : null
+   }
+ 
+   readonly controls: Controls = {
+     pitch: 0, roll: 0, yaw: 0, throttle: 0, mixture: 1,
+     flapsIndex: 0, brakeLeft: 0, brakeRight: 0, trim: 0,
+   }
+ 
++  /** Last inputs/surface angles actually passed to physics. Animation reads
++   * this snapshot after AP/SAS and trim mixing, never a restored command. */
++  readonly appliedControlSurfaces = { pitch: 0, roll: 0, yaw: 0, elevatorRad: 0, aileronRad: 0, rudderRad: 0 }
++
+   /** Extra wind in NED (from WindModel), applied as air-mass motion. */
+   readonly windNed = v3()
+ 
+   /** Terrain elevation (m MSL) at frame-local NED (north, east); Phase 2+. */
+   groundElevAt: ((n: number, e: number) => number) | null = null
+ 
+   /** Live-weather ISA temperature offset, °C (Phase 5 §11): shifts air
+    *  density (hot day → thinner air → longer takeoff, weaker climb) while
+    *  leaving pressure untouched — the dominant density-altitude term. 0 =
+    *  ISA, which keeps the POH validation suite exactly as tuned. */
+   isaTempOffsetC = 0
+ 
+   /** Systems layer (Phase 3): whether the engine is actually running. Phase
+    *  1/2 always ran the engine, so this defaults to true — callers that
+    *  never touch systems (existing tests, current main.ts) see identical
+    *  behavior. `src/sim/systems/engine-start.ts` drives this once wired in
+    *  by the caller, making "stopped" (cold-and-dark, fuel-starved, shut
+    *  down) a real reachable state: false here means no fuel is available
+    *  to the engine this step, same mechanism as running the tank dry. */
+   engineRunning = true
++
++  /** Fraction of jet engine groups running, set by Captain systems. Shared
++   * N1 remains an approximation: no independent spool or asymmetric yaw. */
++  jetPowerFactor = 1
+ 
+   /** Intake power multiplier from the carb-ice model (Phase 11b), set by
+    *  the systems layer each frame. 1 (default) = clear venturi — injected
+    *  engines and all existing callers see identical behavior. */
+   intakePowerFactor = 1
+ 
+   /** groundElevAt with a finite guard: a flaky terrain sample (NaN tile
+    *  decode) must never reach aero (AGL/ground effect) or gear math —
+    *  fall back to sea level, which is what a missing tile really means. */
+   private safeGroundElev(n: number, e: number): number {
+     const h = this.groundElevAt?.(n, e) ?? 0
+     return Number.isFinite(h) ? h : 0
+@@ -199,24 +207,25 @@
+     v3set(this.velBody, 0, 0, 0)
+     v3set(this.rates, 0, 0, 0)
+     this.prop.omegaRadS = (700 * Math.PI) / 30
+     // Respawn hygiene (9B): a respawned jet used to come back at the
+     // last flight's N1 against the brakes, with speedbrakes armed and
+     // reversers still commanded; interlocks also read one step of stale
+     // flight data.
+     this.spoilerCmd = 0
+     this.spoilerPos = 0
+     this.spoilerArmed = false
+     this.reverseCmd = false
+     this.reversePos = 0
++    for(const key of Object.keys(this.appliedControlSurfaces) as Array<keyof typeof this.appliedControlSurfaces>)this.appliedControlSurfaces[key]=0
+     this.alphaDotFilt = 0
+     if (this.jetState && this.P.jet) Object.assign(this.jetState, makeTurbofanState(this.P.jet))
+     this.data.onGround = true
+     this.data.kias = 0
+     this.data.verticalSpeedFpm = 0
+   }
+ 
+   /** Set on structural-impact or numeric blowup; freezes physics until reset. */
+   crashed = false
+ 
+   step(dt: number): void {
+     if (this.crashed) return
+@@ -269,38 +278,41 @@
+       this.gearPos = clamp(this.gearPos + (this.gearDownCommanded ? rate : -rate), 0, 1)
+     }
+ 
+     // ---- propulsion ----
+     // Params passed EXPLICITLY here and below: the modules' defaulted
+     // C172S args exist for external callers/tests — if the 6-DOF relied on
+     // the default, every fleet member would silently fly a C172 (§1).
+     let mach = 0
+     if (this.P.jet && this.jetState) {
+       // Jet path: turbofan drives the shared `prop` output struct so the
+       // force assembly / fuel / data plumbing below is powerplant-agnostic.
+       mach = vAir / this.air.speedOfSoundMs
+-      const running = this.fuelKg > 0.5 && this.engineRunning
++      const powerFactor = Number.isFinite(this.jetPowerFactor) ? clamp(this.jetPowerFactor, 0, 1) : 0
++      const running = this.fuelKg > 0.5 && this.engineRunning && powerFactor > 0
+       stepTurbofan(this.jetState, dt, c.throttle, rho, mach, running, this.P.jet)
+-      this.prop.thrustN = running ? this.jetState.thrustN : -windmillDragN(rho, vAir, this.P.jet)
++      this.prop.thrustN = running ? this.jetState.thrustN * powerFactor : 0
+       // Reversers: cascade redirect — effective thrust swings negative as
+       // the sleeves translate (weight-on-wheels interlocked upstream).
+       // RUNNING engines only: a dead engine's thrust is already negative
+       // windmill drag, and the negative reverse multiplier turned it into
+       // FORWARD thrust from a flamed-out engine.
+       if (this.P.reversers && this.reversePos > 0 && running) {
+         this.prop.thrustN *= 1 - this.reversePos * (1 + this.P.reversers.effectiveness)
+       }
++      // Dead groups drag in either reverser position; never reverse drag into thrust.
++      this.prop.thrustN -= windmillDragN(rho, vAir, this.P.jet) * (running ? 1 - powerFactor : 1)
+       this.prop.torqueNm = 0
+-      this.prop.fuelFlowKgS = this.jetState.fuelFlowKgS
+-      this.prop.shaftPowerW = Math.max(this.jetState.thrustN * vAir, 0)
++      this.prop.fuelFlowKgS = this.jetState.fuelFlowKgS * powerFactor
++      this.prop.shaftPowerW = Math.max(this.jetState.thrustN * powerFactor * vAir, 0)
+       this.prop.rpm = 0
+       this.prop.omegaRadS = 0
+     } else {
+       stepPropulsion(
+         this.prop, dt, c.throttle, c.mixture, rho,
+         Math.max(this.vAirBody.x, 0), this.fuelKg > 0.5 && this.engineRunning,
+         this.P, this.intakePowerFactor,
+       )
+     }
+     this.fuelKg = Math.max(this.fuelKg - this.prop.fuelFlowKgS * dt, 0)
+ 
+     // ---- aero ----
+@@ -315,24 +327,26 @@
+     ai.r = this.rates.z
+     // Trim-tab aircraft: tab + elevator share the surface — total clamps to
+     // elevator travel (C172, bit-exact). Trimmable-stabilizer aircraft: the
+     // stab is its own surface; its authority adds beyond elevator stops.
+     ai.elevatorRad = this.P.trimIsStabilizer
+       ? clamp(-c.pitch * this.P.elevatorMaxRad, -this.P.elevatorMaxRad, this.P.elevatorMaxRad) - c.trim * this.P.trimMaxRad
+       : clamp(-c.pitch * this.P.elevatorMaxRad - c.trim * this.P.trimMaxRad, -this.P.elevatorMaxRad, this.P.elevatorMaxRad)
+     ai.aileronRad = c.roll * this.P.aileronMaxRad
+     // Convention bridge: +input = right pedal = nose right. The aero
+     // derivatives use Roskam's +δr = trailing-edge-left (nose left), so the
+     // aerodynamic rudder angle is the negative of the pilot input.
+     ai.rudderRad = -c.yaw * this.P.rudderMaxRad
++    Object.assign(this.appliedControlSurfaces, {pitch:c.pitch,roll:c.roll,yaw:c.yaw,
++      elevatorRad:ai.elevatorRad,aileronRad:ai.aileronRad,rudderRad:ai.rudderRad})
+     ai.flapsDeg = this.flapsDeg
+     ai.thrustN = this.prop.thrustN
+     ai.propTorqueNm = this.prop.torqueNm
+     ai.mach = mach
+     ai.extraCd = (this.P.gearRetractable ? this.P.gearRetractable.dCdExtended * this.gearPos : 0) +
+       (this.P.spoilers ? this.P.spoilers.dCd * this.spoilerPos : 0)
+     ai.extraClDump = this.P.spoilers ? this.P.spoilers.dCl * this.spoilerPos : 0
+     const groundElev = this.safeGroundElev(this.posNed.x, this.posNed.y)
+     ai.heightAglM = altM - groundElev
+     this.data.aglFt = ai.heightAglM / FT
+     computeAero(ai, this.aeroOut, this.P)
+ 
+--- before/src/input/controller-capture.ts
++++ after/src/input/controller-capture.ts
+@@ -0,0 +1,42 @@
++import { detectMovedAxis, detectPressedButton, validCalibration, UNIPOLAR, type AxisBinding, type AxisCalibration, type BindableAxis, type BindableButton, type ButtonBinding, type PadReading } from '../sim/gamepad-map'
++export class ControllerCapture {
++  candidate: AxisBinding | ButtonBinding | null = null
++  points: Partial<AxisCalibration> = {}
++  message = 'Move only the requested control. New devices cannot participate; Retry after connecting.'
++  private readonly baseline: readonly (PadReading|null)[]
++  constructor(readonly kind:'axis'|'button', readonly fn:BindableAxis|BindableButton,pads:readonly(PadReading|null)[]) {
++    this.baseline=pads.map(p=>p?{...p,axes:[...p.axes],buttons:p.buttons.map(b=>({...b}))}:null)
++  }
++  poll(pads:readonly(PadReading|null)[]):void {
++    if(this.candidate)return
++    const beforeAxes:number[][]=[],afterAxes:number[][]=[],beforeButtons:boolean[][]=[],afterButtons:boolean[][]=[]
++    for(const old of this.baseline){
++      if(!old)continue
++      const p=pads.find(p=>p && p.index===old.index && p.id===old.id && p.connected!==false)
++      if(!p)continue
++      beforeAxes[p.index]=[...old.axes];afterAxes[p.index]=[...p.axes]
++      for(let i=0;i<old.buttons.length;i++)if(p.buttons[i]?.pressed===false)old.buttons[i]!.pressed=false
++      beforeButtons[p.index]=old.buttons.map(b=>b.pressed);afterButtons[p.index]=p.buttons.map(b=>b.pressed)
++    }
++    const hit=this.kind==='axis'?detectMovedAxis(beforeAxes,afterAxes,.45):detectPressedButton(beforeButtons,afterButtons)
++    if(hit){this.candidate={...hit,source:'user',deviceId:pads.find(p=>p?.index===hit.pad)!.id};this.message=this.kind==='axis'?'Movement found. Verify live raw value and record the endpoints, then Save.':'Press found. Verify this control, then Save.'}
++  }
++  raw(pads:readonly(PadReading|null)[]):number|null {
++    const c=this.candidate;if(!c || !('axis' in c))return null
++    const matches=pads.filter(p=>p && p.id===c.deviceId && p.connected!==false)
++    const v=matches.length===1?matches[0]?.axes[c.axis]:undefined
++    return typeof v==='number' && Number.isFinite(v)?v*c.sign:null
++  }
++  record(point:keyof AxisCalibration,pads:readonly(PadReading|null)[]):boolean {
++    const raw=this.raw(pads);if(raw===null)return false
++    this.points[point]=raw;return true
++  }
++  result():AxisBinding|ButtonBinding|null {
++    if(!this.candidate)return null
++    if(this.kind==='button')return this.candidate
++    const axis=this.fn as BindableAxis
++    if(!UNIPOLAR.has(axis))return this.candidate
++    if(!validCalibration(this.points) || ((axis==='throttle'||axis==='throttle2') && this.points.idle===undefined))return null
++    return {...this.candidate,calibration:{...this.points} as AxisCalibration}
++  }
++}
+--- before/src/input/controller-runtime.ts
++++ after/src/input/controller-runtime.ts
+@@ -0,0 +1,24 @@
++import { BUTTON_FUNCTIONS, readButton, readAlias, type GamepadMap, type BindableButton, type PadReading } from '../sim/gamepad-map'
++/** Release-before-rearm for momentary controls; latched switches are read
++ * separately as absolute states. Unknown/disconnected is never a release. */
++export class ControllerRuntime {
++  private armed=new Set<string>()
++  private previous=new Map<string,boolean>()
++  private signature=''
++  reset():void {this.armed.clear();this.previous.clear();this.signature=''}
++  poll(map:GamepadMap,pads:readonly(PadReading|null)[],eligible:boolean):{held:(fn:BindableButton)=>boolean;pressed:(fn:BindableButton)=>boolean;aliases:Map<string,{held:boolean;pressed:boolean}>} {
++    const signature=JSON.stringify([pads.filter(Boolean).map(p=>[p!.id,p!.index,p!.axes.length,p!.buttons.length]),map])
++    if(signature!==this.signature || !eligible){this.armed.clear();this.previous.clear();this.signature=signature}
++    const values=new Map<string,{held:boolean;pressed:boolean}>()
++    const sample=(key:string,physical:boolean|null):void=>{
++      if(!eligible || physical===null){this.armed.delete(key);this.previous.delete(key);values.set(key,{held:false,pressed:false});return}
++      if(!physical)this.armed.add(key)
++      const held=physical && this.armed.has(key)
++      values.set(key,{held,pressed:held && !this.previous.get(key)});this.previous.set(key,held)
++    }
++    for(const fn of BUTTON_FUNCTIONS)sample(fn,readButton(map,fn,pads))
++    const aliases=new Map<string,{held:boolean;pressed:boolean}>()
++    for(const key of Object.keys(map.btnKeys??{})){sample(`key:${key}`,readAlias(map,key,pads));aliases.set(key,values.get(`key:${key}`)!)}
++    return {held:fn=>values.get(fn)?.held??false,pressed:fn=>values.get(fn)?.pressed??false,aliases}
++  }
++}
+--- before/src/ui/controller-panel.ts
++++ after/src/ui/controller-panel.ts
+@@ -0,0 +1,65 @@
++import { AXIS_FUNCTIONS, BUTTON_FUNCTIONS, readAxis, readButton, leverWithReverse, calibratedUnipolar, UNIPOLAR, type GamepadMap, type PadReading, type BindableAxis, type BindableButton, type AxisBinding, type ButtonBinding } from '../sim/gamepad-map'
++import { ControllerCapture } from '../input/controller-capture'
++const LABELS:Partial<Record<BindableAxis|BindableButton,string>>={throttle:'ENG 1 throttle',throttle2:'ENG 2 throttle',reverse:'ENG 1 reverse lift (hold)',reverse2:'ENG 2 reverse lift (hold)',ptt:'Push to talk (hold)',parkingBrake:'Parking brake (latched ON; released = OFF)',engineMaster1:'ENG 1 master (latched ON; released = OFF)',engineMaster2:'ENG 2 master (latched ON; released = OFF)',gearDown:'Gear DOWN position',gearUp:'Gear UP position',speedbrake:'Speedbrake lever',speedbrakeArm:'Speedbrake ARM position'}
++const label=(fn:BindableAxis|BindableButton):string=>LABELS[fn]??fn.replace(/([A-Z0-9])/g,' $1')
++export class ControllerPanel {
++  readonly root=document.createElement('details')
++  private readonly status=document.createElement('pre')
++  private readonly live=document.createElement('pre')
++  private readonly feedback=document.createElement('div')
++  private readonly selector=document.createElement('select')
++  private readonly endpointRow=document.createElement('div')
++  private capture:ControllerCapture|null=null
++  private queue:Array<{kind:'axis'|'button';fn:BindableAxis|BindableButton}>=[]
++  private latest:readonly(PadReading|null)[]=[]
++  private lastRender=0
++  private error=''
++  get capturing():boolean{return this.capture!==null}
++  constructor(private readonly getMap:()=>GamepadMap,private readonly save:(map:GamepadMap)=>void,private readonly onCapture:()=>void) {
++    this.root.id='controller-panel';this.root.style.cssText='position:fixed;right:8px;top:54px;z-index:28;width:min(440px,90vw);max-height:75vh;overflow:auto;background:#071923f2;color:#def;padding:10px;border:1px solid #53717e;border-radius:6px;font:12px/1.5 monospace'
++    const summary=document.createElement('summary');summary.textContent='Controllers · TCA Captain · J';this.root.append(summary,this.status)
++    const help=document.createElement('p');help.textContent='Pause before calibration. Mac presets use measured throttle axes. Add-on indices require capture. Jet masters drive two equal engine groups. Ignition returns to NORM with CRANK and START both released (both must be bound). One aggregate engine model: opposing thrust directions command idle; no independent engine yaw. Detent buttons are alternatives to lever axes.'
++    for(const [kind,fns] of [['axis',AXIS_FUNCTIONS],['button',BUTTON_FUNCTIONS]] as const)for(const fn of fns){const option=document.createElement('option');option.value=`${kind}:${fn}`;option.textContent=`${kind} · ${label(fn)}`;this.selector.append(option)}
++    this.selector.setAttribute('aria-label','Controller function')
++    const action=(title:string,fn:()=>void):HTMLButtonElement=>{const b=document.createElement('button');b.textContent=title;b.onclick=()=>{fn();b.blur()};return b}
++    this.root.append(help,this.selector,action('Capture',()=>{const[k,f]=this.selector.value.split(':');this.start(k as 'axis'|'button',[f as BindableAxis|BindableButton])}),this.feedback)
++    for(const [point,title] of [['min','Record minimum / full reverse'],['max','Record maximum / TOGA'],['idle','Record IDLE'],['cl','Record CL (optional)'],['flex','Record FLEX (optional)']] as const)this.endpointRow.append(action(title,()=>{if(!this.capture?.record(point,this.latest))this.feedback.textContent='No finite connected axis reading.'}))
++    this.root.append(this.endpointRow,action('Save / Next',()=>this.accept()),action('Retry',()=>{if(this.capture)this.capture=new ControllerCapture(this.capture.kind,this.capture.fn,this.latest)}),action('Skip',()=>this.next()),action('Cancel',()=>{this.capture=null;this.queue=[];this.feedback.textContent='Capture cancelled; saved bindings retained.'}),this.live)
++    document.body.append(this.root)
++  }
++  start(kind:'axis'|'button',functions:readonly(BindableAxis|BindableButton)[]):void {
++    this.error='';this.root.open=true;this.queue=functions.map(fn=>({kind,fn}));this.next();this.onCapture()
++  }
++  toggle():void {this.root.open=!this.root.open}
++  private next():void {
++    this.error='';const step=this.queue.shift();this.capture=step?new ControllerCapture(step.kind,step.fn,this.latest):null
++    this.feedback.textContent=step?'Waiting for deliberate movement…':'Capture finished. Use the function selector to bind any remaining controls.'
++  }
++  private accept():void {
++    const c=this.capture,result=c?.result();if(!c)return
++    if(!result){this.error='Record valid minimum and maximum; throttle also requires IDLE. Move in the requested positive direction, Retry if reversed.';return}
++    const m=this.getMap()
++    if(c.kind==='axis')m[c.fn as BindableAxis]=result as AxisBinding
++    else {
++      // A captured physical button has one purpose; remove conflicting preset aliases.
++      for(const [k,id] of Object.entries(m.devices??{}))if(id===result.deviceId && m.btnKeys)delete m.btnKeys[`${k}:${(result as ButtonBinding).btn}`]
++      for(const [fn,b] of Object.entries(m.btn??{}))if(b.deviceId===result.deviceId && b.btn===(result as ButtonBinding).btn)delete m.btn![fn as BindableButton]
++      m.btn={...m.btn,[c.fn]:result as ButtonBinding}
++    }
++    this.save(m);this.next()
++  }
++  update(pads:readonly(PadReading|null)[],summary:string,now=performance.now()):void {
++    this.latest=pads;this.capture?.poll(pads)
++    if(now-this.lastRender<100)return;this.lastRender=now
++    this.status.textContent=pads.filter(Boolean).map(p=>`${p!.index}: ${p!.id}`).join('\n')||'No controller exposed. Press a device button.'
++    if(!this.root.open)return
++    const m=this.getMap(),lines=[summary]
++    for(const fn of ['throttle','throttle2'] as const){const r=readAxis(m,fn,pads),b=m[fn],v=r===null?null:leverWithReverse(r,b?.calibration);let detent=v?.reverse?'REV':v && v.power<.02?'IDLE':v && v.power>.98?'TOGA':'travel';for(const d of ['cl','flex'] as const)if(r!==null && b?.calibration?.[d]!==undefined && Math.abs(r-b.calibration[d]!)<.035)detent=d.toUpperCase();lines.push(`${label(fn)}: ${v?`${Math.round(v.power*100)}% ${detent} raw ${r!.toFixed(3)}`:'unavailable'}`)}
++    for(const fn of AXIS_FUNCTIONS){if(fn==='throttle'||fn==='throttle2')continue;const r=readAxis(m,fn,pads);lines.push(`${label(fn)}: ${r===null?'unbound / unavailable':UNIPOLAR.has(fn)?`${Math.round(calibratedUnipolar(r,m[fn])*100)}%`:r.toFixed(3)}`)}
++    for(const fn of BUTTON_FUNCTIONS)lines.push(`${label(fn)}: ${readButton(m,fn,pads)===null?'unbound / unavailable':readButton(m,fn,pads)?'ON':'OFF'}`)
++    if(this.capture){const c=this.capture,axis=c.kind==='axis',throttle=c.fn==='throttle'||c.fn==='throttle2';this.feedback.textContent=`${this.error?this.error+' · ':''}Capture ${label(c.fn)} · ${this.queue.length+1} remaining. ${c.message}\n${axis?'Start at minimum, move toward '+(throttle?'TOGA':'maximum / right / pull nose up')+'. ': 'Release first, then press or select the target position. '}${c.candidate?JSON.stringify(c.candidate):''}\nraw: ${c.raw(pads)?.toFixed(3)??'—'} points: ${JSON.stringify(c.points)}`;this.endpointRow.hidden=!axis || !UNIPOLAR.has(c.fn as BindableAxis)}else this.endpointRow.hidden=true
++    lines.push('RAW LIVE (verify movement before saving)')
++    for(const p of pads)if(p)lines.push(`pad ${p.index} axes ${p.axes.map((a,i)=>`${i}:${a.toFixed(2)}`).join(' ')}\nbuttons down: ${p.buttons.flatMap((b,i)=>b.pressed?[i]:[]).join(', ')}`)
++    this.live.textContent=lines.join('\n')
++  }
++}
+--- before/src/main.ts
++++ after/src/main.ts
+@@ -59,25 +59,28 @@
+ import { buildCockpit, panelLayoutFor, updateCockpitControls, updateCockpitDisplays, updateEicas, updateMcp, CockpitInteraction, type SwitchId } from './render/cockpit'
+ import type { PfdInput } from './cockpit/pfd'
+ import { Input } from './input/input'
+ import { EngineSound } from './audio/engine-sound'
+ import { Hud } from './ui/hud'
+ import { GraphicsPanel } from './ui/graphics-panel'
+ import { LoadingPanel } from './ui/loading-panel'
+ import { sunPosition } from './math/solar'
+ import { WorldFrame, TileManager } from './world/tiles'
+ import { Airports, type AirportData, type RunwayData } from './world/airports'
+ import { makeElectricalState, stepElectrical } from './sim/systems/electrical'
+ import { c172WeightBalance, C172S_ENVELOPE } from './sim/weight-balance'
+-import { applyDeadzone, axisToUnipolar, detectMovedAxis, detectPressedButton, leverWithReverse, parseGamepadMap, serializeGamepadMap, tcaPresetFor, DEFAULT_SINGLE_STICK, TCA_PRESET_VERSION, HELD_ALIASES, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
++import { applyDeadzone, leverWithReverse, parseGamepadMap, serializeGamepadMap, tcaPresetFor, HELD_ALIASES, readAxis, readButton, readAlias, calibratedUnipolar, mergePreset, combineLevers, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
++import { ControllerPanel } from './ui/controller-panel'
++import { ControllerRuntime } from './input/controller-runtime'
++import { createCaptainSystems, stepCaptainSystems, type CaptainSystemsInput } from './sim/captain-systems'
+ import { makeFuelState, stepFuel, type FuelSelector } from './sim/systems/fuel'
+ import { applyLoading, defaultLoading, loadingFromSnapshot, preferenceFor, setPreference, type LoadingSelection, type MassUnit } from './sim/loading'
+ import { PitotStaticSystem } from './sim/systems/pitot'
+ import { stepEngineStart, type EngineStartState, type MagnetoPosition } from './sim/systems/engine-start'
+ import { makeEngineTemps, stepEngineTemps } from './sim/systems/engine-temps'
+ import { NavaidsIndex } from './sim/nav/navaids'
+ import { FlightPlan, gpsCdiDeflection, determinePhase, activeLegProgress } from './sim/nav/gps'
+ import { airspacesContaining, type AirspacePolygon } from './sim/nav/airspace'
+ import { makeAutopilotState, stepAutopilot, disconnect as disconnectAutopilot, type LateralMode, type VerticalMode } from './sim/autopilot'
+ import {
+   findTunedVor, vorCdiFraction, ilsRefFromRunwayThreshold, localizerFraction, glideslopeFraction, findKnownIls,
+   ilsOnFinal, NO_NAV_RESULT, type TunedNavResult,
+@@ -327,24 +330,30 @@
+ const SYSTEMS_CONTROLS_DEFAULT: SystemsControls = {
+   masterBattery: true,
+   masterAlternator: true,
+   avionicsSwitch: true,
+   pitotHeat: false,
+   magneto: 'both',
+   starterEngaged: false,
+   fuelSelector: 'BOTH',
+   boostPumpOn: false,
+   apMaster: false,
+ }
+ const systemsControls: SystemsControls = { ...SYSTEMS_CONTROLS_DEFAULT }
++let captainSystems = createCaptainSystems()
++let captainCommands: Partial<CaptainSystemsInput> = {}
++const controllerRuntime = new ControllerRuntime()
++let keyboardReverse = false
++let hardwareReverseOwned = false
++let pilotBrake = 0
+ 
+ // ---- Phase 4 Task 6: radio/GPS/autopilot state ----
+ 
+ /** NAV1/NAV2/COM1/COM2 flip-flop frequency state + OBS course selectors.
+  *  NAV1/COM1 get physical 3D-cockpit tuning knobs (`render/cockpit.ts`);
+  *  NAV2/COM2 are modeled state without a physical control this task (scope
+  *  cut — see task report). Boot frequencies are arbitrary in-band defaults,
+  *  not tied to any real station until the pilot tunes one. */
+ const radios = {
+   nav1: { activeMhz: 109.55, standbyMhz: 115.8 },
+   nav2: { activeMhz: 112.3, standbyMhz: 112.3 },
+   com1: { activeMhz: 118.0, standbyMhz: 121.5 },
+@@ -389,24 +398,29 @@
+  *  only `Aircraft`'s own fields). Mirrors the module-scope boot seeding above
+  *  exactly (reuses the same defaults/constants) rather than inventing a
+  *  second "normal" state. */
+ function resetSystemsState(): void {
+   // A respawn uses this aircraft's saved loading selection. Snapshot loading
+   // is restored after respawn and therefore has explicit higher priority.
+   Object.assign(fuelState, makeFuelState(selectedLoading.leftKg, selectedLoading.rightKg))
+   applyLoading(selectedLoading, FLEET_ACTIVE.params, aircraft, fuelState, true)
+   Object.assign(electricalState, makeElectricalState())
+   Object.assign(engineStartState, ENGINE_START_BOOT_RUNNING)
+   Object.assign(engineTemps, makeEngineTemps())
+   Object.assign(systemsControls, SYSTEMS_CONTROLS_DEFAULT)
++  captainSystems = createCaptainSystems()
++  captainCommands = {}
++  controllerRuntime.reset()
++  keyboardReverse = hardwareReverseOwned = false
++  aircraft.jetPowerFactor = 1
+   failures.alternatorFailed = false
+   failures.icingConditions = false
+   failures.staticBlocked = false
+   disconnectAutopilot(apState)
+   // 9A/9B respawn leaks: a fully-iced carburetor survived respawn
+   // (silently powerless engine), and control overrides / wing-leveler /
+   // baro / landing light all carried into the new flight.
+   Object.assign(carbIceState, makeCarbIceState())
+   carbHeatOn = false
+   aircraft.spoilerCmd = 0
+   aircraft.spoilerArmed = false
+   aircraft.reverseCmd = false
+@@ -829,24 +843,25 @@
+ const shaped = { pitch: 0, roll: 0, yaw: 0 }
+ 
+ /** Keyboard focus is leaving the sim (search/ATC text box). Drop every
+  *  transient: held keys, gamepad key-aliases, pending presses, and the
+  *  shaped control axes — pollControls() stops running while disabled, so
+  *  anything held at this instant would otherwise latch (a brake alias
+  *  held while a box opened once kept the brakes dragging for a whole
+  *  takeoff roll). Absolute levers (throttle/trim) stay put on purpose. */
+ function disableSimInput(): void {
+   voicePtt?.reset()
+   input.enabled = false
+   input.clearHeld()
++  clearControllerTransient()
+   shaped.pitch = 0
+   shaped.roll = 0
+   shaped.yaw = 0
+   if (!parkingBrake) {
+     aircraft.controls.brakeLeft = 0
+     aircraft.controls.brakeRight = 0
+   }
+ }
+ 
+ function restoreSimInputIfNoEditorFocused(): void {
+   const active = document.activeElement
+   const editing = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement || (active instanceof HTMLElement && active.isContentEditable)
+@@ -856,174 +871,58 @@
+ // ---- 16a: joystick / throttle quadrant ----
+ // Bound axes OWN their control absolutely while the device is
+ // connected (stick: pitch/roll/yaw through deadzone+expo; quadrant:
+ // throttle/mixture as absolute lever positions with end detents;
+ // brakes max-combined with the B key). Capture convention: move the
+ // axis to the function's POSITIVE extreme — that direction becomes +1,
+ // so inverted hardware never needs a checkbox.
+ let gamepadMap: GamepadMap = {}
+ try {
+   const storedJoy = localStorage.getItem('oh-gamepad-map')
+   if (storedJoy) gamepadMap = parseGamepadMap(storedJoy) ?? {}
+ } catch { /* private mode */ }
+-let joyCapture: { fn: BindableAxis; queue: BindableAxis[]; baseline: number[][]; deadlineMs: number } | null = null
+-let btnCapture: { fn: BindableButton; queue: BindableButton[]; baseline: boolean[][]; deadlineMs: number } | null = null
+-let btnPrev: boolean[][] = []
+-let joyBrakeHeld = false
+-let joyWizardChain = false
+-let joyReverseHeld = false
+-/** True while the QUADRANT's lifted reverse zone is the thing holding
+- *  reverseCmd — so the lever leaving the zone rescinds only its OWN
+- *  engagement and can no longer cancel the KeyZ toggle every frame. */
+-let leverReverseActive = false
+-
+-const JOY_PROMPT: Record<BindableAxis, string> = {
+-  pitch: 'PULL — nose UP', roll: 'roll RIGHT', yaw: 'RIGHT rudder',
+-  throttle: 'LEVER 1 to TOGA (full forward)', throttle2: 'LEVER 2 to TOGA (full forward)',
+-  mixture: 'mixture FULL RICH', brakes: 'brakes full ON',
+-}
+-const BTN_PROMPT: Record<BindableButton, string> = {
+-  gear: 'GEAR toggle', flapsUp: 'FLAPS UP one step', flapsDown: 'FLAPS DOWN one step',
+-  trimUp: 'TRIM nose-down (forward)', trimDown: 'TRIM nose-up (back)',
+-  apDisconnect: 'AP DISCONNECT', brakes: 'BRAKES (hold)', reverse: 'REVERSE (hold)',
+-}
+-
+-function padsSnapshot(): number[][] {
+-  const pads = navigator.getGamepads?.() ?? []
+-  const out: number[][] = []
+-  for (const p of pads) out.push(p ? [...p.axes] : [])
+-  return out
+-}
+-
+-function padsButtonSnapshot(): boolean[][] {
+-  const pads = navigator.getGamepads?.() ?? []
+-  const out: boolean[][] = []
+-  for (const p of pads) out.push(p ? p.buttons.map((b) => b.pressed) : [])
+-  return out
+-}
+-
+-function startBtnCapture(queue: BindableButton[]): void {
+-  const fn = queue[0]!
+-  btnCapture = { fn, queue: queue.slice(1), baseline: padsButtonSnapshot(), deadlineMs: performance.now() + 8000 }
+-  toast(`JOY BTN — press: ${BTN_PROMPT[fn]} (8 s to skip)`)
+-}
+-
+-function startJoyCapture(queue: BindableAxis[]): void {
+-  const fn = queue[0]!
+-  joyCapture = { fn, queue: queue.slice(1), baseline: padsSnapshot(), deadlineMs: performance.now() + 8000 }
+-  toast(`JOY — ${JOY_PROMPT[fn]} (8 s)`)
+-}
+-
++const controllerPanel = new ControllerPanel(()=>gamepadMap, map=>{gamepadMap=map;saveJoyMap();controllerRuntime.reset()},()=>{clearControllerTransient();voicePtt?.reset()})
++let lastPadIdentity = ''
++function startBtnCapture(queue: BindableButton[]): void { controllerPanel.start('button',queue) }
++function startJoyCapture(queue: BindableAxis[]): void { controllerPanel.start('axis',queue) }
+ function saveJoyMap(): void {
+-  try { localStorage.setItem('oh-gamepad-map', serializeGamepadMap(gamepadMap)) } catch { /* private mode */ }
+-}
+-
+-window.addEventListener('gamepadconnected', (e) => {
+-  const g = (e as GamepadEvent).gamepad
+-  // TCA Captain Pack (sidestick + quadrant) auto-preset: applied only
+-  // over UNBOUND functions so a saved custom map always wins. Re-runs on
+-  // each connect so the quadrant slots in whenever it enumerates.
+-  const padList = (navigator.getGamepads?.() ?? [])
+-    .filter((p): p is Gamepad => !!p)
+-    .map((p) => ({ id: p.id, axes: p.axes.length, index: p.index }))
+-  const preset = tcaPresetFor(padList)
+-  if (preset) {
+-    // A stale-version map (the v1 guess inverted the quadrant → idle
+-    // levers read as FULL thrust) gets its preset-defined axes OVERWRITTEN;
+-    // a current-version map only fills unbound functions so the J wizard's
+-    // custom bindings always win.
+-    const stale = (gamepadMap.v ?? 0) < TCA_PRESET_VERSION
+-    let applied = 0
+-    for (const [k, v] of Object.entries(preset)) {
+-      if (k === 'btn' || k === 'v' || k === 'btnKeys') continue
+-      const nb = v as { pad: number; axis: number; sign: 1 | -1 }
+-      const cur = gamepadMap[k as BindableAxis]
+-      // Overwrite when unbound, or when upgrading a stale preset AND the
+-      // current binding sits on the preset's own pad/axis (a J-wizard
+-      // capture on a different axis is the pilot's choice — keep it).
+-      const presetSourced = !!cur && cur.pad === nb.pad && cur.axis === nb.axis
+-      if (!cur || (stale && presetSourced)) {
+-        gamepadMap[k as BindableAxis] = nb
+-        applied++
+-      }
+-    }
+-    // Button tables: a stale map takes the full preset; a current one
+-    // keeps the pilot's own captures and only fills missing entries.
+-    if (preset.btnKeys) gamepadMap.btnKeys = stale ? { ...preset.btnKeys } : { ...preset.btnKeys, ...(gamepadMap.btnKeys ?? {}) }
+-    if (preset.btn) gamepadMap.btn = stale ? { ...preset.btn } : { ...preset.btn, ...(gamepadMap.btn ?? {}) }
+-    gamepadMap.v = TCA_PRESET_VERSION
+-    if (applied || stale) {
+-      saveJoyMap()
+-      toast(`TCA DETECTED: ${g.id.slice(0, 30)} — ${applied} axes + ${Object.keys(gamepadMap.btnKeys ?? {}).length} buttons mapped (J to fine-tune)`)
+-      return
+-    }
+-  }
+-  if (Object.keys(gamepadMap).length === 0 && g.axes.length >= 4) {
+-    gamepadMap = { ...DEFAULT_SINGLE_STICK }
+-    toast(`JOYSTICK: ${g.id.slice(0, 36)} — default map (J to rebind)`)
+-  } else {
+-    toast(`GAMEPAD CONNECTED: ${g.id.slice(0, 40)}`)
+-  }
+-})
+-window.addEventListener('gamepaddisconnected', (e) => {
+-  input.setVirtualHeld('KeyT', false);voicePtt?.reset('Controller disconnected — transmission cancelled')
+-  toast(`GAMEPAD DISCONNECTED: ${(e as GamepadEvent).gamepad.id.slice(0, 36)}`)
+-})
+-
+-/** Read a binding's current value in command sign, or null if unplugged. */
+-function joyRead(fn: BindableAxis): number | null {
+-  const b = gamepadMap[fn]
+-  if (!b) return null
+-  const pad = (navigator.getGamepads?.() ?? [])[b.pad]
+-  if (!pad) return null
+-  return (pad.axes[b.axis] ?? 0) * b.sign
+-}
+-
+-/** Capture tick: returns true while a capture is consuming input. */
+-function pollJoyCapture(nowMs: number): boolean {
+-  if (btnCapture) {
+-    const hit = detectPressedButton(btnCapture.baseline, padsButtonSnapshot())
+-    if (hit) {
+-      gamepadMap.btn = { ...(gamepadMap.btn ?? {}), [btnCapture.fn]: hit }
+-      saveJoyMap()
+-      toast(`JOY: ${btnCapture.fn.toUpperCase()} ← pad${hit.pad} button${hit.btn}`)
+-      const q = btnCapture.queue
+-      btnCapture = null
+-      if (q.length) startBtnCapture(q)
+-    } else if (nowMs > btnCapture.deadlineMs) {
+-      toast(`JOY: ${btnCapture.fn.toUpperCase()} — skipped`)
+-      const q = btnCapture.queue
+-      btnCapture = null
+-      if (q.length) startBtnCapture(q)
+-    }
+-    return true
+-  }
+-  if (!joyCapture) return false
+-  const hit = detectMovedAxis(joyCapture.baseline, padsSnapshot(), 0.45)
+-  if (hit) {
+-    gamepadMap[joyCapture.fn] = hit
+-    saveJoyMap()
+-    toast(`JOY: ${joyCapture.fn.toUpperCase()} ← pad${hit.pad} axis${hit.axis}${hit.sign < 0 ? ' (inverted)' : ''}`)
+-    const q = joyCapture.queue
+-    joyCapture = null
+-    if (q.length) startJoyCapture(q)
+-    else if (joyWizardChain) { joyWizardChain = false; startBtnCapture(['gear', 'flapsUp', 'flapsDown', 'trimUp', 'trimDown', 'apDisconnect', 'brakes', 'reverse']) }
+-  } else if (nowMs > joyCapture.deadlineMs) {
+-    toast(`JOY: ${joyCapture.fn.toUpperCase()} — nothing moved, skipped`)
+-    const q = joyCapture.queue
+-    joyCapture = null
+-    if (q.length) startJoyCapture(q)
+-    else if (joyWizardChain) { joyWizardChain = false; startBtnCapture(['gear', 'flapsUp', 'flapsDown', 'trimUp', 'trimDown', 'apDisconnect', 'brakes', 'reverse']) }
+-  }
+-  return true
++  try { localStorage.setItem('oh-gamepad-map',serializeGamepadMap(gamepadMap)) } catch { /* private mode */ }
++}
++function clearControllerTransient(): void {
++  controllerRuntime.reset()
++  captainCommands = {}
++  shaped.pitch=shaped.roll=shaped.yaw=0
++  aircraft.controls.pitch=aircraft.controls.roll=aircraft.controls.yaw=0
++  pilotBrake=parkingBrake?1:0
++  for(const code of HELD_ALIASES)input.setVirtualHeld(code,false)
++  if(hardwareReverseOwned){aircraft.reverseCmd=keyboardReverse;hardwareReverseOwned=false}
++  if(!parkingBrake)aircraft.controls.brakeLeft=aircraft.controls.brakeRight=0
++}
++window.addEventListener('blur',clearControllerTransient)
++document.addEventListener('focusin',e=>{const el=e.target;if(el instanceof HTMLElement && el.matches('input,textarea,select,[contenteditable=true]'))disableSimInput()})
++document.addEventListener('focusout',()=>queueMicrotask(restoreSimInputIfNoEditorFocused))
++document.addEventListener('visibilitychange',()=>{if(document.hidden)clearControllerTransient()})
++window.addEventListener('gamepaddisconnected',()=>{clearControllerTransient();voicePtt?.reset('Controller disconnected — transmission cancelled')})
++function joyRead(fn: BindableAxis): number | null {return readAxis(gamepadMap,fn,navigator.getGamepads?.()??[])}
++/** Runs even when the controls are paused/focused elsewhere: first-load discovery
++ * and identity remapping must not depend on a future connected event. */
++function updateControllers():void {
++  const pads=navigator.getGamepads?.()??[]
++  const signature=pads.filter(Boolean).map(p=>`${p!.id}:${p!.index}:${p!.axes.length}:${p!.buttons.length}`).join('|')
++  if(signature!==lastPadIdentity){
++    lastPadIdentity=signature;clearControllerTransient();voicePtt?.reset()
++    const preset=tcaPresetFor(pads.filter((p):p is Gamepad=>!!p).map(p=>({id:p.id,index:p.index,axes:p.axes.length})))
++    if(preset){gamepadMap=mergePreset(gamepadMap,preset);saveJoyMap()}
++  }
++  controllerPanel.update(pads,`SIM · thrust ${Math.round(aircraft.controls.throttle*100)}% · ${loop.paused?'PAUSED':'RUNNING'} · ${document.hasFocus()?'FOCUSED':'BACKGROUND'}\nKeyboard W ${input.isHeld('KeyW')?'DOWN':'up'} / S ${input.isHeld('KeyS')?'DOWN':'up'} · override ${ctlOverride?JSON.stringify(ctlOverride):'none'}\nSIM · flaps ${aircraft.controls.flapsIndex} · speedbrake ${Math.round(aircraft.spoilerCmd*100)}% ${aircraft.spoilerArmed?'ARM':''}\nParking ${parkingBrake?'ON':'OFF'} · TX ${voicePtt?.state.phase??'idle'} · trigger ${physicalPttState()===true?'held':'released / unavailable'}\nEngines ${captainSystems.engine1Running?'1 RUN':'1 STOP'} / ${captainSystems.engine2Running?'2 RUN':'2 STOP'} · ignition ${captainSystems.ignitionMode}\nAutobrake ${captainSystems.autobrakeMode} ${captainSystems.autobrakeActive?'ACTIVE':captainSystems.autobrakeDisarmed?'DISARMED':'armed / waiting'} · rudder trim ${captainSystems.rudderTrim.toFixed(2)}`)
+ }
+ function shapeAxis(current: number, held: number, dt: number, attack = 2.2, recenter = 3.0): number {
+   if (held !== 0) return Math.min(Math.max(current + held * attack * dt, -1), 1)
+   const mag = Math.max(Math.abs(current) - recenter * dt, 0)
+   return Math.sign(current) * mag
+ }
+ 
+ const baseDate = new Date()
+ let scrubSeconds = 0
+ 
+ /** Default the clock to pleasant daylight (~10:00 local solar time) at the
+  *  spawn longitude; the real/custom time-of-day picker is Phase 8 (§17).
+@@ -1068,31 +967,25 @@
+         items[k - 1]!.run()
+         atcMenuOpen = false
+         renderAtcMenu()
+       }
+     }
+   }
+   if (input.wasPressed('Space')) loop.setRate(loop.paused ? 1 : 0)
+   if (!atcMenuOpen) {
+     for (const [key, rate] of [['Digit1', 1], ['Digit2', 2], ['Digit3', 4]] as const) {
+       if (input.wasPressed(key)) loop.setRate(rate as SimRate)
+     }
+   }
+-  if (input.wasPressed('KeyJ')) {
+-    // Full joystick wizard: axes, then the button tour chained on the
+-    // end (each step skips after 8 s of silence). TCA pack: stick axes,
+-    // lever 1, lever 2, then gear/flaps/trim/AP-disc/brakes/reverse.
+-    joyWizardChain = true
+-    startJoyCapture(['pitch', 'roll', 'yaw', 'throttle', 'throttle2'])
+-  }
++  if (input.wasPressed('KeyJ')) controllerPanel.toggle()
+   if (input.wasPressed('KeyX')) {
+     assistMode = assistMode === 'sas' ? 'full' : assistMode === 'full' ? 'off' : 'sas'
+     toast(assistMode === 'sas' ? 'STABILITY ASSIST: SAS (yaw damper + wing leveler)' : assistMode === 'full' ? 'STABILITY ASSIST: FULL (adds pitch hold)' : 'STABILITY ASSIST: OFF')
+   }
+   if (input.wasPressed('KeyQ')) engineSound.muted = !engineSound.muted // mute moved M→Q (M = plane menu)
+   if (input.wasPressed('KeyO')) saveSnapshot()
+   if (input.wasPressed('KeyP')) loadSnapshot()
+   // Fleet keys (11g): U gear (retractable only), H hand-prop, K carb heat.
+   if (input.wasPressed('KeyU') && aircraft.P.gearRetractable) {
+     aircraft.gearDownCommanded = !aircraft.gearDownCommanded
+     toast(aircraft.gearDownCommanded ? 'GEAR DOWN' : 'GEAR UP')
+   }
+@@ -1121,164 +1014,105 @@
+     // airport's longest/default runway instead.
+     const parts = spawnDesc.split(' ')
+     const ap = airports.find(parts[0] || 'KHAF')
+     if (ap) spawnAtAirport(ap, parts[1])
+     aircraft.crashed = false
+     c.throttle = 0
+     c.trim = 0
+     c.flapsIndex = 0
+   }
+ }
+ 
+ function pollControls(dt: number): void {
+-  if (!input.enabled) return
++  if (!input.enabled || document.hidden || !document.hasFocus() || controllerPanel.capturing) {clearControllerTransient();return}
+   const c = aircraft.controls
+   const pitchKey = input.axis('ArrowDown', 'ArrowUp')
+   const rollKey = input.axis('ArrowRight', 'ArrowLeft')
+   const yawKey = input.axis('KeyD', 'KeyA')
+   shaped.pitch = shapeAxis(shaped.pitch, pitchKey, dt, 1.5, 2.5)
+   shaped.roll = shapeAxis(shaped.roll, rollKey, dt)
+   shaped.yaw = shapeAxis(shaped.yaw, yawKey, dt, 2.5, 4)
+   c.throttle = Math.min(Math.max(c.throttle + input.axis('KeyW', 'KeyS') * 0.5 * dt, 0), 1)
+   c.trim = Math.min(Math.max(c.trim + input.axis('Period', 'Comma') * 0.25 * dt, -1), 1)
+   baroSetInHg = Math.min(Math.max(baroSetInHg + input.axis('Quote', 'Semicolon') * 0.2 * dt, 27.5), 31.5)
+   // Parking brake: set on ground spawn, auto-releases when power comes up.
+-  if (parkingBrake && c.throttle > 0.15) parkingBrake = false
++  const pads=navigator.getGamepads?.()??[]
++  const latchedParking=readButton(gamepadMap,'parkingBrake',pads)
++  if(latchedParking!==null)parkingBrake=latchedParking
++  if (latchedParking===null && !gamepadMap.btn?.parkingBrake && parkingBrake && c.throttle > 0.15) parkingBrake = false
+   c.brakeLeft = c.brakeRight = input.isHeld('KeyB') || parkingBrake ? 1 : 0
+   if (input.wasPressed('KeyV')) {
+     if (aircraft.P.spoilers) {
+       // Lever cycle: DOWN → ARM → FLIGHT DETENT → DOWN (737 quadrant).
+       if (aircraft.spoilerArmed) { aircraft.spoilerArmed = false; aircraft.spoilerCmd = 1; toast('SPEEDBRAKE — FLIGHT DETENT') }
+       else if (aircraft.spoilerCmd > 0.5) { aircraft.spoilerCmd = 0; toast('SPEEDBRAKE DOWN') }
+       else { aircraft.spoilerArmed = true; toast('SPEEDBRAKE ARMED — auto-deploys on touchdown') }
+     } else {
+       toast('NO SPEEDBRAKES ON THIS TYPE')
+     }
+   }
+   if (input.wasPressed('KeyZ')) {
+     if (aircraft.P.reversers) {
+-      aircraft.reverseCmd = !aircraft.reverseCmd
++      keyboardReverse = !keyboardReverse
++      aircraft.reverseCmd = keyboardReverse
+       toast(aircraft.reverseCmd ? 'REVERSE THRUST (deploys on ground)' : 'REVERSERS STOWED')
+     } else {
+       toast('NO REVERSERS ON THIS TYPE')
+     }
+   }
+-  // 16a: mapped gamepad axes own their controls while connected.
+-  if (!pollJoyCapture(performance.now())) {
+-    const jr = joyRead('roll')
+-    const jp = joyRead('pitch')
+-    const jy = joyRead('yaw')
+-    if (jr !== null) shaped.roll = applyDeadzone(jr)
+-    if (jp !== null) shaped.pitch = applyDeadzone(jp)
+-    if (jy !== null) shaped.yaw = applyDeadzone(jy)
+-    const jt = joyRead('throttle')
+-    if (jt !== null) {
+-      // Two-lever quadrant (TCA): average both levers; travel below the
+-      // idle detent (the lifted reverse gate) commands reverse thrust
+-      // with zone depth as reverse power — jets only, WoW-interlocked
+-      // downstream like the Z key.
+-      const jt2 = joyRead('throttle2')
+-      const raw = jt2 !== null ? (jt + jt2) / 2 : jt
+-      const lev = leverWithReverse(raw)
+-      if (lev.reverse && aircraft.P.reversers) {
+-        aircraft.reverseCmd = true
+-        leverReverseActive = true
+-        // Airborne, the reverse zone commands IDLE — the sleeves are
+-        // WoW-gated but the throttle wasn't, so a lifted lever in
+-        // flight used to command full FORWARD N1.
+-        c.throttle = aircraft.data.onGround && lev.power >= 0.02 ? lev.power : 0
+-      } else {
+-        // Only the lever's OWN engagement is rescinded when it leaves
+-        // the zone — this branch used to clear reverseCmd EVERY frame,
+-        // cancelling the KeyZ toggle the same frame it was pressed.
+-        if (aircraft.P.reversers && leverReverseActive && !joyReverseHeld) {
+-          aircraft.reverseCmd = false
+-          leverReverseActive = false
+-        }
+-        c.throttle = lev.power < 0.02 ? 0 : lev.power > 0.98 ? 1 : lev.power
+-      }
+-    }
+-    const jm = joyRead('mixture')
+-    if (jm !== null) {
+-      const lever = axisToUnipolar(jm)
+-      c.mixture = lever < 0.02 ? 0 : lever > 0.98 ? 1 : lever
+-    }
+-    const jb = joyRead('brakes')
+-    if (jb !== null) {
+-      const brake = axisToUnipolar(jb)
+-      c.brakeLeft = Math.max(c.brakeLeft, brake)
+-      c.brakeRight = Math.max(c.brakeRight, brake)
+-    }
+-    // 16a-b: bound BUTTONS (TCA stick/quadrant switches). Edge-triggered
+-    // toggles + held functions, same actions as their keyboard twins.
+-    const btns = gamepadMap.btn ?? (gamepadMap.btnKeys ? {} : null)
+-    if (btns) {
+-      const now = padsButtonSnapshot()
+-      // 9A: a pad set change (connect/disconnect/slot move) resyncs
+-      // btnPrev WITHOUT edge processing — a stale baseline used to fire
+-      // phantom gear/flap/AP-disconnect presses the frame a device came
+-      // back (latched base switches read pressed at rest).
+-      const padsChanged = now.length !== btnPrev.length || now.some((p, i) => p.length !== (btnPrev[i]?.length ?? -1))
+-      if (padsChanged) {
+-        input.setVirtualHeld('KeyT', false);voicePtt?.reset()
+-        if (btnPrev.length > 0 && now.length < btnPrev.length) toast('GAMEPAD DISCONNECTED — bindings idle until it returns')
+-        btnPrev = now
+-      } else {
+-      const down = (fn: BindableButton): boolean => {
+-        const b = btns[fn]
+-        return !!b && !!now[b.pad]?.[b.btn]
+-      }
+-      const pressed = (fn: BindableButton): boolean => {
+-        const b = btns[fn]
+-        return !!b && !!now[b.pad]?.[b.btn] && !btnPrev[b.pad]?.[b.btn]
+-      }
+-      if (pressed('gear') && aircraft.P.gearRetractable) {
+-        aircraft.gearDownCommanded = !aircraft.gearDownCommanded
+-        toast(aircraft.gearDownCommanded ? 'GEAR DOWN' : 'GEAR UP')
+-      }
+-      if (pressed('flapsDown')) c.flapsIndex = Math.min(c.flapsIndex + 1, aircraft.P.flapDetentsDeg.length - 1)
+-      if (pressed('flapsUp')) c.flapsIndex = Math.max(c.flapsIndex - 1, 0)
+-      if (pressed('trimUp')) c.trim = Math.min(Math.max(c.trim - 0.02, -1), 1)
+-      if (pressed('trimDown')) c.trim = Math.min(Math.max(c.trim + 0.02, -1), 1)
+-      if (pressed('apDisconnect') && systemsControls.apMaster) {
+-        systemsControls.apMaster = false
+-        toast('AP DISCONNECT')
+-      }
+-      joyBrakeHeld = down('brakes')
+-      if (joyBrakeHeld) {
+-        c.brakeLeft = Math.max(c.brakeLeft, 1)
+-        c.brakeRight = Math.max(c.brakeRight, 1)
+-      }
+-      joyReverseHeld = down('reverse')
+-      if (aircraft.P.reversers && joyReverseHeld) aircraft.reverseCmd = true
+-      // Key-alias buttons: the whole stick/quadrant face drives the
+-      // existing key handlers (gear/flaps/spoilers/ATC/menu/camera/pause…).
+-      const aliases = gamepadMap.btnKeys
+-      if (aliases) {
+-        for (const [key, code] of Object.entries(aliases)) {
+-          const [padS, btnS] = key.split(':')
+-          const p = Number(padS), b = Number(btnS)
+-          const isDown = !!now[p]?.[b]
+-          if (HELD_ALIASES.has(code)) input.setVirtualHeld(code, isDown)
+-          else if (isDown && !btnPrev[p]?.[b]) input.injectPress(code)
+-        }
+-      }
+-      btnPrev = now
+-      }
+-    }
+-  } else {
+-    // 9A: btnPrev stays FRESH through a J-wizard capture — it used to
+-    // freeze, then fire phantom edges the frame capture ended.
+-    btnPrev = padsButtonSnapshot()
+-  }
++  const runtime=controllerRuntime.poll(gamepadMap,pads,true)
++  const down=runtime.held,pressed=runtime.pressed
++  const jr=joyRead('roll'),jp=joyRead('pitch'),jy=joyRead('yaw')
++  if(jr!==null)shaped.roll=applyDeadzone(jr)
++  if(jp!==null)shaped.pitch=applyDeadzone(jp)
++  if(jy!==null)shaped.yaw=applyDeadzone(jy)
++  const levers:ReturnType<typeof leverWithReverse>[]=[]
++  for(const [axis,button] of [['throttle','reverse'],['throttle2','reverse2']] as const){
++    const value=joyRead(axis)
++    if(value!==null){const lever=leverWithReverse(value,gamepadMap[axis]?.calibration);if(down(button))lever.reverse=true;levers.push(lever)}
++  }
++  const aggregate=combineLevers(levers)
++  if(levers.length)c.throttle=aggregate.reverse&&!aircraft.data.onGround?0:aggregate.power
++  const heldReverse=down('reverse')||down('reverse2')
++  const ownsReverse=aggregate.reverse||aggregate.mixed||heldReverse
++  if(aircraft.P.reversers && (ownsReverse||hardwareReverseOwned))aircraft.reverseCmd=ownsReverse?aggregate.reverse&&!aggregate.mixed || heldReverse&&!aggregate.mixed:keyboardReverse
++  hardwareReverseOwned=ownsReverse
++  const jm=joyRead('mixture');if(jm!==null)c.mixture=calibratedUnipolar(jm,gamepadMap.mixture)
++  const jb=joyRead('brakes');if(jb!==null)c.brakeLeft=c.brakeRight=Math.max(c.brakeLeft,calibratedUnipolar(jb,gamepadMap.brakes))
++  const jf=joyRead('flaps');if(jf!==null)c.flapsIndex=Math.round(calibratedUnipolar(jf,gamepadMap.flaps)*(aircraft.P.flapDetentsDeg.length-1))
++  const js=joyRead('speedbrake');if(js!==null && aircraft.P.spoilers){aircraft.spoilerCmd=calibratedUnipolar(js,gamepadMap.speedbrake);aircraft.spoilerArmed=false}
++  const latched=(fn:BindableButton):boolean|null=>readButton(gamepadMap,fn,pads)
++  if(pressed('gear') && aircraft.P.gearRetractable)aircraft.gearDownCommanded=!aircraft.gearDownCommanded
++  if(aircraft.P.gearRetractable){if(latched('gearDown')===true)aircraft.gearDownCommanded=true;else if(latched('gearUp')===true)aircraft.gearDownCommanded=false}
++  if(pressed('flapsDown'))c.flapsIndex=Math.min(c.flapsIndex+1,aircraft.P.flapDetentsDeg.length-1)
++  if(pressed('flapsUp'))c.flapsIndex=Math.max(c.flapsIndex-1,0)
++  for(const [i,fn] of (['flaps0','flaps1','flaps2','flaps3','flapsFull'] as const).entries())if(latched(fn)===true)c.flapsIndex=Math.round(i/4*(aircraft.P.flapDetentsDeg.length-1))
++  if(aircraft.P.spoilers){
++    if(latched('speedbrakeDown')===true){aircraft.spoilerCmd=0;aircraft.spoilerArmed=false}
++    if(latched('speedbrakeFull')===true){aircraft.spoilerCmd=1;aircraft.spoilerArmed=false}
++    if(latched('speedbrakeArm')===true){aircraft.spoilerCmd=0;aircraft.spoilerArmed=true}
++  }
++  if(down('trimUp'))c.trim=Math.max(-1,c.trim-.25*dt)
++  if(down('trimDown'))c.trim=Math.min(1,c.trim+.25*dt)
++  if(pressed('apDisconnect'))systemsControls.apMaster=false
++  if(down('brakes'))c.brakeLeft=c.brakeRight=1
++  captainCommands={trimLeft:down('rudderTrimLeft'),trimRight:down('rudderTrimRight'),trimReset:down('rudderTrimReset')}
++  for(const fn of ['engineMaster1','engineMaster2'] as const){const v=latched(fn);if(v!==null)captainCommands[fn]=v}
++  if(latched('ignitionCrank')===false && latched('ignitionStart')===false)captainCommands.ignitionMode='norm'
++  for(const [fn,mode] of [['ignitionCrank','crank'],['ignitionNorm','norm'],['ignitionStart','start']] as const)if(latched(fn)===true)captainCommands.ignitionMode=mode
++  for(const [fn,mode] of [['autobrakeOff','off'],['autobrakeLow','low'],['autobrakeMedium','medium'],['autobrakeMax','max'],['autobrakeRto','rto']] as const)if(latched(fn)===true)captainCommands.autobrakeMode=mode
++  const heldCodes=new Set<string>()
++  for(const [key,state] of runtime.aliases){const code=gamepadMap.btnKeys![key]!;if(HELD_ALIASES.has(code)){if(state.held)heldCodes.add(code)}else if(state.pressed)input.injectPress(code)}
++  for(const code of HELD_ALIASES)input.setVirtualHeld(code,heldCodes.has(code))
++  pilotBrake=Math.max(c.brakeLeft,c.brakeRight)
+   // Expo curve: fine control near center, full authority at the stops.
+   const expo = (v: number) => v * Math.abs(v) * 0.65 + v * 0.35
+   c.pitch = expo(shaped.pitch)
+   c.roll = expo(shaped.roll)
+   c.yaw = expo(shaped.yaw)
+   // Flight assist (X toggles): untouched axes get stability help — wing
+   // leveler, pitch-rate damping, auto-coordinated rudder. Pilot-side aid;
+   // the flight model itself is untouched.
+   if (assistMode !== 'off' && aircraft.data.onGround && Math.abs(shaped.yaw) < 0.04) {
+     // Ground assist: hold the heading captured the moment this condition
+     // first arms (a pure yaw-rate damper only slows the P-factor/torque
+     // swerve, it can't null a steady disturbance — heading still drifts).
+@@ -1847,33 +1681,29 @@
+     const said = atcTypeBox.value.trim()
+     atcTypeBox.value = ''
+     sendFreeTextAtc(said)
+   } else if (e.key === 'Escape') {
+     atcTypeBox.style.display = 'none'
+     input.enabled = true
+     atcTypeBox.blur()
+   }
+ })
+ /** Read physical buttons even when Input is cleared for blur/menu/pad resync.
+  * A missing device is unknown, never evidence that the trigger was released. */
+ function physicalPttState():boolean|null {
++  if(controllerPanel.capturing)return null
+   const pads=navigator.getGamepads?.()??[]
+-  let known=false,down=false
+-  for(const [key,code] of Object.entries(gamepadMap.btnKeys??{})){
+-    if(code!=='KeyT')continue
+-    const [p,b]=key.split(':').map(Number),pad=pads[p!]
+-    if(!pad?.connected||!pad.buttons[b!])continue
+-    known=true;down ||= pad.buttons[b!]!.pressed
+-  }
+-  return known?down:null
++  const values=[readButton(gamepadMap,'ptt',pads),...Object.entries(gamepadMap.btnKeys??{}).filter(([,code])=>code==='KeyT').map(([key])=>readAlias(gamepadMap,key,pads))]
++  if(values.some(v=>v===true))return true
++  return values.some(v=>v===false)?false:null
+ }
+ 
+ // PTT shares sendFreeTextAtc and its ground/tower/approach strip authority.
+ const voicePanel=document.createElement('div')
+ voicePanel.id='atc-voice-panel'
+ voicePanel.style.cssText='position:fixed;left:8px;bottom:8px;z-index:14;max-width:520px;padding:8px 10px;border-radius:6px;background:rgba(0,16,26,.92);color:#dff;font:12px/1.4 ui-monospace,monospace'
+ const talkButton=document.createElement('button');talkButton.textContent='Hold to talk · T';talkButton.id='atc-push-to-talk';talkButton.style.touchAction='none'
+ const menuButton=document.createElement('button');menuButton.textContent='ATC menu · `';menuButton.onclick=()=>{if(!activeAtc){toast('NO ATC IN RANGE');return}atcMenuOpen=!atcMenuOpen;renderAtcMenu()}
+ const cancelVoice=document.createElement('button');cancelVoice.textContent='Cancel';cancelVoice.onclick=()=>voicePtt?.cancel()
+ const retryVoice=document.createElement('button');retryVoice.textContent='Check local voice';retryVoice.onclick=()=>{void refreshVoice()}
+ const voiceStatus=document.createElement('div');voiceStatus.id='atc-voice-status';voiceStatus.setAttribute('role','status');voiceStatus.textContent='Checking local speech…'
+ const voiceHelp=document.createElement('div');voiceHelp.textContent='Microphone only while held · local Whisper · max 20 seconds · typed ATC in menu'
+@@ -2383,24 +2213,25 @@
+  *  per frame in `advanceFrame`, exposed via `__ohAirspace` for a later
+  *  acceptance task to verify "the sim knows when the aircraft is inside the
+  *  Bravo shelf" without needing its own polygon math. */
+ let currentAirspace: AirspacePolygon[] = []
+ 
+ // ---- §23 perf instrumentation (13a): full-frame cost ring + draw calls ----
+ const perfRing = new Float32Array(180)
+ let perfIdx = 0
+ let perfCount = 0
+ 
+ function advanceFrame(elapsed: number, now: number): void {
+   const perfT0 = performance.now()
++  updateControllers()
+   handleDiscreteKeys()
+   pollControls(elapsed)
+   voicePtt?.checkContext()
+   voicePtt?.poll('gamepad', physicalPttState())
+   if (ctlOverride) Object.assign(aircraft.controls, ctlOverride)
+   if (holdWingsLevel) {
+     const rollRad = (aircraft.data.rollDeg * Math.PI) / 180
+     aircraft.controls.roll = Math.min(Math.max(-1.4 * rollRad - 0.4 * aircraft.rates.x, -1), 1)
+     const betaRad = (aircraft.data.betaDeg * Math.PI) / 180
+     aircraft.controls.yaw = Math.min(Math.max(1.8 * betaRad - 0.9 * aircraft.rates.z, -1), 1)
+   }
+ 
+@@ -2488,25 +2319,30 @@
+       // `aircraft.controls` fields `pollControls`/`CockpitInteraction` write,
+       // exactly like a real AP servo clutch; when disengaged those two
+       // input paths are untouched (see `AutopilotState.rollCmd` etc.'s doc:
+       // they rate-limit to 0 on disconnect rather than snapping, so this
+       // assignment is always well-defined even mid-disconnect).
+       if (apState.masterEnabled) {
+         aircraft.controls.pitch = apState.pitchCmd
+         aircraft.controls.roll = apState.rollCmd
+         aircraft.controls.yaw = apState.yawCmd
+         aircraft.controls.trim = apState.trimCommand
+       }
+ 
++      const untrimmedYaw=aircraft.controls.yaw
++      aircraft.controls.yaw=Math.min(1,Math.max(-1,untrimmedYaw+captainSystems.rudderTrim))
++      aircraft.controls.brakeLeft=Math.max(pilotBrake,captainSystems.autobrakeDemand)
++      aircraft.controls.brakeRight=Math.max(pilotBrake,captainSystems.autobrakeDemand)
+       aircraft.step(dt)
++      aircraft.controls.yaw=untrimmedYaw
+ 
+       // ---- systems (Phase 3 §8) — fixed-timestep, same cadence as
+       // aircraft.step. Order matters: fuel's `fuelFlowing` must be fresh
+       // before engine-start reads it, and engine-start's status must be
+       // fresh before electrical reads `aircraft.engineRunning`.
+       stepFuel(fuelState, dt, {
+         selector: systemsControls.fuelSelector,
+         boostPumpOn: systemsControls.boostPumpOn,
+         demandKgS: aircraft.prop.fuelFlowKgS,
+         // FUEL LOW scaled to THIS type's tankage (~7.5% of capacity,
+         // floor 8 kg; none for fuel-less gliders) — the C172 constant
+         // warned an A380 at 36 kg and gliders permanently.
+@@ -2515,39 +2351,45 @@
+       // `fuelState.leftKg`/`rightKg` (this file) is the authoritative fuel
+       // ledger — it's the only one that knows about the selector/starvation
+       // logic (a tank can run dry while the other is full). `aircraft.fuelKg`
+       // (src/sim/aircraft.ts) is a single-pool mirror that `aircraft.step()`
+       // above already decremented by the same `prop.fuelFlowKgS * dt` this
+       // tick, blind to per-tank state; overwriting it here from the fresh
+       // `fuelState` sum makes it track the authoritative ledger exactly
+       // (mass/propulsion gating in Aircraft still reads `fuelKg` as before)
+       // instead of drifting as an independent second ledger. Not a double
+       // decrement: this replaces aircraft.step()'s decrement for the tick
+       // rather than subtracting again.
+       aircraft.fuelKg = fuelState.leftKg + fuelState.rightKg
++      captainSystems=stepCaptainSystems(captainSystems,{
++        fuelAvailable:fuelState.fuelFlowing,electricalPower:systemsControls.masterBattery,
++        onGround:aircraft.data.onGround,groundSpeedKt:aircraft.data.groundSpeedKt,
++        throttle:aircraft.controls.throttle,manualBrake:pilotBrake,...captainCommands,
++      },dt)
++      if(aircraft.P.jet){aircraft.jetPowerFactor=captainSystems.enginePowerFraction;aircraft.engineRunning=captainSystems.enginePowerFraction>0}
+       stepEngineStart(engineStartState, dt, {
+         masterBattery: systemsControls.masterBattery,
+         starterEngaged: systemsControls.starterEngaged,
+         magneto: systemsControls.magneto,
+         mixtureRich: aircraft.controls.mixture > 0.9,
+         throttleFrac: aircraft.controls.throttle,
+         fuelAvailable: fuelState.fuelFlowing,
+         hotEngine: false,
+         floodedEngine: false,
+         primed: false,
+         hasElectrical: aircraft.P.electrical !== false,
+         handPropPull: handPropRequested,
+       })
+       handPropRequested = false // momentary — one compression stroke per press
+-      aircraft.engineRunning = engineStartState.status === 'running'
++      if(!aircraft.P.jet)aircraft.engineRunning = engineStartState.status === 'running'
+       // Carb ice (11b/11g): carbureted engines only; injected/jet see 1.
+       if (aircraft.P.carburetor) {
+         const oatCNow = isa(Math.max(aircraft.data.altitudeFt, 0) * FT).temperatureK - 273.15 + aircraft.isaTempOffsetC
+         stepCarbIce(carbIceState, dt, {
+           carburetor: true,
+           carbHeatOn,
+           powerFrac: Math.min(Math.max(aircraft.data.shaftPowerW / aircraft.P.ratedPowerW, 0), 1),
+           oatC: oatCNow,
+           dewpointC: oatCNow - wxTempDewSpreadC,
+         })
+         aircraft.intakePowerFactor = carbIcePowerFactor(carbIceState, carbHeatOn)
+       } else {
+@@ -3122,25 +2964,28 @@
+     return {
+       points: p.plan.length,
+       touchdownIdx: p.touchdownIdx,
+       totalDistM: Math.round(p.totalDistM),
+       firstAltFt: p.profile[0] ? Math.round(p.profile[0].altFt) : null,
+       lastAltFt: p.profile.length ? Math.round(p.profile[p.profile.length - 1]!.altFt) : null,
+       viewerOpen: replayView.isOpen,
+     }
+   },
+   __ohJoy: () => ({
+     connected: [...(navigator.getGamepads?.() ?? [])].filter(Boolean).map((g) => ({ id: g!.id.slice(0, 48), axes: g!.axes.length })),
+     map: gamepadMap,
+-    capturing: joyCapture?.fn ?? null,
++    captain: { ...captainSystems },
++    appliedControlSurfaces: { ...aircraft.appliedControlSurfaces },
++    parkingBrake,
++    capturing: controllerPanel.capturing,
+   }),
+   __ohAi: () => aiShips.map((s) => ({ cs: s.pilot.callsign, phase: s.pilot.phase, gsKt: Math.round(s.pilot.plane.gsKt), altFt: Math.round(s.pilot.plane.altFt) })),
+   __ohTraffic: () => ({
+     on: liveTrafficOn,
+     count: liveTraffic.targets.size,
+     pollCount: trafficPollCount,
+     lastErr: trafficLastErr,
+     payloadAgeS: lastTrafficPayloadTs ? +((Date.now() - lastTrafficPayloadTs) / 1000).toFixed(1) : null,
+     sample: [...liveTraffic.targets.values()].slice(0, 6).map((t) => ({
+       id: t.id, cs: t.cs, t: t.t, altFt: Math.round(t.altFt), gsKt: t.gsKt, gnd: t.gnd,
+       lat: +t.lat.toFixed(4), lon: +t.lon.toFixed(4),
+     })),
+--- before/tests/tca-controller.test.ts
++++ after/tests/tca-controller.test.ts
+@@ -0,0 +1,79 @@
++import { describe,it,expect } from 'vitest'
++import { tcaPresetFor, leverWithReverse, detectMovedAxis, detectPressedButton, parseGamepadMap, readAxis, readButton, mergePreset, combineLevers, type GamepadMap } from '../src/sim/gamepad-map'
++const id='TCA Q-Eng 1&2 (Vendor: 044f Product: 0407)'
++const pad=(index=1,axes=[-1,-1],device=id)=>({id:device,index,connected:true,axes,buttons:[{pressed:false},{pressed:false}]})
++describe('Captain controls safety',()=>{
++ it('retains measured idle polarity, two held reverse lifts and no generic Thrustmaster preset',()=>{
++  const m=tcaPresetFor([{id,index:1,axes:7}])!
++  expect(m.throttle?.sign).toBe(1);expect(m.btn?.reverse2?.btn).toBe(1);expect(m.btnKeys?.['1:1']).toBeUndefined()
++  expect(tcaPresetFor([{id:'Thrustmaster HOTAS',index:0,axes:7}])).toBeNull()
++ })
++ it('reads by identity after index move, rejects replacement/missing/nonfinite axes',()=>{
++  const m=tcaPresetFor([{id,index:1,axes:7}])!
++  expect(readAxis(m,'throttle',[pad(3,[-1,1])])).toBe(-1)
++  expect(readAxis(m,'throttle',[pad(1,[0,0],'Xbox')])).toBeNull()
++  expect(readAxis(m,'throttle',[pad(1,[])])).toBeNull()
++  expect(readAxis(m,'throttle',[pad(1,[NaN])])).toBeNull()
++  expect(readButton(m,'reverse2',[{...pad(3),buttons:[{pressed:false},{pressed:true}]}])).toBe(true)
++  expect(readButton(m,'reverse2',[])).toBeNull()
++ })
++ it('calibrated reverse fits physical [-1,1], forward/reverse interpreted separately',()=>{
++  const cal={min:-1,max:1,idle:-.5}
++  expect(leverWithReverse(-1,cal)).toEqual({power:1,reverse:true})
++  expect(leverWithReverse(-.5,cal)).toEqual({power:0,reverse:false})
++  expect(leverWithReverse(1,cal)).toEqual({power:1,reverse:false})
++  expect(combineLevers([{power:1,reverse:true},{power:1,reverse:false}])).toEqual({power:0,reverse:false,mixed:true})
++  expect(combineLevers([{power:.8,reverse:true},{power:.4,reverse:true}]).power).toBeCloseTo(.6)
++ })
++ it('never captures new/resting/nonfinite axes or buttons',()=>{
++  expect(detectMovedAxis([[]],[[-1]])).toBeNull()
++  expect(detectMovedAxis([[0]],[[NaN]])).toBeNull()
++  expect(detectPressedButton([],[[true]])).toBeNull()
++  expect(detectPressedButton([[]],[[true]])).toBeNull()
++ })
++ it('validates enums indices and calibration; preserves calibrated migration',()=>{
++  for(const raw of [{pitch:{pad:-1,axis:0,sign:1}},{bogus:{pad:0,axis:0,sign:1}},{btn:{bogus:{pad:0,btn:0}}},{throttle:{pad:0,axis:0,sign:1,calibration:{min:1,max:-1,idle:0}}},{btnKeys:{'0:NaN':'KeyZ'}}]) expect(parseGamepadMap(JSON.stringify(raw))).toBeNull()
++  const old:GamepadMap={v:6,throttle:{pad:1,axis:0,sign:1,calibration:{min:-1,max:.9,idle:-.6}}}
++  const migrated=mergePreset(old,tcaPresetFor([{id,index:1,axes:7}])!)
++  expect(migrated.throttle?.calibration).toEqual(old.throttle?.calibration)
++  expect(readAxis(migrated,'throttle',[pad(2)])).toBe(-1)
++ })
++})
++
++import { ControllerCapture } from '../src/input/controller-capture'
++it('capture requires explicit endpoints/idle, ignores replaced devices and does not timeout',()=>{
++ const c=new ControllerCapture('axis','throttle',[pad()])
++ c.poll([pad(1,[1,1],'unrelated')]);expect(c.candidate).toBeNull()
++ c.poll([pad(1,[1,-1])]);expect(c.candidate).not.toBeNull();expect(c.result()).toBeNull()
++ c.record('max',[pad(1,[1,-1])]);c.record('min',[pad(1,[-1,-1])]);expect(c.result()).toBeNull()
++ c.record('idle',[pad(1,[-.5,-1])]);expect((c.result() as {calibration:unknown}).calibration).toEqual({min:-1,max:1,idle:-.5})
++})
++it('reconnect with swapped indices keeps aliases on the original device identity',()=>{
++ const stick='TCA Sidestick X Copilot'
++ const saved=tcaPresetFor([{id:stick,index:0,axes:10},{id,index:1,axes:7}])!
++ const moved=mergePreset(saved,tcaPresetFor([{id:stick,index:1,axes:10},{id,index:0,axes:7}])!)
++ expect(moved.devices?.['0']).toBe(stick)
++ expect(moved.btnKeys?.['1:4']).toBeUndefined()
++ expect(moved.btn?.reverse2?.deviceId).toBe(id)
++})
++it('initial held capture button must release and press, rather than bind at rest',()=>{
++ const held={...pad(),buttons:[{pressed:true},{pressed:false}]}
++ const c=new ControllerCapture('button','parkingBrake',[held])
++ c.poll([held]);expect(c.candidate).toBeNull()
++ c.poll([pad()]);c.poll([held]);expect(c.result()).toMatchObject({btn:0,deviceId:id})
++})
++it('a later quadrant replaces only the automatic stick slider, and captured buttons keep one action',()=>{
++ const stick='TCA Sidestick X Copilot'
++ const first=tcaPresetFor([{id:stick,index:0,axes:10}])!
++ const both=tcaPresetFor([{id:stick,index:0,axes:10},{id,index:1,axes:7}])!
++ expect(mergePreset(first,both).throttle?.deviceId).toBe(id)
++ const custom={...first,throttle:{...first.throttle!,source:'user' as const}}
++ expect(mergePreset(custom,both).throttle?.deviceId).toBe(stick)
++ const captured={...both,btn:{parkingBrake:{pad:1,btn:0,deviceId:id}}}
++ expect(mergePreset(captured,both).btn?.reverse).toBeUndefined()
++})
++it('retains unverified legacy custom bindings without assigning them to a newly seen device',()=>{
++ const migrated=mergePreset({flaps:{pad:1,axis:2,sign:1}},tcaPresetFor([{id,index:1,axes:7}])!)
++ expect(migrated.flaps).toBeDefined()
++ expect(readAxis(migrated,'flaps',[pad(1,[-1,-1,1])])).toBeNull()
++})
+--- before/tests/controller-runtime.test.ts
++++ after/tests/controller-runtime.test.ts
+@@ -0,0 +1,17 @@
++import {it,expect} from 'vitest'
++import { ControllerRuntime } from '../src/input/controller-runtime'
++import {tcaPresetFor,combineLevers} from '../src/sim/gamepad-map'
++const id='TCA Q-Eng 1&2',m=tcaPresetFor([{id,index:1,axes:7}])!
++const pads=(a=false,b=false)=>[{id,index:1,axes:[-1,-1],buttons:[{pressed:a},{pressed:b}]}]
++it('both reverse lifts release symmetrically and focus/disconnect require release before rearm',()=>{
++ const r=new ControllerRuntime();r.poll(m,pads(),true)
++ expect(r.poll(m,pads(true,true),true).held('reverse2')).toBe(true)
++ expect(r.poll(m,pads(true,false),true).held('reverse2')).toBe(false)
++ expect(r.poll(m,pads(false,false),true).held('reverse')).toBe(false)
++ r.poll(m,pads(true,true),false);expect(r.poll(m,pads(true,true),true).held('reverse')).toBe(false)
++ r.poll(m,pads(),true);expect(r.poll(m,pads(true),true).held('reverse')).toBe(true)
++ r.poll(m,[],true);expect(r.poll(m,pads(true),true).held('reverse')).toBe(false)
++})
++it('idle reverse lift cannot turn the other forward lever into reverse thrust',()=>{
++ expect(combineLevers([{power:0,reverse:true},{power:1,reverse:false}])).toEqual({power:0,reverse:false,mixed:true})
++})
+--- before/tests/controller-main.test.ts
++++ after/tests/controller-main.test.ts
+@@ -0,0 +1,51 @@
++import {readFileSync} from 'node:fs'
++import ts from 'typescript'
++import {it,expect} from 'vitest'
++import * as mapping from '../src/sim/gamepad-map'
++import {ControllerRuntime} from '../src/input/controller-runtime'
++const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8')
++const ast=ts.createSourceFile('main.ts',source,ts.ScriptTarget.Latest,true)
++const body=ast.statements.filter(n=>ts.isFunctionDeclaration(n)&&['pollControls','joyRead','shapeAxis'].includes(n.name?.text??'')).map(n=>n.getText(ast)).join('\n')
++function harness(){
++ const pad={id:'TCA Q-Eng 1&2',index:1,connected:true,axes:[-1,-1,-1,-1],buttons:Array.from({length:8},()=>({pressed:false}))}
++ const m=mapping.tcaPresetFor([{id:pad.id,index:1,axes:7}])!
++ m.flaps={pad:1,deviceId:pad.id,axis:2,sign:1};m.speedbrake={pad:1,deviceId:pad.id,axis:3,sign:1}
++ m.btn={...m.btn,parkingBrake:{pad:1,deviceId:pad.id,btn:2},engineMaster1:{pad:1,deviceId:pad.id,btn:3},engineMaster2:{pad:1,deviceId:pad.id,btn:4}}
++ const controls={pitch:0,roll:0,yaw:0,throttle:0,trim:0,mixture:1,flapsIndex:0,brakeLeft:0,brakeRight:0}
++ const aircraft={controls,P:{reversers:{},spoilers:{},flapDetentsDeg:[0,1,2,3,4],gearRetractable:{}},data:{onGround:true},rates:{z:0},reverseCmd:false,spoilerCmd:0,spoilerArmed:false}
++ const presses=new Set<string>();const pads:typeof pad[]=[pad]
++ const ctx={...mapping,aircraft,gamepadMap:m,navigator:{getGamepads:()=>pads},document:{hidden:false,hasFocus:()=>true},controllerPanel:{capturing:false},input:{enabled:true,axis:()=>0,isHeld:()=>false,wasPressed:(k:string)=>presses.has(k),setVirtualHeld:()=>{},injectPress:()=>{}},controllerRuntime:new ControllerRuntime(),clearControllerTransient:()=>{},toast:()=>{},performance:{now:()=>0},systemsControls:{apMaster:false}}
++ const declarations=`let shaped={pitch:0,roll:0,yaw:0},parkingBrake=false,keyboardReverse=false,hardwareReverseOwned=false,pilotBrake=0,baroSetInHg=29.92,captainCommands={},assistMode='off',groundHeadingLockDeg=null,airbornePitchLockDeg=null,airborneHeadingLockDeg=null,scrubSeconds=0;`
++ const code=ts.transpileModule(declarations+body+';return ()=>{pollControls(.02);return {parkingBrake,captainCommands}}',{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
++ const poll=new Function(...Object.keys(ctx),code)(...Object.values(ctx)) as ()=>{parkingBrake:boolean;captainCommands:Record<string,unknown>}
++ return {pad,pads,aircraft,presses,poll,m}
++}
++it('main applies flap/speedbrake axes, absolute parking brake and both master switch levels',()=>{
++ const h=harness();h.poll();h.pad.axes=[-1,-1,1,0];h.pad.buttons[2]!.pressed=true;h.pad.buttons[3]!.pressed=true
++ const s=h.poll();expect(h.aircraft.controls.flapsIndex).toBe(4);expect(h.aircraft.spoilerCmd).toBe(.5);expect(s.parkingBrake).toBe(true);expect(s.captainCommands).toMatchObject({engineMaster1:true,engineMaster2:false})
++ h.pad.axes[0]=1;h.poll();expect(h.aircraft.controls.brakeLeft).toBe(1)
++ h.pad.buttons[2]!.pressed=false;expect(h.poll().parkingBrake).toBe(false);expect(h.aircraft.controls.brakeLeft).toBe(0)
++})
++it('main releases either lift symmetrically, rejects opposing levers and preserves keyboard reverse without hardware ownership',()=>{
++ const h=harness();h.poll();h.pad.buttons[0]!.pressed=true;h.pad.buttons[1]!.pressed=true;h.poll();expect(h.aircraft.reverseCmd).toBe(true)
++ h.pad.buttons[0]!.pressed=false;h.poll();expect(h.aircraft.reverseCmd).toBe(true)
++ h.pad.buttons[1]!.pressed=false;h.poll();expect(h.aircraft.reverseCmd).toBe(false)
++ h.pad.buttons[0]!.pressed=true;h.pad.axes[1]=1;h.poll();expect(h.aircraft.controls.throttle).toBe(0);expect(h.aircraft.reverseCmd).toBe(false)
++ h.pads.length=0;h.presses.add('KeyZ');h.poll();expect(h.aircraft.reverseCmd).toBe(true)
++})
++
++import {createCaptainSystems,stepCaptainSystems} from '../src/sim/captain-systems'
++import {makeFuelState,stepFuel} from '../src/sim/systems/fuel'
++import {Aircraft} from '../src/sim/aircraft'
++import {B738} from '../src/sim/aircraft/b738'
++it('first real systems tick reads fresh fuel metadata before Captain engine state',()=>{
++ const aircraft=new Aircraft(B738);aircraft.posNed.z=-1000;aircraft.velBody.x=100
++ const fuelState=makeFuelState(100,100)
++ const start=Math.min(source.indexOf('      captainSystems=stepCaptainSystems'),source.indexOf('      stepFuel(fuelState, dt,'))
++ const end=source.indexOf('      stepEngineStart(engineStartState, dt,',start)
++ const ctx={aircraft,fuelState,stepFuel,stepCaptainSystems,createCaptainSystems,systemsControls:{masterBattery:true,fuelSelector:'BOTH',boostPumpOn:false}}
++ const code=ts.transpileModule(`let captainSystems=createCaptainSystems(),captainCommands={},pilotBrake=0,dt=.02;${source.slice(start,end)};return captainSystems`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
++ const state=new Function(...Object.keys(ctx),code)(...Object.values(ctx))
++ expect(fuelState.fuelFlowing).toBe(true)
++ expect(state.enginePowerFraction).toBe(1)
++})
+--- before/tests/gamepad-map.test.ts
++++ after/tests/gamepad-map.test.ts
+@@ -65,25 +65,25 @@
+     expect(DEFAULT_SINGLE_STICK.yaw).toEqual({ pad: 0, axis: 2, sign: 1 })
+     // Slider convention: full forward reports −1 on most sticks.
+     expect(DEFAULT_SINGLE_STICK.throttle).toEqual({ pad: 0, axis: 3, sign: -1 })
+   })
+ })
+ 
+ describe('TCA Captain Pack support (16a-b)', () => {
+   it('leverWithReverse: forward range, idle guard, reverse gate depth', () => {
+     expect(leverWithReverse(1)).toEqual({ power: 1, reverse: false })
+     expect(leverWithReverse(0)).toEqual({ power: 0.5, reverse: false })
+     expect(leverWithReverse(-1)).toEqual({ power: 0, reverse: false }) // exactly idle
+     expect(leverWithReverse(-1.05).power).toBe(0) // wobble below idle stays forward-idle
+-    const rev = leverWithReverse(-1.4) // deep in the lifted reverse zone
++    const rev = leverWithReverse(-1, { min: -1, max: 1, idle: -0.5 }) // calibrated physical reverse zone
+     expect(rev.reverse).toBe(true)
+     expect(rev.power).toBeGreaterThan(0.4)
+   })
+ 
+   it('detectPressedButton finds a new press on any pad', () => {
+     const before = [[false, false], [false, false, false]]
+     const after = [[false, false], [false, false, true]]
+     expect(detectPressedButton(before, after)).toEqual({ pad: 1, btn: 2 })
+     expect(detectPressedButton(after, after)).toBeNull()
+   })
+ 
+   it('button bindings survive the serialize/parse round-trip; old maps still parse', () => {
+@@ -96,53 +96,53 @@
+     expect(back?.btn?.gear).toEqual({ pad: 1, btn: 4 })
+     expect(back?.pitch?.axis).toBe(1)
+     const legacy = parseGamepadMap('{"roll":{"pad":0,"axis":0,"sign":1}}')
+     expect(legacy?.roll?.sign).toBe(1)
+   })
+ 
+   it('tcaPresetFor maps stick axes and BOTH quadrant levers to the right pads', () => {
+     // Real device ids/axis counts read from the user's Captain Pack.
+     const m = tcaPresetFor([
+       { id: 'TCA Sidestick X Copilot (Vendor: 044f Product: 040f)', axes: 10, index: 0 },
+       { id: 'TCA Q-Eng 1&2 (Vendor: 044f Product: 0407)', axes: 7, index: 1 },
+     ])!
+-    expect(m.roll).toEqual({ pad: 0, axis: 0, sign: 1 })
+-    expect(m.pitch).toEqual({ pad: 0, axis: 1, sign: 1 })
+-    expect(m.yaw).toEqual({ pad: 0, axis: 5, sign: 1 }) // twist is axis 5 on the real unit
+-    expect(m.throttle).toEqual({ pad: 1, axis: 0, sign: 1 }) // idle=-1, TOGA=+1 (live-verified)
+-    expect(m.throttle2).toEqual({ pad: 1, axis: 1, sign: 1 })
+-    expect(m.v).toBe(6)
++    expect(m.roll).toMatchObject({ pad: 0, axis: 0, sign: 1 })
++    expect(m.pitch).toMatchObject({ pad: 0, axis: 1, sign: 1 })
++    expect(m.yaw).toMatchObject({ pad: 0, axis: 5, sign: 1 }) // twist is axis 5 on the real unit
++    expect(m.throttle).toMatchObject({ pad: 1, axis: 0, sign: 1 }) // idle=-1, TOGA=+1 (live-verified)
++    expect(m.throttle2).toMatchObject({ pad: 1, axis: 1, sign: 1 })
++    expect(m.v).toBe(7)
+     // Full face bound: trigger = PTT, red = AP disconnect, base buttons = gear/flaps/spoilers…
+     expect(m.btnKeys?.['0:0']).toBe('KeyT')
+-    expect(m.btn?.apDisconnect).toEqual({ pad: 0, btn: 1 })
++    expect(m.btn?.apDisconnect).toMatchObject({ pad: 0, btn: 1 })
+     expect(m.btnKeys?.['0:4']).toBe('KeyU')
+-    expect(m.btn?.reverse).toEqual({ pad: 1, btn: 0 })
++    expect(m.btn?.reverse).toMatchObject({ pad: 1, btn: 0 })
+   })
+ 
+   it('button preset: every stick face button gets a job; held aliases are the held keys', () => {
+     const p = tcaButtonPreset(0, 1)
+-    expect(Object.keys(p.keys).length).toBeGreaterThanOrEqual(16)
++    expect(Object.keys(p.keys).length).toBe(15)
+     expect(p.keys['0:16']).toBeUndefined() // no guessed hat/latching-switch aliases
+     expect(new Set(Object.values(p.keys)).has('KeyB')).toBe(true)
+     expect(HELD_ALIASES.has('KeyB')).toBe(true)
+     expect(HELD_ALIASES.has('KeyU')).toBe(false)
+     const back = parseGamepadMap(serializeGamepadMap({ btnKeys: p.keys, v: 5 }))
+     expect(back?.btnKeys?.['0:0']).toBe('KeyT')
+   })
+ 
+   it('stick alone falls back to its base slider for throttle; non-TCA gets nothing', () => {
+     const solo = tcaPresetFor([{ id: 'TCA STICK X AIRBUS', axes: 4, index: 0 }])!
+-    expect(solo.throttle).toEqual({ pad: 0, axis: 3, sign: -1 }) // 4-axis variant keeps the classic layout
++    expect(solo.throttle).toMatchObject({ pad: 0, axis: 3, sign: -1 }) // 4-axis variant keeps the classic layout
+     const solo10 = tcaPresetFor([{ id: 'TCA Sidestick X Copilot', axes: 10, index: 0 }])!
+-    expect(solo10.throttle).toEqual({ pad: 0, axis: 6, sign: -1 })
++    expect(solo10.throttle).toMatchObject({ pad: 0, axis: 6, sign: -1 })
+     expect(solo.throttle2).toBeUndefined()
+     expect(tcaPresetFor([{ id: 'Xbox Wireless Controller', axes: 4, index: 0 }])).toBeNull()
+   })
+ })
+ 
+ describe('9A: capture-time device guards', () => {
+   it('a pad that connects MID-capture cannot insta-bind its resting axes', () => {
+     // Baseline had one pad; a quadrant connects during capture with its
+     // slider parked at -1 — a full-swing "delta" against an empty
+     // baseline. Must be ignored.
+     const before = [[0, 0]]
+     const after = [[0, 0.05], [-1, -1]]
+--- before/tests/captain-systems.test.ts
++++ after/tests/captain-systems.test.ts
+@@ -0,0 +1,108 @@
++import { describe, expect, it } from 'vitest'
++import { createCaptainSystems, stepCaptainSystems, type CaptainSystemsInput } from '../src/sim/captain-systems'
++import { Aircraft } from '../src/sim/aircraft'
++import { B738 } from '../src/sim/aircraft/b738'
++
++const ground: CaptainSystemsInput = { fuelAvailable: true, electricalPower: true, onGround: true, groundSpeedKt: 0, throttle: 0, manualBrake: 0 }
++
++describe('aggregate jet engine groups', () => {
++  it('scales powered thrust and fuel while retaining dead-fan drag', () => {
++    const full = new Aircraft(B738)
++    const half = new Aircraft(B738)
++    const dead = new Aircraft(B738)
++    half.jetPowerFactor = 0.5
++    dead.jetPowerFactor = 0
++    for (const aircraft of [full, half, dead]) {
++      aircraft.posNed.z = -1000
++      aircraft.velBody.x = 100
++      aircraft.controls.throttle = 0.8
++      aircraft.step(0.02)
++    }
++    expect(half.prop.fuelFlowKgS).toBeCloseTo(full.prop.fuelFlowKgS / 2, 8)
++    expect(dead.prop.fuelFlowKgS).toBe(0)
++    expect(dead.prop.thrustN).toBeLessThan(0)
++    expect(half.prop.thrustN).toBeCloseTo((full.prop.thrustN + dead.prop.thrustN) / 2, 8)
++  })
++})
++
++describe('Captain engine masters and ignition', () => {
++  it('latches individual shutdown commands without toggling on held inputs', () => {
++    const initial = createCaptainSystems()
++    const one = stepCaptainSystems(initial, { ...ground, engineMaster1: false }, 1)
++    expect(initial.engine1Running).toBe(true)
++    expect(one.enginePowerFraction).toBe(0.5)
++    expect(stepCaptainSystems(one, ground, 1).enginePowerFraction).toBe(0.5)
++    expect(stepCaptainSystems(one, { ...ground, engineMaster1: false }, 1).engine2Running).toBe(true)
++  })
++  it('requires START, master, fuel, electrical supply, and start time', () => {
++    let s = createCaptainSystems(false)
++    s = stepCaptainSystems(s, { ...ground, engineMaster1: true }, 10)
++    expect(s.engine1Running).toBe(false)
++    s = stepCaptainSystems(s, { ...ground, ignitionMode: 'crank' }, 10)
++    expect(s.engine1Running).toBe(false)
++    s = stepCaptainSystems(s, { ...ground, ignitionMode: 'start', electricalPower: false }, 10)
++    expect(s.engine1Running).toBe(false)
++    s = stepCaptainSystems(s, ground, 3)
++    expect(s.engine1Running).toBe(false)
++    s = stepCaptainSystems(s, ground, 3)
++    expect(s.enginePowerFraction).toBe(0.5)
++    expect(stepCaptainSystems(s, { ...ground, ignitionMode: 'norm' }, 1).engine1Running).toBe(true)
++    expect(stepCaptainSystems(s, { ...ground, fuelAvailable: false }, 1).enginePowerFraction).toBe(0)
++  })
++})
++
++describe('rudder trim', () => {
++  it('moves only while held, clamps and resets', () => {
++    let s = stepCaptainSystems(createCaptainSystems(), { ...ground, trimRight: true }, 1)
++    expect(s.rudderTrim).toBeGreaterThan(0)
++    expect(stepCaptainSystems(s, ground, 1).rudderTrim).toBe(s.rudderTrim)
++    expect(stepCaptainSystems(s, { ...ground, trimLeft: true }, 1).rudderTrim).toBeCloseTo(0)
++    s = stepCaptainSystems(s, { ...ground, trimRight: true }, 100)
++    expect(s.rudderTrim).toBe(0.3)
++    expect(stepCaptainSystems(s, { ...ground, trimReset: true, trimRight: true }, 1).rudderTrim).toBe(0)
++  })
++})
++
++describe('autobrake', () => {
++  it('does not brake parked or during ordinary taxi', () => {
++    let s = stepCaptainSystems(createCaptainSystems(), { ...ground, autobrakeMode: 'max' }, 1)
++    expect(s.autobrakeDemand).toBe(0)
++    s = stepCaptainSystems(s, { ...ground, groundSpeedKt: 20 }, 1)
++    expect(s.autobrakeDemand).toBe(0)
++  })
++  it.each(['low', 'medium', 'max'] as const)('activates %s after touchdown and releases at low speed', mode => {
++    let s = stepCaptainSystems(createCaptainSystems(), { ...ground, onGround: false, groundSpeedKt: 130, autobrakeMode: mode }, 1)
++    expect(s.autobrakeDemand).toBe(0)
++    s = stepCaptainSystems(s, { ...ground, groundSpeedKt: 100 }, 1)
++    expect(s.autobrakeDemand).toBeGreaterThan(0)
++    expect(stepCaptainSystems(s, { ...ground, groundSpeedKt: 3 }, 1).autobrakeDemand).toBe(0)
++  })
++  it('manual brake disarms until selector is cycled', () => {
++    let s = stepCaptainSystems(createCaptainSystems(), { ...ground, onGround: false, autobrakeMode: 'medium' }, 1)
++    s = stepCaptainSystems(s, { ...ground, groundSpeedKt: 100 }, 1)
++    s = stepCaptainSystems(s, { ...ground, groundSpeedKt: 90, manualBrake: 0.2 }, 1)
++    expect(s.autobrakeDemand).toBe(0)
++    expect(stepCaptainSystems(s, { ...ground, groundSpeedKt: 80, autobrakeMode: 'medium' }, 1).autobrakeDemand).toBe(0)
++  })
++  it('RTO requires takeoff power and speed, then brakes when power is rejected', () => {
++    let s = stepCaptainSystems(createCaptainSystems(), { ...ground, groundSpeedKt: 90, autobrakeMode: 'rto' }, 1)
++    expect(s.autobrakeDemand).toBe(0)
++    s = stepCaptainSystems(s, { ...ground, groundSpeedKt: 90, throttle: 0.9 }, 1)
++    expect(s.rtoArmed).toBe(true)
++    expect(s.autobrakeDemand).toBe(0)
++    s = stepCaptainSystems(s, { ...ground, groundSpeedKt: 90 }, 1)
++    expect(s.autobrakeDemand).toBe(1)
++    expect(stepCaptainSystems(s, { ...ground, groundSpeedKt: 90, throttle: 0.9 }, 1).autobrakeDemand).toBe(0)
++  })
++})
++
++it('records final applied control surfaces for animation, with trim already mixed into yaw',()=>{
++ const a=new Aircraft(B738)
++ a.controls.yaw=.5;a.controls.pitch=.2;a.controls.trim=.1;a.controls.roll=-.3
++ a.posNed.z=-1000;a.velBody.x=100;a.step(.02)
++ expect(a.appliedControlSurfaces.yaw).toBe(.5)
++ expect(a.appliedControlSurfaces.rudderRad).toBeCloseTo(-.5*a.P.rudderMaxRad)
++ expect(a.appliedControlSurfaces.aileronRad).toBeCloseTo(-.3*a.P.aileronMaxRad)
++ a.controls.yaw=.2
++ expect(a.appliedControlSurfaces.yaw).toBe(.5)
++})
+--- before/tests/loading-main.test.ts
++++ after/tests/loading-main.test.ts
+@@ -1,40 +1,43 @@
+ import { readFileSync } from 'node:fs'
+ import ts from 'typescript'
+ import { describe, expect, it } from 'vitest'
++import { createCaptainSystems } from '../src/sim/captain-systems'
++import { ControllerRuntime } from '../src/input/controller-runtime'
+ import { C172S } from '../src/sim/aircraft/c172s'
+ import { applyLoading, loadingFromSnapshot } from '../src/sim/loading'
+ import { makeFuelState, stepFuel } from '../src/sim/systems/fuel'
+ import { stepEngineStart } from '../src/sim/systems/engine-start'
+ 
+ const source = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
+ const ast = ts.createSourceFile('main.ts', source, ts.ScriptTarget.Latest, true)
+ const functionText = (name: string) => ast.statements
+   .filter(n => ts.isFunctionDeclaration(n) && n.name?.text === name)
+   .map(n => n.getText(ast)).join('\n')
+ 
+ describe('main loading lifecycle', () => {
+   it('recreates fuel metadata on reset so an old L selector cannot stop the engine', () => {
+     const fuelState = makeFuelState(30, 30)
+     stepFuel(fuelState, 1 / 60, { selector: 'L', boostPumpOn: false, demandKgS: 0 })
+     const aircraft = { payloadKg: 0, fuelKg: 60, spoilerCmd: 0, spoilerArmed: false, reverseCmd: false }
+     const ctx = {
++      createCaptainSystems, controllerRuntime: new ControllerRuntime(),
+       fuelState, makeFuelState, selectedLoading: { payloadKg: 80, leftKg: 30, rightKg: 30 },
+       aircraft, FLEET_ACTIVE: { params: C172S }, applyLoading,
+       electricalState: {}, makeElectricalState: () => ({}), engineStartState: {}, ENGINE_START_BOOT_RUNNING: { status: 'running', rpm: 700, crankTimeS: 0 },
+       engineTemps: {}, makeEngineTemps: () => ({}), systemsControls: {}, SYSTEMS_CONTROLS_DEFAULT: { fuelSelector: 'BOTH', boostPumpOn: false },
+       failures: {}, disconnectAutopilot: () => {}, apState: {}, carbIceState: {}, makeCarbIceState: () => ({}),
+       aircraftLights: { landingOn: false },
+     }
+-    const declarations = 'let carbHeatOn=false,baroSetInHg=0,ctlOverride={},holdWingsLevel=true;'
++    const declarations = 'let carbHeatOn=false,baroSetInHg=0,ctlOverride={},holdWingsLevel=true,captainSystems={},captainCommands={},keyboardReverse=false,hardwareReverseOwned=false;'
+     const code = ts.transpileModule(`${declarations}${functionText('resetSystemsState')};resetSystemsState();`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+     new Function(...Object.keys(ctx), code)(...Object.values(ctx))
+     expect(fuelState._lastSelector).toBeNull()
+     expect(fuelState.fuelFlowing).toBe(false)
+     expect(fuelState.boostPumpOn).toBe(false)
+ 
+     stepFuel(fuelState, 1 / 60, { selector: 'BOTH', boostPumpOn: false, demandKgS: 0.01 })
+     const engine = { status: 'running' as const, rpm: 700, crankTimeS: 0 }
+     stepEngineStart(engine, 1 / 60, { masterBattery: true, starterEngaged: false, magneto: 'both', mixtureRich: true, throttleFrac: 0, fuelAvailable: fuelState.fuelFlowing, hotEngine: false, floodedEngine: false, primed: false })
+     expect(engine.status).toBe('running')
+   })
+ 

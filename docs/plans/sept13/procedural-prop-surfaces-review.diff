@@ -1,0 +1,672 @@
+--- a/src/render/procedural-surfaces.ts
++++ b/src/render/procedural-surfaces.ts
+@@ -0,0 +1,68 @@
++import * as THREE from 'three'
++
++export interface HingeFrame {
++  root: THREE.Group
++  length: number
++  setAngle(rad:number):void
++  worldEndpoints():readonly [THREE.Vector3,THREE.Vector3]
++}
++
++export interface LiveLinkage {
++  rod: THREE.Mesh
++  fixedMount: THREE.Object3D
++  movingMount: THREE.Object3D
++  update():void
++  readonly lastFixed: THREE.Vector3
++  readonly lastMoving: THREE.Vector3
++}
++
++const X = new THREE.Vector3(1,0,0)
++const Y = new THREE.Vector3(0,1,0)
++const finite = (n:number,fallback=0):number => Number.isFinite(n)?n:fallback
++
++/** A local X-axis frame whose complete axis passes through both supplied parent-space points. */
++export function createHingeFrame(parent:THREE.Object3D,name:string,a:THREE.Vector3,b:THREE.Vector3):HingeFrame {
++  const axis=b.clone().sub(a), length=axis.length()
++  if(!(length>1e-7))throw new Error(`${name} hinge endpoints coincide`)
++  const root=new THREE.Group();root.name=name;root.position.copy(a)
++  root.quaternion.setFromUnitVectors(X,axis.multiplyScalar(1/length));parent.add(root)
++  const baseQuaternion=root.quaternion.clone(),twist=new THREE.Quaternion()
++  root.userData.hingeStart=a.clone();root.userData.hingeEnd=b.clone();root.userData.hingeLength=length
++  let angle=0
++  return {
++    root,length,
++    setAngle(rad:number){angle=THREE.MathUtils.clamp(finite(rad),-Math.PI*.65,Math.PI*.65);root.userData.surfaceAngle=angle;root.quaternion.copy(baseQuaternion).multiply(twist.setFromAxisAngle(X,angle))},
++    worldEndpoints(){
++      root.updateWorldMatrix(true,false)
++      return [root.localToWorld(new THREE.Vector3()),root.localToWorld(new THREE.Vector3(length,0,0))] as const
++    },
++  }
++}
++
++/** Allocation-free updating rod joining mounts that may live under different transforms. */
++export function createLiveLinkage(parent:THREE.Object3D,name:string,fixedMount:THREE.Object3D,movingMount:THREE.Object3D,radius:number,material=new THREE.MeshStandardMaterial({color:0x929aa1,metalness:.7,roughness:.3})):LiveLinkage {
++  const rod=new THREE.Mesh(new THREE.CylinderGeometry(radius,radius,1,8),material);rod.name=name;parent.add(rod)
++  const lastFixed=new THREE.Vector3(),lastMoving=new THREE.Vector3(),a=new THREE.Vector3(),b=new THREE.Vector3(),d=new THREE.Vector3(),mid=new THREE.Vector3()
++  const update=()=>{
++    fixedMount.updateWorldMatrix(true,false);movingMount.updateWorldMatrix(true,false);parent.updateWorldMatrix(true,false)
++    fixedMount.getWorldPosition(a);movingMount.getWorldPosition(b)
++    lastFixed.copy(a);lastMoving.copy(b)
++    parent.worldToLocal(a);parent.worldToLocal(b);d.subVectors(b,a)
++    const length=Math.max(1e-7,d.length());rod.position.copy(mid.addVectors(a,b).multiplyScalar(.5));rod.scale.set(1,length,1)
++    rod.quaternion.setFromUnitVectors(Y,d.multiplyScalar(1/length));rod.updateWorldMatrix(false,false);rod.userData.fixedEndpoint=lastFixed;rod.userData.movingEndpoint=lastMoving
++  }
++  const linkage={rod,fixedMount,movingMount,update,lastFixed,lastMoving};update();return linkage
++}
++
++/** Attachment error since the last mechanism update; useful for geometry acceptance. */
++export function linkageError(linkage:LiveLinkage):number {
++  linkage.fixedMount.updateWorldMatrix(true,false);linkage.movingMount.updateWorldMatrix(true,false)
++  const a=linkage.fixedMount.getWorldPosition(new THREE.Vector3()),b=linkage.movingMount.getWorldPosition(new THREE.Vector3())
++  linkage.rod.updateWorldMatrix(true,false)
++  const r0=linkage.rod.localToWorld(new THREE.Vector3(0,-.5,0)),r1=linkage.rod.localToWorld(new THREE.Vector3(0,.5,0))
++  return Math.min(Math.max(a.distanceTo(r0),b.distanceTo(r1)),Math.max(a.distanceTo(r1),b.distanceTo(r0)))
++}
++
++export function bounded(value:number|undefined,lo=-1,hi=1):number {
++  return THREE.MathUtils.clamp(Number.isFinite(value)?value!:0,lo,hi)
++}
+--- a/src/render/prop-profiles.ts
++++ b/src/render/prop-profiles.ts
+@@ -8,20 +8,22 @@
+  * https://www.piaggioaerospace.it/yep-content/media/P180-AvantiEVO-brochure.pdf
+  * https://www.antonov.com/history/an-2
+  * Dimensions below describe the visual envelope, not certified engineering data.
+  */
+ export interface PropProfile {
+   family: string; width: number; height: number; wing: 'high'|'mid'|'low'; tail: 'normal'|'t'|'v'
+   taper: number; struts: boolean; windows: number; blades: number
+   canopy?: boolean; biplane?: boolean; pusher?: boolean; tipTanks?: boolean
+   radial?: boolean; glider?: boolean; military?: boolean; mooney?: boolean
+   winglets?: boolean; color?: number; fin?: number
++  rollControl?: 'aileron'|'spoiler'|'flaperon'; flapSystem?: 'plain'|'fowler'|'none'; airbrakes?: boolean
++  biplaneControls?: 'an2-upper-aileron-upper-lower-flaps'
+ }
+ const p = (family:string,width:number,height:number,wing:PropProfile['wing'],tail:PropProfile['tail']='normal', extra:Partial<PropProfile>={}):PropProfile =>
+   ({family,width,height,wing,tail,taper:.52,struts:false,windows:2,blades:3,...extra})
+ const high = p('Cessna utility',1.18,1.42,'high','normal',{struts:true,taper:.70})
+ const low = p('Piper cabin single',1.12,1.28,'low','normal',{taper:.70})
+ const beech = p('Beech cabin',1.16,1.36,'low','normal',{taper:.43,windows:3})
+ const diamond = p('Diamond composite',1.14,1.22,'low','t',{canopy:true,taper:.36})
+ const bush = p('Fabric bush',.80,1.35,'high','normal',{struts:true,taper:.88,windows:2,blades:2,color:0xf4c72b})
+ const commuter = p('Regional turboprop',2.65,2.72,'high','t',{windows:12,blades:6,taper:.38})
+ const king = p('King Air',1.60,1.77,'low','t',{windows:5,blades:4,taper:.38})
+@@ -50,16 +52,16 @@
+  B190:{...king,width:1.64,height:1.89,windows:9},
+  DHC6:p('Twin Otter',1.78,2.0,'high','normal',{struts:true,windows:8,taper:.76}),
+  AT76:commuter,AT45:{...commuter,windows:9},DH8D:{...commuter,width:2.70,height:2.85,windows:17},DH8A:{...commuter,width:2.70,height:2.85,windows:10,blades:4},
+  SF34:p('Saab 340',2.10,2.20,'low','normal',{windows:10,taper:.44,blades:4}),
+  E120:p('Brasilia',2.25,2.35,'low','t',{windows:10,taper:.40,blades:4}),
+  D328:{...commuter,family:'Dornier regional',width:2.35,height:2.60,windows:10},
+  JS41:p('Jetstream',1.92,2.08,'low','normal',{windows:10,taper:.48,blades:5}),
+  SW4:p('Metro',1.63,1.75,'low','normal',{windows:13,taper:.57,blades:4}),
+  D228:p('Dornier utility',1.73,1.91,'high','normal',{windows:9,taper:.34,blades:5}),
+  L410:p('Let utility',1.91,2.02,'high','t',{windows:8,taper:.66,blades:5,tipTanks:true}),
+- MU2:p('Mitsubishi',1.57,1.73,'high','normal',{windows:5,taper:.55,tipTanks:true,blades:4}),
++ MU2:p('Mitsubishi',1.57,1.73,'high','normal',{windows:5,taper:.55,tipTanks:true,blades:4,rollControl:'spoiler',flapSystem:'fowler'}),
+  P180:p('Avanti three-surface',1.85,1.94,'mid','t',{windows:6,pusher:true,taper:.42,blades:5}),
+  C130:p('Hercules',3.90,4.10,'high','normal',{windows:0,military:true,taper:.42,blades:4,color:0x788078}),
+- AN2:p('Antonov biplane',1.93,2.40,'high','normal',{radial:true,biplane:true,taper:.91,windows:5,blades:4,color:0xb8bd91}),
+- AS21:{...sailplane,width:.78,height:.92,taper:.34},DG80:sailplane,LS8:{...sailplane,winglets:true},DISC:{...sailplane,winglets:true},
++ AN2:p('Antonov biplane',1.93,2.40,'high','normal',{radial:true,biplane:true,taper:.91,windows:5,blades:4,color:0xb8bd91,biplaneControls:'an2-upper-aileron-upper-lower-flaps'}),
++ AS21:{...sailplane,width:.78,height:.92,taper:.34,flapSystem:'none',airbrakes:true},DG80:{...sailplane,rollControl:'flaperon',flapSystem:'none',airbrakes:true},LS8:{...sailplane,winglets:true,flapSystem:'none',airbrakes:true},DISC:{...sailplane,winglets:true,flapSystem:'none',airbrakes:true},
+ }
+--- a/src/render/prop-aircraft.ts
++++ b/src/render/prop-aircraft.ts
+@@ -1,17 +1,19 @@
+ import * as THREE from 'three'
+ import type { RosterSpec } from '../sim/aircraft/derive'
+ import type { AircraftParams } from '../sim/aircraft/params'
+ import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
+ import { aircraftPaint, aircraftMetal, aircraftRubber } from './aircraft-materials'
+ import { profiledPanel, buildAircraftWheel } from './aircraft-components'
+ import { PROP_PROFILES } from './prop-profiles'
++import { bounded, createHingeFrame, createLiveLinkage, type HingeFrame, type LiveLinkage } from './procedural-surfaces'
++import { fowlerPose } from './fowler'
+ const trim = aircraftPaint(0x213d62,{roughness:.36})
+ const metal = aircraftMetal(0xb5bdc6,.31)
+ const dark = aircraftRubber()
+ const glass = new THREE.MeshPhysicalMaterial({color:0x29434f,metalness:.3,roughness:.13,clearcoat:1,transparent:true,opacity:.81,depthWrite:false,side:THREE.DoubleSide})
+ /** Continuous elliptical loft with smooth spline stations. Cross section shape is
+  * type-specific visual reconstruction, never a replacement for flight parameters. */
+ type Section = [number,number,number,number] // fraction, half-width, center up, half-height
+ function sampler(stations:Section[],length:number):(t:number,a:number,offset?:number)=>THREE.Vector3 {
+  const curve = new THREE.CatmullRomCurve3(stations.map(s=>new THREE.Vector3(s[1],s[2],s[3])),false,'catmullrom',.15)
+  return (t,a,offset=0) => {
+@@ -26,21 +28,22 @@
+  for(let s=0;s<=ns;s++)for(let j=0;j<=na;j++){
+   const v=sample(t0+(t1-t0)*s/ns,a0+(a1-a0)*j/na,offset);p.push(v.x,v.y,v.z);uv.push(j/na,s/ns)
+  }
+  for(let s=0;s<ns;s++)for(let j=0;j<na;j++){
+   const a=s*(na+1)+j,b=a+1,c=a+na+1;ix.push(a,b,c,b,c+1,c)
+  }
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(p,3));g.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));g.setIndex(ix);g.computeVertexNormals();return g
+ }
+ function finGeometry(points:[number,number][],thickness:number):THREE.BufferGeometry {
+  const shape=new THREE.Shape();points.forEach(([z,y],i)=>i?shape.lineTo(z,y):shape.moveTo(z,y));shape.closePath()
+- const geo=new THREE.ExtrudeGeometry(shape,{depth:thickness,bevelEnabled:true,bevelSize:thickness*.18,bevelThickness:thickness*.18,bevelSegments:2,steps:1});geo.translate(0,0,-thickness/2);geo.rotateY(-Math.PI/2);return geo
++ const geo=new THREE.ExtrudeGeometry(shape,{depth:thickness,bevelEnabled:true,bevelSize:thickness*.18,bevelThickness:thickness*.18,bevelSegments:2,steps:1});geo.translate(0,0,-thickness/2);geo.rotateY(-Math.PI/2)
++ if(!geo.index)geo.setIndex(Array.from({length:geo.getAttribute('position').count},(_,i)=>i));return geo
+ }
+ export function buildPropAircraft(spec:RosterSpec,params:AircraftParams):AircraftMesh {
+  const profile=PROP_PROFILES[spec.designator]
+  if(!profile)throw new Error(`No dedicated prop profile for ${spec.designator}`)
+  const g=new THREE.Group();g.name=`player-${spec.designator}`;g.userData.propProfile={...profile};g.userData.modelSource='dedicated-prop'
+  const L=spec.lengthM,S=spec.spanM,W=profile.width,H=profile.height
+  const paint=aircraftPaint(profile.color??0xecefed,{roughness:.39})
+  const add=(name:string,geometry:THREE.BufferGeometry,mat:THREE.Material=paint,parent:THREE.Object3D=g):THREE.Mesh=>{
+   const m=new THREE.Mesh(geometry,mat);m.name=name;m.castShadow=m.receiveShadow=true;parent.add(m);return m
+  }
+@@ -120,52 +123,99 @@
+  // compound curvature readable even at the normal chase-camera distance.
+  for(const a of [0,Math.PI])add('fuselageCheatline',skin(sample,.10,.91,a-.12,a-.075,45,2,.012),trim).userData.exteriorCabin=true
+  const wingY=profile.wing==='high'?H*.58:profile.wing==='low'?-H*.31:H*.04
+  const taper=profile.taper, half=S/2
+  const area=spec.wingAreaM2/(profile.biplane?1.78:1)
+  const rootChord=2*area/(S*(1+taper)),tipChord=rootChord*taper
+  const rootLE=profile.pusher?-L*.10:rootChord*.29
+  const tipLE=rootLE-rootChord*(1-taper)*.29
+  const chord=(x:number)=>THREE.MathUtils.lerp(rootChord,tipChord,x/half)
+  const le=(x:number)=>THREE.MathUtils.lerp(rootLE,tipLE,x/half)
+- const flapPivots:THREE.Group[]=[],spoilers:THREE.Group[]=[]
++ const flapPivots:HingeFrame[]=[],ailerons:{hinge:HingeFrame;side:number}[]=[],spoilers:{hinge:HingeFrame;side:number}[]=[]
++ const linkages:LiveLinkage[]=[]
+  const dihedral=profile.wing==='low'?.065:profile.glider?.045:.018
+  const panel=(name:string,a:number,b:number,c0:number,c1:number,le0:number,le1:number,y:number,side:number,parent:THREE.Object3D=g)=>{
+   const m=profiledPanel(le0,c0,le1,c1,side*a,side*b,Math.max(.025,c0*.075),paint);m.name=name
+   const pos=m.geometry.getAttribute('position');for(let i=0;i<pos.count;i++)pos.setY(i,pos.getY(i)+y+Math.abs(pos.getX(i))*dihedral)
+   m.geometry.computeVertexNormals();parent.add(m);return m
+  }
++ const hingedPanel=(name:string,a:number,b:number,c0:number,c1:number,le0:number,le1:number,y:number,side:number):HingeFrame=>{
++  const skinThickness=Math.max(.025,c0*.075)
++  const hingeA=new THREE.Vector3(side*a,y+Math.abs(a)*dihedral+skinThickness*.5,-le0)
++  const hingeB=new THREE.Vector3(side*b,y+Math.abs(b)*dihedral+skinThickness*.5,-le1)
++  const hinge=createHingeFrame(g,`${name}-hinge`,hingeA,hingeB)
++  const skin=panel(name,a,b,c0,c1,le0,le1,y,side)
++  g.updateMatrixWorld(true);hinge.root.attach(skin);skin.userData.hinge=hinge.root
++  return hinge
++ }
++ const addDrive=(hinge:HingeFrame,name:string,offset=.10):void=>{
++  const fixed=new THREE.Object3D(),moving=new THREE.Object3D(),f=.52
++  fixed.name=`${name}-fixed-mount`;moving.name=`${name}-moving-mount`
++  const start=hinge.root.userData.hingeStart as THREE.Vector3,end=hinge.root.userData.hingeEnd as THREE.Vector3
++  fixed.position.copy(start).lerp(end,f).add(new THREE.Vector3(0,offset,-offset*.35));moving.position.set(hinge.length*f,-offset*.25,offset*.65)
++  g.add(fixed);hinge.root.add(moving);linkages.push(createLiveLinkage(g,`${name}-actuator`,fixed,moving,Math.max(.006,W*.007),metal))
++ }
+  for(const side of [-1,1]){
+   const start=W*.32,fa=Math.max(W*.58,half*.13),fb=half*.61
+-  panel('wingForward',start,half,rootChord*.73,tipChord*.73,le(start),le(half),wingY,side)
+-  for(const [a,b] of [[start,fa],[fb,half]] as const)panel('wingTrailingFixed',a,b,chord(a)*.27,chord(b)*.27,le(a)-chord(a)*.73,le(b)-chord(b)*.73,wingY,side)
+-  const pivot=new THREE.Group();pivot.name=side<0?'flap-left':'flap-right';pivot.position.set(0,wingY,-(le(fa)-chord(fa)*.73));g.add(pivot)
+-  panel('flapSkin',fa,fb,chord(fa)*.27,chord(fb)*.27,0,(le(fb)-chord(fb)*.73)-(le(fa)-chord(fa)*.73),0,side,pivot);flapPivots.push(pivot)
++  panel('wingForward',start,half,chord(start)*.73,chord(half)*.73,le(start),le(half),wingY,side)
++  panel(`wingTrailingFixed-inboard-${side<0?'left':'right'}`,start,fa,chord(start)*.27,chord(fa)*.27,le(start)-chord(start)*.73,le(fa)-chord(fa)*.73,wingY,side)
++  const sideName=side<0?'left':'right'
++  if(profile.rollControl==='flaperon'){
++   const h=hingedPanel(`flaperon-${sideName}`,fa,half,chord(fa)*.27,chord(half)*.27,le(fa)-chord(fa)*.73,le(half)-chord(half)*.73,wingY,side);ailerons.push({hinge:h,side})
++   for(const f of [.28,.72]){
++    const fixed=new THREE.Object3D(),moving=new THREE.Object3D();fixed.name=`flaperon-fixed-mount-${sideName}`;moving.name=`flaperon-moving-mount-${sideName}`
++    const x=h.length*f;fixed.position.set(THREE.MathUtils.lerp(side*fa,side*half,f),wingY+THREE.MathUtils.lerp(fa,half,f)*dihedral,-THREE.MathUtils.lerp(le(fa)-chord(fa)*.69,le(half)-chord(half)*.69,f));moving.position.set(x,-chord(THREE.MathUtils.lerp(fa,half,f))*.08,chord(THREE.MathUtils.lerp(fa,half,f))*.11)
++    g.add(fixed);h.root.add(moving);linkages.push(createLiveLinkage(g,`flaperon-drive-${sideName}`,fixed,moving,Math.max(.008,W*.009),metal))
++   }
++  } else {
++   if(profile.flapSystem==='none')panel(`wingTrailingFixed-mid-${sideName}`,fa,fb,chord(fa)*.27,chord(fb)*.27,le(fa)-chord(fa)*.73,le(fb)-chord(fb)*.73,wingY,side)
++   if(profile.flapSystem!=='none'){
++    const flapEnd=profile.rollControl==='spoiler'?half:fb
++    const h=hingedPanel(`flap-${sideName}`,fa,flapEnd,chord(fa)*.27,chord(flapEnd)*.27,le(fa)-chord(fa)*.73,le(flapEnd)-chord(flapEnd)*.73,wingY,side);h.root.userData.neutralPosition=h.root.position.clone();flapPivots.push(h);addDrive(h,`flap-${sideName}`)
++    if(profile.flapSystem==='fowler'){
++     const second=add(`flap-secondary-slot-${sideName}`,new THREE.BoxGeometry(h.length,Math.max(.018,chord(fa)*.035),chord(fa)*.11,Math.max(2,Math.ceil(h.length)),2,3),paint,h.root);second.position.set(h.length/2,-.035,chord(fa)*.18)
++    }
++    if(profile.flapSystem==='fowler')for(const f of [.25,.75])rod(`fowler-rail-${sideName}`,new THREE.Vector3(side*THREE.MathUtils.lerp(fa,fb,f),wingY-.03,-THREE.MathUtils.lerp(le(fa)-chord(fa)*.80,le(fb)-chord(fb)*.80,f)),new THREE.Vector3(side*THREE.MathUtils.lerp(fa,fb,f),wingY-.11,-THREE.MathUtils.lerp(le(fa)-chord(fa)*.94,le(fb)-chord(fb)*.94,f)),Math.max(.008,W*.008),metal)
++   }
++   if(profile.rollControl!=='spoiler'){const h=hingedPanel(`aileron-${sideName}`,fb,half,chord(fb)*.27,chord(half)*.27,le(fb)-chord(fb)*.73,le(half)-chord(half)*.73,wingY,side);ailerons.push({hinge:h,side});addDrive(h,`aileron-${sideName}`)}
++  }
+   if(profile.struts)rod('wingLiftStrut',new THREE.Vector3(side*W*.40,-H*.27,L*.015),new THREE.Vector3(side*half*.53,wingY+half*.53*dihedral,-rootLE+rootChord*.44),W*.027,paint)
+   if(profile.biplane){
+-   panel('lowerBiplaneWing',start,half*.83,rootChord*.90,tipChord*.9,rootLE-.22,tipLE-.22,-H*.36,side)
++   panel('lowerBiplaneWingForward',start,half*.83,rootChord*.66,tipChord*.66,rootLE-.22,tipLE-.22,-H*.36,side)
++   const lower=hingedPanel(`lower-flap-${sideName}`,start,half*.83,chord(start)*.34,chord(half*.83)*.34,le(start)-.22-chord(start)*.66,le(half*.83)-.22-chord(half*.83)*.66,-H*.36,side);flapPivots.push(lower);addDrive(lower,`lower-flap-${sideName}`)
+    for(const z of [-rootLE+.20,-rootLE+rootChord*.79])rod('interplaneStrut',new THREE.Vector3(side*half*.64,-H*.30,z+.22),new THREE.Vector3(side*half*.66,wingY+half*.66*dihedral,z),W*.025,paint)
+    rod('flyingWire',new THREE.Vector3(side*W*.4,-H*.30,0),new THREE.Vector3(side*half*.66,wingY,rootChord*.45),.009,metal)
+   }
+   if(profile.tipTanks){const tank=add('wingtipTank',new THREE.SphereGeometry(1,24,14));tank.scale.set(W*.16,W*.19,L*.11);tank.position.set(side*(half-W*.16),wingY+half*dihedral,-tipLE+tipChord*.30)}
+   if(profile.winglets){const wl=add('winglet',finGeometry([[-tipLE,0],[-tipLE+.15,H*.40],[-tipLE+.38,H*.38],[-tipLE+tipChord*.75,0]],.025));wl.position.set(side*(half-.025),wingY+half*dihedral,0)}
+-  const pivotS=new THREE.Group();pivotS.position.set(side*half*.47,wingY+half*.47*dihedral+rootChord*.075,-le(half*.47)+chord(half*.47)*.57);g.add(pivotS)
+-  const sp=add('speedBrake',new THREE.BoxGeometry(half*.25,.018,chord(half*.47)*.14),trim,pivotS);sp.position.z=chord(half*.47)*.07;spoilers.push(pivotS)
++  if(profile.airbrakes||profile.rollControl==='spoiler'){
++   const y0=half*.34,y1=half*.59,z0=-(le(y0)-chord(y0)*.57),z1=-(le(y1)-chord(y1)*.57)
++   const h=createHingeFrame(g,`${profile.airbrakes?'airbrake':'rollSpoiler'}-${sideName}-hinge`,new THREE.Vector3(side*y0,wingY+y0*dihedral,z0),new THREE.Vector3(side*y1,wingY+y1*dihedral,z1))
++   const sp=add(profile.airbrakes?`airbrake-${sideName}`:`rollSpoiler-${sideName}`,new THREE.BoxGeometry(h.length,.018,chord(y0)*.14),trim,h.root);sp.position.set(h.length/2,.025,chord(y0)*.07);sp.userData.hinge=h.root;spoilers.push({hinge:h,side});addDrive(h,profile.airbrakes?`airbrake-${sideName}`:`rollSpoiler-${sideName}`,rootChord*.08)
++  }
+  }
+  const tailZ=L*.48,tailY=H*.16,finH=L*(profile.fin??.175)
++ let rudder:HingeFrame|undefined
+  if(profile.tail!=='v'){
+-  const fin=add('verticalFin',finGeometry(profile.mooney?[[tailZ-L*.14,tailY],[tailZ-L*.14,tailY+finH],[tailZ-L*.065,tailY+finH],[tailZ+L*.08,tailY]]:[[tailZ-L*.20,tailY],[tailZ-L*.09,tailY+finH*.22],[tailZ+L*.005,tailY+finH],[tailZ+L*.065,tailY+finH*.94],[tailZ+L*.105,tailY]],W*.075));fin.userData.tailType=profile.tail
+-  add('rudderAccent',finGeometry([[tailZ+L*.025,tailY+finH*.95],[tailZ+L*.065,tailY+finH*.94],[tailZ+L*.105,tailY],[tailZ+L*.068,tailY]],W*.077),trim)
++  const fin=add('verticalFin',finGeometry([[tailZ-L*.20,tailY],[tailZ-L*.09,tailY+finH*.22],[tailZ+L*.005,tailY+finH],[tailZ+L*.035,tailY+finH*.94],[tailZ+L*.068,tailY]],W*.075));fin.userData.tailType=profile.tail
++  rudder=createHingeFrame(g,'rudder-hinge',new THREE.Vector3(-W*.039,tailY,tailZ+L*.068),new THREE.Vector3(-W*.039,tailY+finH*.94,tailZ+L*.035))
++  const skin=add('rudder',finGeometry([[0,0],[L*.037,0],[L*.03,finH*.94],[0,finH*.94]],W*.077),trim,rudder.root);skin.rotation.y=Math.PI/2;skin.position.x=0
++  addDrive(rudder,'rudder',W*.10)
+  }
+  const tailHalf=profile.glider?S*.085:S*.165
++ const elevators:{hinge:HingeFrame;side:number}[]=[]
+  for(const side of [-1,1]){
+-  const stab=profiledPanel(-tailZ+L*.075,L*.15,-tailZ-L*.008,L*.063,0,side*tailHalf,Math.max(.025,H*.055),paint);stab.name=profile.tail==='v'?'ruddervator':'horizontalStabilizer';stab.position.y=tailY+(profile.tail==='t'?finH*.96:0);if(profile.tail==='v')stab.rotation.z=side*.59;g.add(stab)
++  const ty=tailY+(profile.tail==='t'?finH*.96:0),fixed=profiledPanel(-tailZ+L*.075,L*.105,-tailZ-L*.008,L*.044,0,side*tailHalf,Math.max(.025,H*.055),paint);fixed.name=profile.tail==='v'?'vTailFixed':'horizontalStabilizerFixed';fixed.position.y=ty;if(profile.tail==='v')fixed.rotation.z=side*.59;g.add(fixed)
++  const cant=profile.tail==='v'?.59:0
++  const tailThickness=Math.max(.025,H*.056)
++  const a=new THREE.Vector3(0,ty+tailThickness*.5,tailZ+L*.03),b=new THREE.Vector3(side*tailHalf*Math.cos(cant),ty+tailThickness*.5+tailHalf*Math.sin(cant),tailZ+L*.052);const h=createHingeFrame(g,`${profile.tail==='v'?'ruddervator':'elevator'}-${side<0?'left':'right'}-hinge`,a,b)
++  const moving=profiledPanel(-tailZ-L*.03,L*.045,-tailZ-L*.052,L*.019,0,side*tailHalf,Math.max(.025,H*.056),paint);moving.name=`${profile.tail==='v'?'ruddervator':'elevator'}-${side<0?'left':'right'}`;moving.position.y=ty;if(profile.tail==='v')moving.rotation.z=side*.59;g.add(moving);g.updateMatrixWorld(true);h.root.attach(moving);moving.userData.hinge=h.root;elevators.push({hinge:h,side});addDrive(h,moving.name,W*.08)
+   if(profile.pusher){const canard=profiledPanel(L*.235,L*.08,L*.22,L*.035,0,side*S*.15,.05,paint);canard.name='foreplane';canard.position.y=-H*.25;g.add(canard)}
+  }
+  const discs:THREE.Mesh[]=[]
+  const prop=(x:number,y:number,z:number,r:number,reverse=false)=>{
+   const spinner=add('propSpinner',new THREE.ConeGeometry(r*.16,r*.43,28),metal);spinner.rotation.x=reverse?Math.PI/2:-Math.PI/2;spinner.position.set(x,y,z+(reverse?1:-1)*r*.14)
+   const disc=add('propDisc',new THREE.CircleGeometry(r,48),new THREE.MeshBasicMaterial({color:0x30383a,transparent:true,opacity:.035,depthWrite:false,side:THREE.DoubleSide}));disc.position.set(x,y,z);disc.castShadow=false;disc.receiveShadow=false;discs.push(disc)
+   const shape=new THREE.Shape();shape.moveTo(-r*.05,r*.13);shape.bezierCurveTo(-r*.10,r*.43,-r*.08,r*.79,r*.018,r*.985);shape.quadraticCurveTo(r*.10,r*.99,r*.12,r*.87);shape.bezierCurveTo(r*.15,r*.58,r*.07,r*.32,r*.05,r*.13);shape.closePath()
+   const base=new THREE.ShapeGeometry(shape,12),positions:number[]=[],normals:number[]=[],indices:number[]=[]
+   for(let b=0;b<profile.blades;b++){
+    const geo=base.clone().rotateZ(b*Math.PI*2/profile.blades),pos=geo.getAttribute('position'),normal=geo.getAttribute('normal'),offset=positions.length/3;positions.push(...pos.array);normals.push(...normal.array);indices.push(...Array.from(geo.index!.array,i=>i+offset));geo.dispose()
+@@ -234,18 +284,35 @@
+   gearGroups.push({group,side:Math.sign(leg.y),nose:key==='nose'||key==='tail'})
+  }
+  // Uniform API for engine-off gliders: non-rendering placeholders never become
+  // visible accidentally through updateProp; real props are enumerated separately.
+  let propDisc=discs[0]
+  if(!propDisc){propDisc=new THREE.Mesh(new THREE.CircleGeometry(.001,3),new THREE.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false}));propDisc.name='inertProp';propDisc.userData.blade=new THREE.Mesh(new THREE.CircleGeometry(.001,3),new THREE.MeshStandardMaterial({transparent:true,opacity:0}));g.add(propDisc,propDisc.userData.blade)}
+  g.userData.propDiscs=discs
+  g.userData.lightAnchors={wingtipL:new THREE.Vector3(-half,wingY+half*dihedral,-tipLE+tipChord*.3),wingtipR:new THREE.Vector3(half,wingY+half*dihedral,-tipLE+tipChord*.3),tail:new THREE.Vector3(0,tailY+finH,tailZ),beacon:new THREE.Vector3(0,H*.63,L*.02)}
+  if(profile.glider)for(const anchor of Object.values(g.userData.lightAnchors) as THREE.Vector3[])anchor.y+=gliderOffset
+  const surfaces=(s:SurfaceState)=>{
+-  const flap=THREE.MathUtils.clamp(s.flapFrac,0,1),gear=THREE.MathUtils.clamp(s.gearPos,0,1)
++  const flap=bounded(s.flapFrac,0,1),gear=bounded(s.gearPos,0,1),roll=bounded(s.roll),pitch=bounded(s.pitch),yaw=bounded(s.yaw)
+   if(gliderWheel && spec.gear.retractable)gliderWheel.visible=gear>.05
+-  for(const p of flapPivots)p.rotation.x=flap*Math.max(.35,(spec.flapDetentsDeg.at(-1)??30)*Math.PI/180)
+-  for(const p of spoilers)p.rotation.x=-THREE.MathUtils.clamp(s.spoilerFrac,0,1)*1.05
++  for(const p of flapPivots){
++   p.setAngle(flap*Math.max(.35,(spec.flapDetentsDeg.at(-1)??30)*Math.PI/180))
++   const neutral=p.root.userData.neutralPosition as THREE.Vector3|undefined
++   if(neutral){p.root.position.copy(neutral);if(profile.flapSystem==='fowler'){const fp=fowlerPose(flap);p.root.position.y-=fp.drop*rootChord*.10;p.root.position.z+=fp.ext*rootChord*.20}}
++  }
++  for(const a of ailerons){
++   const explicit=spec.designator==='DG80'?(a.side<0?s.flaperonLeftRad:s.flaperonRightRad):undefined
++   const base=spec.designator==='DG80'&&Number.isFinite(s.flapsDeg)?s.flapsDeg!*Math.PI/180:0
++   const an2Droop=spec.designator==='AN2'?flap*16*Math.PI/180:0
++   const physical=Number.isFinite(explicit)?explicit!:base+an2Droop-a.side*roll*(a.side>0?.35:.18)
++   a.hinge.setAngle(a.side*physical);a.hinge.root.userData.surfaceAngle=physical
++   const skin=a.hinge.root.children.find(o=>o instanceof THREE.Mesh);if(skin)skin.userData.surfaceAngle=physical
++  }
++  for(const e of elevators){const physical=-pitch*.42+(profile.tail==='v'?e.side*yaw*.28:0);e.hinge.setAngle(e.side*physical);e.hinge.root.userData.surfaceAngle=physical}
++  rudder?.setAngle(yaw*.48)
++  const spoiler=bounded(s.spoilerFrac,0,1)
++  for(const p of spoilers)p.hinge.setAngle(-(profile.rollControl==='spoiler'?Math.max(spoiler,p.side>0?roll: -roll):spoiler)*1.05)
++  for(const l of linkages)l.update()
+   if(spec.gear.retractable)for(const {group,side,nose} of gearGroups){if(nose)group.rotation.x=(1-gear)*1.5;else group.rotation.z=-(1-gear)*side*1.55;group.visible=gear>.015}
+  }
++ g.userData.surfaceLinkages=linkages
+  return {group:g,propDisc,surfaces}
+ }
+--- a/src/render/cub-mesh.ts
++++ b/src/render/cub-mesh.ts
+@@ -1,16 +1,17 @@
+ import * as THREE from 'three'
+ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
+ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
+ import { aircraftFabric, aircraftMetal, aircraftPaint } from './aircraft-materials'
+-import { buildAircraftWheel } from './aircraft-components'
+-import type { AircraftMesh } from './aircraft-mesh'
++import { buildAircraftWheel, profiledPanel } from './aircraft-components'
++import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
++import { bounded, createHingeFrame, createLiveLinkage, type LiveLinkage } from './procedural-surfaces'
+ 
+ const yellow = aircraftFabric(0xf2bc14)
+ const cowlPaint = aircraftPaint(0xf1bc16)
+ const black = aircraftPaint(0x202329, { roughness: .62, clearcoat: .08 })
+ const steel = aircraftMetal(0x818b92,.42)
+ const glass = new THREE.MeshPhysicalMaterial({ color: 0xa5c9d2, transparent: true, opacity: .17, roughness: .1, metalness: .08, clearcoat: 1, side: THREE.DoubleSide, depthWrite: false })
+ 
+ function mesh(geometry: THREE.BufferGeometry, material: THREE.Material): THREE.Mesh {
+   const m=new THREE.Mesh(geometry,material); m.castShadow=m.receiveShadow=true; return m
+ }
+@@ -39,54 +40,78 @@
+   }
+   for(let i=0;i<bodyStations.length-1;i++)for(let j=0;j<n;j++){
+     const a=i*n+j,b=i*n+(j+1)%n;idx.push(a,b,a+n,b,b+n,a+n)
+   }
+   const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(p,3));geo.setIndex(idx);geo.computeVertexNormals();return geo
+ }
+ function wingGeometry():THREE.BufferGeometry {
+   const p:number[]=[],idx:number[]=[];const section:[number,number][]=[];const n=40
+   const profile=(u:number)=>Math.max(0,.2969*Math.sqrt(u)-.126*u-.3516*u*u+.2843*u**3-.1036*u**4)
+   for(const side of [1,-1])for(let j=0;j<n;j++){
+-    const u=(1-Math.cos((side===1?j:n-j)*Math.PI/n))/2
++    const u=(1-Math.cos((side===1?j:n-j)*Math.PI/n))/2*.72
+     section.push([u,side*profile(u)/.060*.065])
+   }
+   const stations=[-5.37,-5.35,-5.30,-5.20,-5.05,-4.8,-4.5,-3,-1.5,0,1.5,3,4.5,4.8,5.05,5.2,5.3,5.35,5.37]
+   for(const x of stations){
+     const tip=Math.max(0,(Math.abs(x)-4.57)/.8)
+     const chord=1.6*Math.max(.015,Math.sqrt(Math.max(0,1-tip*tip)))
+     for(const [u,h]of section)p.push(x,1+h*Math.sqrt(chord/1.6),-.15+(u-.5)*chord)
+   }
+   const ring=section.length
+   for(let i=0;i<stations.length-1;i++)for(let j=0;j<ring;j++){
+     const a=i*ring+j,b=i*ring+(j+1)%ring;idx.push(a,b,a+ring,b,b+ring,a+ring)
+   }
+   for(let j=1;j<ring-1;j++){idx.push(0,j+1,j);const b=(stations.length-1)*ring;idx.push(b,b+j,b+j+1)}
+   const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(p,3));geo.setIndex(idx);geo.computeVertexNormals();return geo
+ }
+-function ovalTail(horizontal:boolean):THREE.BufferGeometry {
+-  const shape=new THREE.Shape()
+-  if(horizontal){shape.moveTo(-1.45,0);shape.bezierCurveTo(-1.48,-.42,-.8,-.56,0,-.46);shape.bezierCurveTo(.8,-.56,1.48,-.42,1.45,0);shape.bezierCurveTo(1.3,.45,.6,.55,0,.47);shape.bezierCurveTo(-.6,.55,-1.3,.45,-1.45,0)}
+-  else {shape.moveTo(-.40,.30);shape.bezierCurveTo(-.42,.83,-.17,1.58,.24,1.63);shape.bezierCurveTo(.69,1.66,.74,1.15,.70,.77);shape.bezierCurveTo(.65,.39,.25,.27,-.40,.30)}
+-  const geo=new THREE.ExtrudeGeometry(shape,{depth:.04,bevelEnabled:true,bevelSize:.023,bevelThickness:.023,bevelSegments:3,curveSegments:24})
+-  if(horizontal){geo.rotateX(Math.PI/2);geo.translate(0,.42,4.02)}
+-  else {geo.rotateY(-Math.PI/2);geo.translate(.02,0,3.97)}
+-  return geo
++function cubRudderGeometry():THREE.BufferGeometry {
++  const shape=new THREE.Shape();shape.moveTo(0,0);shape.bezierCurveTo(.18,.05,.29,.34,.30,.65);shape.bezierCurveTo(.31,1.02,.24,1.23,0,1.25);shape.closePath()
++  const geo=new THREE.ExtrudeGeometry(shape,{depth:.052,bevelEnabled:true,bevelSize:.012,bevelThickness:.012,bevelSegments:2,curveSegments:18});geo.translate(0,0,-.026);geo.rotateY(-Math.PI/2)
++  if(!geo.index)geo.setIndex(Array.from({length:geo.getAttribute('position').count},(_,i)=>i));return geo
++}
++function cubFixedFinGeometry():THREE.BufferGeometry {
++  const shape=new THREE.Shape();shape.moveTo(0,0);shape.lineTo(-.66,0);shape.bezierCurveTo(-.48,.48,-.27,1.10,-.08,1.25);shape.lineTo(0,1.25);shape.closePath()
++  const geo=new THREE.ExtrudeGeometry(shape,{depth:.05,bevelEnabled:true,bevelSize:.012,bevelThickness:.012,bevelSegments:2,curveSegments:18});geo.translate(0,0,-.025);geo.rotateY(-Math.PI/2);geo.translate(0,.3,4.24)
++  if(!geo.index)geo.setIndex(Array.from({length:geo.getAttribute('position').count},(_,i)=>i));return geo
+ }
+ 
+ /** Detailed procedural exterior; model frame nose -Z, +Y up. Original ground
+  * contacts and prop interface are retained independently of the visual skin. */
+ export function buildDetailedCub():AircraftMesh {
+   const g=new THREE.Group();g.name='detailedCub'
++  const linkages:LiveLinkage[]=[]
++  const drive=(hinge:ReturnType<typeof createHingeFrame>,name:string):void=>{
++    const fixed=new THREE.Object3D(),moving=new THREE.Object3D(),a=hinge.root.userData.hingeStart as THREE.Vector3,b=hinge.root.userData.hingeEnd as THREE.Vector3
++    fixed.name=`${name}-fixed-mount`;moving.name=`${name}-moving-mount`;fixed.position.copy(a).lerp(b,.55).add(new THREE.Vector3(0,.07,-.04));moving.position.set(hinge.length*.55,-.025,.08);g.add(fixed);hinge.root.add(moving)
++    linkages.push(createLiveLinkage(g,`${name}-actuator`,fixed,moving,.012,steel))
++  }
+   const add=(o:THREE.Object3D,x=0,y=0,z=0):void=>{o.position.set(x,y,z);g.add(o)}
+   const body=mesh(bodyGeometry(),yellow);body.name='cubFabricBody';add(body)
+   const wing=mesh(wingGeometry(),yellow);wing.name='cubWing';add(wing)
+-  add(mesh(ovalTail(true),yellow));add(mesh(ovalTail(false),yellow))
++  const ailerons:{hinge:ReturnType<typeof createHingeFrame>;side:number}[]=[]
++  for(const side of [-1,1]){
++    const hinge=createHingeFrame(g,`cubAileron-${side<0?'left':'right'}-hinge`,new THREE.Vector3(side*2,1+.075*.5,.20),new THREE.Vector3(side*5.18,1+.075*.5,.37))
++    const skin=profiledPanel(-.20,.43,-.37,.28,side*2,side*5.18,.075,yellow);skin.name=`cubAileron-${side<0?'left':'right'}`;skin.position.y=1;g.add(skin);g.updateMatrixWorld(true);hinge.root.attach(skin);skin.userData.hinge=hinge.root;ailerons.push({hinge,side})
++    drive(hinge,skin.name)
++  }
++  // The fixed stabilizer/fin stop at their hinge lines; the aft skins below replace those regions.
++  const fixedTail=profiledPanel(-3.60,.24,-3.69,.22,-1.45,1.45,.055,yellow);fixedTail.name='cubStabilizerFixed';fixedTail.position.y=.42;g.add(fixedTail)
++  const elevators:ReturnType<typeof createHingeFrame>[]=[]
++  for(const side of [-1,1]){
++    const hinge=createHingeFrame(g,`cubElevator-${side<0?'left':'right'}-hinge`,new THREE.Vector3(0,.42+.057*.5,3.84),new THREE.Vector3(side*1.45,.42+.057*.5,3.91))
++    const skin=profiledPanel(-3.84,.30,-3.91,.22,0,side*1.45,.057,yellow);skin.name=`cubElevator-${side<0?'left':'right'}`;skin.position.y=.42;g.add(skin);g.updateMatrixWorld(true);hinge.root.attach(skin);skin.userData.hinge=hinge.root;elevators.push(hinge)
++    drive(hinge,skin.name)
++  }
++  const fixedFin=mesh(cubFixedFinGeometry(),yellow);fixedFin.name='cubFinFixed';add(fixedFin)
++  const rudder=createHingeFrame(g,'cubRudder-hinge',new THREE.Vector3(-.025,.3,4.24),new THREE.Vector3(-.025,1.55,4.27))
++  const rudderSkin=mesh(cubRudderGeometry(),yellow);rudderSkin.name='cubRudder';rudder.root.add(rudderSkin);rudderSkin.userData.hinge=rudder.root
++  drive(rudder,'cubRudder')
+   const cowl=mesh(new RoundedBoxGeometry(.66,.57,.54,5,.12),cowlPaint);add(cowl,0,.1,-1.52)
+   const nose=mesh(new THREE.SphereGeometry(1,28,16),cowlPaint);nose.scale.set(.28,.25,.16);add(nose,0,.10,-1.8)
+ 
+   // Framed clear cabin panes, following the high wing and low fuselage sill.
+   const frames:THREE.BufferGeometry[]=[],brace:THREE.BufferGeometry[]=[]
+   const frontLow=[-.35,.43,-1.05],frontHigh=[-.32,.94,-.72],rearLow=[-.34,.43,.82],rearHigh=[-.31,.94,.68]
+   for(const side of [-1,1]){
+     const flip=(a:number[])=>[Math.abs(a[0]!)*side,a[1]!,a[2]!]
+     const corners=[flip(frontLow),flip(frontHigh),flip(rearHigh),flip(rearLow)]
+     const pane=mesh(polygon(corners),glass);pane.castShadow=false;pane.userData.exteriorCabin=true;add(pane)
+@@ -128,12 +153,20 @@
+     const wheel=buildAircraftWheel(.2,.12);add(wheel,side*.9,-1.05,-.25)
+   }
+   gear.push(rod(new THREE.Vector3(-.9,-1.05,-.25),new THREE.Vector3(.9,-1.05,-.25),.027))
+   gear.push(rod(new THREE.Vector3(0,.31,4.10),new THREE.Vector3(0,-.52,4.11),.021))
+   add(mesh(mergeGeometries(gear),steel));add(buildAircraftWheel(.08,.06),0,-.52,4.11)
+   const spinner=mesh(new THREE.ConeGeometry(.10,.25,24),steel);spinner.rotation.x=-Math.PI/2;add(spinner,0,.1,-2)
+   const propDisc=new THREE.Mesh(new THREE.CircleGeometry(.915,48),new THREE.MeshBasicMaterial({color:0x242222,transparent:true,depthWrite:false,opacity:.18,side:THREE.DoubleSide}))
+   add(propDisc,0,.1,-2.02)
+   const blade=mesh(new RoundedBoxGeometry(.095,1.8,.035,3,.014),new THREE.MeshStandardMaterial({color:0x34302a,roughness:.6,transparent:true,depthWrite:false}))
+   add(blade,0,.1,-2.01);propDisc.userData.blade=blade
+-  return {group:g,propDisc}
++  const surfaces=(s:SurfaceState):void=>{
++    const roll=bounded(s.roll),pitch=bounded(s.pitch),yaw=bounded(s.yaw)
++    for(const a of ailerons)a.hinge.setAngle(-roll*.31)
++    for(let i=0;i<elevators.length;i++)elevators[i]!.setAngle((i===0?-1:1)*-pitch*.48)
++    rudder.setAngle(yaw*.52)
++    for(const l of linkages)l.update()
++  }
++  g.userData.surfaceLinkages=linkages
++  return {group:g,propDisc,surfaces}
+ }
+--- a/src/render/aircraft-mesh.ts
++++ b/src/render/aircraft-mesh.ts
+@@ -44,20 +44,25 @@
+    * may have a stabilizer even when a generic physics anchor uses tabs. */
+   elevatorCommandRad?: number
+   trimRad?: number
+   /** Normalized trim inputs for original authored trim tabs. */
+   trim?: number
+   rudderTrim?: number
+   /** Landing-gear position: 1 down … 0 retracted. */
+   gearPos: number
+   /** Reverser sleeve position: 0 stowed … 1 deployed. */
+   reverseFrac?: number
++  /** Signed DG-800S common-mode flap position, trailing-edge down positive. */
++  flapsDeg?: number
++  /** Explicit final DG-800S mixed flaperon angles; down is positive. */
++  flaperonLeftRad?: number
++  flaperonRightRad?: number
+ }
+ 
+ export interface AircraftMesh {
+   /** Optional native-model propeller/fan animator. */
+   updateProp?: (rpm: number, dt: number) => void
+   group: THREE.Group
+   propDisc: THREE.Mesh
+   /** Present when the mesh has animated control surfaces / gear. */
+   surfaces?: (s: SurfaceState) => void
+ }
+--- a/tests/render/procedural-surfaces.test.ts
++++ b/tests/render/procedural-surfaces.test.ts
+@@ -0,0 +1,37 @@
++import * as THREE from 'three'
++import { describe, expect, it } from 'vitest'
++import { createHingeFrame, createLiveLinkage, linkageError } from '../../src/render/procedural-surfaces'
++
++describe('procedural surface mechanisms', () => {
++  it('rotates around the complete swept and dihedral hinge line', () => {
++    const root = new THREE.Group()
++    const a = new THREE.Vector3(-2, .4, 1)
++    const b = new THREE.Vector3(3, .9, 1.8)
++    const hinge = createHingeFrame(root, 'test-hinge', a, b)
++    hinge.setAngle(.42)
++    root.updateMatrixWorld(true)
++    expect(hinge.worldEndpoints()[0].distanceTo(a)).toBeLessThan(1e-6)
++    expect(hinge.worldEndpoints()[1].distanceTo(b)).toBeLessThan(1e-6)
++    expect(hinge.root.quaternion.length()).toBeCloseTo(1, 6)
++  })
++
++  it('keeps a fixed-to-moving actuator attached and detects a disconnected endpoint', () => {
++    const root = new THREE.Group()
++    const hinge = createHingeFrame(root, 'test-hinge', new THREE.Vector3(-1,0,0), new THREE.Vector3(1,.2,.4))
++    const fixed = new THREE.Object3D(), moving = new THREE.Object3D()
++    fixed.position.set(-.4,-.1,.25); moving.position.set(-.4,.18,.42)
++    root.add(fixed); hinge.root.add(moving)
++    const linkage = createLiveLinkage(root, 'test-linkage', fixed, moving, .025)
++    for (const angle of [-.5,-.25,0,.25,.5]) {
++      hinge.setAngle(angle); linkage.update(); root.updateMatrixWorld(true)
++      expect(linkageError(linkage)).toBeLessThan(1e-6)
++      const rodEnds=[new THREE.Vector3(0,-.5,0),new THREE.Vector3(0,.5,0)].map(p=>linkage.rod.localToWorld(p))
++      const mounts=[fixed,moving].map(m=>m.getWorldPosition(new THREE.Vector3()))
++      expect(Math.min(rodEnds[0]!.distanceTo(mounts[0]!),rodEnds[0]!.distanceTo(mounts[1]!))).toBeLessThan(1e-6)
++      expect(Math.min(rodEnds[1]!.distanceTo(mounts[0]!),rodEnds[1]!.distanceTo(mounts[1]!))).toBeLessThan(1e-6)
++    }
++    moving.position.x += .2 // required disconnected-endpoint mutation
++    root.updateMatrixWorld(true)
++    expect(linkageError(linkage)).toBeGreaterThan(.1)
++  })
++})
+--- a/tests/render/prop-surfaces.test.ts
++++ b/tests/render/prop-surfaces.test.ts
+@@ -0,0 +1,100 @@
++import * as THREE from 'three'
++import { describe, expect, it } from 'vitest'
++import { ROSTER } from '../../src/sim/aircraft/roster'
++import { deriveParams } from '../../src/sim/aircraft/derive'
++import { buildPropAircraft } from '../../src/render/prop-aircraft'
++import { buildDetailedCub } from '../../src/render/cub-mesh'
++import type { AircraftMesh, SurfaceState } from '../../src/render/aircraft-mesh'
++import { linkageError, type LiveLinkage } from '../../src/render/procedural-surfaces'
++
++const neutral:SurfaceState={flapFrac:0,spoilerFrac:0,gearPos:1,roll:0,pitch:0,yaw:0}
++function vertexWorld(o:THREE.Object3D,index:number):THREE.Vector3 {
++  const m=o as THREE.Mesh, p=m.geometry.getAttribute('position')
++  return new THREE.Vector3().fromBufferAttribute(p,index).applyMatrix4(m.matrixWorld)
++}
++function expectMoves(model:AircraftMesh,name:string,state:SurfaceState):void {
++  const skin=model.group.getObjectByName(name) as THREE.Mesh
++  expect(skin?.geometry.index,name).toBeTruthy()
++  const indices=Array.from(skin.geometry.index!.array as ArrayLike<number>)
++  model.surfaces!(neutral);model.group.updateMatrixWorld(true);const before=indices.map(i=>vertexWorld(skin,i))
++  model.surfaces!(state);model.group.updateMatrixWorld(true);const after=indices.map(i=>vertexWorld(skin,i))
++  expect(Math.max(...after.map((p,i)=>p.distanceTo(before[i]!))),name).toBeGreaterThan(1e-4)
++  model.surfaces!(neutral);model.group.updateMatrixWorld(true)
++  expect(Math.max(...indices.map((ix,i)=>vertexWorld(skin,ix).distanceTo(before[i]!))),name).toBeLessThan(1e-7)
++}
++function center(o:THREE.Object3D):THREE.Vector3 { return new THREE.Box3().setFromObject(o).getCenter(new THREE.Vector3()) }
++function skinEndpointError(skin:THREE.Mesh):number {
++  const hinge=skin.userData.hinge as THREE.Object3D, length=hinge.userData.hingeLength as number
++  skin.updateWorldMatrix(true,false);hinge.updateWorldMatrix(true,false)
++  const ends=[hinge.localToWorld(new THREE.Vector3()),hinge.localToWorld(new THREE.Vector3(length,0,0))]
++  const p=skin.geometry.getAttribute('position'),v=new THREE.Vector3()
++  return Math.max(...ends.map(end=>{
++    let best=Infinity
++    for(let i=0;i<p.count;i++){v.fromBufferAttribute(p,i).applyMatrix4(skin.matrixWorld);best=Math.min(best,v.distanceTo(end))}
++    return best
++  }))
++}
++
++describe('procedural prop moving skins',()=>{
++  it('covers every non-jet profile with bounded signed moving skins',()=>{
++    for(const {spec,opts} of ROSTER.filter(x=>x.spec.powerplant.kind!=='jet')){
++      const model=buildPropAircraft(spec,deriveParams(spec,opts))
++      expect(model.surfaces,spec.designator).toBeTypeOf('function')
++      if(spec.designator!=='MU2') expectMoves(model,spec.designator==='DG80'?'flaperon-right':'aileron-right',{...neutral,roll:1})
++      expectMoves(model, spec.designator==='BE35'?'ruddervator-right':'elevator-right',{...neutral,pitch:1})
++      expectMoves(model, spec.designator==='BE35'?'ruddervator-right':'rudder',{...neutral,yaw:1})
++      for(const f of [0,.25,.5,.75,1]) {
++        model.surfaces!({...neutral,flapFrac:f,spoilerFrac:f,roll:2*f-1,pitch:1-2*f,yaw:2*f-1});model.group.updateMatrixWorld(true)
++        for(const linkage of model.group.userData.surfaceLinkages as LiveLinkage[])expect(linkageError(linkage),`${spec.designator}@${f}`).toBeLessThan(1e-5)
++      }
++      model.surfaces!({...neutral,flapFrac:Number.NaN,roll:Infinity,pitch:Number.NaN,yaw:-Infinity})
++      model.group.updateMatrixWorld(true)
++      model.group.traverse(o=>expect(o.matrixWorld.elements.every(Number.isFinite),spec.designator).toBe(true))
++      expect(model.group.getObjectByName('wingTrailingFixed-outboard-right')).toBeUndefined()
++      const rollSkin=model.group.getObjectByName(spec.designator==='DG80'?'flaperon-right':spec.designator==='MU2'?'rollSpoiler-right':'aileron-right') as THREE.Mesh
++      expect(skinEndpointError(rollSkin),spec.designator).toBeLessThan(spec.designator==='MU2'?.02:1e-4)
++      if(spec.designator==='MU2') {
++        expect(model.group.getObjectByName('aileron-right')).toBeUndefined()
++        expect(model.group.getObjectByName('rollSpoiler-right')).toBeTruthy()
++        expect(model.group.getObjectByName('flap-secondary-slot-right')).toBeTruthy()
++        const flapBounds=new THREE.Box3().setFromObject(model.group.getObjectByName('flap-right')!)
++        expect(flapBounds.max.x,spec.designator).toBeGreaterThan(spec.spanM*.45)
++      }
++      if(spec.designator==='AN2') expect(model.group.getObjectByName('lower-aileron-right')).toBeUndefined()
++      if(['AS21','LS8','DISC','DG80'].includes(spec.designator)) expect(model.group.getObjectByName('airbrake-right')).toBeTruthy()
++      if(['AS21','LS8','DISC'].includes(spec.designator)) expect(model.group.getObjectByName('wingTrailingFixed-mid-right')).toBeTruthy()
++      if(spec.designator==='AN2') expect(model.group.getObjectByName('lower-flap-right')).toBeTruthy()
++    }
++  },60000)
++
++  it('honors explicit DG80 flaperon angles without adding roll',()=>{
++    const entry=ROSTER.find(x=>x.spec.designator==='DG80')!
++    const model=buildPropAircraft(entry.spec,deriveParams(entry.spec,entry.opts))
++    const right=model.group.getObjectByName('flaperon-right')!
++    model.surfaces!({...neutral,roll:1,flaperonLeftRad:.12,flaperonRightRad:-.2,flapsDeg:-9})
++    expect(right.userData.surfaceAngle).toBeCloseTo(-.2)
++    expect(model.group.getObjectsByProperty('name','flaperon-drive-right')).toHaveLength(2)
++  })
++
++  it('uses aerodynamic sign conventions for right roll, pull and right yaw',()=>{
++    const entry=ROSTER.find(x=>x.spec.designator==='C182')!, model=buildPropAircraft(entry.spec,deriveParams(entry.spec,entry.opts))
++    const right=model.group.getObjectByName('aileron-right')!,left=model.group.getObjectByName('aileron-left')!,elevator=model.group.getObjectByName('elevator-right')!,rudder=model.group.getObjectByName('rudder')!
++    model.surfaces!(neutral);model.group.updateMatrixWorld(true)
++    const ar=center(right),al=center(left),ep=center(elevator),rp=center(rudder)
++    model.surfaces!({...neutral,roll:1,pitch:1,yaw:1});model.group.updateMatrixWorld(true)
++    expect(center(right).y).toBeGreaterThan(ar.y)
++    expect(center(left).y).toBeLessThan(al.y)
++    expect(center(elevator).y).toBeGreaterThan(ep.y)
++    expect(center(rudder).x).toBeGreaterThan(rp.x)
++  })
++
++  it('gives the flapless Cub actual aileron, elevator and rudder skins',()=>{
++    const model=buildDetailedCub()
++    expect(model.group.getObjectByName('cubFlap')).toBeUndefined()
++    expect(skinEndpointError(model.group.getObjectByName('cubAileron-right') as THREE.Mesh)).toBeLessThan(1e-5)
++    expect(skinEndpointError(model.group.getObjectByName('cubElevator-right') as THREE.Mesh)).toBeLessThan(1e-5)
++    expectMoves(model,'cubAileron-right',{...neutral,roll:1})
++    expectMoves(model,'cubElevator-right',{...neutral,pitch:1})
++    expectMoves(model,'cubRudder',{...neutral,yaw:1})
++  })
++})
+--- a/tests/prop-aircraft.test.ts
++++ b/tests/prop-aircraft.test.ts
+@@ -68,21 +68,24 @@
+         expect((tireBounds.min.z+tireBounds.max.z)/2).toBeCloseTo(-leg.x,5)
+       }
+       if(spec.powerplant.kind==='none'){
+         const centerWheel=model.group.getObjectByName('gliderCenterWheel')!
+         const bounds=new THREE.Box3().setFromObject(centerWheel)
+         expect(bounds.min.y).toBeCloseTo(-params.gear.mainL.z,5)
+         expect(centerWheel.position.x).toBe(0)
+         expect(model.group.getObjectByName('gearStrut')).toBeUndefined()
+         expect(model.group.userData.exteriorVerticalOffset).toBeLessThan(0)
+       }
+-      const flap = model.group.getObjectByName('flap-left')!
++      const flap = model.group.getObjectByName('flap-left-hinge')
+       model.surfaces!({flapFrac:1,spoilerFrac:1,gearPos:0})
+-      expect(flap.rotation.x).toBeGreaterThan(0)
++      if(PROP_PROFILES[spec.designator]!.flapSystem!=='none' && spec.designator!=='DG80') {
++        expect(flap,spec.designator).toBeTruthy()
++        expect(flap!.userData.surfaceAngle,spec.designator).toBeGreaterThan(0)
++      } else expect(flap,spec.designator).toBeUndefined()
+       for (const key of spec.powerplant.kind==='none'?[]:Object.keys(params.gear)) expect(model.group.getObjectByName(`gear-${key}`)!.visible).toBe(!spec.gear.retractable)
+       model.surfaces!({flapFrac:0,spoilerFrac:0,gearPos:1})
+-      expect(flap.rotation.x).toBe(0)
++      if(flap) expect(flap.userData.surfaceAngle).toBe(0)
+       for (const key of spec.powerplant.kind==='none'?[]:Object.keys(params.gear)) expect(model.group.getObjectByName(`gear-${key}`)!.visible).toBe(true)
+       model.group.traverse(o => { if (o instanceof THREE.Mesh) o.geometry.dispose() })
+     }
+   }, 60000)
+ })
+--- a/tests/render/cub-surfaces.test.ts
++++ b/tests/render/cub-surfaces.test.ts
+@@ -7,21 +7,22 @@
+     const a = buildDetailedCub()
+     const wing = a.group.getObjectByName('cubWing') as THREE.Mesh
+     const bounds = new THREE.Box3().setFromObject(wing)
+     expect(bounds.max.x - bounds.min.x).toBeCloseTo(10.74, 4)
+     a.group.updateMatrixWorld(true)
+     const topHit = new THREE.Raycaster(new THREE.Vector3(2,2,-.15),new THREE.Vector3(0,-1,0)).intersectObject(wing)
+     expect(topHit.length).toBeGreaterThan(0)
+     expect(topHit[0]!.face!.normal.y).toBeGreaterThan(0)
+     let draws = 0
+     a.group.traverse(o => { if (o instanceof THREE.Mesh) draws++ })
+-    expect(draws).toBeLessThan(40)
++    // Moving skins and their real actuator rods add eight bounded draw calls.
++    expect(draws).toBeLessThan(50)
+     const wheels: THREE.Object3D[] = []
+     a.group.traverse(o => { if (o.name === 'aircraftWheel') wheels.push(o) })
+     expect(wheels).toHaveLength(3)
+     expect(new THREE.Box3().setFromObject(wheels[0]!).min.y).toBeCloseTo(-1.25)
+     expect(new THREE.Box3().setFromObject(wheels[2]!).min.y).toBeCloseTo(-.60)
+     expect(a.propDisc.position.toArray()).toEqual([0, .1, -2.02])
+     expect((a.propDisc.material as THREE.Material).depthWrite).toBe(false)
+     expect((a.propDisc.userData.blade.material as THREE.Material).depthWrite).toBe(false)
+   })
+   it('leaves the GA pilot forward sightline open through transparent glazing', () => {
