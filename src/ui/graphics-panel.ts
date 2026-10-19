@@ -43,7 +43,7 @@ export class GraphicsPanel {
       <label>Exposure<input aria-label="Exposure" type="range" min="0.4" max="1.2" step="0.05" value="0.8"></label>
       <label>Weather<select aria-label="Weather"><option value="live">Live weather</option><option value="clear">Clear</option><option value="scattered">Scattered</option><option value="overcast">Overcast</option></select></label>
       <div class="time"><button type="button" data-light="day">Daylight</button><button type="button" data-light="sunset">Sunset</button><button type="button" data-light="night">Night</button></div>
-      <label>Flight overlay<input aria-label="Flight overlay" type="checkbox" checked></label>
+      <label>Traffic labels<input aria-label="Traffic labels" type="checkbox" checked></label>
       <output aria-label="Rendering statistics"></output>
     </div>`
     // Let native controls consume keys without also flying the airplane.
@@ -65,11 +65,10 @@ export class GraphicsPanel {
     panel.querySelectorAll<HTMLButtonElement>('[data-light]').forEach(b => {
       b.onclick = () => actions.lighting(b.dataset.light as Parameters<GraphicsActions['lighting']>[0])
     })
-    panel.querySelector<HTMLInputElement>('[aria-label="Flight overlay"]')!.onchange = e => {
-      const display = (e.target as HTMLInputElement).checked ? '' : 'none'
-      document.getElementById('hud')!.style.display = display
+    // Flight info has its own toolbar button; this hides the traffic tags.
+    panel.querySelector<HTMLInputElement>('[aria-label="Traffic labels"]')!.onchange = e => {
       const labels = document.getElementById('traffic-labels')
-      if (labels) labels.style.display = display
+      if (labels) labels.style.display = (e.target as HTMLInputElement).checked ? '' : 'none'
     }
     this.stats = panel.querySelector('output')!
     document.body.appendChild(panel)

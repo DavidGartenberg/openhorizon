@@ -41,7 +41,9 @@ import { ChaseCamera } from './render/chase-camera'
 import { OrbitCamera } from './render/orbit-camera'
 import { CockpitCamera, EYE_BY_LAYOUT } from './render/cockpit-camera'
 import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from './render/aircraft-mesh'
-import { PlaneMenu } from './render/plane-menu'
+import { planeMenuEntries } from './render/plane-menu'
+import { Shell } from './ui/shell/shell'
+import { Launcher, launchCommand, parsePendingLaunch, PENDING_LAUNCH_KEY, type LaunchChoice, type LauncherAirport } from './ui/shell/launcher'
 import { loadIls, ilsLoaded, ilsCount } from './world/ils'
 import { osmIdentSegs } from './world/osm-layout'
 import { routeIdents } from './sim/atc/ground'
@@ -74,7 +76,7 @@ import { kgToGal, TANK_CAPACITY_GAL } from './sim/systems/fuel'
 import { Input } from './input/input'
 import { EngineSound } from './audio/engine-sound'
 import { Hud } from './ui/hud'
-import { GraphicsPanel } from './ui/graphics-panel'
+import { GraphicsPanel, type GraphicsActions } from './ui/graphics-panel'
 import { LoadingPanel } from './ui/loading-panel'
 import { sunPosition } from './math/solar'
 import { WorldFrame, TileManager } from './world/tiles'
@@ -242,18 +244,14 @@ aircraft.groundElevAt = (n, e) => {
 }
 const mesh = FLEET_ACTIVE.build()
 void upgradePlayerAircraft(mesh, fleetKey)
-// N1: aircraft menu (M or N) — selection respawns via the FLY path.
-const planeMenu = new PlaneMenu((key) => {
-  try { localStorage.setItem('oh-aircraft', key) } catch { /* private mode */ }
-  location.reload()
-}, fleetKey) // fleetKey is the validated, private-mode-safe read of 'oh-aircraft'
+// Aircraft selection lives in the free-flight start screen (M or N opens
+// it); a new aircraft reloads, carrying the launch across (launcher.ts).
+let launcher: Launcher | null = null
+let shell: Shell | null = null
 window.addEventListener('keydown', (e) => {
-  if (planeMenu.isOpen) {
-    if (planeMenu.handleKey(e.code)) { e.preventDefault(); e.stopImmediatePropagation() }
-    return
-  }
+  if (launcher?.isOpen) return
   if ((e.code === 'KeyM' || e.code === 'KeyN') && document.activeElement?.tagName !== 'INPUT') {
-    planeMenu.open()
+    launcher?.open()
     e.preventDefault()
     e.stopImmediatePropagation()
   }
@@ -663,11 +661,11 @@ interface Snapshot {
   simMs: number; onGround: boolean; spawn: string
 }
 
-let toastLine = ''
-let toastUntil = 0
+/** Messages raised before the shell exists (boot) wait for it. */
+const earlyToasts: string[] = []
 function toast(msg: string): void {
-  toastLine = msg
-  toastUntil = performance.now() + 6000
+  if (shell) shell.notifier.push(msg)
+  else earlyToasts.push(msg)
 }
 
 function saveSnapshot(): void {
@@ -890,6 +888,7 @@ searchBox.style.cssText =
   'position:fixed;top:45%;left:50%;transform:translateX(-50%);width:340px;padding:10px 14px;' +
   'font:14px ui-monospace,monospace;background:rgba(0,10,20,.9);color:#aef;border:1px solid #4a7;' +
   'border-radius:8px;display:none;z-index:20;outline:none'
+searchBox.className = 'oh-search oh-ui'
 document.body.appendChild(searchBox)
 searchBox.addEventListener('keydown', (e) => {
   e.stopPropagation()
@@ -953,7 +952,7 @@ try {
   const storedJoy = localStorage.getItem('oh-gamepad-map')
   if (storedJoy) gamepadMap = parseGamepadMap(storedJoy) ?? {}
 } catch { /* private mode */ }
-const controllerPanel = new ControllerPanel(()=>gamepadMap, map=>{gamepadMap=map;saveJoyMap();controllerRuntime.reset()},()=>{clearControllerTransient();voicePtt?.reset()})
+const controllerPanel = new ControllerPanel(()=>gamepadMap, map=>{gamepadMap=map;saveJoyMap();controllerRuntime.reset()},()=>{clearControllerTransient();voicePtt?.reset();shell?.open('controls')})
 let lastPadIdentity = ''
 function startBtnCapture(queue: BindableButton[]): void { controllerPanel.start('button',queue) }
 function startJoyCapture(queue: BindableAxis[]): void { controllerPanel.start('axis',queue) }
@@ -1049,7 +1048,7 @@ function handleDiscreteKeys(): void {
       if (input.wasPressed(key)) loop.setRate(rate as SimRate)
     }
   }
-  if (input.wasPressed('KeyJ')) controllerPanel.toggle()
+  if (input.wasPressed('KeyJ')) { if (shell) shell.windows.get('controls')?.toggle(); else controllerPanel.toggle() }
   if (input.wasPressed('KeyX')) {
     assistMode = assistMode === 'sas' ? 'full' : assistMode === 'full' ? 'off' : 'sas'
     toast(assistMode === 'sas' ? 'STABILITY ASSIST: SAS (yaw damper + wing leveler)' : assistMode === 'full' ? 'STABILITY ASSIST: FULL (adds pitch hold)' : 'STABILITY ASSIST: OFF')
@@ -1742,14 +1741,14 @@ function taxiRouteIdents(): string[] | undefined {
 }
 
 const transcriptDiv = document.createElement('div')
+transcriptDiv.id = 'atc-transcript'
 transcriptDiv.style.cssText =
   'position:fixed;left:8px;bottom:140px;max-width:520px;z-index:12;font:12px/1.5 ui-monospace,monospace;' +
-  'color:#cfe;background:rgba(0,10,18,.72);padding:8px 10px;border-radius:6px;white-space:pre-wrap;display:none'
+  'color:#cfe;padding:8px 10px;border-radius:3px;white-space:pre-wrap;display:none;background:rgba(255,255,255,.04)'
 document.body.appendChild(transcriptDiv)
 const atcMenuDiv = document.createElement('div')
-atcMenuDiv.style.cssText =
-  'position:fixed;right:8px;bottom:140px;z-index:12;font:13px/1.7 ui-monospace,monospace;' +
-  'color:#ffd;background:rgba(10,14,4,.85);padding:8px 12px;border-radius:6px;white-space:pre;display:none'
+atcMenuDiv.id = 'atc-menu'
+atcMenuDiv.style.cssText = 'position:fixed;right:8px;bottom:140px;z-index:12;display:none'
 document.body.appendChild(atcMenuDiv)
 const transcript: string[] = []
 // Free-text ATC (goal: type anything, they respond — emergencies included).
@@ -1902,7 +1901,7 @@ comms.subscribe((t) => {
   if (transcript.length > 7) transcript.shift()
   transcriptDiv.style.display = 'block'
   transcriptDiv.textContent = transcript.join('\n')
-  if (t.from !== CALLSIGN) speak(t)
+  if (t.from !== CALLSIGN) { speak(t); shell?.notifier.push(`${t.from}: ${t.text}`, 7000) }
 })
 
 /** Going around (9B): a captured glideslope had no un-capture path — the
@@ -2109,10 +2108,22 @@ function renderAtcMenu(): void {
   atcMenuDiv.style.display = 'block'
   // Free-text transmit box rides with the ATC panel (click to type).
   atcTypeBox.style.display = 'block'
-  atcMenuDiv.textContent =
-    `ATC — ${activeAtc.ident} (ATIS ${activeAtc.atisF.toFixed(2)})\n` +
-    items.map((it, i) => ` ${i + 1}. ${it.label}`).join('\n') +
-    `\n Backquote (\`) close · Hold T to talk`
+  atcMenuDiv.textContent = ''
+  const head = document.createElement('div')
+  head.className = 'oh-label'
+  head.style.marginTop = '0'
+  head.textContent = `${activeAtc.ident} · ATIS ${activeAtc.atisF.toFixed(2)}`
+  atcMenuDiv.appendChild(head)
+  items.forEach((it, i) => {
+    const row = document.createElement('button')
+    row.className = 'oh-row'
+    const n = document.createElement('span'); n.className = 'oh-num'; n.textContent = String(i + 1)
+    const t = document.createElement('span'); t.textContent = it.label
+    row.append(n, t)
+    row.onclick = () => { it.run(); atcMenuOpen = false; renderAtcMenu() }
+    atcMenuDiv.appendChild(row)
+  })
+  shell?.open('atc')
 }
 
 // ---- FIS-B NEXRAD + in-world precip/lightning (Phase 5 step 5) ----
@@ -3081,7 +3092,7 @@ function advanceFrame(elapsed: number, now: number): void {
       // Safety strict priority (9A): a live TCAS/TAWS line must never be
       // blanked by a gear/spoiler toast; the debrief line expires instead
       // of squatting the slot forever.
-      safety: safetyLine || (performance.now() < toastUntil ? toastLine : '') || (performance.now() < debriefUntil ? debriefLine : '') || undefined,
+      safety: safetyLine || (performance.now() < debriefUntil ? debriefLine : '') || undefined,
       copilot: performance.now() < copilotUntil ? copilotLine : undefined,
       assist: assistMode === 'off' ? undefined : assistMode === 'sas' ? 'SAS' : 'ASSIST FULL',
       // Slice 6: honest live-traffic status — silent emptiness used to be
@@ -3101,6 +3112,7 @@ function advanceFrame(elapsed: number, now: number): void {
 
   renderer.render(scene, camera)
   graphicsPanel.update(now, cameraMode, performance.now()-perfT0, renderer)
+  shell?.refresh()
   input.endFrame()
   perfRing[perfIdx] = performance.now() - perfT0
   perfIdx = (perfIdx + 1) % perfRing.length
@@ -3151,8 +3163,15 @@ metronome.onmessage = () => {
 airports
   .load()
   .then(() => {
+    // A free-flight launch that needed a new aircraft arrives here after
+    // the reload; otherwise start at KHAF 30 behind the start screen
+    // (skip it with ?launcher=0 for automation).
+    let pending: LaunchChoice | null = null
+    try { pending = parsePendingLaunch(sessionStorage.getItem(PENDING_LAUNCH_KEY)); sessionStorage.removeItem(PENDING_LAUNCH_KEY) } catch { /* storage unavailable */ }
+    if (pending && pending.aircraft === fleetKey) { applyLaunch(pending); return }
     const khaf = airports.find('KHAF')
     if (khaf) spawnAtAirport(khaf, '30')
+    if (new URLSearchParams(location.search).get('launcher') !== '0') launcher?.open()
   })
   .catch((err) => console.error('airport data failed to load:', err))
 
@@ -3261,6 +3280,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
     if (o?.disconnect) atDisconnectPressed = true
     return { arm: atArmSwitch, ...autothrottle }
   },
+  /** Open / close the free-flight start screen (verification). */
+  __ohLauncher: (open: boolean) => { if (open) launcher?.open(); else launcher?.close() },
   /** Cockpit look direction (radians) for verification screenshots. */
   __ohLook: (yaw: number, pitch: number) => cockpitCam.setLook(yaw, pitch),
   /** 737NG aurals: inspect, or drive the FIRE WARN test / HORN CUTOUT. */
@@ -3542,7 +3563,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
 void distanceM
 
 
-const graphicsPanel = new GraphicsPanel(renderer, {
+const graphicsActions: GraphicsActions = {
   clearInput: () => input.clearHeld(),
   quality: mode => { clouds.setQuality(mode); tiles.setDetailEnabled(mode !== 'performance') },
   camera: mode => { cameraMode = mode },
@@ -3575,7 +3596,8 @@ const graphicsPanel = new GraphicsPanel(renderer, {
     applyBlendedWeather(blendWeather(wxStations,ll.lat,ll.lon))
     wxDesc = `MANUAL ${mode.toUpperCase()} · 300@8 10SM`
   },
-})
+}
+const graphicsPanel = new GraphicsPanel(renderer, graphicsActions)
 
 new LoadingPanel(FLEET_ACTIVE.params, {
   current: currentLoading,
@@ -3584,3 +3606,71 @@ new LoadingPanel(FLEET_ACTIVE.params, {
   disableInput: disableSimInput,
   enableInput: restoreSimInputIfNoEditorFocused,
 }, loadingUnit)
+
+// ---- shell: free-flight start screen, toolbar, windows, notifications ----
+const toLauncherAirport = (a: AirportData): LauncherAirport => ({
+  ident: a.i, name: a.n, size: a.t,
+  runways: a.r.flatMap((r) => [r.li, r.hi]).filter((id) => /^[0-9]{1,2}[LCR]?$/.test(id)),
+})
+/** Apply a free-flight choice to the airplane already loaded. */
+function applyLaunch(c: LaunchChoice): void {
+  handleSearch(launchCommand(c))
+  if (c.time !== 'keep') graphicsActions.lighting(c.time === 'day' ? 'day' : c.time)
+  graphicsActions.weather(c.weather)
+  try { localStorage.setItem('oh-last-departure', c.airport) } catch { /* storage unavailable */ }
+}
+let rateBeforeLauncher: SimRate = 1
+launcher = new Launcher({
+  aircraft: planeMenuEntries().map((e) => ({ key: e.key, label: e.label, group: e.group })),
+  currentAircraft: fleetKey,
+  defaultAirport: (() => { try { return localStorage.getItem('oh-last-departure') ?? 'KHAF' } catch { return 'KHAF' } })(),
+  search: (q) => (airports.loaded ? airports.search(q).map(toLauncherAirport) : []),
+  airport: (ident) => {
+    if (!airports.loaded) return undefined
+    const hit = airports.search(ident, 1)[0]
+    return hit && hit.i === ident.toUpperCase() ? toLauncherAirport(hit) : undefined
+  },
+  fly: (c) => {
+    if (c.aircraft !== fleetKey) {
+      // The airframe is built at boot: carry the launch across a reload.
+      try { sessionStorage.setItem(PENDING_LAUNCH_KEY, JSON.stringify(c)); localStorage.setItem('oh-aircraft', c.aircraft) } catch { /* storage unavailable */ }
+      location.reload()
+      return
+    }
+    applyLaunch(c)
+  },
+  onVisible: (open) => {
+    if (open) { rateBeforeLauncher = loop.paused ? 1 : loop.getRate(); loop.setRate(0); disableSimInput() }
+    else { loop.setRate(rateBeforeLauncher); input.enabled = true }
+  },
+})
+shell = new Shell({
+  launcher,
+  flightInfo: hud,
+  camera: { get: () => cameraMode, set: (m) => { cameraMode = m } },
+  assist: { get: () => assistMode, set: (m) => { assistMode = m } },
+  pause: { paused: () => loop.paused, toggle: () => loop.setRate(loop.paused ? 1 : 0) },
+  navLog: () => {
+    const wps = flightPlan.all
+    const legs = flightPlan.legs()
+    const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+    const prog = legs.length ? activeLegProgress(legs, ll) : undefined
+    const active = prog ? prog.legIndex + 1 : -1
+    return wps.map((w, i) => ({ ident: w.ident, active: i === active, ...(i === active && prog ? { distNm: prog.distanceRemainingM / 1852 } : {}) }))
+  },
+  panels: {
+    conditions: document.getElementById('graphics-panel'),
+    fuel: document.getElementById('loading-panel'),
+    controls: controllerPanel.root,
+  },
+  atc: [transcriptDiv, atcMenuDiv, atcTypeBox, voicePanel],
+  keys: [
+    ['↑ ↓ ← →', 'Pitch and roll'], ['A / D', 'Rudder'], ['W / S', 'Throttle'], ['F / G', 'Flaps down / up'],
+    [', / .', 'Trim'], ['B', 'Brakes'], ['U', 'Gear'], ['V', 'Spoilers / speedbrake'], ['Z', 'Reverse thrust'],
+    ['C', 'Change camera'], ['X', 'Stability assistance'], ['T (hold)', 'Talk to ATC'], ['`', 'ATC menu'],
+    ['/', 'Quick airport search'], ['M', 'Free flight (aircraft & departure)'], ['Space', 'Pause'], ['1 / 2 / 3', 'Sim rate'],
+    ['[ / ]', 'Time of day'], ['R', 'Reset to runway'], ['O / P', 'Save / load flight'], ['L', 'Landing lights'],
+    ['Q', 'Mute'], ['J', 'Controller setup'],
+  ],
+})
+for (const m of earlyToasts.splice(0)) shell.notifier.push(m)
