@@ -41,6 +41,11 @@ export class CockpitCamera {
     this.eye = EYE_BY_LAYOUT[kind]
   }
 
+  /** Set an explicit eyepoint (a scaled deck: business-jet cabins). */
+  setEyePoint(eye: { x: number; y: number; up: number }): void {
+    this.eye = { ...eye }
+  }
+
   /** Verification hook: set the look direction directly (radians). */
   setLook(yaw: number, pitch: number): void {
     this.lookYaw = THREE.MathUtils.clamp(yaw, -1.4, 1.4)

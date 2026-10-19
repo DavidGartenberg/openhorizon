@@ -506,6 +506,9 @@ export interface BoeingEicasInput {
   fuelKg: readonly [number, number]
   tatC: number
   reverse: boolean
+  /** Turboprop engine display: the two dial rows show torque and prop
+   *  speed (NP) instead of N1 and EGT — values come in the same slots. */
+  labels?: { primary: string; secondary: string; secondaryMax: number; secondaryRed: number }
 }
 
 export function drawBoeingEicas(c: Ctx, S: number, d: BoeingEicasInput): void {
@@ -541,9 +544,11 @@ export function drawBoeingEicas(c: Ctx, S: number, d: BoeingEicasInput): void {
   }
   for (let i = 0; i < n; i++) {
     const cx = 20 * k + colW * (i + 0.5)
-    dial(cx, 200 * k, rN1, d.n1Pct[i]!, 110, d.n1RedlinePct, i === Math.floor((n - 1) / 2) ? 'N1' : '', d.n1Pct[i]!.toFixed(1), d.n1CommandPct)
+    const L = d.labels
+    const mid = i === Math.floor((n - 1) / 2)
+    dial(cx, 200 * k, rN1, d.n1Pct[i]!, 110, d.n1RedlinePct, mid ? L?.primary ?? 'N1' : '', d.n1Pct[i]!.toFixed(1), d.n1CommandPct)
     if (d.reverse) txt(c, 'REV', cx, 90 * k, 20 * k, C.green)
-    dial(cx, 430 * k, rEgt, d.egtC[i] ?? 0, 1000, 950, i === Math.floor((n - 1) / 2) ? 'EGT' : '', String(d.egtC[i] ?? 0))
+    dial(cx, 430 * k, rEgt, d.egtC[i] ?? 0, L?.secondaryMax ?? 1000, L?.secondaryRed ?? 950, mid ? L?.secondary ?? 'EGT' : '', L ? (d.egtC[i] ?? 0).toFixed(0) : String(d.egtC[i] ?? 0))
     txt(c, ((d.ffKgH[i] ?? 0) / 1000).toFixed(2), cx, 530 * k, 24 * k, C.white)
   }
   txt(c, 'FF', 30 * k, 530 * k, 20 * k, '#22d8f0', 'left')
@@ -585,4 +590,32 @@ export function drawIsfd(c: Ctx, S: number, d: { iasKt: number; altFt: number; p
   txt(c, String(Math.round(d.altFt / 20) * 20), 230 * k, cy, 15 * k)
   txt(c, `${d.baroInHg.toFixed(2)} IN`, cx, 242 * k, 14 * k, C.cyan)
   txt(c, 'STBY', cx, 12 * k, 13 * k, C.white)
+}
+
+// ---------------------------------------------------------------------------
+// Fitting the square formats into landscape display units
+// ---------------------------------------------------------------------------
+
+/** Draw a square format centred in a w×h canvas region (pillarboxed). */
+export function drawSquareFitted(c: Ctx, x: number, y: number, w: number, h: number, draw: (c: Ctx, S: number) => void): void {
+  c.fillStyle = C.black
+  c.fillRect(x, y, w, h)
+  const S = Math.min(w, h)
+  c.save()
+  c.translate(x + (w - S) / 2, y + (h - S) / 2)
+  c.beginPath(); c.rect(0, 0, S, S); c.clip()
+  draw(c, S)
+  c.restore()
+}
+
+/** Landscape MFD (737 MAX inboard displays, Gulfstream / Citation /
+ *  Phenom MFDs): engine display down the left, the map on the right. */
+export function drawMfdWithEngines(c: Ctx, w: number, h: number, nd: BoeingNdInput, eng: BoeingEicasInput): void {
+  c.fillStyle = C.black
+  c.fillRect(0, 0, w, h)
+  const colW = Math.round(Math.min(w * 0.36, h * 0.62))
+  drawSquareFitted(c, 0, 0, colW, colW, (cc, S) => drawBoeingEicas(cc, S, eng))
+  c.strokeStyle = '#2b3036'; c.lineWidth = 2
+  c.beginPath(); c.moveTo(colW + 1, 8); c.lineTo(colW + 1, h - 8); c.stroke()
+  drawSquareFitted(c, colW + 2, 0, w - colW - 2, h, (cc, S) => drawBoeingNd(cc, S, nd))
 }

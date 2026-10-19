@@ -91,6 +91,14 @@ export function drawGaBoeingPfd(c: Ctx, w: number, h: number, pfd: BoeingPfdInpu
 export interface GaEngineInput {
   /** False for a glider: there is nothing to display. */
   hasEngine: boolean
+  /** Turboprops show prop speed (NP) and torque; no CHT / mixture EGT. */
+  kind?: 'piston' | 'turboprop'
+  /** Engines on the airframe (the sim runs them matched). */
+  engines?: number
+  /** Torque, % (turboprop) — shaft power over prop speed. */
+  torquePct?: number
+  /** False: no electrical system (hand-propped) — no bus readouts. */
+  hasElectrical?: boolean
   rpm: number
   redlineRpm: number
   egtC: number
@@ -135,10 +143,19 @@ export function drawBoeingEngineColumn(c: Ctx, x: number, y: number, w: number, 
   c.beginPath(); c.moveTo(cx + Math.cos(ang(d.redlineRpm)) * (r - 9 * u), cy + Math.sin(ang(d.redlineRpm)) * (r - 9 * u)); c.lineTo(cx + Math.cos(ang(d.redlineRpm)) * (r + 7 * u), cy + Math.sin(ang(d.redlineRpm)) * (r + 7 * u)); c.stroke()
   c.strokeStyle = COL.white; c.lineWidth = 4 * u
   c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + Math.cos(ang(d.rpm)) * r * 0.95, cy + Math.sin(ang(d.rpm)) * r * 0.95); c.stroke()
-  text(c, 'RPM', cx, y + 22 * u, 16 * u, COL.cyan, 'center')
+  const tp = d.kind === 'turboprop', n = Math.max(1, d.engines ?? 1)
+  text(c, tp ? 'NP  RPM' : n > 1 ? 'RPM  1 · 2' : 'RPM', cx, y + 22 * u, 16 * u, COL.cyan, 'center')
   c.strokeStyle = COL.white; c.lineWidth = 2 * u
-  c.strokeRect(cx - 40 * u, cy + 12 * u, 80 * u, 30 * u)
-  text(c, String(Math.round(d.rpm)), cx + 34 * u, cy + 27 * u, 22 * u, over ? COL.red : COL.white, 'right')
+  if (n > 1) {
+    // Twins: one box per engine (the sim runs them matched).
+    for (const dx of [-44, 44]) {
+      c.strokeRect(cx + dx * u - 40 * u, cy + 12 * u, 80 * u, 30 * u)
+      text(c, String(Math.round(d.rpm)), cx + dx * u + 34 * u, cy + 27 * u, 20 * u, over ? COL.red : COL.white, 'right')
+    }
+  } else {
+    c.strokeRect(cx - 40 * u, cy + 12 * u, 80 * u, 30 * u)
+    text(c, String(Math.round(d.rpm)), cx + 34 * u, cy + 27 * u, 22 * u, over ? COL.red : COL.white, 'right')
+  }
 
   // Boxed readouts: label left, value right, colour = caution state.
   let ry = y + 172 * u
@@ -150,8 +167,11 @@ export function drawBoeingEngineColumn(c: Ctx, x: number, y: number, w: number, 
     ry += 33 * u
   }
   const hot = (v: number, max: number): string => (v / max > 0.9 ? COL.amber : COL.green)
-  row('EGT °C', d.egtC.toFixed(0), COL.green)
-  row('CHT °C', d.chtC.toFixed(0), hot(d.chtC, d.chtMaxC))
+  if (tp) row('TRQ %', (d.torquePct ?? 0).toFixed(0), (d.torquePct ?? 0) > 100 ? COL.red : COL.green)
+  else {
+    row('EGT °C', d.egtC.toFixed(0), COL.green)
+    row('CHT °C', d.chtC.toFixed(0), hot(d.chtC, d.chtMaxC))
+  }
   row('OIL °C', d.oilTempC.toFixed(0), hot(d.oilTempC, d.oilTempMaxC))
   row('OIL PSI', d.oilPressPsi.toFixed(0), d.oilPressPsi < d.oilPressMinGreenPsi ? COL.amber : COL.green)
   ry += 6 * u
@@ -168,6 +188,7 @@ export function drawBoeingEngineColumn(c: Ctx, x: number, y: number, w: number, 
     ry += 38 * u
   }
   ry += 4 * u
+  if (d.hasElectrical === false) { text(c, 'NO ELECTRICAL SYSTEM', x + 12 * u, ry, 12 * u, COL.dim); return }
   text(c, `VOLTS ${d.volts.toFixed(1)}`, x + 12 * u, ry, 14 * u)
   text(c, `ALT ${d.ampsAlt.toFixed(0)}A  BAT ${d.ampsBat.toFixed(0)}A`, x + 12 * u, ry + 22 * u, 13 * u)
 }

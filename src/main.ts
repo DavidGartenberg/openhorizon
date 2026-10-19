@@ -17,7 +17,7 @@ import { BrowserSpeechDriver } from './audio/browser-speech'
 import { makeSurfaceSmoother } from './render/surface-smoother'
 import { boeingAurals, makeAuralLatches } from './sim/boeing-aurals'
 import { makeAutothrottle, stepAutothrottle } from './sim/autothrottle'
-import { drawBoeingPfd, drawBoeingNd, drawBoeingEicas, drawIsfd, boeingFma, egtFromN1, type BoeingNdInput, type BoeingPfdInput } from './cockpit/boeing-displays'
+import { drawBoeingNd, drawBoeingEicas, drawIsfd, boeingFma, egtFromN1, drawSquareFitted, drawMfdWithEngines, type BoeingEicasInput, type BoeingNdInput, type BoeingPfdInput } from './cockpit/boeing-displays'
 import { animate737, update737Live } from './render/cockpit-737'
 import { BoeingAuralsAudio } from './audio/boeing-aurals-audio'
 import { loadCustomPack } from './audio/custom-audio-pack'
@@ -39,7 +39,7 @@ import { Ocean } from './render/ocean'
 import { FlyCamera } from './render/camera'
 import { ChaseCamera } from './render/chase-camera'
 import { OrbitCamera } from './render/orbit-camera'
-import { CockpitCamera } from './render/cockpit-camera'
+import { CockpitCamera, EYE_BY_LAYOUT } from './render/cockpit-camera'
 import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from './render/aircraft-mesh'
 import { PlaneMenu } from './render/plane-menu'
 import { loadIls, ilsLoaded, ilsCount } from './world/ils'
@@ -63,10 +63,11 @@ import { ReplayView } from './render/replay-view'
 import { buildReplayPlots } from './sim/replay'
 import { TrafficLayer } from './render/traffic-layer'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
-import { buildCockpit, panelLayoutFor, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
+import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
 import { vSpeedArcs, type PfdInput } from './cockpit/pfd'
 import { airspaceStrokeStyle, filterAirspaceInRange, glideRangeRadiusM } from './cockpit/mfd'
 import { drawGaBoeingNd, drawGaBoeingPfd, drawBoeingEngineColumn } from './cockpit/boeing-ga-displays'
+import { cockpitProfile } from './render/cockpit-profile'
 import { OIL_TEMP_MAX_C, OIL_PRESS_MAX_PSI, OIL_PRESS_MIN_GREEN_PSI, CHT_MAX_C } from './sim/systems/engine-temps'
 import { egtC as pistonEgtC } from './sim/systems/mixture'
 import { kgToGal, TANK_CAPACITY_GAL } from './sim/systems/fuel'
@@ -266,9 +267,18 @@ aircraftLights.attach(mesh.group)
 const trafficLayer = new TrafficLayer(scene)
 // 16d: replay viewer (REPLAY verb).
 const replayView = new ReplayView()
-const cockpitLayout = panelLayoutFor(fleetKey, FLEET_ACTIVE.params.trimIsStabilizer ?? false)
-const engineCount = Math.max(1, Math.min(4, FLEET_ACTIVE.params.jet?.engines ?? 2))
-const cockpit = buildCockpit(mesh.group, cockpitLayout, FLEET_ACTIVE.params.flapDetentsDeg, engineCount)
+/** This airplane's cockpit, tailored per type (render/cockpit-profile.ts):
+ *  the transport deck dressed for its family, or the G1000 panel fitted
+ *  with its own controls and hardware. */
+const COCKPIT_PROFILE = cockpitProfile(fleetKey, FLEET_ACTIVE.params, {
+  label: FLEET_ACTIVE.label,
+  powerplant: ROSTER.find((r) => r.spec.designator === fleetKey)?.spec.powerplant
+    ?? (fleetKey === '737' ? { kind: 'jet', count: 2 } : { kind: 'piston', count: 1 }),
+})
+const cockpitLayout = COCKPIT_PROFILE.layout
+const DECK_PROFILE = COCKPIT_PROFILE.deck
+const engineCount = DECK_PROFILE?.engines ?? COCKPIT_PROFILE.ga?.engines ?? 1
+const cockpit = buildCockpit(mesh.group, COCKPIT_PROFILE, FLEET_ACTIVE.params.flapDetentsDeg, { speedbrake: !!FLEET_ACTIVE.params.spoilers })
 // Exteriors previously cast onto runways but never received their own
 // shadows. Light aircraft now get a tightly fitted shadow map as well.
 mesh.group.traverse(o => {
@@ -297,7 +307,11 @@ const freeCam = new FlyCamera(camera)
 const cockpitCam = new CockpitCamera(camera)
 // Per-layout eyepoint (Slice 3): GA eye under the C172 cabin top;
 // transport eye above the re-seated 737/Airbus glareshield.
-cockpitCam.setEye(cockpitLayout === 'boeingNG' ? 'boeing737' : 'ga')
+if (DECK_PROFILE) {
+  // The deck scales about the airplane origin; the design eye scales with it.
+  const e = EYE_BY_LAYOUT.boeing737, k = DECK_PROFILE.scale
+  cockpitCam.setEyePoint({ x: e.x * k, y: e.y * k, up: e.up * k })
+} else cockpitCam.setEye('ga')
 let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' = 'chase'
 const DEFAULT_NEAR = camera.near // 0.5 m (scene.ts) — correct for exterior views
 /** Rudder as drawn: pedal demand through a slew-limited actuator (±1 = full
@@ -2378,9 +2392,13 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
   const fdOn = apState.masterEnabled || apState.lateralMode !== 'ROL' || apState.verticalMode !== 'PIT'
   const atMode = autothrottle.mode
   const speedMode = atMode === 'MCP SPD'
-  drawBoeingPfd(cockpit.pfdCtx, 768, makeBoeingPfdInput(d, nav, iasKt, altFt, vsFpm))
-  cockpit.pfdTexture.needsUpdate = true
+  const pfdC = cockpit.pfdCanvas, ndC = cockpit.mfdCanvas
   const windKt = Math.hypot(aircraft.windNed.x, aircraft.windNed.y) / KT
+  drawGaBoeingPfd(cockpit.pfdCtx, pfdC.width, pfdC.height, makeBoeingPfdInput(d, nav, iasKt, altFt, vsFpm), {
+    com1: radios.com1, nav1: radios.nav1, squawk: '1200', oatC, ktas: d.ktas, groundSpeedKt: d.groundSpeedKt,
+    windDirDeg: windDirFromNed(aircraft.windNed), windKt, alerts: [],
+  })
+  cockpit.pfdTexture.needsUpdate = true
   const wps = flightPlan.all
   const legs = flightPlan.legs()
   const prog = legs.length ? activeLegProgress(legs, ll) : undefined
@@ -2391,24 +2409,38 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
     return `${String(when.getUTCHours()).padStart(2, '0')}${String(when.getUTCMinutes()).padStart(2, '0')}.${Math.floor(when.getUTCSeconds() / 6)}`
   }
   const activeWp = activeIdx >= 0 ? wps[activeIdx] : undefined
-  drawBoeingNd(cockpit.mfdCtx, 768, makeBoeingNdInput(d, ll, 40, false))
-  cockpit.mfdTexture.needsUpdate = true
-  // Captain systems model two engine states (left / right bank); a 3- or
-  // 4-engine airplane maps its inboard/outboard engines onto them.
-  const running: boolean[] = Array.from({ length: engineCount }, (_, i) => (i < Math.ceil(engineCount / 2) ? captainSystems.engine1Running : captainSystems.engine2Running))
+  // Engine states: jets use the Captain systems' two banks (3/4 engines map
+  // inboard/outboard onto them); turboprops share the one engine model.
+  const running: boolean[] = Array.from({ length: engineCount }, (_, i) => (P.jet ? (i < Math.ceil(engineCount / 2) ? captainSystems.engine1Running : captainSystems.engine2Running) : aircraft.engineRunning))
   const n1 = d.n1Pct, ffPer = (aircraft.prop.fuelFlowKgS * 3600) / Math.max(1, running.filter(Boolean).length)
   const jet = P.jet
+  const tatC = (oatC + 273.15) * (1 + 0.2 * mach * mach) - 273.15
+  // Turboprop engine display: torque % (shaft power over prop speed) and NP.
+  const npPct = (d.rpm / Math.max(1, P.redlineRpm)) * 100
+  const trqPct = (Math.max(0, d.shaftPowerW / Math.max(1, P.ratedPowerW)) / Math.max(0.05, npPct / 100)) * 100
+  const eng: BoeingEicasInput = DECK_PROFILE?.turboprop
+    ? {
+        n1Pct: running.map((r) => (r ? trqPct : 0)), n1RedlinePct: 100, n1CommandPct: aircraft.controls.throttle * 100,
+        egtC: running.map((r) => (r ? npPct : 0)), ffKgH: running.map((r) => (r ? ffPer : 0)),
+        fuelKg: [fuelState.leftKg, fuelState.rightKg], tatC, reverse: false,
+        labels: { primary: 'TRQ', secondary: 'NP', secondaryMax: 110, secondaryRed: 104 },
+      }
+    : {
+        n1Pct: running.map((r) => (r ? n1 : 0)),
+        n1RedlinePct: jet?.n1MaxPct ?? 104,
+        n1CommandPct: jet ? jet.n1IdlePct + aircraft.controls.throttle * (jet.n1MaxPct - jet.n1IdlePct) : 0,
+        egtC: running.map((r) => egtFromN1(r ? n1 : 0, oatC)),
+        ffKgH: running.map((r) => (r ? ffPer : 0)),
+        fuelKg: [fuelState.leftKg, fuelState.rightKg], tatC,
+        reverse: aircraft.reversePos > 0.05,
+      }
+  const ndIn = makeBoeingNdInput(d, ll, 40, false)
+  if (deck.style.layout.ndEngines) drawMfdWithEngines(cockpit.mfdCtx, ndC.width, ndC.height, ndIn, eng)
+  else drawSquareFitted(cockpit.mfdCtx, 0, 0, ndC.width, ndC.height, (c, S) => drawBoeingNd(c, S, ndIn))
+  cockpit.mfdTexture.needsUpdate = true
   if (cockpit.boeingScreens) {
-    drawBoeingEicas(cockpit.boeingScreens.eicas.ctx, 768, {
-      n1Pct: running.map((r) => (r ? n1 : 0)),
-      n1RedlinePct: jet?.n1MaxPct ?? 104,
-      n1CommandPct: jet ? jet.n1IdlePct + aircraft.controls.throttle * (jet.n1MaxPct - jet.n1IdlePct) : 0,
-      egtC: running.map((r) => egtFromN1(r ? n1 : 0, oatC)),
-      ffKgH: running.map((r) => (r ? ffPer : 0)),
-      fuelKg: [fuelState.leftKg, fuelState.rightKg],
-      tatC: (oatC + 273.15) * (1 + 0.2 * mach * mach) - 273.15,
-      reverse: aircraft.reversePos > 0.05,
-    })
+    const ec = cockpit.boeingScreens.eicas.ctx
+    drawSquareFitted(ec, 0, 0, ec.canvas.width, ec.canvas.height, (c, S) => drawBoeingEicas(c, S, eng))
     cockpit.boeingScreens.eicas.texture.needsUpdate = true
     drawIsfd(cockpit.boeingScreens.isfd.ctx, 256, { iasKt, altFt, pitchDeg: d.pitchDeg, rollDeg: d.rollDeg, baroInHg: baroSetInHg })
     cockpit.boeingScreens.isfd.texture.needsUpdate = true
@@ -2541,7 +2573,7 @@ function advanceFrame(elapsed: number, now: number): void {
         navRangeM: navRangeForAp,
         trackDeg: aircraft.data.trackDeg,
       })
-      if (cockpitLayout === 'boeingNG') {
+      if (DECK_PROFILE?.autothrottle) {
         const atCmd = stepAutothrottle(autothrottle, dt, {
           armSwitch: atArmSwitch, speedPressed: atSpeedPressed, disconnectPressed: atDisconnectPressed, resetLight: atResetPressed,
           iasKt: aircraft.data.kias, targetKt: apTargets.iasTargetKt, verticalMode: apTargets.verticalMode,
@@ -2806,6 +2838,9 @@ function advanceFrame(elapsed: number, now: number): void {
     }
     cockpitInteraction.update(input, cockpit, systemsControls, aircraft.controls, radios)
     const deckClick = cockpitInteraction.consumeDeckClick()
+    // Turboprop decks have no G1000 starter button: holding an overhead
+    // ENGINE START selector cranks the engine.
+    if (DECK_PROFILE?.turboprop) systemsControls.starterEngaged = cockpitInteraction.heldDeckControl === 'engStart'
     if (deckClick === 'hornCutout') auralHornCutout = true
     else if (deckClick === 'mcpDisengage') { systemsControls.apMaster = false; apDisconnectPressedFlag = true }
     else if (deckClick === 'mcpCmdA') systemsControls.apMaster = !systemsControls.apMaster
@@ -2892,7 +2927,11 @@ function advanceFrame(elapsed: number, now: number): void {
   const gaMfdSkin = gaSkin
     ? {
         eis: (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void => drawBoeingEngineColumn(ctx, x, y, w, h, {
-          hasEngine: aircraft.P.fuelCapacityKg >= 1, rpm: d.rpm, redlineRpm: aircraft.P.redlineRpm, egtC: pistonEgtC(aircraft.controls.mixture),
+          hasEngine: COCKPIT_PROFILE.ga?.hasEngine ?? aircraft.P.fuelCapacityKg >= 1,
+          kind: COCKPIT_PROFILE.ga?.turboprop ? 'turboprop' : 'piston', engines: COCKPIT_PROFILE.ga?.engines ?? 1,
+          torquePct: (Math.max(0, d.shaftPowerW / Math.max(1, aircraft.P.ratedPowerW)) / Math.max(0.05, d.rpm / Math.max(1, aircraft.P.redlineRpm))) * 100,
+          hasElectrical: COCKPIT_PROFILE.ga?.hasElectrical ?? true,
+          rpm: d.rpm, redlineRpm: aircraft.P.redlineRpm, egtC: pistonEgtC(aircraft.controls.mixture),
           chtC: engineTemps.chtC, chtMaxC: CHT_MAX_C, oilTempC: engineTemps.oilTempC, oilTempMaxC: OIL_TEMP_MAX_C,
           oilPressPsi: engineTemps.oilPressPsi, oilPressMaxPsi: OIL_PRESS_MAX_PSI, oilPressMinGreenPsi: OIL_PRESS_MIN_GREEN_PSI,
           fuelFlowGph: d.fuelFlowGph, fuelLGal: kgToGal(fuelState.leftKg), fuelRGal: kgToGal(fuelState.rightKg),

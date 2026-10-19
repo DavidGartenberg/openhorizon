@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 import { build737Deck, type Deck737 } from './cockpit-737'
+import { deckLayout } from './cockpit-737-paint'
+import type { CockpitProfile, DeckProfile } from './cockpit-profile'
 import type { Input } from '../input/input'
 import { drawPfd, type PfdInput } from '../cockpit/pfd'
 import { drawMfd, mfdSoftkeyRegions, type MfdInput } from '../cockpit/mfd'
@@ -113,15 +115,22 @@ const GLAZING = new THREE.MeshStandardMaterial({
  *  cosmetic and recorded as such; the LIVE PFD/MFD/standby planes render
  *  just proud of the painted glass regions. Panel plane: 1.13 m wide
  *  centered lat 0.02, 0.52 m tall centered up 0.43. */
-function drawGaPanel(c: CanvasRenderingContext2D): void {
+interface GaPanelLook { placard: string; panel: string; hasElectrical: boolean; hasEngine: boolean }
+const GA_PANEL_DEFAULT: GaPanelLook = { placard: 'CESSNA 172S  ·  NAV III', panel: '#8b8d88', hasElectrical: true, hasEngine: true }
+
+function drawGaPanel(c: CanvasRenderingContext2D, look: GaPanelLook = GA_PANEL_DEFAULT): void {
   const W = 1536
   const H = 704
   const px = (lat: number): number => ((lat - 0.02 + 0.565) / 1.13) * W
   const py = (up: number): number => ((0.26 - (up - 0.43)) / 0.52) * H
   const sx = (m: number): number => (m / 1.13) * W
   const sy = (m: number): number => (m / 0.52) * H
-  c.fillStyle = '#8b8d88'
+  c.fillStyle = look.panel
   c.fillRect(0, 0, W, H)
+  // Engraving contrasts with the face: dark text on light panels, light on dark.
+  const n = parseInt(look.panel.slice(1), 16)
+  const lum = (((n >> 16) & 255) * 0.3 + ((n >> 8) & 255) * 0.59 + (n & 255) * 0.11) / 255
+  const ink = lum > 0.45 ? '#1f2124' : '#e6e4dc'
   const grad = c.createLinearGradient(0, 0, 0, H)
   grad.addColorStop(0, 'rgba(255,255,255,0.08)')
   grad.addColorStop(1, 'rgba(0,0,0,0.16)')
@@ -178,11 +187,11 @@ function drawGaPanel(c: CanvasRenderingContext2D): void {
     c.beginPath(); c.arc(x, y, sx(0.056), 0, Math.PI * 2); c.stroke()
   }
   // Switch row labels + breaker rows along the bottom.
-  c.fillStyle = '#1f2124'
+  c.fillStyle = ink
   c.font = 'bold 15px sans-serif'
   c.textAlign = 'center'
   const labels = ['MASTER', 'ALT', 'AVION', 'PITOT', 'AP', 'PUMP']
-  labels.forEach((l, i) => c.fillText(l, px(-0.5 + i * 0.045), py(0.185)))
+  if (look.hasElectrical) labels.forEach((l, i) => c.fillText(l, px(-0.5 + i * 0.045), py(0.185)))
   c.fillText('BREAKERS', px(0.55), py(0.34))
   for (let r = 0; r < 2; r++) {
     for (let i = 0; i < 9; i++) {
@@ -192,11 +201,11 @@ function drawGaPanel(c: CanvasRenderingContext2D): void {
       c.beginPath(); c.arc(px(0.42 + i * 0.03), py(0.3 - r * 0.045), 7, 0, Math.PI * 2); c.stroke()
     }
   }
-  c.fillStyle = '#2b2d30'
+  c.fillStyle = ink
   c.font = 'bold 20px sans-serif'
-  c.fillText('CESSNA 172S  ·  NAV III', px(0.02), py(0.185))
+  c.fillText(look.placard, px(0.02), py(0.185))
   c.font = 'bold 13px sans-serif'
-  c.fillText('IGNITION', px(0.33), py(0.29))
+  if (look.hasEngine) c.fillText('IGNITION', px(0.33), py(0.29))
   for (let x = 40; x < W; x += 300) { screw(x, 16); screw(x, H - 14) }
 }
 
@@ -328,6 +337,8 @@ export interface CockpitMeshes {
    *  (cockpit/boeing-displays.ts) on these square canvases. */
   deck737?: Deck737
   boeingScreens?: { eicas: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture }; isfd: { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture } }
+  /** Floor-mounted control stick (GA stick types): pivots for pitch/roll. */
+  gaStick?: THREE.Group
   /** Flap-lever detent count for drag mapping (default 4: the C172). */
   flapDetentCount?: number
 }
@@ -356,13 +367,28 @@ function makeSwitch(label: string): THREE.Mesh {
 
 /** 737NG flight deck: the dedicated deck (cockpit-737.ts) plus inert,
  *  hidden stand-ins for the G1000-only slots of `CockpitMeshes`. */
-function build737Cockpit(parent: THREE.Object3D, flapDetentsDeg: readonly number[], engines: number): CockpitMeshes {
+function build737Cockpit(parent: THREE.Object3D, flapDetentsDeg: readonly number[], prof: DeckProfile, speedbrake: boolean): CockpitMeshes {
   const group = new THREE.Group()
-  const pfd = makeCanvasTexture(768, 768)
-  const nd = makeCanvasTexture(768, 768)
-  const eicas = makeCanvasTexture(768, 768)
+  const layout = deckLayout(prof.du)
+  // Screen canvases match their display units: square 8-inch DUs, 4:3
+  // landscape units on the large-display decks.
+  const dims = (kind: 'pfd' | 'nd' | 'eicas'): [number, number] => {
+    const slot = layout.dus.find((d) => d.kind === kind)
+    return slot && slot.w / slot.h > 1.05 ? [1024, 768] : [768, 768]
+  }
+  const pfd = makeCanvasTexture(...dims('pfd'))
+  const nd = makeCanvasTexture(...dims('nd'))
+  const eicas = makeCanvasTexture(...dims('eicas'))
   const isfd = makeCanvasTexture(256, 256)
-  const deck = build737Deck(group, { pfd: pfd.texture, nd: nd.texture, eicas: eicas.texture, isfd: isfd.texture }, flapDetentsDeg, engines)
+  // Business-jet and regional cabins are smaller: the whole deck scales
+  // about the airplane origin (the cockpit camera scales its eye to match).
+  const inner = new THREE.Group()
+  inner.scale.setScalar(prof.scale)
+  group.add(inner)
+  const deck = build737Deck(inner, { pfd: pfd.texture, nd: nd.texture, eicas: eicas.texture, isfd: isfd.texture }, flapDetentsDeg, prof.engines, {
+    layout, panel: prof.fcu, maker: prof.maker, control: prof.control, trimWheels: prof.trimWheels,
+    reversers: prof.reversers, turboprop: prof.turboprop, speedbrake, autothrottle: prof.autothrottle,
+  })
   const hidden = (): THREE.Mesh => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(0.001, 0.001, 0.001), SWITCH_OFF)
     m.visible = false
@@ -405,10 +431,12 @@ export function panelLayoutFor(_designator: string, trimIsStabilizer: boolean): 
   return trimIsStabilizer ? 'boeingNG' : 'g1000'
 }
 
-export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g1000', flapDetentsDeg: readonly number[] = [0, 10, 20, 30], engines = 2): CockpitMeshes {
-  // Jets and airliners fly the dedicated 737NG flight deck; everything
-  // else (piston/turboprop/glider) keeps the G1000 panel below.
-  if (layout === 'boeingNG') return build737Cockpit(parent, flapDetentsDeg, engines)
+export function buildCockpit(parent: THREE.Object3D, profile: CockpitProfile, flapDetentsDeg: readonly number[] = [0, 10, 20, 30], opts: { speedbrake?: boolean } = {}): CockpitMeshes {
+  // Jets and airliner turboprops fly the 737-derived transport deck dressed
+  // for their family; everything else keeps the G1000 panel below, fitted
+  // with that airplane's own controls and hardware.
+  if (profile.layout === 'boeingNG' && profile.deck) return build737Cockpit(parent, flapDetentsDeg, profile.deck, opts.speedbrake ?? true)
+  const ga = profile.ga ?? { control: 'yoke' as const, hasFlaps: true, hasElectrical: true, hasEngine: true, turboprop: false, engines: 1, panel: '#8b8d88' }
   const group = new THREE.Group()
   const interactive: THREE.Object3D[] = []
   const add = (mesh: THREE.Mesh, x: number, y: number, z: number): THREE.Mesh => {
@@ -429,7 +457,7 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   add(new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.54, 0.06), PANEL_DARK), 1.02, 0.02, -0.43)
   // Painted G1000 panel face just proud of the box (see drawGaPanel).
   const face = makeCanvasTexture(1536, 704)
-  drawGaPanel(face.ctx)
+  drawGaPanel(face.ctx, { placard: profile.placard, panel: ga.panel, hasElectrical: ga.hasElectrical, hasEngine: ga.hasEngine })
   face.texture.needsUpdate = true
   add(new THREE.Mesh(new THREE.PlaneGeometry(1.13, 0.52), new THREE.MeshBasicMaterial({ map: face.texture, toneMapped: false })), 0.988, 0.02, -0.43)
   // Padded glareshield lip along the panel top (kept under the 0.75 eye).
@@ -584,20 +612,68 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
   // pilot looks over the rim rather than through it. Two-horn control yoke
   // (the C172's real yoke is this shape); the hub carries the horns as
   // children so the roll animation's rotation.z turns the whole assembly.
+  // Control: a yoke (most types), a floor-mounted stick between the knees
+  // (Cubs, aerobatic, warbird, Diamond, gliders) or the Cirrus side-yoke
+  // on the left side panel. The animation reads each part's rest pose.
   const yokeColumn = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.35, 8), YOKE_MAT)
-  add(yokeColumn, 0.7, -0.3, -0.16)
   const yokeWheel = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.045, 0.028), YOKE_MAT)
-  for (const hs of [-1, 1]) {
-    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.011, 0.013, 0.13, 8), YOKE_MAT)
-    arm.position.set(hs * 0.075, 0.045, 0)
-    arm.rotation.z = -hs * 0.85 // up and outboard from the hub
-    yokeWheel.add(arm)
-    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.015, 0.095, 8), YOKE_MAT)
-    grip.position.set(hs * 0.125, 0.115, 0)
-    grip.rotation.z = -hs * 0.18 // near-vertical grips
-    yokeWheel.add(grip)
+  let gaStick: THREE.Group | undefined
+  if (ga.control === 'stick') {
+    gaStick = new THREE.Group()
+    // Pivot at the floor ahead of the seat; the stick rakes back toward the
+    // pilot so the grip sits ≈ 0.23 m ahead of and 0.4 m below the eye.
+    placeBody(gaStick, 0.85, -0.33, 0.27)
+    const tip = new THREE.Vector3(0, 0.62, 0.17)
+    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.011, 0.014, tip.length(), 10), YOKE_MAT)
+    rod.position.copy(tip).multiplyScalar(0.5)
+    rod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tip.clone().normalize())
+    gaStick.add(rod)
+    const grip = new THREE.Mesh(new THREE.CapsuleGeometry(0.018, 0.07, 4, 12), new THREE.MeshStandardMaterial({ color: 0x15130f, roughness: 0.9 }))
+    grip.position.copy(tip).add(new THREE.Vector3(0, 0.03, 0.008))
+    grip.quaternion.copy(rod.quaternion)
+    gaStick.add(grip)
+    const boot = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, 0.08, 12), new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 1 }))
+    boot.position.y = 0.04
+    gaStick.add(boot)
+    group.add(gaStick)
+    yokeColumn.visible = yokeWheel.visible = false
+    group.add(yokeColumn, yokeWheel)
+  } else {
+    const side = ga.control === 'sideyoke'
+    // Side-yoke: a short W-handle on a horizontal tube out of the left
+    // side panel (Cirrus); the column is the tube.
+    const col: [number, number, number] = side ? [0.76, -0.52, -0.36] : [0.7, -0.3, -0.16]
+    const wheel: [number, number, number] = side ? [0.64, -0.52, -0.36] : [0.68, -0.3, -0.26]
+    if (side) yokeColumn.rotation.x = Math.PI / 2
+    add(yokeColumn, ...col)
+    yokeColumn.userData.rest = col
+    for (const hs of [-1, 1]) {
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.011, 0.013, side ? 0.08 : 0.13, 8), YOKE_MAT)
+      arm.position.set(hs * (side ? 0.045 : 0.075), side ? 0.03 : 0.045, 0)
+      arm.rotation.z = -hs * 0.85 // up and outboard from the hub
+      yokeWheel.add(arm)
+      const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.015, side ? 0.07 : 0.095, 8), YOKE_MAT)
+      grip.position.set(hs * (side ? 0.08 : 0.125), side ? 0.075 : 0.115, 0)
+      grip.rotation.z = -hs * 0.18 // near-vertical grips
+      yokeWheel.add(grip)
+    }
+    if (side) yokeWheel.scale.setScalar(0.8)
+    add(yokeWheel, ...wheel)
+    yokeWheel.userData.rest = wheel
   }
-  add(yokeWheel, 0.68, -0.3, -0.26)
+
+  // Only the hardware this airplane has: no flap lever on a flapless type,
+  // no electrics or starter on a hand-propped type, no engine controls on
+  // a glider.
+  const drop: THREE.Object3D[] = []
+  if (!ga.hasFlaps) drop.push(flapLever)
+  if (!ga.hasElectrical) drop.push(...Object.values(switches), starterButton)
+  if (!ga.hasEngine) drop.push(throttleKnob, mixtureKnob, ignitionKey, starterButton, fuelSelectorKnob, switches.boostPump)
+  for (const o of drop) {
+    o.visible = false
+    const i = interactive.indexOf(o)
+    if (i >= 0) interactive.splice(i, 1)
+  }
 
   // Cockpit structure — real flight decks are FRAMED: windshield posts,
   // roof beam, side pillars and floor. The frame hugs the cabin (a GA
@@ -650,6 +726,7 @@ export function buildCockpit(parent: THREE.Object3D, layout: PanelLayout = 'g100
     yokeColumn,
     yokeWheel,
     standby,
+    ...(gaStick ? { gaStick } : {}),
     nav1TuneUp,
     nav1TuneDown,
     nav1FlipFlop,
@@ -719,10 +796,18 @@ export function updateCockpitControls(
   const p = THREE.MathUtils.clamp(pitchFrac, -1, 1)
   const r = THREE.MathUtils.clamp(rollFrac, -1, 1)
   // Yoke: wheel turns (±75° at full aileron), column slides aft on pull.
+  if (meshes.gaStick) {
+    // Stick: ±15° pitch (pull = aft), ±15° roll about the floor pivot.
+    meshes.gaStick.rotation.x = p * 0.26
+    meshes.gaStick.rotation.z = -r * 0.26
+    return
+  }
   meshes.yokeWheel.rotation.z = -r * 1.3
   const pitchThrow = p * 0.07
-  placeBody(meshes.yokeColumn, 0.7 - pitchThrow, -0.3, -0.16)
-  placeBody(meshes.yokeWheel, 0.68 - pitchThrow, -0.3, -0.26)
+  const cr = (meshes.yokeColumn.userData.rest as [number, number, number] | undefined) ?? [0.7, -0.3, -0.16]
+  const wr = (meshes.yokeWheel.userData.rest as [number, number, number] | undefined) ?? [0.68, -0.3, -0.26]
+  placeBody(meshes.yokeColumn, cr[0] - pitchThrow, cr[1], cr[2])
+  placeBody(meshes.yokeWheel, wr[0] - pitchThrow, wr[1], wr[2])
 }
 
 // ============================================================================
@@ -731,7 +816,7 @@ export function updateCockpitControls(
 
 export type DraggableAxis = 'throttle' | 'mixture' | 'trim' | 'flap'
 
-const DECK_CLICK_IDS = new Set(['fireTest', 'hornCutout', 'mcpCmdA', 'mcpDisengage', 'masterCaution', 'landingLights', 'mcpAtArm', 'mcpSpeed', 'atDisconnect', 'atReset', 'apReset'])
+const DECK_CLICK_IDS = new Set(['engStart', 'fireTest', 'hornCutout', 'mcpCmdA', 'mcpDisengage', 'masterCaution', 'landingLights', 'mcpAtArm', 'mcpSpeed', 'atDisconnect', 'atReset', 'apReset'])
 
 const DRAG_PX_FOR_FULL_RANGE = 220
 

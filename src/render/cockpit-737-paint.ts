@@ -7,8 +7,19 @@
  * otherwise — recorded in PROGRESS.md. No logos or trademarks are drawn.
  */
 
-export const PANEL_GRAY = '#565b60'
-export const PANEL_EDGE = '#3f4347'
+import type { DuLayoutName } from './cockpit-profile'
+
+/** Panel face / seam colours — set per airplane (manufacturer palette)
+ *  before the deck paints; every painter reads the current values. */
+export let PANEL_GRAY = '#565b60'
+export let PANEL_EDGE = '#3f4347'
+export function setPanelPalette(panel: string, edge: string): void {
+  PANEL_GRAY = panel
+  PANEL_EDGE = edge
+}
+
+/** Which family's legends the panels carry. */
+export type PanelStyle = 'boeing' | 'airbus' | 'generic'
 export const ENGRAVE = '#eceae0'
 const LIGHT_OFF = '#2a2d30'
 
@@ -229,6 +240,14 @@ function lightsRow(o: OverheadState): Item[] {
     TOG('LOGO', o.powered), TOG('POSITION', o.powered), TOG('ANTI COLLISION', o.powered), TOG('WING', false), TOG('WHEEL WELL', false),
   ]
 }
+/** Canvas-space box of one item in the lights / engine-start row. */
+export function lightsRowItemBox(W: number, H: number, index: number): { x0: number; x1: number; y0: number; y1: number } {
+  const lightsH = H * 0.13, n = lightsRow({ landing: false, powered: true }).length, cw = (W - 30) / n
+  return { x0: 15 + index * cw, x1: 15 + (index + 1) * cw, y0: H - lightsH + 4, y1: H - 10 }
+}
+/** Lights-row indices of the ENGINE 1 / ENGINE 2 start selectors. */
+export const ENGINE_START_ITEMS = [11, 13] as const
+
 /** Canvas-space box of the landing-light switch group (for the 3D hit). */
 export function landingSwitchBox(W: number, H: number): { x0: number; x1: number; y0: number; y1: number } {
   const lightsH = H * 0.13, n = lightsRow({ landing: false, powered: true }).length, cw = (W - 30) / n
@@ -294,20 +313,24 @@ export function paintOverhead(c: Ctx, W: number, H: number, state: OverheadState
 // Main instrument panel
 // ---------------------------------------------------------------------------
 
-/** Main-panel layout in panel metres: lateral (−left) / up, shared by the
- *  painter and the 3D builder so DU glass and live screens coincide. */
 /** A/P, A/T, FMC P/RST light strip height (below the glareshield hood). */
 export const PRST_UP = 0.795
 
-/** The P/RST strip on its own canvas (LIVE overlay): A/P and A/T lamps
- *  flash red after a disconnect until reset. */
-export function paintPrst(c: Ctx, W: number, H: number, ap: boolean, at: boolean): void {
+/** The disconnect-light strip on its own canvas (LIVE overlay): the A/P and
+ *  A/T lamps flash red after a disconnect until reset. Legends per family. */
+export function paintPrst(c: Ctx, W: number, H: number, ap: boolean, at: boolean, style: PanelStyle = 'boeing'): void {
   c.fillStyle = PANEL_GRAY
   c.fillRect(0, 0, W, H)
-  const items: Array<[string[], string, boolean]> = [[['A/P', 'P/RST'], RED, ap], [['A/T', 'P/RST'], RED, at], [['FMC', 'P/RST'], AMBER, false]]
+  const items: Array<[string[], string, boolean]> = style === 'boeing'
+    ? [[['A/P', 'P/RST'], RED, ap], [['A/T', 'P/RST'], RED, at], [['FMC', 'P/RST'], AMBER, false]]
+    : style === 'airbus'
+      ? [[['AUTO', 'LAND'], RED, ap], [['A/THR', 'DISC'], AMBER, at], [['TERR', 'ON ND'], GREEN, false]]
+      : [[['AP', 'DISC'], RED, ap], [['AT', 'DISC'], AMBER, at], [['TAWS', 'INHB'], AMBER, false]]
   items.forEach(([t, col, lit], i) => lamp(c, (i + 0.1) * (W / 3), H * 0.08, (W / 3) * 0.8, H * 0.84, t, col, lit))
 }
 
+/** Main-panel outline in panel metres: lateral (−left) / up, shared by the
+ *  painter and the 3D builder; the `six` display positions are the 737NG's. */
 export const MIP = {
   left: -0.84, right: 0.84, bottom: 0.3, top: 0.83,
   /** DU bezel size and active (glass) size, metres. */
@@ -322,8 +345,45 @@ export const MIP = {
   gear: { lat: 0.215, up: 0.66 },
 } as const
 
-/** Paint the MIP face. `px(lat)`/`py(up)` map panel metres to canvas px. */
-export function paintMip(c: Ctx, W: number, H: number): void {
+export type DuKind = 'pfd' | 'nd' | 'eicas' | 'lower'
+export interface DuSlot { kind: DuKind; lat: number; up: number; w: number; h: number }
+export interface DeckLayout {
+  name: DuLayoutName
+  dus: DuSlot[]
+  isfd: { lat: number; up: number; size: number }
+  gear: { lat: number; up: number; scale: number }
+  /** MFDs carry the engine display beside the map (no dedicated EICAS DU). */
+  ndEngines: boolean
+}
+
+/** Display arrangements (published flight decks): six 8-inch DUs (737NG,
+ *  757/767/777/747, A320–A380, CRJ, MD-11); four large landscape DUs
+ *  (737 MAX, Gulfstream PlaneView, Falcon EASy, Pro Line turboprops);
+ *  five (787, A220, E-Jets, Q400, ATR -600, Citation X); three (Citation CJ /
+ *  Latitude, Phenom, HondaJet). Glass = bezel less 2.15 cm a side. */
+export function deckLayout(name: DuLayoutName): DeckLayout {
+  const m = MIP
+  const sq = (kind: DuKind, lat: number, up: number = m.duUp): DuSlot => ({ kind, lat, up, w: m.du, h: m.du })
+  const wide = (kind: DuKind, lat: number, w: number, up: number = m.duUp): DuSlot => ({ kind, lat, up, w, h: w * 0.75 })
+  switch (name) {
+    case 'fourWide':
+      return { name, ndEngines: true, dus: [wide('pfd', -0.6, 0.27), wide('nd', -0.3, 0.27), wide('nd', 0.3, 0.27), wide('pfd', 0.6, 0.27)], isfd: { lat: -0.08, up: 0.705, size: 0.088 }, gear: { lat: 0.085, up: 0.66, scale: 1 } }
+    case 'fiveWide':
+      return { name, ndEngines: false, dus: [wide('pfd', -0.6, 0.22), wide('nd', -0.33, 0.22), wide('eicas', 0, 0.22), wide('nd', 0.33, 0.22), wide('pfd', 0.6, 0.22)], isfd: { lat: -0.165, up: 0.705, size: 0.085 }, gear: { lat: 0.165, up: 0.66, scale: 0.72 } }
+    case 'threeWide':
+      return { name, ndEngines: true, dus: [wide('pfd', -0.55, 0.26), wide('nd', 0, 0.32, 0.65), wide('pfd', 0.55, 0.26)], isfd: { lat: -0.295, up: 0.705, size: 0.088 }, gear: { lat: 0.295, up: 0.66, scale: 1 } }
+    default:
+      return { name: 'six', ndEngines: false, dus: [sq('pfd', m.captPfd), sq('nd', m.captNd), sq('eicas', m.upperDu), sq('lower', m.lowerDu, m.lowerDuUp), sq('nd', m.foNd), sq('pfd', m.foPfd)], isfd: { ...m.isfd }, gear: { ...m.gear, scale: 1 } }
+  }
+}
+
+/** Glass (active area) of a slot. */
+export function duGlass(s: DuSlot): { w: number; h: number } {
+  return { w: s.w - 0.043, h: s.h - 0.043 }
+}
+
+/** Paint the MIP face for a layout and family. */
+export function paintMip(c: Ctx, W: number, H: number, layout: DeckLayout = deckLayout('six'), style: PanelStyle = 'boeing', turboprop = false): void {
   const m = MIP
   const sx = W / (m.right - m.left), sy = H / (m.top - m.bottom)
   const px = (lat: number): number => (lat - m.left) * sx
@@ -353,25 +413,21 @@ export function paintMip(c: Ctx, W: number, H: number): void {
   for (const lat of [-m.centerHalf, m.centerHalf]) { c.beginPath(); c.moveTo(px(lat), py(m.top)); c.lineTo(px(lat), py(m.sideBottom)); c.stroke() }
   for (let lat = m.left + 0.04; lat < m.right; lat += 0.21) { screw(c, px(lat), py(m.top - 0.012), 6) }
 
-  // Six DU bezels with glass, softkey-less (the CDS DUs carry only a
-  // brightness knob and a light sensor).
-  const du = (lat: number, up: number): void => {
-    const w = m.du * sx, h = m.du * sy, x = px(lat) - w / 2, y = py(up) - h / 2
+  // Display bezels with glass (the live screens render just proud of them).
+  for (const slot of layout.dus) {
+    const w = slot.w * sx, h = slot.h * sy, x = px(slot.lat) - w / 2, y = py(slot.up) - h / 2
     c.fillStyle = '#1d1f21'
     c.beginPath(); c.roundRect(x, y, w, h, 14); c.fill()
     c.strokeStyle = '#0c0d0e'; c.lineWidth = 3; c.stroke()
-    const gw = m.glass * sx, gh = m.glass * sy
+    const gl = duGlass(slot)
     c.fillStyle = '#040506'
-    c.fillRect(px(lat) - gw / 2, py(up) - gh / 2, gw, gh)
-    for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) screw(c, px(lat) + dx * (w / 2 - 12), py(up) + dy * (h / 2 - 12), 5)
-    knob(c, px(lat) + w / 2 - 22, py(up) + h / 2 - 22, 9)
-    c.fillStyle = '#0a0b0c'; c.beginPath(); c.arc(px(lat) - w / 2 + 20, py(up) + h / 2 - 20, 5, 0, Math.PI * 2); c.fill()
+    c.fillRect(px(slot.lat) - (gl.w * sx) / 2, py(slot.up) - (gl.h * sy) / 2, gl.w * sx, gl.h * sy)
+    for (const [dx, dy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) screw(c, px(slot.lat) + dx * (w / 2 - 12), py(slot.up) + dy * (h / 2 - 12), 5)
+    knob(c, px(slot.lat) + w / 2 - 22, py(slot.up) + h / 2 - 22, 9)
+    c.fillStyle = '#0a0b0c'; c.beginPath(); c.arc(px(slot.lat) - w / 2 + 20, py(slot.up) + h / 2 - 20, 5, 0, Math.PI * 2); c.fill()
   }
-  for (const lat of [m.captPfd, m.captNd, m.foNd, m.foPfd]) du(lat, m.duUp)
-  du(m.upperDu, m.duUp)
-  du(m.lowerDu, m.lowerDuUp)
 
-  // Captain panel: clock, A/P-A/T-FMC annunciators, display selectors.
+  // Captain / F/O panels: clock, display selectors, glideslope inhibit.
   const clock = (lat: number, up: number): void => {
     const r = 0.034 * sx
     c.fillStyle = '#121315'; c.beginPath(); c.arc(px(lat), py(up), r + 6, 0, Math.PI * 2); c.fill()
@@ -382,43 +438,76 @@ export function paintMip(c: Ctx, W: number, H: number): void {
   }
   clock(-0.775, 0.765)
   clock(0.775, 0.765)
+  const pfdLats = layout.dus.filter(d => d.kind === 'pfd').map(d => d.lat)
   for (const side of [-1, 1]) {
-    const lat0 = side * 0.645
-    const items = [['A/P', 'P/RST'], ['A/T', 'P/RST'], ['FMC', 'P/RST']]
-    items.forEach((t, i) => lamp(c, px(lat0 - 0.06 + i * 0.06) - 0.024 * sx, py(PRST_UP) - 0.011 * sy, 0.048 * sx, 0.022 * sy, t, i < 2 ? RED : AMBER))
-    engrave(c, 'MAIN PANEL DUs', px(side * 0.69), py(0.53), 12)
-    knob(c, px(side * 0.69), py(0.505), 0.013 * sx, -Math.PI / 2, [['OUTBD PFD', -Math.PI * 0.95], ['NORM', -Math.PI / 2], ['ENG PRI', -Math.PI * 0.05]])
-    engrave(c, 'LOWER DU', px(side * 0.57), py(0.53), 12)
-    knob(c, px(side * 0.57), py(0.505), 0.013 * sx, -Math.PI / 2, [['ENG PRI', -Math.PI * 0.95], ['NORM', -Math.PI / 2], ['ND', -Math.PI * 0.05]])
-    lamp(c, px(side * 0.785) - 0.03 * sx, py(0.705) - 0.018 * sy, 0.06 * sx, 0.036 * sy, ['BELOW', 'G/S'], AMBER)
-    engrave(c, 'P-INHIBIT', px(side * 0.785), py(0.672), 10)
+    const lat0 = pfdLats.find(l => Math.sign(l) === side) ?? side * 0.645
+    // Disconnect lights (painted; the LIVE strip overlays them).
+    paintPrstAt(c, px(lat0), py(PRST_UP), 0.18 * sx, 0.024 * sy, style)
+    const [selA, selB] = style === 'airbus' ? [['PFD/ND XFR', ['PFD', 'NORM', 'ND']], ['ECAM/ND XFR', ['CAPT', 'NORM', 'F/O']]] as const
+      : style === 'boeing' ? [['MAIN PANEL DUs', ['OUTBD PFD', 'NORM', 'ENG PRI']], ['LOWER DU', ['ENG PRI', 'NORM', 'ND']]] as const
+        : [['DISPLAY', ['PFD', 'NORM', 'MFD']], ['REVERSION', ['NORM', 'MFD', 'EICAS']]] as const
+    engrave(c, selA[0], px(side * 0.69), py(0.53), 12)
+    knob(c, px(side * 0.69), py(0.505), 0.013 * sx, -Math.PI / 2, [[selA[1][0], -Math.PI * 0.95], [selA[1][1], -Math.PI / 2], [selA[1][2], -Math.PI * 0.05]])
+    engrave(c, selB[0], px(side * 0.57), py(0.53), 12)
+    knob(c, px(side * 0.57), py(0.505), 0.013 * sx, -Math.PI / 2, [[selB[1][0], -Math.PI * 0.95], [selB[1][1], -Math.PI / 2], [selB[1][2], -Math.PI * 0.05]])
+    const gsLamp = style === 'airbus' ? ['G/S', 'MODE'] : ['BELOW', 'G/S']
+    lamp(c, px(side * 0.785) - 0.03 * sx, py(0.705) - 0.018 * sy, 0.06 * sx, 0.036 * sy, gsLamp, AMBER)
+    engrave(c, style === 'airbus' ? 'LOUD SPKR' : 'P-INHIBIT', px(side * 0.785), py(0.672), 10)
   }
-  knob(c, px(-0.785), py(0.505), 0.012 * sx, -Math.PI / 2, [['ALT', -Math.PI * 0.8], ['NORM', -Math.PI * 0.2]], 'NOSE WHEEL STEERING')
+  knob(c, px(-0.785), py(0.505), 0.012 * sx, -Math.PI / 2, [['ALT', -Math.PI * 0.8], ['NORM', -Math.PI * 0.2]], style === 'airbus' ? 'A/SKID & N/W STRG' : 'NOSE WHEEL STEERING')
 
-  // Center panel: ISFD bezel (live face drawn by the 3D builder), N1 SET,
-  // SPD REF, FUEL FLOW, MFD buttons, LE flaps lights.
-  const f = m.isfd
+  // Center panel: standby display bezel (live face drawn by the 3D
+  // builder), then the family's center-stack controls under it.
+  const f = layout.isfd
   c.fillStyle = '#18191b'
   c.beginPath(); c.roundRect(px(f.lat) - (f.size / 2 + 0.01) * sx, py(f.up) - (f.size / 2 + 0.01) * sy, (f.size + 0.02) * sx, (f.size + 0.02) * sy, 10); c.fill()
   knob(c, px(f.lat) + (f.size / 2 - 0.003) * sx, py(f.up) + (f.size / 2 + 0.003) * sy, 9)
-  engrave(c, 'N1 SET', px(-0.265), py(0.575), 11)
-  knob(c, px(-0.265), py(0.55), 0.012 * sx, -Math.PI / 2, [['2', -Math.PI * 0.9], ['1', -Math.PI * 0.65], ['BOTH', -Math.PI * 0.35], ['AUTO', -Math.PI * 0.1]])
-  engrave(c, 'SPD REF', px(-0.205), py(0.575), 11)
-  knob(c, px(-0.205), py(0.55), 0.012 * sx, -Math.PI / 2, [['V1', -Math.PI * 0.9], ['VR', -Math.PI * 0.7], ['WT', -Math.PI * 0.5], ['VREF', -Math.PI * 0.3], ['SET', -Math.PI * 0.1]])
-  toggle(c, px(-0.235), py(0.47), 'FUEL FLOW', true, 0.9)
-  for (const [t, i] of [['ENG', 0], ['SYS', 1]] as const) lamp(c, px(-0.27 + i * 0.07) - 0.025 * sx, py(0.39) - 0.012 * sy, 0.05 * sx, 0.024 * sy, [t], WHITE_LIGHT)
-  engrave(c, 'MFD', px(-0.235), py(0.415), 11)
-  lamp(c, px(0.215) - 0.035 * sx, py(0.53) - 0.012 * sy, 0.07 * sx, 0.024 * sy, ['ANTISKID', 'INOP'], AMBER)
-  engrave(c, 'AUTO BRAKE', px(0.215), py(0.505), 11)
-  lamp(c, px(0.27) - 0.024 * sx, py(0.478) - 0.012 * sy, 0.048 * sx, 0.024 * sy, ['AUTO BRAKE', 'DISARM'], AMBER)
-  engrave(c, 'LANDING GEAR', px(0.215), py(0.81), 12)
+  const cl = f.lat, cu = f.up
+  if (style === 'boeing') {
+    engrave(c, turboprop ? 'TQ SET' : 'N1 SET', px(cl - 0.03), py(cu - 0.13), 11)
+    knob(c, px(cl - 0.03), py(cu - 0.155), 0.012 * sx, -Math.PI / 2, [['2', -Math.PI * 0.9], ['1', -Math.PI * 0.65], ['BOTH', -Math.PI * 0.35], ['AUTO', -Math.PI * 0.1]])
+    engrave(c, 'SPD REF', px(cl + 0.03), py(cu - 0.13), 11)
+    knob(c, px(cl + 0.03), py(cu - 0.155), 0.012 * sx, -Math.PI / 2, [['V1', -Math.PI * 0.9], ['VR', -Math.PI * 0.7], ['WT', -Math.PI * 0.5], ['VREF', -Math.PI * 0.3], ['SET', -Math.PI * 0.1]])
+    toggle(c, px(cl), py(cu - 0.235), 'FUEL FLOW', true, 0.9)
+    for (const [t, i] of [['ENG', 0], ['SYS', 1]] as const) lamp(c, px(cl - 0.035 + i * 0.07) - 0.025 * sx, py(cu - 0.315) - 0.012 * sy, 0.05 * sx, 0.024 * sy, [t], WHITE_LIGHT)
+    engrave(c, 'MFD', px(cl), py(cu - 0.29), 11)
+  } else if (style === 'airbus') {
+    for (const [t, i] of [['LO', 0], ['MED', 1], ['MAX', 2]] as const) lamp(c, px(cl - 0.05 + i * 0.05) - 0.021 * sx, py(cu - 0.15) - 0.014 * sy, 0.042 * sx, 0.028 * sy, [t, 'DECEL'], GREEN)
+    engrave(c, 'AUTO/BRK', px(cl), py(cu - 0.12), 11)
+    toggle(c, px(cl - 0.03), py(cu - 0.235), 'A/SKID', true, 0.9)
+    lamp(c, px(cl + 0.04) - 0.025 * sx, py(cu - 0.235) - 0.014 * sy, 0.05 * sx, 0.028 * sy, ['BRK', 'FAN'], WHITE_LIGHT)
+    gauge(c, px(cl), py(cu - 0.32), 0.025 * sx, 'BRAKES PSI', 6, 0.1)
+  } else {
+    engrave(c, 'AUTO BRAKE', px(cl), py(cu - 0.13), 11)
+    knob(c, px(cl), py(cu - 0.155), 0.012 * sx, -Math.PI / 2, [['OFF', -Math.PI * 0.9], ['LO', -Math.PI * 0.6], ['MED', -Math.PI * 0.4], ['HI', -Math.PI * 0.1]])
+    toggle(c, px(cl - 0.03), py(cu - 0.235), 'ANTISKID', true, 0.9)
+    toggle(c, px(cl + 0.03), py(cu - 0.235), 'EMER BRK', false, 0.9)
+    lamp(c, px(cl) - 0.035 * sx, py(cu - 0.315) - 0.012 * sy, 0.07 * sx, 0.024 * sy, ['DISPLAY', 'REVERSION'], WHITE_LIGHT)
+  }
+  const gr = layout.gear
+  lamp(c, px(gr.lat) - 0.035 * sx, py(gr.up - 0.13) - 0.012 * sy, 0.07 * sx, 0.024 * sy, ['ANTISKID', 'INOP'], AMBER)
+  engrave(c, style === 'airbus' ? 'LDG GEAR' : 'LANDING GEAR', px(gr.lat), py(0.81), 12)
 
-  // F/O panel extras: brake pressure gauge, STAB OUT OF TRIM, SPEEDBRAKE.
+  // F/O panel extras: brake pressure gauge, trim / speedbrake lights.
   gauge(c, px(0.785), py(0.53), 0.03 * sx, 'BRAKE PRESS', 6, 0.82)
-  lamp(c, px(0.70) - 0.04 * sx, py(0.565) - 0.012 * sy, 0.08 * sx, 0.024 * sy, ['STAB OUT', 'OF TRIM'], AMBER)
-  lamp(c, px(-0.12) - 0.04 * sx, py(0.79) - 0.011 * sy, 0.08 * sx, 0.022 * sy, ['SPEED BRAKE', 'ARMED'], GREEN)
-  lamp(c, px(-0.03) - 0.04 * sx, py(0.79) - 0.011 * sy, 0.08 * sx, 0.022 * sy, ['SPEED BRAKE', 'DO NOT ARM'], AMBER)
-  lamp(c, px(0.06) - 0.04 * sx, py(0.79) - 0.011 * sy, 0.08 * sx, 0.022 * sy, ['STAB OUT', 'OF TRIM'], AMBER)
+  if (style === 'boeing') {
+    lamp(c, px(0.70) - 0.04 * sx, py(0.535) - 0.012 * sy, 0.08 * sx, 0.024 * sy, ['STAB OUT', 'OF TRIM'], AMBER)
+    lamp(c, px(-0.12) - 0.04 * sx, py(0.79) - 0.011 * sy, 0.08 * sx, 0.022 * sy, ['SPEED BRAKE', 'ARMED'], GREEN)
+    lamp(c, px(-0.03) - 0.04 * sx, py(0.79) - 0.011 * sy, 0.08 * sx, 0.022 * sy, ['SPEED BRAKE', 'DO NOT ARM'], AMBER)
+    lamp(c, px(0.06) - 0.04 * sx, py(0.79) - 0.011 * sy, 0.08 * sx, 0.022 * sy, ['STAB OUT', 'OF TRIM'], AMBER)
+  } else if (style === 'airbus') {
+    lamp(c, px(0.70) - 0.04 * sx, py(0.535) - 0.012 * sy, 0.08 * sx, 0.024 * sy, ['TERR', 'ON ND'], GREEN)
+  } else {
+    lamp(c, px(0.70) - 0.04 * sx, py(0.535) - 0.012 * sy, 0.08 * sx, 0.024 * sy, ['TRIM', 'FAIL'], AMBER)
+  }
+}
+
+/** Painted disconnect-light strip (the live overlay sits over it). */
+function paintPrstAt(c: Ctx, cx: number, cy: number, w: number, h: number, style: PanelStyle): void {
+  c.save()
+  c.translate(cx - w / 2, cy - h / 2)
+  paintPrst(c, w, h, false, false, style)
+  c.restore()
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +515,9 @@ export function paintMip(c: Ctx, W: number, H: number): void {
 // ---------------------------------------------------------------------------
 
 /** EFIS control panel (captain or F/O). Cosmetic. */
-export function paintEfis(c: Ctx, W: number, H: number): void {
+export function paintEfis(c: Ctx, W: number, H: number, style: PanelStyle = 'boeing'): void {
+  if (style === 'airbus') { paintEfisAirbus(c, W, H); return }
+  if (style === 'generic') { paintDisplayControl(c, W, H); return }
   plate(c, 0, 0, W, H)
   const k = H / 300
   knob(c, W * 0.17, H * 0.36, 30 * k, -Math.PI / 2, [['RADIO', -Math.PI * 0.85], ['BARO', -Math.PI * 0.15]], 'MINS')
@@ -451,7 +542,17 @@ export function paintEfis(c: Ctx, W: number, H: number): void {
 
 /** Glareshield annunciator cluster: FIRE WARN, MASTER CAUTION and the
  *  six-pack system annunciator. LIVE: fire / caution lamps. */
-export function paintAnnunciators(c: Ctx, W: number, H: number, side: 'L' | 'R', fire: boolean, caution: boolean): void {
+export function paintAnnunciators(c: Ctx, W: number, H: number, side: 'L' | 'R', fire: boolean, caution: boolean, style: PanelStyle = 'boeing'): void {
+  if (style !== 'boeing') {
+    // Airbus / most other types: MASTER WARNING (red) + MASTER CAUTION
+    // (amber) pushbutton lights, plus the family's extra annunciators.
+    plate(c, 0, 0, W, H)
+    lamp(c, W * 0.06, H * 0.1, W * 0.4, H * 0.34, ['MASTER', 'WARN'], RED, fire)
+    lamp(c, W * 0.54, H * 0.1, W * 0.4, H * 0.34, ['MASTER', 'CAUT'], AMBER, caution)
+    const extra = style === 'airbus' ? [['AUTO LAND', RED], ['SIDE STICK', GREEN], ['PRIORITY', RED]] : [['AP DISC', RED], ['TAWS', AMBER], ['GPWS', AMBER]]
+    extra.forEach(([t, col], i) => lamp(c, W * 0.06 + i * W * 0.3, H * 0.6, W * 0.27, H * 0.28, [t!], col!))
+    return
+  }
   plate(c, 0, 0, W, H)
   const k = H / 300
   const bw = W * 0.4, bh = H * 0.3
@@ -488,7 +589,17 @@ export interface Mcp737State {
   atArm: boolean
 }
 
-export function paintMcp737(c: Ctx, W: number, H: number, s: Mcp737State): void {
+/** Clickable controls on each guidance panel, as fractions of its width
+ *  (shared by the painter and the 3D hit boxes). */
+export const FCU_HITS: Record<PanelStyle, { cmdA: number; atArm?: number; speed?: number; disengage?: number }> = {
+  boeing: { cmdA: 0.925, atArm: 0.15, speed: 0.255, disengage: 0.95 },
+  airbus: { cmdA: 0.565, atArm: 0.655, speed: 0.13 },
+  generic: { cmdA: 0.68, atArm: 0.74, speed: 0.12 },
+}
+
+export function paintMcp737(c: Ctx, W: number, H: number, s: Mcp737State, style: PanelStyle = 'boeing', autothrottle = true): void {
+  if (style === 'airbus') { paintFcuAirbus(c, W, H, s); return }
+  if (style === 'generic') { paintGuidancePanel(c, W, H, s, autothrottle); return }
   c.fillStyle = '#5b6065'
   c.fillRect(0, 0, W, H)
   c.strokeStyle = '#33373a'; c.lineWidth = 4; c.strokeRect(2, 2, W - 4, H - 4)
@@ -665,5 +776,122 @@ export function paintCduKeys(c: Ctx, W: number, H: number): void {
     const x = W * 0.42 + (i % 5) * sz * 1.12, y = top + Math.floor(i / 5) * sz * 1.05
     c.fillStyle = '#1e2124'; c.fillRect(x, y, sz, sz * 0.88)
     engrave(c, l, x + sz / 2, y + sz * 0.45, sz * (l.length > 1 ? 0.3 : 0.5))
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Airbus FCU and EFIS control panel; business-jet / regional guidance panel
+// ---------------------------------------------------------------------------
+
+/** Airbus flight control unit: SPD/MACH, HDG/TRK, ALT, V/S windows with
+ *  the knobs under them, LOC / AP1 / AP2 / A/THR / EXPED / APPR. LIVE. */
+function paintFcuAirbus(c: Ctx, W: number, H: number, s: Mcp737State): void {
+  c.fillStyle = PANEL_GRAY
+  c.fillRect(0, 0, W, H)
+  c.strokeStyle = PANEL_EDGE; c.lineWidth = 4; c.strokeRect(2, 2, W - 4, H - 4)
+  const k = H / 300
+  const AMBER_LCD = '#ffa236'
+  const win = (x: number, w: number, label: string, value: string, dot = false): void => {
+    engrave(c, label, x + w / 2, H * 0.12, 16 * k)
+    readout(c, x, H * 0.2, w, H * 0.26, value, AMBER_LCD)
+    if (dot) { c.fillStyle = AMBER_LCD; c.beginPath(); c.arc(x + w - 10 * k, H * 0.25, 4 * k, 0, Math.PI * 2); c.fill() }
+    knob(c, x + w / 2, H * 0.72, 30 * k)
+  }
+  const btn = (x: number, label: string, lit: boolean, w = 76 * k): void => {
+    const y = H * 0.56, h = 52 * k
+    c.fillStyle = '#2a2f35'
+    c.beginPath(); c.roundRect(x - w / 2, y, w, h, 5); c.fill()
+    engrave(c, label, x, y + 32 * k, 15 * k)
+    c.fillStyle = lit ? '#7dff7d' : '#3a403c'
+    if (lit) { c.shadowColor = '#7dff7d'; c.shadowBlur = 10 }
+    c.fillRect(x - w * 0.35, y + 7 * k, w * 0.7, 6 * k)
+    c.shadowBlur = 0
+  }
+  const f3 = (n: number): string => String(Math.round(((n % 360) + 360) % 360) || 360).padStart(3, '0')
+  win(W * 0.06, W * 0.12, 'SPD   MACH', String(Math.round(s.iasKt)).padStart(3, ' '), !s.speedMode)
+  btn(W * 0.235, 'LOC', s.lateral === 'APR' || s.lateral === 'NAV')
+  win(W * 0.29, W * 0.12, 'HDG   TRK', f3(s.hdgDeg), s.lateral !== 'HDG')
+  btn(W * 0.565, 'AP1', s.cmdA)
+  btn(W * 0.565 + 82 * k, 'AP2', false)
+  btn(W * 0.655, 'A/THR', s.atArm)
+  win(W * 0.43, W * 0.11, 'ALT', String(Math.round(s.altFt)).padStart(5, ' '), s.vertical !== 'ALT')
+  btn(W * 0.75, 'EXPED', false)
+  btn(W * 0.84, 'APPR', s.lateral === 'APR' || s.vertical === 'GS')
+  win(W * 0.875, W * 0.11, 'V/S   FPA', s.vsActive ? `${s.vsFpm >= 0 ? '+' : '-'}${String(Math.abs(Math.round(s.vsFpm / 100))).padStart(2, '0')}oo` : '-----')
+}
+
+/** Airbus EFIS control panel: QNH/STD, FD and LS, the ND filters, and the
+ *  ND mode / range selectors. Cosmetic. */
+function paintEfisAirbus(c: Ctx, W: number, H: number): void {
+  plate(c, 0, 0, W, H)
+  const k = H / 300
+  readout(c, W * 0.06, H * 0.08, W * 0.3, H * 0.14, '1013', '#ffa236')
+  knob(c, W * 0.21, H * 0.45, 30 * k, -Math.PI / 2, [['inHg', -Math.PI * 0.85], ['hPa', -Math.PI * 0.15]], 'QNH')
+  for (const [t, x] of [['FD', 0.45], ['LS', 0.6]] as const) {
+    c.fillStyle = '#2a2f35'; c.beginPath(); c.roundRect(W * x - 26 * k, H * 0.12, 52 * k, 34 * k, 4); c.fill()
+    engrave(c, t, W * x, H * 0.12 + 17 * k, 14 * k)
+  }
+  knob(c, W * 0.52, H * 0.55, 26 * k, -Math.PI * 0.55, [['ILS', -Math.PI * 0.95], ['VOR', -Math.PI * 0.75], ['NAV', -Math.PI * 0.55], ['ARC', -Math.PI * 0.35], ['PLAN', -Math.PI * 0.15]], 'MODE')
+  knob(c, W * 0.8, H * 0.55, 26 * k, -Math.PI * 0.6, [['10', -Math.PI * 0.95], ['20', -Math.PI * 0.75], ['40', -Math.PI * 0.55], ['80', -Math.PI * 0.35], ['160', -Math.PI * 0.15]], 'RANGE')
+  ;['CSTR', 'WPT', 'VOR.D', 'NDB', 'ARPT'].forEach((b, i) => {
+    const x = W * (0.12 + i * 0.18), y = H * 0.86
+    c.fillStyle = '#2a2f35'; c.beginPath(); c.roundRect(x - 26 * k, y - 15 * k, 52 * k, 30 * k, 4); c.fill()
+    engrave(c, b, x, y, 12 * k)
+  })
+}
+
+/** Business-jet / regional flight-guidance panel (Collins / Honeywell /
+ *  Garmin family): CRS, HDG, ALT, SPD knobs; HDG NAV APR B/C, VNAV FLC VS
+ *  ALT; AP, YD and, where fitted, A/T. Targets show on the PFD. LIVE. */
+function paintGuidancePanel(c: Ctx, W: number, H: number, s: Mcp737State, autothrottle: boolean): void {
+  c.fillStyle = PANEL_GRAY
+  c.fillRect(0, 0, W, H)
+  c.strokeStyle = PANEL_EDGE; c.lineWidth = 4; c.strokeRect(2, 2, W - 4, H - 4)
+  const k = H / 300
+  const btn = (x: number, label: string, lit: boolean, w = 72 * k): void => {
+    const y = H * 0.36, h = 50 * k
+    c.fillStyle = '#25292e'
+    c.beginPath(); c.roundRect(x - w / 2, y, w, h, 5); c.fill()
+    engrave(c, label, x, y + 30 * k, 15 * k)
+    c.fillStyle = lit ? '#7dff7d' : '#3a403c'
+    if (lit) { c.shadowColor = '#7dff7d'; c.shadowBlur = 10 }
+    c.fillRect(x - w * 0.12, y + 6 * k, w * 0.24, 6 * k)
+    c.shadowBlur = 0
+  }
+  const kn = (x: number, label: string): void => { knob(c, x, H * 0.5, 30 * k); engrave(c, label, x, H * 0.16, 16 * k) }
+  kn(W * 0.05, 'CRS 1')
+  kn(W * 0.12, 'SPD')
+  btn(W * 0.2, 'HDG', s.lateral === 'HDG')
+  btn(W * 0.2 + 78 * k, 'NAV', s.lateral === 'NAV' || s.lateral === 'GPS')
+  btn(W * 0.2 + 156 * k, 'APR', s.lateral === 'APR')
+  btn(W * 0.2 + 234 * k, 'B/C', s.lateral === 'BC')
+  kn(W * 0.45, 'HDG')
+  btn(W * 0.53, 'VNAV', false)
+  btn(W * 0.53 + 78 * k, 'FLC', s.vertical === 'FLC' || s.vertical === 'IAS')
+  btn(W * 0.53 + 156 * k, 'VS', s.vertical === 'VS')
+  btn(W * 0.53 + 234 * k, 'ALT', s.vertical === 'ALT')
+  btn(W * 0.68, 'AP', s.cmdA)
+  if (autothrottle) btn(W * 0.74, 'A/T', s.atArm)
+  btn(W * 0.8, 'YD', s.cmdA)
+  kn(W * 0.86, 'ALT')
+  // pitch wheel
+  c.fillStyle = '#1b1c1e'; c.fillRect(W * 0.91, H * 0.25, W * 0.022, H * 0.5)
+  for (let i = 0; i < 9; i++) { c.fillStyle = '#4a4d50'; c.fillRect(W * 0.91, H * 0.27 + i * H * 0.052, W * 0.022, 3) }
+  engrave(c, 'DN / UP', W * 0.921, H * 0.84, 12 * k)
+  kn(W * 0.965, 'CRS 2')
+}
+
+/** Display control panel (business jets / regionals): PFD/MFD formats,
+ *  range, baro, minimums. Cosmetic. */
+function paintDisplayControl(c: Ctx, W: number, H: number): void {
+  plate(c, 0, 0, W, H)
+  const k = H / 300
+  knob(c, W * 0.16, H * 0.42, 28 * k, -Math.PI / 2, [['RA', -Math.PI * 0.85], ['BARO', -Math.PI * 0.15]], 'MINIMUMS')
+  knob(c, W * 0.84, H * 0.42, 28 * k, -Math.PI / 2, [['IN', -Math.PI * 0.85], ['HPA', -Math.PI * 0.15]], 'BARO')
+  knob(c, W * 0.5, H * 0.42, 26 * k, -Math.PI * 0.6, [['5', -Math.PI * 0.9], ['25', -Math.PI * 0.6], ['100', -Math.PI * 0.3], ['300', -Math.PI * 0.1]], 'RANGE')
+  ;['FRMT', 'TERR', 'WX', 'TFC', 'NAV SRC'].forEach((b, i) => {
+    const x = W * (0.12 + i * 0.19), y = H * 0.86
+    c.fillStyle = '#25292e'; c.beginPath(); c.roundRect(x - 28 * k, y - 15 * k, 56 * k, 30 * k, 4); c.fill()
+    engrave(c, b, x, y, 12 * k)
   })
 }

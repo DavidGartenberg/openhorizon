@@ -59,6 +59,22 @@ describe('Boeing engine strip for piston / turboprop / glider', () => {
     expect(low.texts.find(x => x.text === '250')?.color).toBe('#ffb020')
     expect(low.texts.find(x => x.text === '2750')?.color).toBe('#ff2b2b')
   })
+  it('a turboprop shows prop speed and torque, never piston CHT or mixture EGT', () => {
+    const c = makeRecordingCtx()
+    drawBoeingEngineColumn(c, 0, 0, 205, 700, { ...engine, kind: 'turboprop', torquePct: 72 })
+    const t = c.texts.map(x => x.text)
+    expect(t).toContain('NP  RPM'); expect(t).toContain('TRQ %'); expect(t).toContain('72')
+    expect(t).not.toContain('CHT °C'); expect(t).not.toContain('EGT °C')
+  })
+  it('a twin shows one RPM box per engine; a hand-propped airplane shows no bus readouts', () => {
+    const c = makeRecordingCtx()
+    drawBoeingEngineColumn(c, 0, 0, 205, 700, { ...engine, engines: 2 })
+    expect(c.texts.filter(x => x.text === '2300')).toHaveLength(2)
+    const cub = makeRecordingCtx()
+    drawBoeingEngineColumn(cub, 0, 0, 205, 700, { ...engine, hasElectrical: false })
+    expect(cub.texts.map(x => x.text)).toContain('NO ELECTRICAL SYSTEM')
+    expect(cub.texts.some(x => x.text.startsWith('VOLTS'))).toBe(false)
+  })
   it('a glider shows NO ENGINE, not invented gauges', () => {
     const c = makeRecordingCtx()
     drawBoeingEngineColumn(c, 0, 0, 205, 700, { ...engine, hasEngine: false })

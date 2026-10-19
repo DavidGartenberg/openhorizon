@@ -1,8 +1,10 @@
 import * as THREE from 'three'
 import {
-  MIP, PRST_UP, paintPrst, paintMip, paintOverhead, landingSwitchBox, paintEfis, paintAnnunciators, paintMcp737, paintAisle, paintCdu, paintCduKeys,
-  plate, engrave, knob, gauge, lamp, AMBER, GREEN, RED, ENGRAVE, type Mcp737State, type AisleState,
+  MIP, PRST_UP, paintPrst, paintMip, paintOverhead, landingSwitchBox, lightsRowItemBox, ENGINE_START_ITEMS, paintEfis, paintAnnunciators, paintMcp737, paintAisle, paintCdu, paintCduKeys,
+  plate, engrave, knob, gauge, lamp, AMBER, GREEN, RED, ENGRAVE, PANEL_GRAY, setPanelPalette, deckLayout, duGlass, FCU_HITS,
+  type Mcp737State, type AisleState, type DeckLayout, type PanelStyle,
 } from './cockpit-737-paint'
+import { PALETTES, type Maker } from './cockpit-profile'
 
 /**
  * Boeing 737NG flight deck (layout 'boeingNG'). Built around the captain's
@@ -45,6 +47,24 @@ export interface Deck737Screens {
 
 interface Live { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; last: string }
 
+/** How this airplane's deck is dressed (from its cockpit profile). */
+export interface DeckStyle {
+  layout: DeckLayout
+  panel: PanelStyle
+  maker: Maker
+  control: 'yoke' | 'sidestick'
+  trimWheels: boolean
+  reversers: boolean
+  /** Power + condition levers instead of thrust + start levers. */
+  turboprop: boolean
+  speedbrake: boolean
+  autothrottle: boolean
+}
+export const DEFAULT_DECK_STYLE: DeckStyle = {
+  layout: deckLayout('six'), panel: 'boeing', maker: 'boeing', control: 'yoke',
+  trimWheels: true, reversers: true, turboprop: false, speedbrake: true, autothrottle: true,
+}
+
 export interface Deck737 {
   interactive: THREE.Object3D[]
   mcp: Live
@@ -75,6 +95,7 @@ export interface Deck737 {
   flapDetentsDeg: readonly number[]
   /** Engine count (thrust/start levers, engine display, fire handles). */
   engines: number
+  style: DeckStyle
   /** Stub meshes for the CockpitMeshes slots the G1000 path needs. */
   yokeColumn: THREE.Mesh
   yokeWheel: THREE.Mesh
@@ -207,6 +228,34 @@ function buildColumn(lat: number, side: -1 | 1): { pivot: THREE.Group; wheel: TH
   return { pivot, wheel }
 }
 
+/** Sidestick on the outboard side console (Airbus, Falcon 7X): the pivot
+ *  tilts for pitch (x) and roll (z); `wheel` is an empty group so the yoke
+ *  animation path has a target. */
+function buildSidestick(side: -1 | 1): { pivot: THREE.Group; wheel: THREE.Group } {
+  const pivot = new THREE.Group()
+  pivot.position.copy(v(0.16, side * 0.75, 0.455))
+  const boot = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.03, 14), M.rubber)
+  boot.position.y = 0.015
+  pivot.add(boot)
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.016, 0.07, 10), M.wheel)
+  stem.position.y = 0.06
+  pivot.add(stem)
+  const grip = new THREE.Mesh(new THREE.CapsuleGeometry(0.019, 0.07, 4, 12), M.wheel)
+  grip.position.set(0, 0.13, -0.006)
+  grip.rotation.x = -0.32 // raked toward the pilot
+  pivot.add(grip)
+  const thumbRest = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.014, 0.03), M.rubber)
+  thumbRest.position.set(-side * 0.02, 0.15, 0.0)
+  pivot.add(thumbRest)
+  const takeover = new THREE.Mesh(new THREE.CylinderGeometry(0.007, 0.007, 0.008, 10), M.red)
+  takeover.position.set(0, 0.18, -0.02)
+  pivot.add(takeover)
+  const wheel = new THREE.Group()
+  pivot.add(wheel)
+  pivot.userData.sidestick = true
+  return { pivot, wheel }
+}
+
 function buildSeat(lat: number): THREE.Group {
   const g = new THREE.Group()
   const at = (m: THREE.Object3D, fwd: number, up: number, dl = 0): void => { m.position.copy(v(fwd, lat + dl, up)); g.add(m) }
@@ -226,7 +275,14 @@ function buildSeat(lat: number): THREE.Group {
   return g
 }
 
-export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDetentsDeg: readonly number[], engines = 2): Deck737 {
+export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDetentsDeg: readonly number[], engines = 2, style: DeckStyle = DEFAULT_DECK_STYLE): Deck737 {
+  // Manufacturer palette: panel faces, glareshield, lining, stand.
+  const pal = PALETTES[style.maker]
+  setPanelPalette(pal.panel, pal.edge)
+  M.glare.color.setHex(pal.glare); M.lining.color.setHex(pal.lining); M.ceiling.color.setHex(pal.ceiling)
+  M.stand.color.setHex(pal.stand); M.panelBack.color.set(pal.panel).multiplyScalar(0.9)
+  setInteriorFill(1)
+  const layout = style.layout
   const interactive: THREE.Object3D[] = []
   const panelMats: THREE.MeshBasicMaterial[] = []
   const put = (m: THREE.Object3D): THREE.Object3D => { group.add(m); return m }
@@ -237,7 +293,7 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
   const mipW = MIP.right - MIP.left, mipH = MIP.top - MIP.bottom
   const PX = 2000
   const mipTex = canvasTex(Math.round(mipW * PX), Math.round(mipH * PX))
-  paintMip(mipTex.ctx, mipTex.canvas.width, mipTex.canvas.height)
+  paintMip(mipTex.ctx, mipTex.canvas.width, mipTex.canvas.height, layout, style.panel, style.turboprop)
   mipTex.texture.needsUpdate = true
   const MIP_FWD = 0.74
   const mipMesh = new THREE.Mesh(new THREE.PlaneGeometry(mipW, mipH), painted(mipTex.texture, 0.5))
@@ -261,29 +317,32 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
   }
 
   // Live screens just proud of the painted glass.
-  const screen = (tex: THREE.Texture, lat: number, up: number, size: number): THREE.Mesh => {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }))
+  const screen = (tex: THREE.Texture, lat: number, up: number, w: number, h: number): THREE.Mesh => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }))
     m.position.copy(v(MIP_FWD - 0.002, lat, up))
     put(m)
     return m
   }
-  screen(screens.pfd, MIP.captPfd, MIP.duUp, MIP.glass)
-  screen(screens.nd, MIP.captNd, MIP.duUp, MIP.glass)
-  screen(screens.eicas, MIP.upperDu, MIP.duUp, MIP.glass)
-  screen(screens.nd, MIP.foNd, MIP.duUp, MIP.glass)
-  screen(screens.pfd, MIP.foPfd, MIP.duUp, MIP.glass)
-  screen(screens.isfd, MIP.isfd.lat, MIP.isfd.up, MIP.isfd.size)
+  for (const slot of layout.dus) {
+    if (slot.kind === 'lower') continue
+    const g = duGlass(slot)
+    screen(slot.kind === 'pfd' ? screens.pfd : slot.kind === 'nd' ? screens.nd : screens.eicas, slot.lat, slot.up, g.w, g.h)
+  }
+  screen(screens.isfd, layout.isfd.lat, layout.isfd.up, layout.isfd.size, layout.isfd.size)
   // Lower DU: blank in normal operation (secondary engine page on demand).
 
   // Gear panel (LIVE: gear lights + flap position indicator).
   const gearPanel = live(512, 900)
-  const gearPanelW = 0.13, gearPanelH = 0.23
+  const gs = layout.gear.scale
+  const gearPanelW = 0.13 * gs, gearPanelH = 0.23 * gs
   const gp = new THREE.Mesh(new THREE.PlaneGeometry(gearPanelW, gearPanelH), painted(gearPanel.texture))
-  gp.position.copy(v(MIP_FWD - 0.0015, MIP.gear.lat, 0.665))
+  gp.position.copy(v(MIP_FWD - 0.0015, layout.gear.lat, layout.gear.up + 0.005))
   put(gp)
   // Gear lever: wheel-shaped Boeing knob on a lever in a slot.
   const gearHandle = new THREE.Group()
-  gearHandle.position.copy(v(MIP_FWD - 0.01, MIP.gear.lat, 0.665))
+  gearHandle.position.copy(v(MIP_FWD - 0.01, layout.gear.lat, layout.gear.up + 0.005))
+  gearHandle.scale.setScalar(gs)
+  gearHandle.userData.travel = 0.055 * gs
   const gearArm = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.012, 0.06), M.metal)
   gearArm.position.z = 0.03
   gearHandle.add(gearArm)
@@ -297,13 +356,14 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
   // A/P · A/T · FMC P/RST lights (LIVE, both sides share one canvas) —
   // also pushbuttons: pressing resets the light.
   const prst = live(384, 88)
+  const pfdLat = (side: number): number => layout.dus.find((d) => d.kind === 'pfd' && Math.sign(d.lat) === side)?.lat ?? side * 0.645
   for (const side of [-1, 1]) {
     const m = new THREE.Mesh(new THREE.PlaneGeometry(0.18, 0.024), painted(prst.texture))
-    m.position.copy(v(MIP_FWD - 0.0015, side * 0.645, PRST_UP))
+    m.position.copy(v(MIP_FWD - 0.0015, pfdLat(side), PRST_UP))
     put(m)
     for (const [id, dl] of [['apReset', -0.06], ['atReset', 0]] as const) {
       const h = new THREE.Mesh(new THREE.PlaneGeometry(0.05, 0.024), new THREE.MeshBasicMaterial({ visible: false }))
-      h.position.copy(v(MIP_FWD - 0.003, side * 0.645 + dl, PRST_UP))
+      h.position.copy(v(MIP_FWD - 0.003, pfdLat(side) + dl, PRST_UP))
       h.userData.controlId = id
       put(h)
       interactive.push(h)
@@ -339,7 +399,7 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
   face(annunL.texture, -0.84, -0.645)
   face(annunR.texture, 0.645, 0.84)
   const efis = canvasTex(560, 300)
-  paintEfis(efis.ctx, 560, 300)
+  paintEfis(efis.ctx, 560, 300, style.panel)
   efis.texture.needsUpdate = true
   face(efis.texture, -0.64, -0.435)
   face(efis.texture, 0.435, 0.64)
@@ -352,10 +412,11 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
     interactive.push(m)
   }
   const mcpLat = (fx: number): number => -0.43 + fx * 0.86
-  hit('mcpCmdA', mcpLat(0.925), faceUp - faceH * 0.2, 0.03, 0.025)
-  hit('mcpAtArm', mcpLat(0.15), faceUp, 0.035, 0.06)
-  hit('mcpSpeed', mcpLat(0.255), faceUp - faceH * 0.2, 0.035, 0.03)
-  hit('mcpDisengage', mcpLat(0.95), faceUp + faceH * 0.24, 0.06, 0.015)
+  const fh = FCU_HITS[style.panel]
+  hit('mcpCmdA', mcpLat(fh.cmdA), faceUp - faceH * 0.2, 0.035, 0.03)
+  if (style.autothrottle && fh.atArm !== undefined) hit('mcpAtArm', mcpLat(fh.atArm), style.panel === 'boeing' ? faceUp : faceUp - faceH * 0.2, 0.035, style.panel === 'boeing' ? 0.06 : 0.03)
+  if (style.autothrottle && fh.speed !== undefined) hit('mcpSpeed', mcpLat(fh.speed), faceUp - faceH * 0.2, 0.035, 0.03)
+  if (fh.disengage !== undefined) hit('mcpDisengage', mcpLat(fh.disengage), faceUp + faceH * 0.24, 0.06, 0.015)
   hit('masterCaution', -0.69, faceUp + faceH * 0.27, 0.075, 0.035)
   hit('masterCaution', 0.79, faceUp + faceH * 0.27, 0.075, 0.035)
   void mcpMesh
@@ -424,6 +485,16 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
     put(m)
     interactive.push(m)
   }
+  if (style.turboprop) {
+    // Engine start selectors: press and hold to crank (the starter).
+    for (const idx of ENGINE_START_ITEMS) {
+      const b = lightsRowItemBox(2048, 1760, idx)
+      const m = quad(ohAt(b.x0, b.y1), ohAt(b.x1, b.y1), ohAt(b.x1, b.y0), ohAt(b.x0, b.y0), new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide }))
+      m.userData.controlId = 'engStart'
+      put(m)
+      interactive.push(m)
+    }
+  }
   const aftOh = canvasTex(1024, 640)
   {
     const c = aftOh.ctx
@@ -467,44 +538,63 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
     const s = lat < 0 ? -1 : 1
     const p = new THREE.Group()
     p.position.copy(v(0.52, lat, 0.26))
-    // 737 thrust lever: a long arm curving aft to a wide grip.
-    const armPath = new THREE.CatmullRomCurve3([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0.14, 0.01), new THREE.Vector3(0, 0.26, 0.05), new THREE.Vector3(0, 0.31, 0.09)])
-    p.add(new THREE.Mesh(new THREE.TubeGeometry(armPath, 16, 0.009, 8), M.metal))
-    const knobBar = new THREE.Mesh(new THREE.CapsuleGeometry(0.018, 0.03, 4, 10), M.black)
-    knobBar.rotation.z = Math.PI / 2
-    knobBar.scale.set(1, kScale, 1) // capsule length runs along local y before the roll
-    knobBar.position.set(0, 0.315, 0.1)
-    p.add(knobBar)
-    const toga = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.012, 0.008), M.knobGray)
-    toga.position.set(0, 0.297, 0.117)
-    p.add(toga)
-    const atDisc = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.006, 10), M.red)
-    atDisc.rotation.z = Math.PI / 2
-    atDisc.position.set(s * 0.036 * kScale, 0.315, 0.1)
-    atDisc.userData.controlId = 'atDisconnect'
-    interactive.push(atDisc)
-    p.add(atDisc)
+    let knobBar: THREE.Mesh
+    if (style.turboprop) {
+      // Turboprop power lever: straight arm, T-handle grip.
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.26, 0.014), M.metal)
+      arm.position.set(0, 0.13, 0.02)
+      arm.rotation.x = 0.15
+      p.add(arm)
+      knobBar = new THREE.Mesh(new THREE.BoxGeometry(0.05 * kScale, 0.022, 0.03), M.black)
+      knobBar.position.set(0, 0.27, 0.06)
+      p.add(knobBar)
+    } else {
+      // Jet thrust lever: a long arm curving aft to a wide grip.
+      const armPath = new THREE.CatmullRomCurve3([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0.14, 0.01), new THREE.Vector3(0, 0.26, 0.05), new THREE.Vector3(0, 0.31, 0.09)])
+      p.add(new THREE.Mesh(new THREE.TubeGeometry(armPath, 16, 0.009, 8), M.metal))
+      knobBar = new THREE.Mesh(new THREE.CapsuleGeometry(0.018, 0.03, 4, 10), M.black)
+      knobBar.rotation.z = Math.PI / 2
+      knobBar.scale.set(1, kScale, 1) // capsule length runs along local y before the roll
+      knobBar.position.set(0, 0.315, 0.1)
+      p.add(knobBar)
+      if (style.panel === 'boeing') {
+        const toga = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.012, 0.008), M.knobGray)
+        toga.position.set(0, 0.297, 0.117)
+        p.add(toga)
+      }
+      if (style.autothrottle) {
+        const atDisc = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.006, 10), M.red)
+        atDisc.rotation.z = Math.PI / 2
+        atDisc.position.set(s * 0.036 * kScale, 0.315, 0.1)
+        atDisc.userData.controlId = 'atDisconnect'
+        interactive.push(atDisc)
+        p.add(atDisc)
+      }
+    }
     knobBar.userData.controlId = 'throttleKnob'
     interactive.push(knobBar)
     put(p)
     thrust.push(p)
-    const r = new THREE.Group()
-    r.position.set(0, 0.24, 0.02)
-    const rev = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.07, 0.012), M.metal)
-    rev.position.y = 0.035
-    r.add(rev)
-    const revKnob = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.012, 0.016), M.black)
-    revKnob.position.y = 0.07
-    r.add(revKnob)
-    r.rotation.x = 0.9
-    p.add(r)
-    reversers.push(r)
+    if (style.reversers) {
+      const r = new THREE.Group()
+      r.position.set(0, 0.24, 0.02)
+      const rev = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.07, 0.012), M.metal)
+      rev.position.y = 0.035
+      r.add(rev)
+      const revKnob = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.012, 0.016), M.black)
+      revKnob.position.y = 0.07
+      r.add(revKnob)
+      r.rotation.x = 0.9
+      p.add(r)
+      reversers.push(r)
+    }
     const st = new THREE.Group()
     st.position.copy(v(0.34, lat, 0.37))
     const sArm = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.06, 0.012), M.metal)
     sArm.position.y = 0.03
     st.add(sArm)
-    const sKnob = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.022, 0.03), M.knobGray)
+    // Start levers (jets) or condition levers (turboprops, red grips).
+    const sKnob = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.022, 0.03), style.turboprop ? M.red : M.knobGray)
     sKnob.position.y = 0.065
     st.add(sKnob)
     put(st)
@@ -524,13 +614,14 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
   }
   const sbHandle = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.022, 0.055), M.knobGray)
   const speedbrake = lever(-0.1, 0.13, sbHandle)
+  speedbrake.visible = style.speedbrake
   const flapHandle = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.02, 0.032), M.white)
   flapHandle.userData.controlId = 'flapLever'
   interactive.push(flapHandle)
   const flap = lever(0.1, 0.12, flapHandle)
   // Stabilizer trim wheels on the stand flanks.
   const trimWheels: THREE.Mesh[] = []
-  for (const s of [-1, 1]) {
+  for (const s of style.trimWheels ? [-1, 1] : []) {
     const w = new THREE.Mesh(new THREE.CylinderGeometry(0.135, 0.135, 0.034, 40), M.wheel)
     w.rotation.z = Math.PI / 2
     w.position.copy(v(0.5, s * 0.155, 0.2))
@@ -596,7 +687,7 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
     const top = canvasTex(256, 1024)
     {
       const c = top.ctx
-      c.fillStyle = '#4f5459'; c.fillRect(0, 0, 256, 1024)
+      c.fillStyle = PANEL_GRAY; c.fillRect(0, 0, 256, 1024)
       plate(c, 8, 20, 240, 300, s < 0 ? 'NOSE WHEEL STEERING' : 'CHART', 12)
       plate(c, 8, 340, 240, 300, 'OXYGEN MASK', 12)
       plate(c, 8, 660, 240, 340, 'AUDIO CONTROL', 12)
@@ -636,8 +727,8 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
   }
   put(buildSeat(-0.5))
   put(buildSeat(0.5))
-  const capt = buildColumn(-0.5, -1)
-  const fo = buildColumn(0.5, 1)
+  const capt = style.control === 'sidestick' ? buildSidestick(-1) : buildColumn(-0.5, -1)
+  const fo = style.control === 'sidestick' ? buildSidestick(1) : buildColumn(0.5, 1)
   put(capt.pivot)
   put(fo.pivot)
 
@@ -646,7 +737,7 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
   return {
     interactive, mcp, annunL, annunR, aisle, stand, gearPanel, cdu, overhead: oh, prst, panelMats,
     rig: { capt, fo, thrust, reversers, startLevers, speedbrake, flap, trimWheels, pedals, gearHandle, parkingBrake, fireHandles },
-    flapDetentsDeg, engines,
+    flapDetentsDeg, engines, style,
     yokeColumn: stub(), yokeWheel: stub(), throttleKnob: stub(), flapLever: stub(), trimWheel: stub(),
   }
 }
@@ -687,6 +778,12 @@ export function animate737(deck: Deck737, c: Deck737Controls): void {
   // Column: ±12° fore/aft about the floor pivot (pull = aft = +x rotation);
   // wheel: ±90° (the 737 wheel travel is ~±107° — scaled for view).
   for (const side of [deck.rig.capt, deck.rig.fo]) {
+    if (side.pivot.userData.sidestick) {
+      // Sidestick: ±17° pitch (pull = aft), ±20° roll about its base.
+      side.pivot.rotation.x = p * 0.3
+      side.pivot.rotation.z = -r * 0.35
+      continue
+    }
     side.pivot.rotation.x = p * 0.2
     side.wheel.rotation.z = -r * 1.5
   }
@@ -704,7 +801,8 @@ export function animate737(deck: Deck737, c: Deck737Controls): void {
     mesh.position.z = (mesh.userData.z0 as number) - side * clamp(c.yaw) * 0.06
   }
   deck.rig.gearHandle.rotation.x = c.gearDown ? 0.35 : -0.35
-  deck.rig.gearHandle.position.y = (deck.rig.gearHandle.userData.y0 ??= deck.rig.gearHandle.position.y) + (c.gearDown ? -0.055 : 0.055)
+  const travel = (deck.rig.gearHandle.userData.travel as number | undefined) ?? 0.055
+  deck.rig.gearHandle.position.y = (deck.rig.gearHandle.userData.y0 ??= deck.rig.gearHandle.position.y) + (c.gearDown ? -travel : travel)
   deck.rig.parkingBrake.rotation.x = c.parkingBrake ? -0.6 : 0
 }
 
@@ -735,17 +833,17 @@ export function update737Live(deck: Deck737, s: Deck737Live): void {
     l.texture.needsUpdate = true
   }
   const C = (l: Live): CanvasRenderingContext2D => l.ctx
-  redraw(deck.mcp, JSON.stringify(s.mcp), () => paintMcp737(C(deck.mcp), deck.mcp.ctx.canvas.width, deck.mcp.ctx.canvas.height, s.mcp))
+  redraw(deck.mcp, JSON.stringify(s.mcp), () => paintMcp737(C(deck.mcp), deck.mcp.ctx.canvas.width, deck.mcp.ctx.canvas.height, s.mcp, deck.style.panel, deck.style.autothrottle))
   // Disconnect lights flash at 2 Hz while latched.
   const flash = Math.floor(performance.now() / 250) % 2 === 0
-  redraw(deck.prst, `${s.prst.ap && flash}|${s.prst.at && flash}`, () => paintPrst(C(deck.prst), 384, 88, s.prst.ap && flash, s.prst.at && flash))
+  redraw(deck.prst, `${s.prst.ap && flash}|${s.prst.at && flash}`, () => paintPrst(C(deck.prst), 384, 88, s.prst.ap && flash, s.prst.at && flash, deck.style.panel))
   const ak = `${s.fireWarn}|${s.masterCaution}`
-  redraw(deck.annunL, ak, () => paintAnnunciators(C(deck.annunL), 560, 300, 'L', s.fireWarn, s.masterCaution))
-  redraw(deck.annunR, ak, () => paintAnnunciators(C(deck.annunR), 560, 300, 'R', s.fireWarn, s.masterCaution))
+  redraw(deck.annunL, ak, () => paintAnnunciators(C(deck.annunL), 560, 300, 'L', s.fireWarn, s.masterCaution, deck.style.panel))
+  redraw(deck.annunR, ak, () => paintAnnunciators(C(deck.annunR), 560, 300, 'R', s.fireWarn, s.masterCaution, deck.style.panel))
   redraw(deck.aisle, JSON.stringify(s.aisle), () => paintAisle(C(deck.aisle), 768, 1024, s.aisle))
   for (const h of deck.rig.fireHandles) (h.material as THREE.MeshStandardMaterial).emissiveIntensity = s.aisle.fireTest ? 1.2 : 0
   redraw(deck.gearPanel, `${s.gear.left.toFixed(2)}|${s.gear.nose.toFixed(2)}|${s.gear.right.toFixed(2)}|${s.flapsDeg.toFixed(1)}`, () => paintGearPanel(C(deck.gearPanel), 512, 900, s.gear, s.flapsDeg, deck.flapDetentsDeg))
-  redraw(deck.stand, `${s.trimUnits.toFixed(1)}|${s.parkingBrake}|${s.flapsDeg.toFixed(0)}|${s.speedbrakeArmed}`, () => paintStand(C(deck.stand), 640, 700, s, deck.flapDetentsDeg, deck.engines))
+  redraw(deck.stand, `${s.trimUnits.toFixed(1)}|${s.parkingBrake}|${s.flapsDeg.toFixed(0)}|${s.speedbrakeArmed}`, () => paintStand(C(deck.stand), 640, 700, s, deck.flapDetentsDeg, deck.engines, deck.style.turboprop))
   redraw(deck.overhead, `${s.landingLights}|${s.powered}`, () => paintOverhead(C(deck.overhead), 2048, 1760, { landing: s.landingLights, powered: s.powered }))
   redraw(deck.cdu, JSON.stringify(s.cduLines), () => {
     const c = C(deck.cdu)
@@ -765,7 +863,7 @@ export function update737Live(deck: Deck737, s: Deck737Live): void {
 /** Landing gear lights (green down-and-locked / red in transit) and the
  *  dual-needle flap position indicator (LIVE). */
 function paintGearPanel(c: CanvasRenderingContext2D, W: number, H: number, g: { left: number; nose: number; right: number }, flapsDeg: number, detents: readonly number[]): void {
-  c.fillStyle = '#565b60'
+  c.fillStyle = PANEL_GRAY
   c.fillRect(0, 0, W, H)
   // Gear lights in the Boeing triangle: nose top, left/right below.
   const light = (x: number, y: number, label: string, pos: number): void => {
@@ -801,8 +899,8 @@ function paintGearPanel(c: CanvasRenderingContext2D, W: number, H: number, g: { 
 
 /** Control-stand top plate: flap gate with detent numbers, stab trim
  *  scales with green band and pointer, speedbrake gate, park brake light. */
-function paintStand(c: CanvasRenderingContext2D, W: number, H: number, s: Deck737Live, detents: readonly number[], engines: number): void {
-  c.fillStyle = '#4f5459'
+function paintStand(c: CanvasRenderingContext2D, W: number, H: number, s: Deck737Live, detents: readonly number[], engines: number, turboprop = false): void {
+  c.fillStyle = PANEL_GRAY
   c.fillRect(0, 0, W, H)
   // canvas top = forward. Thrust lever slots (center).
   for (const lat of leverLats(engines)) { const x = W / 2 + (lat / 0.26) * W; c.fillStyle = '#16171a'; c.fillRect(x - 9, 60, 18, H * 0.6) }
@@ -835,7 +933,7 @@ function paintStand(c: CanvasRenderingContext2D, W: number, H: number, s: Deck73
   engrave(c, 'APL NOSE DOWN', W * 0.5, H * 0.995 - 6, 11)
   lamp(c, W * 0.06, H * 0.82, 120, 46, ['PARKING', 'BRAKE'], RED, s.parkingBrake)
   // Start levers placard (aft).
-  engrave(c, 'START LEVERS', W * 0.5, H * 0.76, 13)
-  engrave(c, 'IDLE', W * 0.5, H * 0.8, 11); engrave(c, 'CUTOFF', W * 0.5, H * 0.9, 11)
+  engrave(c, turboprop ? 'CONDITION LEVERS' : 'START LEVERS', W * 0.5, H * 0.76, 13)
+  engrave(c, turboprop ? 'AUTO' : 'IDLE', W * 0.5, H * 0.8, 11); engrave(c, turboprop ? 'FUEL SO' : 'CUTOFF', W * 0.5, H * 0.9, 11)
   for (let i = 0; i < engines; i++) lamp(c, W * (0.5 - 0.075 * engines + 0.15 * i) + 4, H * 0.84, 62, 26, [`ENG ${i + 1}`, 'VALVE'], AMBER)
 }
