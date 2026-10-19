@@ -1,3 +1,4 @@
+import { searchAirports as searchAirportsPure } from './airport-search'
 import { pavementMaterial } from '../render/surface-materials'
 import * as THREE from 'three'
 import { FT } from '../sim/atmosphere'
@@ -79,6 +80,8 @@ interface PapiArray {
   rwyIdent: string
 }
 
+export { searchAirports } from './airport-search'
+
 export class Airports {
   private all: AirportData[] = []
   private readonly cells = new Map<string, AirportData[]>()
@@ -116,6 +119,11 @@ export class Airports {
       }
     }
     return out
+  }
+
+  /** Ranked matches for a departure search box (see searchAirports). */
+  search(query: string, limit = 8): AirportData[] {
+    return searchAirportsPure(this.all, query, limit)
   }
 
   find(query: string): AirportData | undefined {
