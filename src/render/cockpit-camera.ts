@@ -24,7 +24,6 @@ import type { Input } from '../input/input'
  *  real design-eye idea). `up` is render-up metres (body −z). */
 export const EYE_BY_LAYOUT = {
   ga: { x: 0.45, y: -0.33, up: 0.75 },
-  transport: { x: 0.45, y: -0.5, up: 1.0 },
   /** 737NG design eye: over the sloped glareshield ≈ 10° down vision,
    *  PFD ≈ 27° below the line of sight (cockpit-737.ts geometry). */
   boeing737: { x: 0.45, y: -0.5, up: 1.03 },

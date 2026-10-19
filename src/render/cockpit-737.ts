@@ -27,6 +27,15 @@ import {
 const EYE_X = 0.45
 const v = (fwd: number, lat: number, up: number): THREE.Vector3 => new THREE.Vector3(lat, up, -(EYE_X + fwd))
 
+/** Lateral thrust-lever stations (metres from the stand centerline) for an
+ *  engine count — shared by the 3D rig and the painted stand slots. */
+export function leverLats(engines: number): number[] {
+  if (engines <= 1) return [0]
+  if (engines === 2) return [-0.04, 0.04]
+  if (engines === 3) return [-0.07, 0, 0.07]
+  return [-0.1, -0.034, 0.034, 0.1]
+}
+
 export interface Deck737Screens {
   pfd: THREE.Texture
   nd: THREE.Texture
@@ -64,6 +73,8 @@ export interface Deck737 {
     fireHandles: THREE.Mesh[]
   }
   flapDetentsDeg: readonly number[]
+  /** Engine count (thrust/start levers, engine display, fire handles). */
+  engines: number
   /** Stub meshes for the CockpitMeshes slots the G1000 path needs. */
   yokeColumn: THREE.Mesh
   yokeWheel: THREE.Mesh
@@ -215,7 +226,7 @@ function buildSeat(lat: number): THREE.Group {
   return g
 }
 
-export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDetentsDeg: readonly number[]): Deck737 {
+export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDetentsDeg: readonly number[], engines = 2): Deck737 {
   const interactive: THREE.Object3D[] = []
   const panelMats: THREE.MeshBasicMaterial[] = []
   const put = (m: THREE.Object3D): THREE.Object3D => { group.add(m); return m }
@@ -451,14 +462,17 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
   put(quad(v(0.3, -0.13, 0.374), v(0.3, 0.13, 0.374), v(0.62, 0.13, 0.348), v(0.62, -0.13, 0.348), painted(stand.texture)))
   // Thrust levers + piggyback reversers + start levers.
   const thrust: THREE.Group[] = [], reversers: THREE.Group[] = [], startLevers: THREE.Group[] = []
-  for (const s of [-1, 1]) {
+  const lats = leverLats(engines), kScale = lats.length >= 3 ? 0.75 : 1
+  for (const lat of lats) {
+    const s = lat < 0 ? -1 : 1
     const p = new THREE.Group()
-    p.position.copy(v(0.52, s * 0.04, 0.26))
+    p.position.copy(v(0.52, lat, 0.26))
     // 737 thrust lever: a long arm curving aft to a wide grip.
     const armPath = new THREE.CatmullRomCurve3([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0.14, 0.01), new THREE.Vector3(0, 0.26, 0.05), new THREE.Vector3(0, 0.31, 0.09)])
     p.add(new THREE.Mesh(new THREE.TubeGeometry(armPath, 16, 0.009, 8), M.metal))
     const knobBar = new THREE.Mesh(new THREE.CapsuleGeometry(0.018, 0.03, 4, 10), M.black)
     knobBar.rotation.z = Math.PI / 2
+    knobBar.scale.set(1, kScale, 1) // capsule length runs along local y before the roll
     knobBar.position.set(0, 0.315, 0.1)
     p.add(knobBar)
     const toga = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.012, 0.008), M.knobGray)
@@ -466,7 +480,7 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
     p.add(toga)
     const atDisc = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.006, 10), M.red)
     atDisc.rotation.z = Math.PI / 2
-    atDisc.position.set(s * 0.036, 0.315, 0.1)
+    atDisc.position.set(s * 0.036 * kScale, 0.315, 0.1)
     atDisc.userData.controlId = 'atDisconnect'
     interactive.push(atDisc)
     p.add(atDisc)
@@ -486,7 +500,7 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
     p.add(r)
     reversers.push(r)
     const st = new THREE.Group()
-    st.position.copy(v(0.34, s * 0.04, 0.37))
+    st.position.copy(v(0.34, lat, 0.37))
     const sArm = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.06, 0.012), M.metal)
     sArm.position.y = 0.03
     st.add(sArm)
@@ -632,7 +646,7 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
   return {
     interactive, mcp, annunL, annunR, aisle, stand, gearPanel, cdu, overhead: oh, prst, panelMats,
     rig: { capt, fo, thrust, reversers, startLevers, speedbrake, flap, trimWheels, pedals, gearHandle, parkingBrake, fireHandles },
-    flapDetentsDeg,
+    flapDetentsDeg, engines,
     yokeColumn: stub(), yokeWheel: stub(), throttleKnob: stub(), flapLever: stub(), trimWheel: stub(),
   }
 }
@@ -653,7 +667,8 @@ export interface Deck737Controls {
   trim: number
   gearDown: boolean
   parkingBrake: boolean
-  enginesRunning: [boolean, boolean]
+  /** One flag per engine (length = deck.engines). */
+  enginesRunning: readonly boolean[]
 }
 
 /** Flap lever angle for a flap setting: interpolated across the gate. */
@@ -678,7 +693,7 @@ export function animate737(deck: Deck737, c: Deck737Controls): void {
   // Thrust levers: idle raked aft 30°, full forward ~22°.
   for (const t of deck.rig.thrust) t.rotation.x = 0.3 - clamp(c.throttle, 0, 1) * 0.85
   for (const rv of deck.rig.reversers) rv.rotation.x = 0.9 - clamp(c.reverse, 0, 1) * 1.6
-  deck.rig.startLevers.forEach((s, i) => { s.rotation.x = c.enginesRunning[i] ? 0 : 0.55 })
+  deck.rig.startLevers.forEach((s, i) => { s.rotation.x = c.enginesRunning[i] ?? c.enginesRunning[0] ? 0 : 0.55 })
   // Speedbrake: DOWN forward, ARMED a notch aft, UP fully aft.
   deck.rig.speedbrake.rotation.x = -0.45 + (c.speedbrakeArmed ? 0.12 : 0) + clamp(c.speedbrake, 0, 1) * 0.95
   // Flap lever: UP forward → 40 aft.
@@ -730,7 +745,7 @@ export function update737Live(deck: Deck737, s: Deck737Live): void {
   redraw(deck.aisle, JSON.stringify(s.aisle), () => paintAisle(C(deck.aisle), 768, 1024, s.aisle))
   for (const h of deck.rig.fireHandles) (h.material as THREE.MeshStandardMaterial).emissiveIntensity = s.aisle.fireTest ? 1.2 : 0
   redraw(deck.gearPanel, `${s.gear.left.toFixed(2)}|${s.gear.nose.toFixed(2)}|${s.gear.right.toFixed(2)}|${s.flapsDeg.toFixed(1)}`, () => paintGearPanel(C(deck.gearPanel), 512, 900, s.gear, s.flapsDeg, deck.flapDetentsDeg))
-  redraw(deck.stand, `${s.trimUnits.toFixed(1)}|${s.parkingBrake}|${s.flapsDeg.toFixed(0)}|${s.speedbrakeArmed}`, () => paintStand(C(deck.stand), 640, 700, s, deck.flapDetentsDeg))
+  redraw(deck.stand, `${s.trimUnits.toFixed(1)}|${s.parkingBrake}|${s.flapsDeg.toFixed(0)}|${s.speedbrakeArmed}`, () => paintStand(C(deck.stand), 640, 700, s, deck.flapDetentsDeg, deck.engines))
   redraw(deck.overhead, `${s.landingLights}|${s.powered}`, () => paintOverhead(C(deck.overhead), 2048, 1760, { landing: s.landingLights, powered: s.powered }))
   redraw(deck.cdu, JSON.stringify(s.cduLines), () => {
     const c = C(deck.cdu)
@@ -786,11 +801,11 @@ function paintGearPanel(c: CanvasRenderingContext2D, W: number, H: number, g: { 
 
 /** Control-stand top plate: flap gate with detent numbers, stab trim
  *  scales with green band and pointer, speedbrake gate, park brake light. */
-function paintStand(c: CanvasRenderingContext2D, W: number, H: number, s: Deck737Live, detents: readonly number[]): void {
+function paintStand(c: CanvasRenderingContext2D, W: number, H: number, s: Deck737Live, detents: readonly number[], engines: number): void {
   c.fillStyle = '#4f5459'
   c.fillRect(0, 0, W, H)
   // canvas top = forward. Thrust lever slots (center).
-  for (const x of [W * 0.42, W * 0.58]) { c.fillStyle = '#16171a'; c.fillRect(x - 10, 60, 20, H * 0.6) }
+  for (const lat of leverLats(engines)) { const x = W / 2 + (lat / 0.26) * W; c.fillStyle = '#16171a'; c.fillRect(x - 9, 60, 18, H * 0.6) }
   // Flap gate (right) — numbers along the slot, UP at the top (forward).
   const fx = W * 0.88
   c.fillStyle = '#16171a'; c.fillRect(fx - 8, 50, 16, H * 0.68)
@@ -822,5 +837,5 @@ function paintStand(c: CanvasRenderingContext2D, W: number, H: number, s: Deck73
   // Start levers placard (aft).
   engrave(c, 'START LEVERS', W * 0.5, H * 0.76, 13)
   engrave(c, 'IDLE', W * 0.5, H * 0.8, 11); engrave(c, 'CUTOFF', W * 0.5, H * 0.9, 11)
-  lamp(c, W * 0.38, H * 0.84, 60, 26, ['ENG 1', 'VALVE'], AMBER); lamp(c, W * 0.52, H * 0.84, 60, 26, ['ENG 2', 'VALVE'], AMBER)
+  for (let i = 0; i < engines; i++) lamp(c, W * (0.5 - 0.075 * engines + 0.15 * i) + 4, H * 0.84, 62, 26, [`ENG ${i + 1}`, 'VALVE'], AMBER)
 }

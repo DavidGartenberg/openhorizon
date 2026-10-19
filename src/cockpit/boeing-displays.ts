@@ -29,8 +29,14 @@ export interface BoeingPfdInput {
   hdgDeg: number
   selHdgDeg: number
   trackDeg: number
-  radioAltFt: number
+  /** Radio altitude, ft — null on airplanes without a radio altimeter
+   *  (an instrument that is not fitted is never drawn). */
+  radioAltFt: number | null
   onGround: boolean
+  /** Colour arcs along the speed tape (flap-operating / normal / caution),
+   *  for types that publish them (every GA type; the jets use the
+   *  barber poles only). */
+  vArcs?: { whiteLow: number; whiteHigh: number; greenLow: number; greenHigh: number; yellowLow: number; yellowHigh: number }
   /** ILS raw data in dots (±2.5 = full scale), absent when not tuned/received. */
   loc?: number
   gs?: number
@@ -180,7 +186,7 @@ export function drawBoeingPfd(c: Ctx, S: number, d: BoeingPfdInput): void {
     dots(cx + aw / 2 + 22 * k, cy, true, d.gs)
   }
   // Radio altitude (below 2500 ft).
-  if (!d.onGround && d.radioAltFt < 2500) {
+  if (!d.onGround && d.radioAltFt !== null && d.radioAltFt < 2500) {
     const ra = d.radioAltFt < 100 ? Math.round(d.radioAltFt) : Math.round(d.radioAltFt / 10) * 10
     txt(c, String(ra), cx, cy + ah / 2 - 30 * k, 28 * k, d.radioAltFt < 500 ? C.amber : C.white)
   }
@@ -207,6 +213,15 @@ export function drawBoeingPfd(c: Ctx, S: number, d: BoeingPfdInput): void {
     }
   }
   pole(d.vmoKt, d.vmoKt + 200)
+  if (d.vArcs) {
+    const band = (lo: number, hi: number, col: string): void => {
+      const y0 = Math.max(ty, ky(hi)), y1 = Math.min(ty + th, ky(lo))
+      if (y1 > y0) { c.fillStyle = col; c.fillRect(tx + tw - 20.5 * k, y0, 6 * k, y1 - y0) }
+    }
+    band(d.vArcs.whiteLow, d.vArcs.whiteHigh, C.white)
+    band(d.vArcs.greenLow, d.vArcs.greenHigh, C.green)
+    band(d.vArcs.yellowLow, d.vArcs.yellowHigh, C.amber)
+  }
   pole(0, d.stallKt)
   // Amber minimum maneuver band: from stall warning up to 1.3 × stall.
   c.strokeStyle = C.amber; c.lineWidth = 3 * k
@@ -326,6 +341,11 @@ export interface BoeingNdInput {
   activeWpt?: { id: string; distNm: number; etaZ: string }
   traffic: ReadonlyArray<{ nN: number; nE: number; relAltFt: number; alerted: boolean }>
   wx: ReadonlyArray<{ nN: number; nE: number; intensity: 1 | 2 | 3 }>
+  /** Airspace outlines, pre-projected to nm offsets with the stroke style
+   *  (GA map: Class B/C/D and special-use areas). */
+  airspace?: ReadonlyArray<{ ring: ReadonlyArray<{ nN: number; nE: number }>; color: string; dash: readonly number[]; label?: string }>
+  /** Best-glide range ring radius, nm (GA engine-out reference). */
+  glideRingNm?: number
 }
 
 export function drawBoeingNd(c: Ctx, S: number, d: BoeingNdInput): void {
@@ -354,6 +374,23 @@ export function drawBoeingNd(c: Ctx, S: number, d: BoeingNdInput): void {
   c.beginPath(); c.arc(ox, oy, R / 2, Math.PI * 1.22, Math.PI * 1.78); c.stroke()
   c.setLineDash([])
   txt(c, String(d.rangeNm / 2), ox - (R / 2) * 0.82, oy - (R / 2) * 0.62, 18 * k)
+  // Airspace outlines and the engine-out glide ring (GA).
+  for (const a of d.airspace ?? []) {
+    if (a.ring.length < 3) continue
+    c.strokeStyle = a.color; c.lineWidth = 2 * k
+    c.setLineDash(a.dash.map((n) => n * k))
+    c.beginPath()
+    a.ring.forEach((p, i) => { const [x, y] = toXY(p.nN, p.nE); if (i) c.lineTo(x, y); else c.moveTo(x, y) })
+    c.closePath(); c.stroke()
+    c.setLineDash([])
+    if (a.label) { const [x, y] = toXY(a.ring[0]!.nN, a.ring[0]!.nE); txt(c, a.label, x + 4 * k, y - 8 * k, 14 * k, a.color, 'left') }
+  }
+  if (d.glideRingNm !== undefined && d.glideRingNm > 0) {
+    c.strokeStyle = C.cyan; c.lineWidth = 2 * k
+    c.setLineDash([4 * k, 8 * k])
+    c.beginPath(); c.arc(ox, oy, d.glideRingNm * pxPerNm, 0, Math.PI * 2); c.stroke()
+    c.setLineDash([])
+  }
   // Airports (cyan circles), route (magenta active leg, white others).
   for (const a of d.airports) {
     const [x, y] = toXY(a.nN, a.nE)
@@ -459,12 +496,14 @@ export function egtFromN1(n1Pct: number, oatC: number): number {
 }
 
 export interface BoeingEicasInput {
-  n1Pct: [number, number]
+  /** One entry per engine (2, 3 or 4). */
+  n1Pct: readonly number[]
   n1RedlinePct: number
   n1CommandPct: number
-  egtC: [number, number]
-  ffKgH: [number, number]
-  fuelKg: [number, number]
+  egtC: readonly number[]
+  ffKgH: readonly number[]
+  /** Tank quantities, kg (the sim models a left and a right tank). */
+  fuelKg: readonly [number, number]
   tatC: number
   reverse: boolean
 }
@@ -473,7 +512,11 @@ export function drawBoeingEicas(c: Ctx, S: number, d: BoeingEicasInput): void {
   const k = S / 768
   c.fillStyle = C.black
   c.fillRect(0, 0, S, S)
+  const n = Math.max(1, Math.min(4, d.n1Pct.length))
   txt(c, `TAT ${d.tatC >= 0 ? '+' : ''}${Math.round(d.tatC)}c`, 30 * k, 30 * k, 22 * k, C.white, 'left')
+  const colW = (S - 40 * k) / n
+  // Dial radius shrinks as engines are added so four columns still fit.
+  const rN1 = Math.min(105, colW / k / 2 - 10) * k, rEgt = rN1 * 0.9
   const dial = (cx: number, cy: number, r: number, value: number, max: number, red: number, label: string, digits: string, cmd?: number): void => {
     const a0 = Math.PI, a1 = Math.PI * 2.1
     const ang = (v: number): number => a0 + (Math.max(0, Math.min(max, v)) / max) * (a1 - a0)
@@ -489,26 +532,27 @@ export function drawBoeingEicas(c: Ctx, S: number, d: BoeingEicasInput): void {
     }
     c.strokeStyle = C.white; c.lineWidth = 4 * k
     c.beginPath(); c.moveTo(cx, cy); c.lineTo(cx + Math.cos(ang(value)) * r * 0.95, cy + Math.sin(ang(value)) * r * 0.95); c.stroke()
+    // Digits in a box under the hub, label above the dial.
     c.strokeStyle = C.white; c.lineWidth = 2 * k
-    c.strokeRect(cx - 4 * k, cy - 46 * k, 92 * k, 36 * k)
-    txt(c, digits, cx + 84 * k, cy - 28 * k, 28 * k, value >= red ? C.red : C.white, 'right')
-    txt(c, label, cx + 140 * k, cy + 6 * k, 20 * k, '#22d8f0')
+    const bw = Math.min(100, r / k * 1.3) * k, bh = 34 * k
+    c.strokeRect(cx - bw / 2, cy + 8 * k, bw, bh)
+    txt(c, digits, cx + bw / 2 - 6 * k, cy + 8 * k + bh / 2, Math.min(28, r / k * 0.3) * k, value >= red ? C.red : C.white, 'right')
+    if (label) txt(c, label, cx, cy - r - 14 * k, 20 * k, '#22d8f0')
   }
-  for (const [i, x] of [[0, 150], [1, 450]] as const) {
-    dial(x * k, 210 * k, 105 * k, d.n1Pct[i], 110, d.n1RedlinePct, i === 0 ? 'N1' : '', d.n1Pct[i].toFixed(1), d.n1CommandPct)
-    if (d.reverse) txt(c, 'REV', x * k + 40 * k, 130 * k, 22 * k, C.green)
-    dial(x * k, 440 * k, 95 * k, d.egtC[i], 1000, 950, i === 0 ? 'EGT' : '', String(d.egtC[i]))
+  for (let i = 0; i < n; i++) {
+    const cx = 20 * k + colW * (i + 0.5)
+    dial(cx, 200 * k, rN1, d.n1Pct[i]!, 110, d.n1RedlinePct, i === Math.floor((n - 1) / 2) ? 'N1' : '', d.n1Pct[i]!.toFixed(1), d.n1CommandPct)
+    if (d.reverse) txt(c, 'REV', cx, 90 * k, 20 * k, C.green)
+    dial(cx, 430 * k, rEgt, d.egtC[i] ?? 0, 1000, 950, i === Math.floor((n - 1) / 2) ? 'EGT' : '', String(d.egtC[i] ?? 0))
+    txt(c, ((d.ffKgH[i] ?? 0) / 1000).toFixed(2), cx, 530 * k, 24 * k, C.white)
   }
-  // Fuel flow + quantity (the 737 shows these on the upper DU's right side).
-  txt(c, 'FF', 600 * k, 560 * k, 20 * k, '#22d8f0')
-  txt(c, (d.ffKgH[0] / 1000).toFixed(2), 520 * k, 560 * k, 24 * k, C.white, 'right')
-  txt(c, (d.ffKgH[1] / 1000).toFixed(2), 690 * k, 560 * k, 24 * k, C.white, 'left')
-  txt(c, 'FUEL', 384 * k, 620 * k, 20 * k, '#22d8f0')
+  txt(c, 'FF', 30 * k, 530 * k, 20 * k, '#22d8f0', 'left')
+  txt(c, 'FUEL', 384 * k, 600 * k, 20 * k, '#22d8f0')
   for (const [i, x] of [[0, 230], [1, 538]] as const) {
     c.strokeStyle = C.white; c.lineWidth = 2 * k
     c.beginPath(); c.arc(x * k, 680 * k, 54 * k, Math.PI, Math.PI * 2); c.stroke()
     txt(c, String(Math.round(d.fuelKg[i])), x * k, 670 * k, 26 * k, d.fuelKg[i] < 453 ? C.amber : C.white)
-    txt(c, i === 0 ? '1' : '2', x * k, 712 * k, 20 * k, C.white)
+    txt(c, i === 0 ? 'L' : 'R', x * k, 712 * k, 20 * k, C.white)
   }
   txt(c, `TOTAL ${Math.round(d.fuelKg[0] + d.fuelKg[1])} KG`, 384 * k, 740 * k, 20 * k)
 }

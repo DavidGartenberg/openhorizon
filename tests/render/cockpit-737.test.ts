@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { installCanvasStub } from './canvas-stub'
-import { animate737, build737Deck, flapLeverFrac, type Deck737, type Deck737Controls } from '../../src/render/cockpit-737'
+import { animate737, build737Deck, flapLeverFrac, leverLats, type Deck737, type Deck737Controls } from '../../src/render/cockpit-737'
 import { MIP } from '../../src/render/cockpit-737-paint'
 import { EYE_BY_LAYOUT } from '../../src/render/cockpit-camera'
 
@@ -108,5 +108,25 @@ describe('flapLeverFrac', () => {
     expect(flapLeverFrac(7.5, DETENTS)).toBeCloseTo(3.5 / 8)
     expect(flapLeverFrac(99, DETENTS)).toBe(1)
     expect(flapLeverFrac(-3, DETENTS)).toBe(0)
+  })
+})
+
+
+describe('737 deck for 2-, 3- and 4-engine jets', () => {
+  it.each([2, 3, 4])('%i engines: one thrust lever, reverser and start lever each, spaced apart, all moving with thrust', n => {
+    const g = new THREE.Group()
+    const d = build737Deck(g, { pfd: tex(), nd: tex(), eicas: tex(), isfd: tex() }, DETENTS, n)
+    expect(d.rig.thrust).toHaveLength(n); expect(d.rig.reversers).toHaveLength(n); expect(d.rig.startLevers).toHaveLength(n)
+    const lats = leverLats(n)
+    for (let i = 1; i < lats.length; i++) expect(lats[i]! - lats[i - 1]!).toBeGreaterThanOrEqual(0.06 - 1e-9)
+    expect(Math.max(...lats.map(Math.abs))).toBeLessThanOrEqual(0.1)
+    animate737(d, { ...rest, throttle: 0 }); g.updateMatrixWorld(true)
+    const idle = d.rig.thrust.map(t => t.localToWorld(new THREE.Vector3(0, 0.315, 0.1)).z)
+    animate737(d, { ...rest, throttle: 1, enginesRunning: Array(n).fill(true) }); g.updateMatrixWorld(true)
+    d.rig.thrust.forEach((t, i) => expect(t.localToWorld(new THREE.Vector3(0, 0.315, 0.1)).z).toBeLessThan(idle[i]! - 0.08))
+    // engines out on one side: only those start levers drop to CUTOFF
+    animate737(d, { ...rest, enginesRunning: Array.from({ length: n }, (_, i) => i < n / 2) })
+    expect(d.rig.startLevers[0]!.rotation.x).toBe(0)
+    expect(d.rig.startLevers[n - 1]!.rotation.x).toBeGreaterThan(0)
   })
 })

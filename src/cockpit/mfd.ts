@@ -341,6 +341,15 @@ export interface MfdInput {
   /** W&B page (15c — only read when page === 'wb'). Null on non-C172
    *  aircraft: the arms are C172S POH data, shown honestly as such. */
   wb?: { grossLb: number; cgIn: number; within: boolean; fwdLimitIn: (g: number) => number; aftLimitIn: number; maxGrossLb: number } | null
+
+  /** Alternate renderers for the always-on engine strip and the MAP page
+   *  body (the Boeing display skin, boeing-ga-displays.ts). Each draws into
+   *  the given rectangle. The softkey row, page logic (MAP / ENGINE / FPL /
+   *  W&B) and click routing stay this module's. */
+  skin?: {
+    eis: (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) => void
+    map: (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) => void
+  }
 }
 
 // ============================================================================
@@ -531,7 +540,7 @@ function drawLeanPage(ctx: CanvasRenderingContext2D, x: number, y: number, w: nu
  *  warning/danger) hatched. Not a sourced sectional-chart color table (no
  *  in-repo spec) — a reasonable representative chart-style scheme, same
  *  caveat as the rest of this file's layout/color choices. */
-function airspaceStrokeStyle(kind: AirspaceKind): { color: string; dash: number[] } {
+export function airspaceStrokeStyle(kind: AirspaceKind): { color: string; dash: number[] } {
   switch (kind) {
     case AirspaceKind.ClassB:
       return { color: '#3060ff', dash: [] }
@@ -855,11 +864,14 @@ export function drawMfd(ctx: CanvasRenderingContext2D, width: number, height: nu
   const bodyH = height - softkeyRowH
 
   const eisW = width * 0.2
-  drawEis(ctx, 0, 0, eisW, bodyH, data)
+  if (data.skin) data.skin.eis(ctx, 0, 0, eisW, bodyH)
+  else drawEis(ctx, 0, 0, eisW, bodyH, data)
 
   const pageX = eisW
   const pageW = width - eisW
-  if (data.page === 'map' && data.map) {
+  if (data.page === 'map' && data.skin) {
+    data.skin.map(ctx, pageX, 0, pageW, bodyH)
+  } else if (data.page === 'map' && data.map) {
     drawMapPage(ctx, pageX, 0, pageW, bodyH, data.map)
   } else if (data.page === 'lean') {
     drawLeanPage(ctx, pageX, 0, pageW, bodyH, data)
