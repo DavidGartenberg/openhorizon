@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently -k -n client,server \"npm:dev:client\" \"npm:dev:server\"",
     "dev:client": "vite",
-    "dev:server": "node server/index.mjs",
+    "dev:server": "PORT=8787 node server/index.mjs",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "validate": "vitest run tests/validate --passWithNoTests"

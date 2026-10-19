@@ -22,7 +22,9 @@ function dataServer(): Plugin {
 export default defineConfig({
   plugins: [dataServer()],
   server: {
-    port: 5173,
+    // autoPort: the harness assigns a free port via PORT (5173 may be
+    // held by another project's dev server); 5173 stays the fallback.
+    port: Number(process.env.PORT) || 5173,
     strictPort: true,
   },
   test: {
