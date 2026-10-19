@@ -9,6 +9,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import { buildAirports, buildNavaids, buildCifpProcedures, buildUsAirspace, buildFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb , buildIls } from './parse.mjs'
+import { voiceRoute } from './voice.mjs'
 import { xpRoute } from './xp-static.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
@@ -536,7 +537,8 @@ export async function landcoverTile(z, x, y) {
   return buf
 }
 
-export async function route(url, res, method = 'GET') {
+export async function route(url, res, method = 'GET', req) {
+  if (await voiceRoute(url, res, method, req)) return true
   // 9A server hygiene: data routes are read-only — a POST/PUT to a proxy
   // path used to trigger upstream fetches and disk writes all the same.
   if (method !== 'GET' && method !== 'HEAD') return false

@@ -109,8 +109,8 @@ describe(`Tier-B roster validation (${ROSTER.length} types)`, () => {
         })
       }
 
-      // Gliders can't hold −3° at best-glide without spoilers (not
-      // modeled) — their approach check is the glide row above.
+      // Glider approach-path control uses the separate airbrake condition;
+      // this generic flap-config check does not command that actuator.
       const approachIt = spec.powerplant.kind === 'none' ? it.skip : it
       approachIt('approach-config trim on a −3° path converges', () => {
         const flaps = spec.flapDetentsDeg[spec.flapDetentsDeg.length - 1]!

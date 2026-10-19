@@ -24,7 +24,9 @@ import type { Input } from '../input/input'
  *  real design-eye idea). `up` is render-up metres (body −z). */
 export const EYE_BY_LAYOUT = {
   ga: { x: 0.45, y: -0.33, up: 0.75 },
-  transport: { x: 0.45, y: -0.5, up: 1.0 },
+  /** 737NG design eye: over the sloped glareshield ≈ 10° down vision,
+   *  PFD ≈ 27° below the line of sight (cockpit-737.ts geometry). */
+  boeing737: { x: 0.45, y: -0.5, up: 1.03 },
 } as const
 
 export class CockpitCamera {
@@ -37,6 +39,17 @@ export class CockpitCamera {
   /** Select the eyepoint for the active aircraft's panel layout. */
   setEye(kind: keyof typeof EYE_BY_LAYOUT): void {
     this.eye = EYE_BY_LAYOUT[kind]
+  }
+
+  /** Set an explicit eyepoint (a scaled deck: business-jet cabins). */
+  setEyePoint(eye: { x: number; y: number; up: number }): void {
+    this.eye = { ...eye }
+  }
+
+  /** Verification hook: set the look direction directly (radians). */
+  setLook(yaw: number, pitch: number): void {
+    this.lookYaw = THREE.MathUtils.clamp(yaw, -1.4, 1.4)
+    this.lookPitch = THREE.MathUtils.clamp(pitch, -1.25, 1.1)
   }
 
   /** Keep world-relative state sane across a floating-origin rebase — no-op,

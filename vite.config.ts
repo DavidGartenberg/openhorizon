@@ -9,7 +9,7 @@ function dataServer(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         import('./server/handlers.mjs')
-          .then((h) => h.route(req.url ?? '', res, req.method))
+          .then((h) => h.route(req.url ?? '', res, req.method, req))
           .then((handled) => {
             if (!handled) next()
           })
@@ -26,6 +26,8 @@ export default defineConfig({
     // held by another project's dev server); 5173 stays the fallback.
     port: Number(process.env.PORT) || 5173,
     strictPort: true,
+    // Hardware calibration can pin the running page while source work continues.
+    hmr: process.env.OPENHORIZON_HMR !== '0',
   },
   test: {
     include: ['tests/**/*.test.ts'],

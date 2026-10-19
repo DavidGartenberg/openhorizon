@@ -1,0 +1,158 @@
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/render/prop-aircraft.ts
++++ src/render/prop-aircraft.ts
+@@ -151,49 +151,84 @@
+  const moving=(name:string,geometry:THREE.BufferGeometry,a:THREE.Vector3,b:THREE.Vector3)=>{
+   const h=createHingeFrame(g,`${name}-hinge`,a,b),skin=add(name,geometry);attachSkin(h,skin);return {h,skin}
+  }
+  const drive=(h:HingeFrame,skin:THREE.Mesh,fixed:THREE.Mesh,name:string,f=.52)=>{
+   const a=h.root.userData.hingeStart as THREE.Vector3,b=h.root.userData.hingeEnd as THREE.Vector3
+   const target=a.clone().lerp(b,f)
+   linkages.push(skinDrive(g,name,fixed,skin,target.clone().add(new THREE.Vector3(0,0,-rootChord*.05)),target.clone().add(new THREE.Vector3(0,0,rootChord*.06)),Math.max(.025,W*.055),Math.max(.006,W*.007),metal))
+  }
++ // Airbrakes stow within the wing. Attach their compact horns to triangle
++ // interiors, rather than snapping to a remote vertex and hanging a generic
++ // external control horn below the lower skin. Dimensions remain visual.
++ const brakeDrive=(name:string,fixed:THREE.Mesh,moving:THREE.Mesh,fixedTarget:THREE.Vector3,movingTarget:THREE.Vector3,fixedOffset:number,movingOffset:number)=>{
++  const radius=Math.max(.002,thickness*.03)
++  const mount=(skin:THREE.Mesh,target:THREE.Vector3,offset:number,label:string)=>{
++   skin.updateWorldMatrix(true,false)
++   const local=skin.worldToLocal(g.localToWorld(target.clone())),p=skin.geometry.getAttribute('position'),ix=skin.geometry.index!.array
++   const triangle=new THREE.Triangle(),nearest=new THREE.Vector3(),anchor=new THREE.Vector3();let best=Infinity
++   for(let i=0;i<ix.length;i+=3){
++    triangle.a.fromBufferAttribute(p,ix[i]!);triangle.b.fromBufferAttribute(p,ix[i+1]!);triangle.c.fromBufferAttribute(p,ix[i+2]!)
++    triangle.closestPointToPoint(local,nearest);const d=nearest.distanceToSquared(local)
++    if(d<best){best=d;anchor.copy(nearest)}
++   }
++   const m=new THREE.Object3D();m.name=`${name}-${label}-mount`;m.position.copy(anchor).add(new THREE.Vector3(0,offset,0));skin.add(m)
++   const horn=new THREE.Mesh(new THREE.CylinderGeometry(radius*1.4,radius*1.4,Math.abs(offset),8),metal)
++   horn.name=`${name}-${label}-horn`;horn.position.copy(anchor).add(new THREE.Vector3(0,offset/2,0));skin.add(horn)
++   m.userData.bracket=horn;m.userData.skin=skin;return m
++  }
++  linkages.push(createLiveLinkage(g,name,mount(fixed,fixedTarget,fixedOffset,'fixed'),mount(moving,movingTarget,movingOffset,'moving'),radius,metal))
++ }
+  for(const side of [-1,1]){
+   const start=W*.32,fa=profile.rollControl==='spoiler'?start:Math.max(W*.58,half*.13),fb=half*.61,sideName=side<0?'left':'right'
+   const full=profiledPanelGeometry(le(start),chord(start),le(half),chord(half),side*start,side*half,thickness)
+   const pos=full.getAttribute('position');for(let i=0;i<pos.count;i++)pos.setY(i,pos.getY(i)+wingY+Math.abs(pos.getX(i))*dihedral);full.computeVertexNormals()
+   const point=(x:number,u:number,y=wingY)=>new THREE.Vector3(side*x,y+x*dihedral+thickness/2,-le(x)+chord(x)*u)
+   const hasBrake=profile.airbrakes||profile.rollControl==='spoiler',ba=half*.34,bb=half*.59
+   let fixed:THREE.Mesh
+   if(hasBrake){
+    fixed=add('wingForward',region(full,start,half,0,.57,side))
+    add('wingForward',region(full,start,half,.71,.73,side))
+    add('wingForward',region(full,start,ba,.57,.71,side));add('wingForward',region(full,bb,half,.57,.71,side))
+    const pocket=region(full,ba,bb,.57,.71,side),floorPlane=new THREE.Plane(new THREE.Vector3(-side*dihedral,1,0),-wingY-thickness/2).normalize()
+-   add(`brake-well-${sideName}`,cutSkin(pocket,floorPlane.clone().negate()),dark)
++   const wellGeo=cutSkin(pocket,floorPlane.clone().negate()),well=add(`brake-well-${sideName}`,wellGeo,dark)
++   if(profile.airbrakes){
++    // Retain the original painted underside; only the cavity floor and cut
++    // walls receive the dark well finish. Two batches avoid per-face draws.
++    const p=wellGeo.getAttribute('position'),ix=wellGeo.index!.array,outer:number[]=[],inner:number[]=[],triangle=new THREE.Triangle(),normal=new THREE.Vector3()
++    for(let i=0;i<ix.length;i+=3){
++     triangle.a.fromBufferAttribute(p,ix[i]!);triangle.b.fromBufferAttribute(p,ix[i+1]!);triangle.c.fromBufferAttribute(p,ix[i+2]!)
++     const batch=triangle.getNormal(normal).y<-.5?outer:inner;batch.push(ix[i]!,ix[i+1]!,ix[i+2]!)
++    }
++    wellGeo.setIndex([...outer,...inner]);wellGeo.addGroup(0,outer.length,0);wellGeo.addGroup(outer.length,inner.length,1);well.material=[paint,dark]
++   }
+    const name=`${profile.airbrakes?'airbrake':'rollSpoiler'}-${sideName}`
+    const {h,skin}=moving(name,cutSkin(pocket,floorPlane),point(ba,.57),point(bb,.57))
+-   skin.material=trim;spoilers.push({hinge:h,side});drive(h,skin,fixed,`${name}-actuator`)
++   skin.material=trim;spoilers.push({hinge:h,side})
++   if(profile.airbrakes){
++    const x=THREE.MathUtils.lerp(ba,bb,.52)
++    brakeDrive(`${name}-actuator`,well,skin,point(x,.60),point(x,.68),thickness*.10,-thickness*.10)
++   }else drive(h,skin,fixed,`${name}-actuator`)
+    if(profile.airbrakeTiers===2){
+     // Two rigid tiers unfold above the real opening. Travel proportions are a
+     // visual linkage approximation, not a manufacturer mechanism dimension.
+     const tierGeo=region(full,ba,bb,.60,.70,side)
+     // A finite thin board nests in the well, rather than duplicating a whole
+     // wing section. Keep the clipped tapered outline and curved edge profile;
+     // section depth is a visual approximation at 10% of the parent airfoil.
+     const tierPositions=tierGeo.getAttribute('position')
+     for(let i=0;i<tierPositions.count;i++){
+      const middle=wingY+Math.abs(tierPositions.getX(i))*dihedral+thickness/2
+      tierPositions.setY(i,middle+(tierPositions.getY(i)-middle)*.10)
+     }
+     tierGeo.computeVertexNormals()
+     const tier=moving(`${name}-upper-tier`,tierGeo,point(ba,.60),point(bb,.60)),tierNeutral=tier.h.root.position.clone();tier.skin.material=trim
+     for(const f of [.20,.80]){
+      const x=THREE.MathUtils.lerp(ba,bb,f),anchor=point(x,.63)
+-     linkages.push(skinDrive(g,`${name}-tier-support-${f}`,skin,tier.skin,anchor,anchor,Math.max(.012,thickness*.16),Math.max(.006,W*.006),metal))
++     brakeDrive(`${name}-tier-support-${f}`,skin,tier.skin,anchor,anchor,-thickness*.07,thickness*.07)
+     }
+     mechanisms.push(f=>{tier.h.root.position.copy(tierNeutral);tier.h.root.position.y+=gliderOffset+Math.sin(f*Math.PI/2)*rootChord*.15-thickness*.12;tier.h.setAngle(-side*f*1.55)})
+    }
+   }else fixed=add('wingForward',region(full,start,half,0,.73,side))
+   if(fa>start)add(`wingTrailingFixed-inboard-${sideName}`,region(full,start,fa,.73,1,side))
+   if(profile.rollControl==='flaperon'){
+    const {h,skin}=moving(`flaperon-${sideName}`,region(full,fa,half,.73,1,side),point(fa,.73),point(half,.73));ailerons.push({hinge:h,side})
+    for(const f of [.28,.72])drive(h,skin,fixed,`flaperon-drive-${sideName}`,f)
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/tests/render/prop-surfaces-repair.test.ts
++++ tests/render/prop-surfaces-repair.test.ts
+@@ -212,8 +212,65 @@
+   })
+   expect(Math.max(...escape()),`${id} ${side}: indexed tier outside original silhouette`).toBeLessThan(2e-5)
+   // Move the same visible, reachable mesh: the probe must catch bottom escape.
+   const hinge=tier.userData.hinge as THREE.Object3D
+   hinge.position.y-=.1;tier.updateWorldMatrix(true,false)
+   expect(Math.max(...escape()),`${id} ${side}: displaced board below well`).toBeGreaterThan(.04)
+  }
+ })
++
++for(const id of ['DG80','LS8','AS21','DISC'])it(`${id} stows every indexed airbrake rod and horn inside the original wing`,()=>{
++ const a=build(id);a.surfaces!(neutral);a.group.updateMatrixWorld(true)
++ const envelope:THREE.Triangle[]=[]
++ a.group.traverse(o=>{if(o instanceof THREE.Mesh&&/^(wingForward$|brake-well-|airbrake-(left|right)$)/.test(o.name))envelope.push(...triangles(o))})
++ const hardware:THREE.Mesh[]=[]
++ a.group.traverse(o=>{if(o instanceof THREE.Mesh&&/^airbrake-.*(actuator|tier-support)/.test(o.name))hardware.push(o)})
++ expect(hardware.length).toBe(id==='DG80'||id==='LS8'?18:6)
++ const escape=(m:THREE.Mesh)=>Math.max(...indexedPoints(m).map(p=>{
++  const ys=envelopeY(p,envelope)
++  expect(ys.length,`${id} ${m.name}: original wing footprint`).toBeGreaterThan(1)
++  return Math.max(Math.min(...ys)-p.y,p.y-Math.max(...ys))
++ }))
++ const outside=hardware.map(m=>{expect(m.visible,`${m.name}: visible geometry`).toBe(true);return {name:m.name,escape:escape(m)}}).filter(m=>m.escape>=2e-5)
++ expect(outside,`${id}: indexed hardware outside wing`).toEqual([])
++ // Move the rendered rod, not an endpoint marker; containment must reject it.
++ const rod=hardware.find(m=>m.name==='airbrake-left-actuator')!
++ rod.position.y-=.1
++ expect(escape(rod),'actual rod displaced below lower skin').toBeGreaterThan(.04)
++})
++
++it('airbrake rods and horns remain finite and physically attached through extension and reset',()=>{
++ for(const id of ['DG80','LS8','AS21','DISC']){
++  const a=build(id),links=(a.group.userData.surfaceLinkages as LiveLinkage[]).filter(l=>l.rod.name.startsWith('airbrake-'))
++  a.surfaces!(neutral);const initial=links.map(l=>indexedPoints(l.rod))
++  for(const f of [0,.01,.25,.5,.75,1,.5,0,NaN,Infinity,-1,2]){
++   a.surfaces!({...neutral,spoilerFrac:f});a.group.updateMatrixWorld(true)
++   for(const l of links){
++    for(const m of [l.fixedMount,l.movingMount])expect(hornError(m),`${id} ${f} ${m.name}`).toBeLessThan(2e-5)
++    const [start,end]=cylinderEnds(l.rod)
++    expect(start.distanceTo(l.fixedMount.getWorldPosition(new THREE.Vector3()))).toBeLessThan(2e-5)
++    expect(end.distanceTo(l.movingMount.getWorldPosition(new THREE.Vector3()))).toBeLessThan(2e-5)
++    for(const mesh of [l.rod,l.fixedMount.userData.bracket,l.movingMount.userData.bracket] as THREE.Mesh[]){
++     expect(mesh.visible).toBe(true)
++     expect(indexedPoints(mesh).every(p=>p.toArray().every(Number.isFinite))).toBe(true)
++    }
++   }
++  }
++  a.surfaces!(neutral)
++  links.forEach((l,i)=>indexedPoints(l.rod).forEach((p,j)=>expect(p.distanceTo(initial[i]![j]!)).toBeLessThan(1e-7)))
++ }
++})
++
++it('airbrake wells keep the exterior wing paint and shade only the inside',()=>{
++ for(const id of ['DG80','LS8','AS21','DISC'])for(const side of ['left','right']){
++  const a=build(id),well=skin(a,`brake-well-${side}`),paint=skin(a,'wingForward').material
++  const materials=Array.isArray(well.material)?well.material:[well.material],ix=well.geometry.index!,p=well.geometry.getAttribute('position')
++  let exterior=0,interior=0
++  for(let i=0;i<ix.count;i+=3){
++   const tri=new THREE.Triangle(...[0,1,2].map(j=>new THREE.Vector3().fromBufferAttribute(p,ix.getX(i+j))) as [THREE.Vector3,THREE.Vector3,THREE.Vector3])
++   const normal=tri.getNormal(new THREE.Vector3()),group=well.geometry.groups.find(g=>i>=g.start&&i<g.start+g.count),material=materials[group?.materialIndex??0]
++   if(normal.y<-.5){expect(material,`${id} ${side}: lower exterior`).toBe(paint);exterior++}
++   if(normal.y>.5){expect(material,`${id} ${side}: interior floor`).not.toBe(paint);interior++}
++  }
++  expect(exterior).toBeGreaterThan(0);expect(interior).toBeGreaterThan(0)
++ }
++})

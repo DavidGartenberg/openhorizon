@@ -64,6 +64,7 @@ export class TrafficLayer {
 
   constructor(private readonly scene: THREE.Scene) {
     this.canvas = document.createElement('canvas')
+    this.canvas.id = 'traffic-labels'
     this.canvas.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:8'
     document.body.appendChild(this.canvas)
     this.ctx = this.canvas.getContext('2d')!

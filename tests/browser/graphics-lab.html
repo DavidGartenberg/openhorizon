@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>OpenHorizon graphics inspection</title>
+<style>
+body{margin:0;background:#101820;color:#d7e3ea;font:13px system-ui}header{padding:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}button{background:#293e4a;border:1px solid #59717f;color:white;padding:8px;border-radius:5px;cursor:pointer}iframe{width:100%;height:calc(100vh - 160px);border:0}pre{margin:0;padding:8px 12px;font:12px/1.5 monospace;white-space:pre-wrap}span{color:#9ab0bd}
+</style>
+<header><strong>Graphics inspection</strong><button id="runway">Runway</button><button id="coast">Coastal final</button><button id="cockpit">Cockpit final</button><button id="sfo">KSFO final</button><button id="imc">Inside cloud</button><button id="cessna">Cessna</button><button id="boeing">737</button><button id="measure">Measure 10 seconds</button><button id="fly">Fly / pause</button><span>Use the simulator’s View & graphics panel for weather, light and quality.</span></header>
+<iframe id="sim" src="/"></iframe><pre id="result">Loading a separate simulator instance…</pre>
+<script type="module">
+const frame=document.getElementById('sim'), result=document.getElementById('result')
+const w=()=>frame.contentWindow
+let measuring=false, retainMeasurement=false
+const status=setInterval(()=>{
+ const s=w(); if(!s.__ohData?.().airportsLoaded)return
+ if(!frame.dataset.ready){s.__ohRate(0);s.__ohCtl({brakeLeft:1,brakeRight:1});s.__ohHold(true);frame.dataset.ready='yes'}
+ if(!measuring && !retainMeasurement)result.textContent=JSON.stringify({flight:s.__ohData(),render:s.__ohPerf(),graphics:s.__ohGraphics?.()},null,0)
+},1000)
+function scenario(command,cam){retainMeasurement=false;flying=false;const s=w();s.__ohRate(0);s.__ohSpawn(command);s.__ohCam(cam);s.__ohRate(1);s.__ohStep(1/120);s.__ohRate(0);result.textContent='Scene selected; allow terrain streaming to settle.'}
+document.getElementById('runway').onclick=()=>scenario('KHAF 30','chase')
+document.getElementById('coast').onclick=()=>scenario('KHAF 30 final','chase')
+document.getElementById('cockpit').onclick=()=>scenario('KHAF 30 final','cockpit')
+document.getElementById('sfo').onclick=()=>scenario('KSFO 28R final','chase')
+document.getElementById('imc').onclick=()=>{scenario('KHAF 30 final','cockpit');w().__ohSlabs([{cover:'OVC',baseMslFt:700,topMslFt:2000}])}
+document.getElementById('cessna').onclick=()=>{retainMeasurement=false;flying=false;delete frame.dataset.ready;w().__ohSpawn('FLY 172')}
+document.getElementById('boeing').onclick=()=>{retainMeasurement=false;flying=false;delete frame.dataset.ready;w().__ohSpawn('FLY 737')}
+let flying=false
+document.getElementById('fly').onclick=()=>{flying=!flying;w().__ohRate(flying?1:0)}
+document.getElementById('measure').onclick=()=>{
+ if(measuring)return;measuring=true;result.textContent='Measuring presented frames for 10 seconds…'
+ const samples=[];let previous=performance.now();const start=previous
+ function sample(now){samples.push(now-previous);previous=now;if(now-start<10000){requestAnimationFrame(sample);return}
+ samples.sort((a,b)=>a-b);const p=q=>+samples[Math.min(samples.length-1,Math.floor(samples.length*q))].toFixed(2)
+ result.textContent=JSON.stringify({viewport:[innerWidth,innerHeight],frames:samples.length,meanFps:+(samples.length/((now-start)/1000)).toFixed(1),frameMs:{p50:p(.5),p95:p(.95),max:p(1)},cpuAndScene:w().__ohPerf(),graphics:w().__ohGraphics?.()},null,2)
+ // Leave the result readable until the next scenario or measurement.
+ retainMeasurement=true;measuring=false
+ }requestAnimationFrame(sample)
+}
+</script>

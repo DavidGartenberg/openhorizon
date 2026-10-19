@@ -314,9 +314,18 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
     ...propGains,
     swirlRollRecovery,
     ...rigging,
+    ...(glider
+      ? {
+          // CALIBRATED approximation: the source types establish dive-brake
+          // fit, and ASK 21 establishes one-second travel, but publish no
+          // coefficient increments. These values give useful approach-path
+          // control while leaving the clean polar untouched.
+          spoilers: { dCd: 0.12, dCl: 0.35, ratePerS: 1, groundAutoDeploy: false },
+        }
+      : {}),
     ...(jet && pp.kind === 'jet'
       ? {
-          spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85 },
+          spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85, groundAutoDeploy: true },
           reversers: { effectiveness: 0.45, transitS: 1.5 },
           jet: {
             ...CFM56_7B26,
@@ -362,5 +371,13 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
   // Partial jet-block tuning deep-merges over the derived CFM56-anchored
   // block (X-Plane engine audit: per-type spool/TSFC/idle overrides).
   if (jetTuning && p.jet) merged.jet = { ...p.jet, ...jetTuning }
+  const ds = merged.flapDetentsDeg
+  if (!ds.length || ds.some((v,i)=>!Number.isFinite(v)||(i>0&&v<=ds[i-1]!))) throw new Error('Invalid flap detents')
+  for(const table of [merged.flapDCl0,merged.flapDClMax,merged.flapDCd,merged.flapDCm]) {
+    if(table.length!==ds.length || table.some(v=>!Number.isFinite(v))) throw new Error('Invalid flap coefficients')
+  }
+  if (merged.flapDefaultIndex !== undefined && (!Number.isInteger(merged.flapDefaultIndex)||merged.flapDefaultIndex<0||merged.flapDefaultIndex>=ds.length)) throw new Error('Invalid flap default')
+  if (merged.flapLabels && merged.flapLabels.length!==ds.length) throw new Error('Invalid flap labels')
+  if (merged.flaperons) merged.vSpeeds = {...merged.vSpeeds, vs0: Math.round(Math.sqrt(2*merged.mtowKg*G/(RHO0*merged.wingAreaM2*(merged.clMaxClean+merged.flapDClMax[ds.length-1]!)))/KT)}
   return merged
 }

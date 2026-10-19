@@ -1,0 +1,201 @@
+--- baseline/src/sim/aircraft/params.ts
++++ current/src/sim/aircraft/params.ts
+@@ -28,16 +28,15 @@
+    *  Jet aircraft should also set pFactorK/swirlK/propwashTailFactor to 0. */
+   jet?: JetParams
+   /** Retractable gear: transit time and the drag increment when extended.
+    *  Absent = fixed gear (always down, no extra drag term). */
+   gearRetractable?: { transitS: number; dCdExtended: number }
+-  /** Flight spoilers / speedbrakes (737-class): drag increment, lift
+-   *  dump (ΔCL removed at full deploy), and actuator rate (fraction/s).
+-   *  Absent = no spoilers (piston fleet). Simplification (documented):
+-   *  symmetric speedbrake only — no roll-spoiler mixing, no ground
+-   *  auto-deploy arming. */
+-  spoilers?: { dCd: number; dCl: number; ratePerS: number }
++  /** Symmetric flight spoilers / speedbrakes: drag increment, lift dump
++   *  (ΔCL removed at full deploy), actuator rate (fraction/s), and an
++   *  explicit ground-auto-deploy capability. Glider airbrakes use the same
++   *  normalized actuator but never inherit jet touchdown logic. */
++  spoilers?: { dCd: number; dCl: number; ratePerS: number; groundAutoDeploy: boolean }
+   /** Thrust reversers (jets): effective reverse thrust as a fraction of
+    *  forward thrust at the same N1, and sleeve transit time. Deploy is
+    *  interlocked to weight-on-wheels like the real airplane. */
+   reversers?: { effectiveness: number; transitS: number }
+   /** Compressibility (Phase 11e): Prandtl–Glauert lift-slope correction and
+--- baseline/src/sim/aircraft/derive.ts
++++ current/src/sim/aircraft/derive.ts
+@@ -312,13 +312,22 @@
+     carburetor: false,
+     propwashTailFactor: glider || jet ? 0 : multiEngineProp ? 0.35 : 0.7,
+     ...propGains,
+     swirlRollRecovery,
+     ...rigging,
++    ...(glider
++      ? {
++          // CALIBRATED approximation: the source types establish dive-brake
++          // fit, and ASK 21 establishes one-second travel, but publish no
++          // coefficient increments. These values give useful approach-path
++          // control while leaving the clean polar untouched.
++          spoilers: { dCd: 0.12, dCl: 0.35, ratePerS: 1, groundAutoDeploy: false },
++        }
++      : {}),
+     ...(jet && pp.kind === 'jet'
+       ? {
+-          spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85 },
++          spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85, groundAutoDeploy: true },
+           reversers: { effectiveness: 0.45, transitS: 1.5 },
+           jet: {
+             ...CFM56_7B26,
+             engines: pp.count,
+             staticThrustN: pp.staticThrustN,
+--- baseline/src/sim/aircraft/b738.ts
++++ current/src/sim/aircraft/b738.ts
+@@ -102,11 +102,11 @@
+   pFactorK: 0, // no P-factor
+   swirlK: 0,
+   // Flight spoilers/speedbrake: in-flight drag + lift dump at full
+   // deflection (class figures for a narrowbody: ΔCD ≈ 0.05, ΔCL ≈ 0.35);
+   // ~1.2 s full travel. Symmetric speedbrake only (documented above).
+-  spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85 },
++  spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85, groundAutoDeploy: true },
+   // CFM56 fan-air cascade reversers: ~45% of forward thrust at the same
+   // N1 (class figure), ~1.5 s sleeve transit, weight-on-wheels interlock.
+   reversers: { effectiveness: 0.45, transitS: 1.5 },
+ 
+   jet: CFM56_7B26,
+--- baseline/src/sim/aircraft.ts
++++ current/src/sim/aircraft.ts
+@@ -262,11 +262,11 @@
+     this.alphaPrev = alpha
+ 
+     // ---- gear transit (Phase 11e; fixed gear pins at 1) ----
+     if (this.P.spoilers) {
+       // ARM → auto-deploy on touchdown (ground spoilers).
+-      if (this.spoilerArmed && this.data.onGround) { this.spoilerCmd = 1; this.spoilerArmed = false }
++      if (this.P.spoilers.groundAutoDeploy && this.spoilerArmed && this.data.onGround) { this.spoilerCmd = 1; this.spoilerArmed = false }
+       const sRate = this.P.spoilers.ratePerS * dt
+       this.spoilerPos = clamp(this.spoilerPos + clamp(this.spoilerCmd - this.spoilerPos, -sRate, sRate), 0, 1)
+     }
+     if (this.P.reversers) {
+       const tgt = this.reverseCmd && this.data.onGround ? 1 : 0
+--- baseline/src/sim/trim.ts
++++ current/src/sim/trim.ts
+@@ -34,10 +34,12 @@
+   throttle?: number
+   /** Aircraft to trim (fleet, Phase 10a); defaults to the C172S. */
+   params?: AircraftParams
+   /** Extra parasite drag in the trim condition (extended gear). Default 0. */
+   extraCd?: number
++  /** Symmetric lift dump in the trim condition (deployed speedbrakes). */
++  extraClDump?: number
+   /** Live ISA temperature offset, °C (9B): a hot/cold-day final spawn was
+    *  trimmed for the standard atmosphere and arrived mistrimmed. */
+   isaTempOffsetC?: number
+ }
+ 
+@@ -119,10 +121,11 @@
+     rho, vAir: s.tasMs, alpha, beta: 0, alphaDot: 0, p: 0, q: 0, r: 0,
+     elevatorRad: elevator, aileronRad: 0, rudderRad: 0, flapsDeg: s.flapsDeg,
+     thrustN: prop.thrustN, propTorqueNm: prop.torqueNm, heightAglM: 1000,
+     mach: P.machModel ? s.tasMs / air.speedOfSoundMs : 0,
+     extraCd: s.extraCd ?? 0,
++    extraClDump: s.extraClDump ?? 0,
+   }
+   computeAero(ai, aeroOut, P)
+   const qS = 0.5 * rho * s.tasMs * s.tasMs * P.wingAreaM2
+   const Lift = qS * aeroOut.cl
+   const Drag = qS * aeroOut.cd
+--- baseline/tests/glider-airbrakes.test.ts
++++ current/tests/glider-airbrakes.test.ts
+@@ -0,0 +1,74 @@
++import { describe, expect, it } from 'vitest'
++import { Aircraft } from '../src/sim/aircraft'
++import { rosterParams } from '../src/sim/aircraft/roster'
++import { trim } from '../src/sim/trim'
++import { KT } from '../src/sim/atmosphere'
++
++const DT = 1 / 120
++const GLIDERS = ['AS21', 'DG80', 'LS8', 'DISC'] as const
++
++describe('glider airbrakes', () => {
++  it('fits the supported glider fleet without inventing flap detents', () => {
++    for (const designator of GLIDERS) {
++      const p = rosterParams(designator)!
++      expect(p.spoilers, designator).toMatchObject({ groundAutoDeploy: false })
++      expect(p.spoilers!.dCd, designator).toBeGreaterThan(0)
++      expect(p.spoilers!.dCl, designator).toBeGreaterThan(0)
++      expect(p.flapDetentsDeg, designator).toEqual([0])
++    }
++  })
++
++  it('travels over the documented one-second ASK 21 extension and retracts/reset cleanly', () => {
++    const ac = new Aircraft(rosterParams('AS21')!)
++    ac.applyTrimState(49 * KT, 0.04, 1000, 0, 0, 0, 0, 0)
++    ac.spoilerCmd = 2
++    for (let i = 0; i < 60; i++) ac.step(DT)
++    expect(ac.spoilerPos).toBeCloseTo(0.5, 2)
++    for (let i = 0; i < 90; i++) ac.step(DT)
++    expect(ac.spoilerPos).toBe(1)
++    ac.spoilerCmd = -1
++    for (let i = 0; i < 120; i++) ac.step(DT)
++    expect(ac.spoilerPos).toBeCloseTo(0, 12)
++
++    ac.spoilerCmd = 1
++    for (let i = 0; i < 30; i++) ac.step(DT)
++    ac.spawnOnGround(0, 0, 0)
++    expect(ac.spoilerCmd).toBe(0)
++    expect(ac.spoilerPos).toBe(0)
++  })
++
++  it('leaves clean glider flight unchanged when the lever is closed', () => {
++    const p = rosterParams('AS21')!
++    const clean = new Aircraft(p)
++    const legacy = new Aircraft({ ...p, spoilers: undefined })
++    for (const ac of [clean, legacy]) ac.applyTrimState(49 * KT, 0.04, 1000, 0, 0, 0, 0, 0)
++    for (let i = 0; i < 240; i++) { clean.step(DT); legacy.step(DT) }
++    expect(clean.posNed).toEqual(legacy.posNed)
++    expect(clean.velBody).toEqual(legacy.velBody)
++    expect(clean.quat).toEqual(legacy.quat)
++  })
++
++  it('produces a steeper equilibrium descent at the same safe speed and mass', () => {
++    const p = rosterParams('AS21')!
++    const tasMs = 55 * KT
++    const massKg = p.mtowKg * 0.9
++    const clean = trim({ tasMs, altM: 1000, massKg, flapsDeg: 0, throttle: 0, params: p })
++    const deployed = trim({
++      tasMs, altM: 1000, massKg, flapsDeg: 0, throttle: 0, params: p,
++      extraCd: p.spoilers!.dCd,
++      extraClDump: p.spoilers!.dCl,
++    })
++    expect(clean.converged).toBe(true)
++    expect(deployed.converged).toBe(true)
++    expect(deployed.gammaRad).toBeLessThan(clean.gammaRad - 0.05)
++  })
++
++  it('does not turn an armed glider lever into jet touchdown autodeploy', () => {
++    const ac = new Aircraft(rosterParams('AS21')!)
++    ac.spawnOnGround(0, 0, 0)
++    ac.spoilerArmed = true
++    for (let i = 0; i < 30; i++) ac.step(DT)
++    expect(ac.spoilerCmd).toBe(0)
++    expect(ac.spoilerPos).toBe(0)
++  })
++})
+--- baseline/tests/validate/roster.test.ts
++++ current/tests/validate/roster.test.ts
+@@ -107,12 +107,12 @@
+           expect(ld).toBeGreaterThan(targets.glideRatio! * 0.8)
+           expect(ld).toBeLessThan(targets.glideRatio! * 1.2)
+         })
+       }
+ 
+-      // Gliders can't hold −3° at best-glide without spoilers (not
+-      // modeled) — their approach check is the glide row above.
++      // Glider approach-path control uses the separate airbrake condition;
++      // this generic flap-config check does not command that actuator.
+       const approachIt = spec.powerplant.kind === 'none' ? it.skip : it
+       approachIt('approach-config trim on a −3° path converges', () => {
+         const flaps = spec.flapDetentsDeg[spec.flapDetentsDeg.length - 1]!
+         const tas = spec.vSpeeds.approachKcas * KT
+         const gearCd = P.gearRetractable ? P.gearRetractable.dCdExtended : 0

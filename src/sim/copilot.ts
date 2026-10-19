@@ -22,6 +22,8 @@ export interface CopilotObs {
   /** Gear commanded/positioned down (true for fixed gear). */
   gearDown: boolean
   flapsIndex: number
+  flapsDeg?: number
+  glider?: boolean
   throttle: number
 }
 
@@ -103,7 +105,7 @@ export function copilotCallouts(
   if (s.onGround) {
     // Takeoff roll: power up AND accelerating — a landing rollout under
     // reverse thrust also reads high "throttle" but decelerates.
-    if (s.throttle > 0.6 && s.kias >= prev.kias) {
+    if (!s.glider && s.throttle > 0.6 && s.kias >= prev.kias) {
       if (s.kias >= 40) fire('alive', 'airspeed alive')
       if (s.kias >= 80 && sp.vrKt > 90) fire('eighty', 'eighty knots')
       if (sp.v1Kt >= 80 && s.kias >= sp.v1Kt) fire('v1', 'vee one')
@@ -115,9 +117,9 @@ export function copilotCallouts(
       L.wasAirborne = false
     }
   } else {
-    if (s.vsFpm > 300 && s.aglFt > 20) fire('posRate', 'positive rate')
+    if (!s.glider && s.vsFpm > 300 && s.aglFt > 20) fire('posRate', 'positive rate')
     if (gearRetractable && prev.gearDown && !s.gearDown) fire('gearUp', 'gear up')
-    if (s.flapsIndex > 0 && s.kias >= sp.flapsUpKt && s.vsFpm > 0 && s.aglFt > 400) {
+    if (!s.glider && (s.flapsDeg !== undefined ? s.flapsDeg > 0 : s.flapsIndex > 0) && s.kias >= sp.flapsUpKt && s.vsFpm > 0 && s.aglFt > 400) {
       fire('flapsUp', 'flaps up speed')
     }
     // Descending through 1000 AGL ("five hundred" belongs to TAWS).

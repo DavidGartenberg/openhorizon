@@ -1,0 +1,19 @@
+# Local voice ATC
+
+Hold **T**, the sidestick trigger mapped to T, or **Hold to talk**. Speak a complete English transmission, then release. Open **ATC menu** (backquote) to type instead. Voice uses the same free-text classifier and ground/tower/approach strip machines as typed ATC; it is not an unrestricted conversational controller.
+
+The microphone is requested only on a hold. Audio is captured in memory for at most 20 seconds, encoded as mono 16 kHz PCM WAV, sent to this computer's local service on release, and deleted after inference. Nothing is sent to a paid or cloud recognition service. The transcript is shown after processing. Hardware triggers require a physical release before rearming after cancellation, and capture requires a focused, visible page. Cancel, blur, text focus, hiding the page, disconnecting a controller, pausing, changing frequency/facility or starting a flight discards pending transmissions. Radio and copilot audio stop during recording; safety callouts remain audible and cancel capture to prevent echo commands. Wait for a safety callout to finish before trying again.
+
+Browser language-pack installation failed on the current embedded Chromium installation. This implementation uses local Whisper instead of silently falling back to network recognition. Microphone recording requires a secure context (localhost counts) and browser microphone permission. If the embedded browser denies access, open the same local address in Chrome, Edge, or Safari and allow the microphone. **Check local voice** retries service detection; typed ATC works without a speech engine.
+
+## Setup on another computer
+
+Run the Vite development server, or build the app and run `node server/index.mjs`. Both mount the same `/api/voice/` routes. Open the app through `localhost` or `127.0.0.1`; speech routes reject LAN clients and foreign origins even when other simulator data routes are exposed.
+
+Install [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and its English base GGML model. On Apple Silicon with Homebrew, `brew install whisper-cpp` installs `/opt/homebrew/bin/whisper-cli`. Download the model using the project's documented model download workflow and place `ggml-base.en.bin` at `server/cache/speech/ggml-base.en.bin` (ignored by git). Set `OPENHORIZON_WHISPER_BIN` and `OPENHORIZON_WHISPER_MODEL` when using another installation path or OS. These are local server configuration variables, never browser input.
+
+On macOS, arbitrary spoken ATC replies use `/usr/bin/say` with the installed Samantha voice to produce temporary PCM WAVs. The single existing speech driver plays them and revokes their object URLs. Other operating systems use browser synthesis for replies, with visible errors if that browser cannot speak. Standard safety warnings always retain their existing prerecorded PCM clips.
+
+`GET /api/voice/status` reports executable/model availability, not successful recognition or audible output. A permission prompt, unavailable microphone, empty or near-silent recording, process failure, oversized recording, or timeout produces a visible error. Whisper can mishear callsigns and aviation words; review the displayed transcript. Only unambiguous spoken runway digits/directions and single-digit thousands with explicit feet units are normalized. Only explicit November/NATO registrations are shortened; no fuzzy callsign correction or invented clearance is performed by the voice layer.
+
+Service limits: 20-second input, one speech job at a time, 30-second child-process timeout, 35-second request timeout, 600-character / 60-second synthesized replies. Speech uploads are bounded before buffering. Temporary directories are private, subprocesses use argument arrays without a shell, client cancellation aborts children, and all speech responses are uncached.

@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>OpenHorizon · Safety audio inspection</title>
+<style>body{margin:0;padding:36px;background:#12202b;color:#e7eef2;font:16px system-ui;max-width:1000px}h1{font-size:26px}button{padding:12px;margin:5px;border:0;border-radius:6px;background:#d1e7ed;color:#172a36;cursor:pointer}label{display:block;margin:20px 0}pre{background:#203440;padding:18px;white-space:pre-wrap;min-height:90px}li{padding:6px;font:14px ui-monospace,monospace}.note{color:#b5cbd6}</style></head>
+<body><h1>Safety audio inspection</h1><p class="note">Runs the simulator’s TCAS, GPWS, and speech controller against repeatable test encounters.</p>
+<label><input id="audio" type="checkbox"> Speak test advisories</label>
+<button data-scenario="parked">Parked aircraft</button><button data-scenario="conflict">Closing traffic</button><button data-scenario="low">Traffic below 500 feet</button><button data-scenario="landing">Landing callouts</button><button data-scenario="priority">Terrain interrupts radio</button><button data-scenario="ptt">PTT with terrain warning</button><button id="stop">Stop and reset</button>
+<pre id="state" aria-label="Current safety state">Choose a scenario.</pre><h2>Speech events</h2><ol id="events" aria-live="polite"></ol><script type="module" src="/tests/browser/safety-studio.ts"></script></body></html>

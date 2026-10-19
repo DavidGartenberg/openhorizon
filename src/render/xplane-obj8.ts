@@ -91,11 +91,14 @@ export interface ParsedObj8 {
   albedo?: string
   lit?: string
   normal?: string
+  materialGloss?: string
+  gloss?: string
+  splitNormal?: boolean
   /** GLOBAL_specular ratio, when present. */
   specular?: number
   /** GLOBAL_no_blend alpha cutoff, when present. */
   noBlend?: number
-  /** NORMAL_METALNESS: normal map's blue/alpha carry metalness (ignored). */
+  /** NORMAL_METALNESS: normal map RG=normal, B=reflectance, A=gloss. */
   normalMetalness: boolean
   /** ATTR_LOD bands [near, far] in file order. */
   lods: Array<[number, number]>
@@ -152,6 +155,9 @@ export function parseObj8(text: string): ParsedObj8 {
   const lods: Array<[number, number]> = []
   let albedo: string | undefined
   let lit: string | undefined
+  let materialGloss: string | undefined
+  let gloss: string | undefined
+  let splitNormal = false
   let normal: string | undefined
   let specular: number | undefined
   let noBlend: number | undefined
@@ -245,7 +251,11 @@ export function parseObj8(text: string): ParsedObj8 {
         break
       case 'IDX10':
       case 'IDX':
-        for (let i = 1; i < t.length; i++) idx.push(n(i))
+        for (let i = 1; i < t.length; i++) {
+          const value = n(i)
+          if (!Number.isInteger(value) || value < 0) warn(`invalid index at line ${li + 1}`)
+          idx.push(value)
+        }
         break
       case 'TRIS': {
         const start = n(1)
@@ -280,7 +290,9 @@ export function parseObj8(text: string): ParsedObj8 {
         break
       case 'TEXTURE_MAP':
         // XP12: TEXTURE_MAP <normal|material_gloss|gloss> <file>
-        if (t[1] === 'normal') normal = addTexture(rest(2))
+        if (t[1] === 'normal') { normal = addTexture(rest(2)); splitNormal = true }
+        if (t[1] === 'material_gloss') materialGloss = addTexture(rest(2))
+        if (t[1] === 'gloss') gloss = addTexture(rest(2))
         break
       case 'GLOBAL_specular':
         specular = n(1)
@@ -323,15 +335,15 @@ export function parseObj8(text: string): ParsedObj8 {
         break
       }
       case 'ANIM_rotate': {
-        const keys: Array<[number, number]> = [[n(6), n(4)], [n(7), n(5)]]
+        const keys: Array<[number, number]> = [[t.length === 6 ? 0 : n(6), n(4)], [t.length === 6 ? 0 : n(7), n(5)]]
         const spec: AnimSpec = { kind: 'rotate', axis: [n(1), n(2), n(3)], keys: keys.sort(byValue), dataref: t[8] ?? 'none' }
         if (!bad) addSpec(spec, cmd)
         break
       }
       case 'ANIM_trans': {
         const keys: Array<[number, Vec3]> = [
-          [n(7), [n(1), n(2), n(3)]],
-          [n(8), [n(4), n(5), n(6)]],
+          [t.length === 7 ? 0 : n(7), [n(1), n(2), n(3)]],
+          [t.length === 7 ? 0 : n(8), [n(4), n(5), n(6)]],
         ]
         const spec: AnimSpec = { kind: 'trans', keys: keys.sort(byValue), dataref: t[9] ?? 'none' }
         if (!bad) addSpec(spec, cmd)
@@ -410,6 +422,9 @@ export function parseObj8(text: string): ParsedObj8 {
   if (albedo !== undefined) out.albedo = albedo
   if (lit !== undefined) out.lit = lit
   if (normal !== undefined) out.normal = normal
+  if (materialGloss !== undefined) out.materialGloss = materialGloss
+  if (gloss !== undefined) out.gloss = gloss
+  if (splitNormal) out.splitNormal = true
   if (specular !== undefined) out.specular = specular
   if (noBlend !== undefined) out.noBlend = noBlend
   if (pointCounts !== undefined) out.pointCounts = pointCounts
@@ -418,14 +433,17 @@ export function parseObj8(text: string): ParsedObj8 {
 
 // ------------------------------------------------------------ animation --
 
-/** Piecewise-linear lookup in an ascending key table, clamped at both ends
- *  (X-Plane does not extrapolate past the table). Equal-valued neighbours
+/** Piecewise-linear lookup in an ascending key table
+ *  with linear extrapolation outside the table (OBJ8 specification). Equal-valued neighbours
  *  behave as a step. Empty table → 0. */
 export function evalObj8Keys(keys: ReadonlyArray<readonly [number, number]>, value: number): number {
   const last = keys.length - 1
   if (last < 0) return 0
-  if (value <= keys[0]![0]) return keys[0]![1]
-  if (value >= keys[last]![0]) return keys[last]![1]
+  if (last === 0) return keys[0]![1]
+  const segment = (a: readonly [number, number], b: readonly [number, number]): number =>
+    b[0] === a[0] ? (value <= a[0] ? a[1] : b[1]) : a[1] + (b[1] - a[1]) * (value - a[0]) / (b[0] - a[0])
+  if (value <= keys[0]![0]) return segment(keys[0]!, keys[1]!)
+  if (value >= keys[last]![0]) return segment(keys[last - 1]!, keys[last]!)
   for (let i = 0; i < last; i++) {
     const [v0, a0] = keys[i]!
     const [v1, a1] = keys[i + 1]!
@@ -455,6 +473,12 @@ const _vec = new THREE.Vector3()
 const _step = new THREE.Matrix4() // per-command scratch inside obj8AnimMatrix
 const _acc = new THREE.Matrix4() // accumulator for applyObj8Anim (must not alias _step)
 
+function animationValue(s: Extract<AnimSpec, {kind: 'rotate' | 'trans'}>, read: DatarefReader): number {
+  const value = read(s.dataref)
+  const start = s.keys[0]?.[0] ?? 0
+  return s.loop && s.loop > 0 ? start + ((value - start) % s.loop + s.loop) % s.loop : value
+}
+
 /** Compose a block's transform commands (in file order, GL-stack style:
  *  M = M1 · M2 · … · Mn) at the given dataref values. */
 export function obj8AnimMatrix(specs: ReadonlyArray<AnimSpec>, read: DatarefReader, out = new THREE.Matrix4()): THREE.Matrix4 {
@@ -463,12 +487,12 @@ export function obj8AnimMatrix(specs: ReadonlyArray<AnimSpec>, read: DatarefRead
     if (s.kind === 'rotate') {
       _axis.set(s.axis[0], s.axis[1], s.axis[2])
       if (_axis.lengthSq() === 0) continue
-      const deg = evalObj8Keys(s.keys, read(s.dataref))
+      const deg = evalObj8Keys(s.keys, animationValue(s, read))
       if (deg === 0) continue
       _step.makeRotationAxis(_axis.normalize(), deg * THREE.MathUtils.DEG2RAD)
       out.multiply(_step)
     } else if (s.kind === 'trans') {
-      evalVec3Keys(s.keys, read(s.dataref), _vec)
+      evalVec3Keys(s.keys, animationValue(s, read), _vec)
       _step.makeTranslation(_vec.x, _vec.y, _vec.z)
       out.multiply(_step)
     }
@@ -510,6 +534,19 @@ export interface BuildObj8Options {
   name?: string
 }
 
+/** Validate before creating GPU resources or publishing a partial exterior. */
+function validateObj8(parsed: ParsedObj8, lod: number): void {
+  const count = parsed.vertices.length / 3
+  const draws = parsed.draws.filter(d => d.lod === lod && d.count > 0)
+  if (!Number.isInteger(count) || count === 0 || parsed.normals.length !== count * 3 || parsed.uvs.length !== count * 2
+    || !parsed.vertices.every(Number.isFinite) || !parsed.normals.every(Number.isFinite) || !parsed.uvs.every(Number.isFinite)
+    || !parsed.indices.every(index => index < count) || !draws.length
+    || draws.some(d => !Number.isInteger(d.start) || !Number.isInteger(d.count) || d.start < 0 || d.count % 3 !== 0 || d.start + d.count > parsed.indices.length)
+    || parsed.warnings.some(w => /malformed|invalid index|exceeds index stream/.test(w))) {
+    throw new Error('Invalid OBJ8 geometry or selected LOD')
+  }
+}
+
 function drawBounds(p: ParsedObj8, d: Obj8Draw): THREE.Box3 {
   const box = new THREE.Box3()
   const v = p.vertices
@@ -532,13 +569,22 @@ export function buildObj8(
   opts: BuildObj8Options = {},
 ): { group: THREE.Group; animated: THREE.Group[] } {
   const lod = opts.lod ?? 0
+  validateObj8(parsed, lod)
   const root = new THREE.Group()
   root.name = opts.name ?? 'obj8'
 
   const position = new THREE.BufferAttribute(parsed.vertices, 3)
   const normal = new THREE.BufferAttribute(parsed.normals, 3)
   const uv = new THREE.BufferAttribute(parsed.uvs, 2)
-  const index = new THREE.BufferAttribute(parsed.indices, 1)
+  // OBJ8 fronts are clockwise; Three's FrontSide uses counterclockwise.
+  // Keep parser output faithful to the file; reverse only the GPU stream.
+  const triangles = parsed.indices.slice()
+  for (let i = 0; i + 2 < triangles.length; i += 3) {
+    const second = triangles[i + 1]!
+    triangles[i + 1] = triangles[i + 2]!
+    triangles[i + 2] = second
+  }
+  const index = new THREE.BufferAttribute(triangles, 1)
 
   const animated: THREE.Group[] = []
   for (const node of parsed.anims) {
@@ -550,6 +596,7 @@ export function buildObj8(
     animated.push(g)
   }
 
+  let propAlphaMaterial: THREE.Material | undefined
   let cockpitMaterial = opts.cockpitMaterial
   for (const d of parsed.draws) {
     if (d.lod !== lod || d.count <= 0) continue
@@ -564,7 +611,16 @@ export function buildObj8(
     if (d.cockpit && !cockpitMaterial) {
       cockpitMaterial = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.8, metalness: 0.1 })
     }
-    const mesh = new THREE.Mesh(geo, d.cockpit ? cockpitMaterial! : material)
+    const propDisc = d.animPath.some(id => parsed.anims[id]!.specs.some(s =>
+      s.kind === 'hide' && s.dataref.includes('/prop_is_disc[') && s.v1 === 0 && s.v2 <= .5))
+    if (propDisc && !propAlphaMaterial) {
+      propAlphaMaterial = material.clone()
+      propAlphaMaterial.onBeforeCompile = material.onBeforeCompile
+      propAlphaMaterial.customProgramCacheKey = material.customProgramCacheKey
+      propAlphaMaterial.transparent = true
+      propAlphaMaterial.depthWrite = false
+    }
+    const mesh = new THREE.Mesh(geo, d.cockpit ? cockpitMaterial! : propDisc ? propAlphaMaterial! : material)
     mesh.name = `tris:${d.start}+${d.count}`
     const last = d.animPath[d.animPath.length - 1]
     ;(last === undefined ? root : animated[last]!).add(mesh)
@@ -587,20 +643,19 @@ export function buildObj8(
  * bottom row — i.e. the OBJ8 convention — so PNGs keep flipY = TRUE; forcing
  * flipY = false here would render every PNG upside down.
  *
- * DDS (CompressedTexture) cannot be flipped on upload and three forces
- * flipY = false. X-Plane's own DDS tooling (DDSTool / XGrinder) writes the
- * rows bottom-first for exactly that reason, so the un-flipped upload lands
- * v = 0 on the bottom row too. Net: no UV surgery for either format; a DDS
- * converted top-down by a generic tool renders flipped here, as it would in
- * X-Plane.
+ * DDS cannot be flipped on upload. The installed Laminar DDS atlases are
+ * top-down (verified against their authored UV islands), so reflect V in
+ * each DDS texture matrix instead. PNGs retain Three's normal upload flip.
  */
 async function loadTexture(url: string, srgb: boolean): Promise<THREE.Texture> {
   const dds = /\.dds$/i.test(url)
   const tex: THREE.Texture = dds
     ? await new DDSLoader().loadAsync(url)
     : await new THREE.TextureLoader().loadAsync(url)
-  tex.flipY = !dds // PNG: true (GL bottom-left origin); DDS: false (pre-flipped file)
+  tex.flipY = !dds
+  if (dds) { tex.repeat.y = -1; tex.offset.y = 1 }
   tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace
+  tex.anisotropy = 8
   tex.needsUpdate = true
   return tex
 }
@@ -617,7 +672,14 @@ async function loadTextureWithFallback(
   base: string,
   srgb: boolean,
   warnings: string[],
+  cache?: Map<string, Promise<THREE.Texture | null>>,
 ): Promise<THREE.Texture | null> {
+  if (cache && name) {
+    const key = `${base}${name}:${srgb}`
+    let pending = cache.get(key)
+    if (!pending) { pending = loadTextureWithFallback(name, base, srgb, warnings); cache.set(key, pending) }
+    return pending
+  }
   if (!name) return null
   const alt = alternateName(name)
   for (const candidate of alt ? [name, alt] : [name]) {
@@ -635,10 +697,12 @@ export interface Obj8MaterialMaps {
   map?: THREE.Texture | null
   emissiveMap?: THREE.Texture | null
   normalMap?: THREE.Texture | null
+  materialGlossMap?: THREE.Texture | null
+  glossMap?: THREE.Texture | null
 }
 
 /** Single-sided MeshStandardMaterial per the OBJ's texture set. */
-export function makeObj8Material(maps: Obj8MaterialMaps, parsed?: Pick<ParsedObj8, 'noBlend'>): THREE.MeshStandardMaterial {
+export function makeObj8Material(maps: Obj8MaterialMaps, parsed?: Partial<Pick<ParsedObj8, 'noBlend' | 'normalMetalness' | 'specular' | 'splitNormal'>>): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({
     roughness: 0.6,
     metalness: 0.1,
@@ -649,8 +713,34 @@ export function makeObj8Material(maps: Obj8MaterialMaps, parsed?: Pick<ParsedObj
     m.emissiveMap = maps.emissiveMap
     m.emissive.set(0xffffff)
   }
-  if (maps.normalMap) m.normalMap = maps.normalMap
-  if (parsed?.noBlend !== undefined) m.alphaTest = parsed.noBlend
+  if (maps.normalMap) {
+    m.normalMap = maps.normalMap
+    // Reflected DDS UVs also reverse the derivative-derived bitangent.
+    m.normalScale.y = maps.normalMap.repeat.y < 0 ? -1 : 1
+  }
+  const surfaceMap = maps.glossMap ?? maps.materialGlossMap ?? (!parsed?.splitNormal ? maps.normalMap : null)
+  if (surfaceMap) {
+    m.roughnessMap = surfaceMap
+    m.roughness = 1
+  }
+  if (parsed?.normalMetalness && (maps.materialGlossMap || (!parsed.splitNormal && maps.normalMap))) {
+    m.metalnessMap = maps.materialGlossMap ?? maps.normalMap ?? null
+    m.metalness = 1
+  } else if (parsed) m.metalness = 0
+  const glossChannel = maps.glossMap ? 'r' : maps.materialGlossMap ? 'g' : 'a'
+  const reflectanceChannel = maps.materialGlossMap ? 'r' : 'b'
+  const gain = Math.max(0, Math.min(1, parsed?.specular ?? 0))
+  const gainGLSL = Number.isInteger(gain) ? gain.toFixed(1) : String(gain)
+  const reconstruct = !!(parsed?.normalMetalness || parsed?.splitNormal)
+  m.customProgramCacheKey = () => `obj8-pbr-v2:${glossChannel}:${reflectanceChannel}:${gainGLSL}:${reconstruct}`
+  m.onBeforeCompile = shader => {
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <roughnessmap_fragment>', THREE.ShaderChunk.roughnessmap_fragment.replace('texelRoughness.g;', `clamp(1.0 - texelRoughness.${glossChannel} * ${gainGLSL}, 0.045, 1.0);`))
+      // X-Plane stores F0; Three uses a metallic fraction with dielectric F0=.04.
+      .replace('#include <metalnessmap_fragment>', THREE.ShaderChunk.metalnessmap_fragment.replace('texelMetalness.b;', `clamp( ( texelMetalness.${reflectanceChannel} - 0.04 ) / 0.96, 0.0, 1.0 );`))
+    if (reconstruct) shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>', THREE.ShaderChunk.normal_fragment_maps.replace('mapN.xy *= normalScale;', 'mapN.z = sqrt( max( 1.0 - dot( mapN.xy, mapN.xy ), 0.0 ) );\nmapN.xy *= normalScale;'))
+  }
+  m.alphaTest = parsed?.noBlend ?? (maps.map ? .01 : 0)
   return m
 }
 
@@ -663,6 +753,8 @@ export interface LoadObj8Options {
   loadTextures?: boolean
   /** ATTR_LOD band to build, default 0. */
   lod?: number
+  /** Per-aircraft texture ownership/cache; never shared across disposed aircraft. */
+  textureCache?: Map<string, Promise<THREE.Texture | null>>
 }
 
 export interface LoadedObj8 {
@@ -680,19 +772,22 @@ export async function loadObj8(url: string, opts: LoadObj8Options): Promise<Load
   const res = await fetch(url)
   if (!res.ok) throw new Error(`loadObj8: ${url} → HTTP ${res.status}`)
   const parsed = parseObj8(await res.text())
+  validateObj8(parsed, opts.lod ?? 0)
   const warnings = [...parsed.warnings]
 
   const base = opts.textureBase.endsWith('/') ? opts.textureBase : `${opts.textureBase}/`
   const want = opts.loadTextures ?? true
-  const [map, emissiveMap, normalMap] = want
+  const [map, emissiveMap, normalMap, materialGlossMap, glossMap] = want
     ? await Promise.all([
-        loadTextureWithFallback(parsed.albedo, base, true, warnings),
-        loadTextureWithFallback(parsed.lit, base, true, warnings),
-        loadTextureWithFallback(parsed.normal, base, false, warnings),
+        loadTextureWithFallback(parsed.albedo, base, true, warnings, opts.textureCache),
+        loadTextureWithFallback(parsed.lit, base, true, warnings, opts.textureCache),
+        loadTextureWithFallback(parsed.normal, base, false, warnings, opts.textureCache),
+        loadTextureWithFallback(parsed.materialGloss, base, false, warnings, opts.textureCache),
+        loadTextureWithFallback(parsed.gloss, base, false, warnings, opts.textureCache),
       ])
-    : [null, null, null]
+    : [null, null, null, null, null]
 
-  const material = makeObj8Material({ map, emissiveMap, normalMap }, parsed)
+  const material = makeObj8Material({ map, emissiveMap, normalMap, materialGlossMap, glossMap }, parsed)
   const name = url.split('?')[0]!.split('/').pop() || 'obj8'
   const built = buildObj8(parsed, material, { name, ...(opts.lod !== undefined ? { lod: opts.lod } : {}) })
   return { ...built, textures: parsed.textures, material, parsed, warnings }

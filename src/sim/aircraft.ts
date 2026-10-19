@@ -1,3 +1,4 @@
+import { flapIndex, airbrakeFlapFloor, mixFlaperons } from './flaperons'
 /**
  * The aircraft (§5): 6-DOF rigid body integrating aero + propulsion + gear +
  * gravity at the fixed timestep. Body axes x fwd / y right / z down; world is
@@ -74,7 +75,7 @@ export class Aircraft {
   readonly rates = v3() // p, q, r rad/s
   readonly prop: PropulsionState = makePropulsionState()
   fuelKg: number
-  payloadKg = 250 // pilot + pax + bags (W&B UI in Phase 8)
+  payloadKg: number // pilot + passengers + bags
   flapsDeg = 0
 
   /** Turbofan state when P.jet is present, else null (piston). */
@@ -98,7 +99,11 @@ export class Aircraft {
 
   constructor(params: AircraftParams = C172S) {
     this.P = params
+    this.resetFlaps()
     this.fuelKg = params.fuelCapacityKg
+    // Preserve the established 250 kg default where it fits, while small
+    // aircraft and gliders cannot boot heavier than their published MTOW.
+    this.payloadKg = Math.min(250, Math.max(params.mtowKg - params.emptyMassKg - this.fuelKg, 0))
     this.jetState = params.jet ? makeTurbofanState(params.jet) : null
   }
 
@@ -106,6 +111,10 @@ export class Aircraft {
     pitch: 0, roll: 0, yaw: 0, throttle: 0, mixture: 1,
     flapsIndex: 0, brakeLeft: 0, brakeRight: 0, trim: 0,
   }
+
+  /** Last inputs/surface angles actually passed to physics. Animation reads
+   * this snapshot after AP/SAS and trim mixing, never a restored command. */
+  readonly appliedControlSurfaces = { pitch: 0, roll: 0, yaw: 0, trim: 0, elevatorCommandRad: 0, trimRad: 0, elevatorSurfaceRad: 0, stabilizerRad: 0, elevatorRad: 0, aileronRad: 0, rudderRad: 0, flapsDeg: 0, flaperonLeftRad: 0, flaperonRightRad: 0 }
 
   /** Extra wind in NED (from WindModel), applied as air-mass motion. */
   readonly windNed = v3()
@@ -127,6 +136,10 @@ export class Aircraft {
    *  down) a real reachable state: false here means no fuel is available
    *  to the engine this step, same mechanism as running the tank dry. */
   engineRunning = true
+
+  /** Fraction of jet engine groups running, set by Captain systems. Shared
+   * N1 remains an approximation: no independent spool or asymmetric yaw. */
+  jetPowerFactor = 1
 
   /** Intake power multiplier from the carb-ice model (Phase 11b), set by
    *  the systems layer each frame. 1 (default) = clear venturi — injected
@@ -178,6 +191,22 @@ export class Aircraft {
     return this.P.emptyMassKg + this.fuelKg + this.payloadKg
   }
 
+  heldFlapFloorDeg = 0
+  private selectedFlapIndex = 0
+  selectFlaps(index: number, deliberate = true): void {
+    const next = flapIndex(this.P,index)
+    if (deliberate || next !== this.selectedFlapIndex) this.heldFlapFloorDeg = airbrakeFlapFloor(this.P,this.spoilerPos)
+    this.controls.flapsIndex = this.selectedFlapIndex = next
+  }
+  resetFlaps(index = this.P.flapDefaultIndex ?? 0): void {
+    this.controls.flapsIndex = this.selectedFlapIndex = flapIndex(this.P,index)
+    this.heldFlapFloorDeg = airbrakeFlapFloor(this.P,0)
+    this.flapsDeg = this.P.flapDetentsDeg[this.controls.flapsIndex]!
+    this.data.flapsDeg = this.flapsDeg
+    this.appliedControlSurfaces.flapsDeg = this.flapsDeg
+    if(this.P.flaperons) mixFlaperons(this.P,this.flapsDeg,0,this.appliedControlSurfaces)
+  }
+
   /** Place the aircraft on the ground at rest, heading ψ (rad). A tricycle
    *  sits at the tuned C172 attitude (bit-exact legacy path); a taildragger
    *  rests three-point at the pitch where mains and tailwheel touch
@@ -200,11 +229,13 @@ export class Aircraft {
     // last flight's N1 against the brakes, with speedbrakes armed and
     // reversers still commanded; interlocks also read one step of stale
     // flight data.
+    this.resetFlaps()
     this.spoilerCmd = 0
     this.spoilerPos = 0
     this.spoilerArmed = false
     this.reverseCmd = false
     this.reversePos = 0
+    for(const key of Object.keys(this.appliedControlSurfaces) as Array<keyof typeof this.appliedControlSurfaces>)this.appliedControlSurfaces[key]=0
     this.alphaDotFilt = 0
     if (this.jetState && this.P.jet) Object.assign(this.jetState, makeTurbofanState(this.P.jet))
     this.data.onGround = true
@@ -227,11 +258,6 @@ export class Aircraft {
     }
     const rho = this.air.densityKgM3
 
-    // Flap actuator. Detent count is per-aircraft (Cub has one, 737 six).
-    const flapTarget = this.P.flapDetentsDeg[clamp(c.flapsIndex, 0, this.P.flapDetentsDeg.length - 1)]!
-    const dFlap = clamp(flapTarget - this.flapsDeg, -this.P.flapRateDegS * dt, this.P.flapRateDegS * dt)
-    this.flapsDeg += dFlap
-
     // Air-relative velocity in body frame.
     qrotateInv(this.windBody, this.quat, this.windNed)
     v3set(
@@ -252,10 +278,17 @@ export class Aircraft {
     // ---- gear transit (Phase 11e; fixed gear pins at 1) ----
     if (this.P.spoilers) {
       // ARM → auto-deploy on touchdown (ground spoilers).
-      if (this.spoilerArmed && this.data.onGround) { this.spoilerCmd = 1; this.spoilerArmed = false }
+      if (this.P.spoilers.groundAutoDeploy && this.spoilerArmed && this.data.onGround) { this.spoilerCmd = 1; this.spoilerArmed = false }
       const sRate = this.P.spoilers.ratePerS * dt
       this.spoilerPos = clamp(this.spoilerPos + clamp(this.spoilerCmd - this.spoilerPos, -sRate, sRate), 0, 1)
     }
+    this.selectFlaps(c.flapsIndex, false)
+    let flapTarget = this.P.flapDetentsDeg[c.flapsIndex]!
+    if (this.P.flaperons) {
+      this.heldFlapFloorDeg = Math.max(this.heldFlapFloorDeg,airbrakeFlapFloor(this.P,this.spoilerPos))
+      flapTarget = Math.max(flapTarget,this.heldFlapFloorDeg)
+    }
+    this.flapsDeg += clamp(flapTarget-this.flapsDeg,-this.P.flapRateDegS*dt,this.P.flapRateDegS*dt)
     if (this.P.reversers) {
       const tgt = this.reverseCmd && this.data.onGround ? 1 : 0
       const rRate = dt / this.P.reversers.transitS
@@ -275,9 +308,10 @@ export class Aircraft {
       // Jet path: turbofan drives the shared `prop` output struct so the
       // force assembly / fuel / data plumbing below is powerplant-agnostic.
       mach = vAir / this.air.speedOfSoundMs
-      const running = this.fuelKg > 0.5 && this.engineRunning
+      const powerFactor = Number.isFinite(this.jetPowerFactor) ? clamp(this.jetPowerFactor, 0, 1) : 0
+      const running = this.fuelKg > 0.5 && this.engineRunning && powerFactor > 0
       stepTurbofan(this.jetState, dt, c.throttle, rho, mach, running, this.P.jet)
-      this.prop.thrustN = running ? this.jetState.thrustN : -windmillDragN(rho, vAir, this.P.jet)
+      this.prop.thrustN = running ? this.jetState.thrustN * powerFactor : 0
       // Reversers: cascade redirect — effective thrust swings negative as
       // the sleeves translate (weight-on-wheels interlocked upstream).
       // RUNNING engines only: a dead engine's thrust is already negative
@@ -286,9 +320,11 @@ export class Aircraft {
       if (this.P.reversers && this.reversePos > 0 && running) {
         this.prop.thrustN *= 1 - this.reversePos * (1 + this.P.reversers.effectiveness)
       }
+      // Dead groups drag in either reverser position; never reverse drag into thrust.
+      this.prop.thrustN -= windmillDragN(rho, vAir, this.P.jet) * (running ? 1 - powerFactor : 1)
       this.prop.torqueNm = 0
-      this.prop.fuelFlowKgS = this.jetState.fuelFlowKgS
-      this.prop.shaftPowerW = Math.max(this.jetState.thrustN * vAir, 0)
+      this.prop.fuelFlowKgS = this.jetState.fuelFlowKgS * powerFactor
+      this.prop.shaftPowerW = Math.max(this.jetState.thrustN * powerFactor * vAir, 0)
       this.prop.rpm = 0
       this.prop.omegaRadS = 0
     } else {
@@ -321,7 +357,17 @@ export class Aircraft {
     // derivatives use Roskam's +δr = trailing-edge-left (nose left), so the
     // aerodynamic rudder angle is the negative of the pilot input.
     ai.rudderRad = -c.yaw * this.P.rudderMaxRad
-    ai.flapsDeg = this.flapsDeg
+    Object.assign(this.appliedControlSurfaces, {pitch:c.pitch,roll:c.roll,yaw:c.yaw,trim:c.trim,
+      elevatorCommandRad:-c.pitch*this.P.elevatorMaxRad,trimRad:-c.trim*this.P.trimMaxRad,
+      elevatorSurfaceRad:this.P.trimIsStabilizer ? -c.pitch*this.P.elevatorMaxRad : ai.elevatorRad,
+      stabilizerRad:this.P.trimIsStabilizer ? -c.trim*this.P.trimMaxRad : 0,
+      elevatorRad:ai.elevatorRad,aileronRad:ai.aileronRad,rudderRad:ai.rudderRad})
+    this.appliedControlSurfaces.flapsDeg = this.flapsDeg
+    if(this.P.flaperons) {
+      mixFlaperons(this.P,this.flapsDeg,c.roll,this.appliedControlSurfaces)
+      ai.aileronRad = this.appliedControlSurfaces.aileronRad
+    }
+    ai.flapsDeg = this.appliedControlSurfaces.flapsDeg
     ai.thrustN = this.prop.thrustN
     ai.propTorqueNm = this.prop.torqueNm
     ai.mach = mach

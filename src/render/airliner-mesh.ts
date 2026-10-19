@@ -1,8 +1,15 @@
+import { tailFlagMaterial } from './jet-finish'
+import { isBusinessLivery } from './livery'
 import * as THREE from 'three'
-import { liveryMaterial } from './livery'
+import { buildJetShell } from './jet-shell'
+import { jetProfileFor, type JetProfile } from './jet-profiles'
+import { profiledPanel as taperedPanel, buildTurbofan, buildAircraftWheel } from './aircraft-components'
+import { aircraftPaint, aircraftMetal } from './aircraft-materials'
 import { fowlerPose, spoileronRise } from './fowler'
 import { standardGearZ } from '../sim/aircraft/derive'
 import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
+import { createHingeFrame, attachSkin, cutSkin, type HingeFrame } from './procedural-surfaces'
+import { profiledPanelGeometry } from './aircraft-components'
 
 /**
  * Config-driven airliner exteriors (night-shift N2): the study 737's
@@ -21,43 +28,26 @@ export interface AirlinerCfg {
   spanM: number
   fuseRadiusM: number
   sweepDeg: number
-  engines: { count: 2 | 3 | 4; mounted: 'wing' | 'tail' }
+  wingAreaM2?: number
+  profile?: JetProfile
+  engines: { count: 2 | 3 | 4; mounted: 'wing' | 'tail' | 'overwing' }
   tTail?: boolean
-  winglet: 'none' | 'blended' | 'sharklet' | 'raked'
+  winglet: JetProfile['winglet']
   hump?: '747' | 'a380' | 'none'
   /** Gear legs in body coords (visual only; physics has its own). */
   gear: { x: number; y: number; z: number; nose?: boolean }[]
 }
 
-const WHITE = new THREE.MeshStandardMaterial({ color: 0xf2f3f5, roughness: 0.3, metalness: 0.12 }) // gloss livery paint (env-lit)
-const RED = new THREE.MeshStandardMaterial({ color: 0xa31621, roughness: 0.6 })
-const DARK = new THREE.MeshStandardMaterial({ color: 0x1a1d20, roughness: 0.9 })
-const BELLY = new THREE.MeshStandardMaterial({ color: 0xb9c0c7, roughness: 0.5, metalness: 0.25 })
-const SILVER = new THREE.MeshStandardMaterial({ color: 0xb8bcc2, roughness: 0.32, metalness: 0.5 })
-const SURFACE = new THREE.MeshStandardMaterial({
-  color: 0xaeb4bb, roughness: 0.45, metalness: 0.3,
+const WHITE = aircraftPaint(0xf2f3f5)
+const BELLY = aircraftPaint(0xb9c0c7, { roughness: .39, metalness: .2 })
+const SILVER = aircraftMetal()
+const SURFACE = aircraftPaint(0xaeb4bb, {
+  roughness: .4, metalness: .22,
   polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
 })
 
 function placeBody(m: THREE.Object3D, x: number, y: number, z: number): void {
   m.position.set(y, -z, -x)
-}
-
-function taperedPanel(
-  rootLeX: number, rootChord: number, tipLeX: number, tipChord: number,
-  y0: number, y1: number, thick: number, mat: THREE.Material,
-): THREE.Mesh {
-  const s = new THREE.Shape()
-  s.moveTo(y0, rootLeX)
-  s.lineTo(y1, tipLeX)
-  s.lineTo(y1, tipLeX - tipChord)
-  s.lineTo(y0, rootLeX - rootChord)
-  s.closePath()
-  const geo = new THREE.ExtrudeGeometry(s, { depth: thick, bevelEnabled: false })
-  geo.rotateX(-Math.PI / 2)
-  const m = new THREE.Mesh(geo, mat)
-  m.castShadow = true
-  return m
 }
 
 export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
@@ -74,49 +64,16 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   const halfSpan = cfg.spanM / 2
   const sweep = (cfg.sweepDeg * Math.PI) / 180
 
-  // ---- fuselage ----
-  const tubeLen = L * 0.72
-  const fuse = new THREE.Mesh(
-    new THREE.CylinderGeometry(R, R, tubeLen, 18),
-    cfg.designator ? liveryMaterial(cfg.designator, L) : WHITE,
-  )
-  fuse.rotation.x = Math.PI / 2
-  add(fuse, L * 0.02, 0, -R * 0.32)
-  const nose = new THREE.Mesh(new THREE.SphereGeometry(R, 18, 12, 0, Math.PI * 2, 0, Math.PI / 2), WHITE)
-  nose.rotation.x = -Math.PI / 2
-  // Elongate the dome's OWN axis (local Y — scale applies pre-rotation);
-  // scaling local Z made a squashed plug instead of a nose (user: "add a
-  // nose").
-  nose.scale.set(1, 1.7, 1)
-  add(nose, L * 0.02 + tubeLen / 2, 0, -R * 0.32)
-  const tailCone = new THREE.Mesh(new THREE.ConeGeometry(R * 0.99, L * 0.26, 16), WHITE)
-  // π/2 sends the cone's apex aft; MINUS the rake angle tilts the apex
-  // UP like a real tail cone (+0.06 raked it down into the ground line).
-  tailCone.rotation.x = Math.PI / 2 - 0.06
-  add(tailCone, L * 0.02 - tubeLen / 2 - L * 0.093, 0, -R * 0.32 - R * 0.22)
-  // window strips (box fallback only when unpainted — livery paints real
-  // window rows into the wrap)
-  if (!cfg.designator) {
-    for (const side of [-1, 1]) {
-      add(new THREE.Mesh(new THREE.BoxGeometry(0.02, R * 0.14, tubeLen * 0.85), DARK), L * 0.03, side * (R - 0.01), -R * 0.6)
-    }
-  }
-  add(new THREE.Mesh(new THREE.BoxGeometry(R * 1.3, R * 0.27, R * 0.5), DARK), L * 0.02 + tubeLen / 2 + R * 0.1, 0, -R * 0.7)
-  // hump (747 forward upper deck / A380 full-length)
-  if (cfg.hump === '747') {
-    const hump = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.62, R * 0.62, tubeLen * 0.34, 14), WHITE)
-    hump.rotation.x = Math.PI / 2
-    add(hump, L * 0.02 + tubeLen * 0.27, 0, -R * 1.05)
-  } else if (cfg.hump === 'a380') {
-    const hump = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.78, R * 0.78, tubeLen * 0.92, 14), WHITE)
-    hump.rotation.x = Math.PI / 2
-    add(hump, L * 0.02, 0, -R * 1.02)
-  }
+  // One fair loft from radome to tail, including any upper deck.
+  const profile = cfg.profile
+  g.add(buildJetShell(L, R, WHITE, cfg.designator, cfg.hump))
+  g.userData.jetProfile = profile
+  g.userData.designator = cfg.designator
 
   // Wing-body fairing: the belly bulge at the wing root (its absence
   // made wings knife into a bare tube — part of the "shape correct" ask).
   {
-    const fair = new THREE.Mesh(new THREE.SphereGeometry(1, 14, 10), BELLY)
+    const fair = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 20), BELLY)
     fair.scale.set(R * 1.12, R * 0.55, L * 0.115)
     placeBody(fair, L * 0.1 - L * 0.06, 0, R * 0.52)
     fair.castShadow = true
@@ -127,13 +84,14 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   const flapPivots: THREE.Group[] = []
   const spoilerPivots: THREE.Group[] = []
   const wingRootX = L * 0.1
-  const rootChord = L * 0.185
+  const rootChord = cfg.wingAreaM2 ? cfg.wingAreaM2 / (cfg.spanM * .61) : L * 0.185
   const tipChord = rootChord * 0.22
   const wingDrop = R * 0.66 // low wing
   for (const side of [-1, 1]) {
     const wingGroup = new THREE.Group()
     const y0 = R * 0.85
-    const y1 = halfSpan - (cfg.winglet === 'none' ? 0 : 0.4)
+    const tipExtension = cfg.winglet === 'raked' ? halfSpan * .09 : cfg.winglet === 'none' ? 0 : R * .22
+    const y1 = halfSpan - tipExtension
     const tipLeX = wingRootX - Math.tan(sweep) * (y1 - y0)
     // Chord / trailing-edge locus at a span station (taper nearly cancels
     // the LE sweep) — flaps and canoe fairings hug the TE, not the LE.
@@ -142,23 +100,26 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     const panel = taperedPanel(wingRootX, rootChord, tipLeX, tipChord, side * y0, side * y1, R * 0.16, BELLY)
     panel.position.y = -wingDrop
     wingGroup.add(panel)
-    if (cfg.winglet !== 'none') {
-      const h = cfg.winglet === 'raked' ? 1.2 : cfg.winglet === 'sharklet' ? 2.0 : 2.35
-      // Same axis fix as buildB738's winglet: shape in (−bodyX, height),
-      // one rotateY(−π/2) → thickness X, height Y, chord Z.
-      const wlShape = new THREE.Shape()
-      wlShape.moveTo(-tipLeX, 0)
-      wlShape.lineTo(-(tipLeX - tipChord * 0.25), h)
-      wlShape.lineTo(-(tipLeX - tipChord * 0.62), h)
-      wlShape.lineTo(-(tipLeX - tipChord), 0)
-      wlShape.closePath()
-      const wlGeo = new THREE.ExtrudeGeometry(wlShape, { depth: 0.1, bevelEnabled: false })
-      wlGeo.rotateY(-Math.PI / 2)
-      const wl = new THREE.Mesh(wlGeo, BELLY)
-      wl.castShadow = true
-      wl.position.set(side * y1, -wingDrop, 0)
-      wl.rotation.z = side * (cfg.winglet === 'raked' ? -0.9 : -0.26)
-      wingGroup.add(wl)
+    if (cfg.winglet === 'raked') {
+      const tip = taperedPanel(tipLeX, tipChord, tipLeX - tipChord*.65, tipChord*.18, side*y1, side*halfSpan, R*.045, BELLY)
+      tip.position.y = -wingDrop
+      wingGroup.add(tip)
+    } else if (cfg.winglet !== 'none') {
+      const h = R * (cfg.winglet === 'fence' ? .35 : cfg.winglet === 'sharklet' ? 1.05 : .85)
+      for (const direction of cfg.winglet === 'fence' || cfg.winglet === 'split' ? [1,-1] : [1]) {
+        const wlShape = new THREE.Shape()
+        const height = h * direction * (direction < 0 ? .55 : 1)
+        wlShape.moveTo(-tipLeX,0)
+        wlShape.lineTo(-(tipLeX-tipChord*.45),height)
+        wlShape.lineTo(-(tipLeX-tipChord*.76),height)
+        wlShape.lineTo(-(tipLeX-tipChord),0)
+        wlShape.closePath()
+        const geo = new THREE.ExtrudeGeometry(wlShape,{depth:R*.035,bevelEnabled:false});geo.rotateY(-Math.PI/2)
+        const wl = new THREE.Mesh(geo,BELLY);wl.name='winglet';wl.castShadow=true
+        wl.position.set(side*y1,-wingDrop,0)
+        wl.rotation.z = -side * .15
+        wingGroup.add(wl)
+      }
     }
     // Dihedral: positive side*θ raises the tip. (side * −0.105 DROPPED
     // both tips — 6° of anhedral on every jet in the fleet.)
@@ -170,7 +131,8 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     // hardware visibly stays connected at every setting.
     for (const ff of [0.28, 0.52]) {
       const fy = y0 + (y1 - y0) * ff
-      const fixedCanoe = new THREE.Mesh(new THREE.BoxGeometry(R * 0.16, R * 0.22, rootChord * 0.4), BELLY)
+      const fixedCanoe = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12), BELLY)
+      fixedCanoe.scale.set(R * .08, R * .11, rootChord * .2)
       // Centered just ahead of the TE locus: buried in the wing
       // underside, protruding aft to meet the flap-riding aft half.
       placeBody(fixedCanoe, teXAt(fy) + rootChord * 0.11, side * fy, wingDrop + R * 0.07)
@@ -200,7 +162,8 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       for (const ff of [0.28, 0.52]) {
         const fy = y0 + (y1 - y0) * ff
         const zLE = teXAt(fy0) - teXAt(fy) // pivot-local aft offset of the flap LE here
-        const aftCanoe = new THREE.Mesh(new THREE.BoxGeometry(R * 0.15, R * 0.18, chord * 0.8), BELLY)
+        const aftCanoe = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12), BELLY)
+        aftCanoe.scale.set(R * .075, R * .09, chord * .4)
         aftCanoe.position.set(side * fy, -R * 0.26, zLE + chord * 0.45)
         aftCanoe.castShadow = true
         pivot.add(aftCanoe)
@@ -226,8 +189,8 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       const perSide = cfg.engines.count === 4 ? 2 : 1
       for (let ei = 0; ei < perSide; ei++) {
         const ey = cfg.engines.count === 4 ? halfSpan * (ei === 0 ? 0.36 : 0.62) : halfSpan * 0.34
-        const engLen = R * 2.2
-        const engR = R * 0.7
+        const engLen = profile?.engineLength ?? R * 2.2
+        const engR = profile?.engineRadius ?? R * 0.7
         // Pod center barely ahead of the local LE — the old +35% of root
         // chord hung the engine in space ahead of the wing (user: "make
         // the engines actually on the plane").
@@ -237,91 +200,97 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
         // ~0.5 m at the REAL 0.073L stance (the old 0.55/0.75 constants
         // were tuned for gear twice as tall — pods touched the ground).
         const engZ = wingDrop * 0.35 + engR * 0.45
-        const eng = new THREE.Mesh(new THREE.CylinderGeometry(engR, engR * 0.8, engLen, 16), SILVER)
-        eng.rotation.x = Math.PI / 2
-        eng.scale.y = 0.92
+        const eng = buildTurbofan(engR, engLen * .92, WHITE)
+        eng.scale.y = .92
+        eng.userData.jetEngine = true
         add(eng, ex, side * ey, engZ)
-        const inlet = new THREE.Mesh(new THREE.CylinderGeometry(engR * 1.02, engR * 1.02, 0.3, 16), DARK)
-        inlet.rotation.x = Math.PI / 2
-        inlet.scale.y = 0.92
-        add(inlet, ex + engLen / 2, side * ey, engZ)
-        // Spinner cone on the fan face (the bare flat disc read as a plug).
-        const spin = new THREE.Mesh(new THREE.ConeGeometry(engR * 0.3, engR * 0.55, 12), SILVER)
-        spin.rotation.x = Math.PI / 2
-        add(spin, ex + engLen / 2 + engR * 0.2, side * ey, engZ)
-        const pylon = new THREE.Mesh(new THREE.BoxGeometry(engR * 0.34, engR * 1.1, engLen * 0.85), BELLY)
-        add(pylon, ex - engLen * 0.2, side * ey, wingDrop * 0.5)
-        // Reverser sleeve: aft nacelle ring that translates AFT on deploy,
-        // showing a dark cascade band.
-        const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(engR * 1.04, engR * 0.86, engLen * 0.4, 16), SILVER)
-        sleeve.rotation.x = Math.PI / 2
-        sleeve.scale.y = 0.92
-        add(sleeve, ex - engLen * 0.32, side * ey, engZ)
-        sleeve.userData.stowZ = sleeve.position.z
+        const sleeve = eng.userData.reverserSleeve as THREE.Mesh
         reverserSleeves.push(sleeve)
-        const cascade = new THREE.Mesh(new THREE.CylinderGeometry(engR * 0.98, engR * 0.98, engLen * 0.36, 16), DARK)
-        cascade.rotation.x = Math.PI / 2
-        cascade.scale.y = 0.92
-        add(cascade, ex - engLen * 0.32, side * ey, engZ)
+        // Rounded pylon fairing retains the original attachment envelope.
+        const pylon = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12), BELLY)
+        pylon.scale.set(engR * .17, engR * .55, engLen * .425)
+        add(pylon, ex - engLen * .2, side * ey, wingDrop * .5)
       }
-    } else {
+    } else if (cfg.engines.mounted === 'tail') {
       // tail-mounted pods (MD-80/CRJ class)
-      const engLen = R * 2.6
-      const engR = R * 0.52
-      const eng = new THREE.Mesh(new THREE.CylinderGeometry(engR, engR * 0.85, engLen, 14), SILVER)
-      eng.rotation.x = Math.PI / 2
-      add(eng, -tubeLen * 0.36, side * (R + engR * 0.9), -R * 0.5)
-      const inlet = new THREE.Mesh(new THREE.CylinderGeometry(engR * 1.02, engR * 1.02, 0.25, 14), DARK)
-      inlet.rotation.x = Math.PI / 2
-      add(inlet, -tubeLen * 0.36 + engLen / 2, side * (R + engR * 0.9), -R * 0.5)
-      const spin = new THREE.Mesh(new THREE.ConeGeometry(engR * 0.28, engR * 0.5, 12), SILVER)
-      spin.rotation.x = Math.PI / 2
-      add(spin, -tubeLen * 0.36 + engLen / 2 + engR * 0.18, side * (R + engR * 0.9), -R * 0.5)
+      const engLen = profile?.engineLength ?? R * 2.6
+      const engR = profile?.engineRadius ?? R * 0.52
+      const eng = buildTurbofan(engR, engLen, WHITE)
+      eng.userData.jetEngine = true
+      reverserSleeves.push(eng.userData.reverserSleeve as THREE.Mesh)
+      add(eng, -L * .29, side * (R + engR * .85), -R * .65)
+      // Short blended support joins the barrel to the aft fuselage.
+      const support = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12), BELLY)
+      support.scale.set(engR * 1.1, engR * .16, engLen * .28)
+      add(support, -L * .29, side * R, -R * .65)
+    } else {
+      const er = profile?.engineRadius ?? R*.45, el = profile?.engineLength ?? R*2
+      const ex = -L*.11, ey = halfSpan*.36, up = R*.95
+      const eng = buildTurbofan(er,el,WHITE);eng.userData.jetEngine=true
+      add(eng,ex,side*ey,-up)
+      reverserSleeves.push(eng.userData.reverserSleeve as THREE.Mesh)
+      const support = new THREE.Mesh(new THREE.SphereGeometry(1,20,12),BELLY)
+      support.scale.set(er*.22,up*.85,el*.36)
+      add(support,ex-el*.13,side*ey,-up*.22)
     }
   }
 
   // ---- empennage ----
   const finRootX = -L * 0.32
-  const finH = L * 0.155
-  const fin = taperedPanel(finRootX, L * 0.16, finRootX - L * 0.13, L * 0.05, 0, finH, R * 0.13, WHITE)
+  const finH = profile?.finHeight ?? L * 0.155
+  const finRootLe = finRootX, finRootChord = L * 0.16, finTipLe = finRootX - L * 0.105, finTipChord = L * 0.045, finThick = R * 0.13
+  const finMat = cfg.designator && isBusinessLivery(cfg.designator) ? aircraftPaint(0x213d59) : tailFlagMaterial()
   // Rz(+π/2) points the panel's span axis UP — the original −π/2 pointed
   // it DOWN, burying the whole fin inside/below the fuselage (the same
   // rotation-sign bug class as the winglets; user: "make the tail
   // upright").
-  fin.rotation.z = Math.PI / 2
-  placeBody(fin, 0, R * 0.03, -R * 0.9)
-  g.add(fin)
-  // American-style flag tail: red/white/blue slabs following the fin
-  // sweep, proud of both fin faces.
-  {
-    const sweepAng = Math.atan2(L * 0.13, finH) // LE sweep of the fin
-    const stripeH = finH * 0.94
-    const colors = [0xb61f2e, 0xeef0f2, 0x1f3a93]
-    colors.forEach((col, i) => {
-      const slab = new THREE.Mesh(
-        new THREE.BoxGeometry(R * 0.13 + 0.08, stripeH, L * 0.028),
-        new THREE.MeshStandardMaterial({ color: col, roughness: 0.45 }),
-      )
-      const midX = finRootX - L * 0.045 - i * L * 0.031 // chordwise, aft-stepping
-      placeBody(slab, midX - Math.tan(sweepAng) * 0, 0, -R * 0.9 - stripeH / 2)
-      slab.rotation.x = sweepAng
-      g.add(slab)
-    })
+  const finGroup = new THREE.Group()
+  finGroup.rotation.z = Math.PI / 2
+  placeBody(finGroup, 0, R * 0.03, -R * 0.9)
+  g.add(finGroup)
+  // Rudder: the aft 32% of the fin, hinged on the line joining its root and
+  // tip stations, cut from the SAME skin (no re-lofted airfoil) with the
+  // panel UVs restored so the tail livery runs unbroken across the hinge.
+  const finGeo = profiledPanelGeometry(finRootLe, finRootChord, finTipLe, finTipChord, 0, finH, finThick)
+  const hingeU = 0.68
+  const hingeAt = (t: number): THREE.Vector3 => new THREE.Vector3(
+    finH * t, finThick / 2,
+    -THREE.MathUtils.lerp(finRootLe, finTipLe, t) + THREE.MathUtils.lerp(finRootChord, finTipChord, t) * hingeU,
+  )
+  const hA = hingeAt(0), hB = hingeAt(1)
+  const cutNormal = new THREE.Vector3(-(hB.z - hA.z), 0, hB.x - hA.x).normalize()
+  const cutPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(cutNormal, hA)
+  const restoreUv = (geo: THREE.BufferGeometry): THREE.BufferGeometry => {
+    const pos = geo.getAttribute('position'), uv = new Float32Array(pos.count * 2)
+    for (let i = 0; i < pos.count; i++) {
+      const t = THREE.MathUtils.clamp(pos.getX(i) / finH, 0, 1)
+      const le = -THREE.MathUtils.lerp(finRootLe, finTipLe, t), chord = THREE.MathUtils.lerp(finRootChord, finTipChord, t)
+      uv[i * 2] = t; uv[i * 2 + 1] = THREE.MathUtils.clamp((pos.getZ(i) - le) / chord, 0, 1)
+    }
+    geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2))
+    return geo
   }
-  const flash = new THREE.Mesh(new THREE.BoxGeometry(R * 0.14, finH * 0.32, L * 0.04), RED)
-  add(flash, finRootX - L * 0.115, 0, -R * 0.9 - finH * 0.83)
+  const fin = new THREE.Mesh(restoreUv(cutSkin(finGeo, cutPlane.clone().negate())), finMat)
+  fin.name = 'verticalFin'
+  fin.castShadow = fin.receiveShadow = true
+  finGroup.add(fin)
+  const rudderSkin = new THREE.Mesh(restoreUv(cutSkin(finGeo, cutPlane)), finMat)
+  rudderSkin.name = 'rudder'
+  rudderSkin.castShadow = rudderSkin.receiveShadow = true
+  finGroup.add(rudderSkin)
+  const rudderHinge: HingeFrame = createHingeFrame(finGroup, 'rudder-hinge', hA, hB)
+  attachSkin(rudderHinge, rudderSkin)
   // Trijet center engine (MD-11/DC-10 class): S-duct pod at the fin base.
   if (cfg.engines.count === 3) {
-    const cR = R * 0.58
-    const ceng = new THREE.Mesh(new THREE.CylinderGeometry(cR, cR * 0.82, R * 2.4, 14), SILVER)
-    ceng.rotation.x = Math.PI / 2
-    add(ceng, finRootX + L * 0.02, 0, -R * 1.05)
-    const cinlet = new THREE.Mesh(new THREE.CylinderGeometry(cR * 1.02, cR * 1.02, 0.25, 14), DARK)
-    cinlet.rotation.x = Math.PI / 2
-    add(cinlet, finRootX + L * 0.02 + R * 1.2, 0, -R * 1.05)
+    const cR = profile?.engineRadius ?? R * .58
+    const ceng = buildTurbofan(cR, profile?.engineLength ?? R * 2.4, WHITE)
+    ceng.userData.jetEngine = true
+    reverserSleeves.push(ceng.userData.reverserSleeve as THREE.Mesh)
+    add(ceng, finRootX + L * .015, 0, -R * (cfg.engines.mounted === 'tail' ? 1.12 : 1.8))
   }
-  const stabZ = cfg.tTail ? -R * 0.9 - finH * 0.92 : -R * 0.25
-  const stabX = cfg.tTail ? finRootX - L * 0.1 : -L * 0.38
+  const tailHeight = cfg.tTail ? .92 : profile?.stabilizerHeight ?? 0
+  const stabZ = tailHeight ? -R*.9-finH*tailHeight : -R*.25
+  const stabX = tailHeight ? finRootX-L*.065*tailHeight/.92 : -L*.36
   for (const side of [-1, 1]) {
     const stab = taperedPanel(stabX, L * 0.085, stabX - L * 0.075, L * 0.032, side * R * 0.2, side * halfSpan * 0.38, R * 0.09, BELLY)
     stab.position.y = -stabZ
@@ -335,8 +304,15 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   const zBelly = R * 0.68 // tube bottom: fuse center sits 0.32R above origin
   const gearGroups: { grp: THREE.Group; nose: boolean; fold: number }[] = []
   const doorPivots: { pivot: THREE.Group; open: number }[] = []
-  for (const leg of cfg.gear) {
+  const visualGear = cfg.gear.map(leg => ({...leg, axles: leg.nose ? 1 : profile?.mainAxles ?? 1}))
+  const main = cfg.gear.find(leg=>!leg.nose)
+  if(main && profile?.bodyBogies) for(let i=0;i<profile.bodyBogies;i++) {
+    visualGear.push({...main, x:main.x-L*.035, y:profile.bodyBogies===1?0:(i===0?-1:1)*R*.48, axles:cfg.hump==='a380'?3:profile.bodyBogies===1?1:2})
+  }
+  for (const leg of visualGear) {
     const grp = new THREE.Group()
+    grp.name = 'jetGear'
+    grp.userData.contact = { x: leg.x, y: leg.y, z: leg.z }
     const wheelR = leg.nose ? R * 0.2 : R * 0.29
     const strutLen = leg.z * 0.66
     const wheelArm = strutLen - wheelR // pivot → wheel center
@@ -348,10 +324,9 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     strut.position.y = -wheelArm / 2
     strut.castShadow = true
     grp.add(strut)
-    for (const wy of leg.nose ? [-R * 0.13, R * 0.13] : [-R * 0.16, R * 0.16]) {
-      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(wheelR, wheelR, R * 0.18, 14), DARK)
-      wheel.rotation.z = Math.PI / 2
-      wheel.position.set(wy, -wheelArm, 0)
+    for (let axle=0;axle<leg.axles;axle++) for (const wy of leg.nose ? [-R * 0.13, R * 0.13] : [-R * 0.16, R * 0.16]) {
+      const wheel = buildAircraftWheel(wheelR, R * .18)
+      wheel.position.set(wy, -wheelArm, (axle-(leg.axles-1)/2)*wheelR*2.3)
       wheel.castShadow = true
       grp.add(wheel)
     }
@@ -360,14 +335,14 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     // short of the centerline; an arm shorter than the span means a full
     // 90° horizontal stow (A320-class) — a fixed angle would either
     // under-fold long legs or cross short-armed wheels past the keel.
-    const fold = leg.nose ? 1.5 : Math.asin(Math.min((Math.abs(leg.y) - wheelR * 0.4) / wheelArm, 1))
+    const fold = leg.nose ? 1.5 : Math.asin(THREE.MathUtils.clamp((Math.abs(leg.y) - wheelR * 0.4) / wheelArm, 0, 1))
     gearGroups.push({ grp, nose: !!leg.nose, fold })
     if (!leg.nose) {
       // Main bay door: hinged on the KEEL side (an outboard hinge would
       // sweep through the fixed canoe fairing on CRJ-scale types),
       // swinging about the fore-aft axis, closed flush with the belly.
       const sgn = leg.y > 0 ? 1 : -1
-      const w = Math.abs(leg.y) - R * 0.18 + wheelR * 0.5
+      const w = Math.max(R*.3, Math.abs(leg.y) - R * 0.18 + wheelR * 0.5)
       const doorPivot = new THREE.Group()
       placeBody(doorPivot, leg.x, sgn * R * 0.18, zBelly)
       const panel = new THREE.Mesh(new THREE.BoxGeometry(w, 0.05, wheelR * 2.6), BELLY)
@@ -397,13 +372,14 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   }
 
   // invisible prop slot (interface uniformity)
-  const propDisc = new THREE.Mesh(new THREE.CircleGeometry(0.01, 6), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 }))
-  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), new THREE.MeshStandardMaterial({ transparent: true, opacity: 0 }))
+  const propDisc = new THREE.Mesh(new THREE.CircleGeometry(0.01, 6), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false, opacity: 0 }))
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.01, 0.01, 0.01), new THREE.MeshStandardMaterial({ transparent: true, depthWrite: false, opacity: 0 }))
   propDisc.userData.blade = blade
   g.add(propDisc)
   g.add(blade)
 
   const surfaces = (s: SurfaceState): void => {
+    rudderHinge.setAngle(Math.max(-1, Math.min(1, s.yaw ?? 0)) * 0.4)
     for (const p of flapPivots) {
       p.userData.z0 ??= p.position.z
       p.userData.y0 ??= p.position.y
@@ -453,79 +429,20 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   return { group: g, propDisc, surfaces }
 }
 
-/** Family traits by designator (engines/mount from the spec drive the
- *  rest; this table only holds what the spec can't say). */
-const FAMILY: Record<string, Partial<AirlinerCfg>> = {
-  // T-tail, tail-mounted twins
-  CRJ2: { engines: { count: 2, mounted: 'tail' }, tTail: true, winglet: 'blended' },
-  CRJ7: { engines: { count: 2, mounted: 'tail' }, tTail: true, winglet: 'blended' },
-  CRJ9: { engines: { count: 2, mounted: 'tail' }, tTail: true, winglet: 'blended' },
-  CRJX: { engines: { count: 2, mounted: 'tail' }, tTail: true, winglet: 'blended' },
-  E135: { engines: { count: 2, mounted: 'tail' }, tTail: true, winglet: 'none' },
-  E145: { engines: { count: 2, mounted: 'tail' }, tTail: true, winglet: 'none' },
-  MD82: { engines: { count: 2, mounted: 'tail' }, tTail: true, winglet: 'none' },
-  MD88: { engines: { count: 2, mounted: 'tail' }, tTail: true, winglet: 'none' },
-  B712: { engines: { count: 2, mounted: 'tail' }, tTail: true, winglet: 'none' },
-  // humps
-  B744: { hump: '747', winglet: 'blended' },
-  B748: { hump: '747', winglet: 'raked' },
-  A388: { hump: 'a380', winglet: 'blended' },
-  // raked-tip modern widebodies
-  B788: { winglet: 'raked' },
-  B789: { winglet: 'raked' },
-  B78X: { winglet: 'raked' },
-  A359: { winglet: 'sharklet' },
-  A35K: { winglet: 'sharklet' },
-  B77W: { winglet: 'raked' },
-  B77L: { winglet: 'raked' },
-  // sharklets
-  A20N: { winglet: 'sharklet' },
-  A21N: { winglet: 'sharklet' },
-  BCS1: { winglet: 'sharklet' },
-  BCS3: { winglet: 'sharklet' },
-  // classic no-winglet types
-  B38M: { winglet: 'sharklet' },
-  B39M: { winglet: 'sharklet' },
-  B752: { winglet: 'none' },
-  B762: { winglet: 'none' },
-  B763: { winglet: 'none' },
-  B772: { winglet: 'none' },
-  A342: { winglet: 'blended' },
-  A343: { winglet: 'blended' },
-  A346: { winglet: 'blended' },
-}
-
+/** Uses real family diameters and exact physics contacts when supplied. */
 export function airlinerCfgFor(spec: {
-  designator: string
-  lengthM: number
-  spanM: number
+  designator: string; lengthM: number; spanM: number; wingAreaM2?: number
   powerplant: { kind: string; count?: number }
-}): AirlinerCfg {
-  const fam = FAMILY[spec.designator] ?? {}
-  const R = Math.max(spec.lengthM * 0.047, 1.35)
-  const L = spec.lengthM
-  const count = (fam.engines?.count ?? (spec.powerplant.count === 4 ? 4 : 2)) as 2 | 3 | 4
-  const mounted = fam.engines?.mounted ?? 'wing'
-  // Contact depth = the PHYSICS gear formula (derive.ts) — the old local
-  // L*0.115 disagreed with the sim's max(L*0.14, 1.1), so every family
-  // jet floated ~0.45 m above its own wheels.
-  const zGround = standardGearZ(L)
-  const gear: AirlinerCfg['gear'] = [
-    { x: L * 0.37, y: 0, z: zGround, nose: true },
-    { x: -L * 0.028, y: -R * 1.5, z: zGround },
-    { x: -L * 0.028, y: R * 1.5, z: zGround },
+}, contacts?: Record<string, {x:number;y:number;z:number}>): AirlinerCfg {
+  const profile = jetProfileFor(spec.designator)
+  const L=spec.lengthM, R=profile.diameter/2, depth=standardGearZ(L)
+  const track=Math.max(spec.spanM*.16,1.7)
+  const gear: AirlinerCfg['gear'] = contacts ? Object.entries(contacts).map(([name,leg])=>({...leg,nose:name==='nose'})) : [
+    {x:L*.38,y:0,z:depth*.98,nose:true},
+    {x:-L*.028,y:-track/2,z:depth},
+    {x:-L*.028,y:track/2,z:depth},
   ]
-  return {
-    designator: spec.designator,
-    lengthM: L,
-    spanM: spec.spanM,
-    fuseRadiusM: R,
-    sweepDeg: 25,
-    engines: { count, mounted },
-    tTail: fam.tTail ?? false,
-    winglet: fam.winglet ?? 'blended',
-    hump: fam.hump ?? 'none',
-    gear,
-    ...((): Partial<AirlinerCfg> => ({}))(),
-  }
+  return { designator:spec.designator,lengthM:L,spanM:spec.spanM,wingAreaM2:spec.wingAreaM2,
+    fuseRadiusM:R,sweepDeg:profile.sweep,engines:{count:(spec.powerplant.count??2) as 2|3|4,mounted:profile.mount},
+    tTail:profile.tTail,winglet:profile.winglet,hump:profile.hump,gear,profile }
 }

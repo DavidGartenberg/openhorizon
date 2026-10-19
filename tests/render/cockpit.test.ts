@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { cycleFuelSelector, stepMagneto, dragToAxisValue, nearestFlapDetent, tuneFrequency, panelLayoutFor } from '../../src/render/cockpit'
+import { ROSTER, rosterParams } from '../../src/sim/aircraft/roster'
 
 describe('cycleFuelSelector (floor fuel selector click-cycle)', () => {
   it('cycles OFF -> L -> BOTH -> R -> OFF', () => {
@@ -97,15 +98,20 @@ describe('tuneFrequency (NAV/COM standby-frequency click knob)', () => {
   })
 })
 
-describe('panelLayoutFor (N3 family layouts)', () => {
-  it('routes Airbus family to the FCU layout, Boeing/other jets to NG, GA to G1000', () => {
-    expect(panelLayoutFor('A20N', true)).toBe('airbusFcu')
-    expect(panelLayoutFor('A388', true)).toBe('airbusFcu')
-    expect(panelLayoutFor('BCS3', true)).toBe('airbusFcu')
-    expect(panelLayoutFor('B738', true)).toBe('boeingNG')
-    expect(panelLayoutFor('MD88', true)).toBe('boeingNG')
-    expect(panelLayoutFor('CRJ9', true)).toBe('boeingNG')
+describe('panelLayoutFor: every jet flies the 737NG flight deck', () => {
+  it('routes Airbus, Boeing and every other stabilizer-trim jet to the 737 deck; the rest keep the G1000', () => {
+    for (const d of ['A20N', 'A388', 'BCS3', 'A320', 'B738', 'MD88', 'CRJ9']) expect(panelLayoutFor(d, true), d).toBe('boeingNG')
     expect(panelLayoutFor('C172', false)).toBe('g1000')
-    expect(panelLayoutFor('A320', false)).toBe('g1000') // trim gate wins
+    expect(panelLayoutFor('PC12', false)).toBe('g1000')
+  })
+  it('covers the whole roster: jet powerplants → 737 deck, piston/turboprop/glider → G1000', () => {
+    let jets = 0, others = 0
+    for (const e of ROSTER) {
+      const params = rosterParams(e.spec.designator)!
+      const layout = panelLayoutFor(e.spec.designator, params.trimIsStabilizer ?? false)
+      if (e.spec.powerplant.kind === 'jet') { jets++; expect(layout, e.spec.designator).toBe('boeingNG'); expect(params.jet?.engines).toBeGreaterThanOrEqual(2); expect(params.jet!.engines).toBeLessThanOrEqual(4) }
+      else { others++; expect(layout, e.spec.designator).toBe('g1000') }
+    }
+    expect(jets).toBeGreaterThan(40); expect(others).toBeGreaterThan(30)
   })
 })

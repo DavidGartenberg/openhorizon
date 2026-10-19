@@ -21,7 +21,9 @@ describe('airliner visual configs (fleet-wide)', () => {
       })
       expect(cfg.lengthM, s.designator).toBeGreaterThan(10)
       expect(cfg.spanM, s.designator).toBeGreaterThan(8)
-      expect(cfg.fuseRadiusM, s.designator).toBeGreaterThan(1.2)
+      // Light business jets have ~1.65 m DIAMETER cabins. The previous
+      // universal 1.2 m radius floor enforced the visibly oversized bodies.
+      expect(cfg.fuseRadiusM, s.designator).toBeGreaterThan(.8)
       expect(cfg.fuseRadiusM, s.designator).toBeLessThan(cfg.spanM / 4)
       // nose gear ahead of CG, mains just behind (transport geometry)
       expect(cfg.gear[0]!.x, s.designator).toBeGreaterThan(0)
@@ -54,5 +56,10 @@ describe('airliner visual configs (fleet-wide)', () => {
     expect(cfg('B752').winglet).toBe('none')
     expect(cfg('A388').engines.count).toBe(4)
     expect(cfg('B744').engines.count).toBe(4)
+    expect(cfg('C25A').fuseRadiusM).toBeCloseTo(.825)
+    expect(cfg('C25C').fuseRadiusM).toBeCloseTo(cfg('C25A').fuseRadiusM)
+    expect(cfg('B739').fuseRadiusM).toBeCloseTo(1.88)
+    expect(cfg('A320').fuseRadiusM).toBeCloseTo(1.975)
+    expect(cfg('HDJT').engines.mounted).toBe('overwing')
   })
 })

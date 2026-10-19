@@ -1,0 +1,541 @@
+Stage8a file-snapshot review; Git unavailable (Xcode license not accepted).
+Base: /tmp/openhorizon-stage8a-baseline
+Changed files:
+src/main.ts
+src/render/aircraft-mesh.ts
+src/render/local-aircraft.ts
+src/render/xplane-manifest.ts
+src/sim/aircraft.ts
+tests/browser/aircraft-studio.html
+tests/browser/aircraft-studio.ts
+tests/captain-systems.test.ts
+tests/render/local-aircraft.test.ts
+tests/render/native-surfaces.test.ts
+
+--- before/src/main.ts
++++ after/src/main.ts
+@@ -2464,21 +2464,29 @@
+   mesh.group.position.set(pos.y, -pos.z, -pos.x)
+   const d = aircraft.data
+   mesh.group.rotation.order = 'YXZ'
+   mesh.group.rotation.y = (-d.headingDeg * Math.PI) / 180
+   mesh.group.rotation.x = (d.pitchDeg * Math.PI) / 180
+   mesh.group.rotation.z = (-d.rollDeg * Math.PI) / 180
+   updateProp(mesh, d.rpm, elapsed)
+   mesh.surfaces?.({
+     flapFrac: aircraft.flapsDeg / Math.max(FLEET_ACTIVE.params.flapDetentsDeg[FLEET_ACTIVE.params.flapDetentsDeg.length - 1] ?? 1, 1),
+     spoilerFrac: aircraft.spoilerPos,
+-    roll: aircraft.controls.roll,
++    roll: aircraft.appliedControlSurfaces.roll,
++    pitch: aircraft.appliedControlSurfaces.pitch,
++    yaw: aircraft.appliedControlSurfaces.yaw,
++    trim: aircraft.appliedControlSurfaces.trim,
++    elevatorRad: aircraft.appliedControlSurfaces.elevatorSurfaceRad,
++    stabilizerRad: aircraft.appliedControlSurfaces.stabilizerRad,
++    elevatorCommandRad: aircraft.appliedControlSurfaces.elevatorCommandRad,
++    trimRad: aircraft.appliedControlSurfaces.trimRad,
++    rudderTrim: captainSystems.rudderTrim,
+     gearPos: aircraft.gearPos,
+     reverseFrac: aircraft.reversePos,
+   })
+ 
+   engineSound.update({
+     rpm: d.rpm,
+     powerFrac: aircraft.P.jet
+       ? Math.min(Math.max(d.n1Pct / 100, 0), 1)
+       : Math.min(Math.max(d.shaftPowerW / aircraft.P.ratedPowerW, 0), 1),
+     jet: !!aircraft.P.jet,
+--- before/src/render/aircraft-mesh.ts
++++ after/src/render/aircraft-mesh.ts
+@@ -26,20 +26,34 @@
+  * Model frame: nose −z, up +y, right wing +x (body x,y,z → model
+  * y→+x, z→−y, x→−z applied at placement time).
+  */
+ export interface SurfaceState {
+   /** Flap deflection as a fraction of full travel [0,1]. */
+   flapFrac: number
+   /** Spoiler/speedbrake actuator position [0,1]. */
+   spoilerFrac: number
+   /** Roll input −1..1 for spoileron mixing (optional). */
+   roll?: number
++  /** Effective pull/nose-up and right-pedal commands, −1..1. */
++  pitch?: number
++  yaw?: number
++  /** Actual elevator-only aerodynamic angle: negative is trailing edge up.
++   * Trimmable-stabilizer contribution must be separate. */
++  elevatorRad?: number
++  stabilizerRad?: number
++  /** Pre-trim elevator command and separate trim authority. Native aircraft
++   * may have a stabilizer even when a generic physics anchor uses tabs. */
++  elevatorCommandRad?: number
++  trimRad?: number
++  /** Normalized trim inputs for original authored trim tabs. */
++  trim?: number
++  rudderTrim?: number
+   /** Landing-gear position: 1 down … 0 retracted. */
+   gearPos: number
+   /** Reverser sleeve position: 0 stowed … 1 deployed. */
+   reverseFrac?: number
+ }
+ 
+ export interface AircraftMesh {
+   /** Optional native-model propeller/fan animator. */
+   updateProp?: (rpm: number, dt: number) => void
+   group: THREE.Group
+--- before/src/render/local-aircraft.ts
++++ after/src/render/local-aircraft.ts
+@@ -1,45 +1,66 @@
+ import * as THREE from 'three'
+ import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
+-import { XP_MODELS, XP_PLACEMENT, XP_CONTROL_LIMITS } from './xplane-manifest'
++import { XP_MODELS, XP_PLACEMENT, XP_CONTROL_LIMITS, XP_SURFACE_CALIBRATION } from './xplane-manifest'
+ import { applyObj8Anim, applyObj8Visibility, loadObj8, type LoadedObj8 } from './xplane-obj8'
+ 
+ export interface LocalAircraftVisual {
+   group: THREE.Group
+   propDisc: THREE.Mesh
+   surfaces: (s: SurfaceState) => void
+   updateProp: (rpm: number, dt: number) => void
+   dispose: () => void
+ }
+ const modelKey = (key: string): string => key === '172' ? 'C172' : key === '737' ? 'B738' : key
+ export function exactLocalModel(key: string) { return XP_MODELS[modelKey(key)] }
++const signed = (v: number | undefined): number => Number.isFinite(v) ? THREE.MathUtils.clamp(v!, -1, 1) : 0
+ const unit = (v: number): number => Number.isFinite(v) ? THREE.MathUtils.clamp(v, 0, 1) : 0
+ 
+ /** Only inputs evidenced in the installed exterior OBJs. Degrees use the
+  * authored dataref key range; unavailable doors/failures/vibration stay neutral. */
+-export function localDatarefReader(state: SurfaceState, angle: number, rpm: number, ranges: Map<string, number>) {
++export function localDatarefReader(state: SurfaceState, angle: number, rpm: number, ranges: Map<string, number>, key?: string) {
++  const calibration = key ? XP_SURFACE_CALIBRATION[modelKey(key)] : undefined
++  const deflection = (input: number, limits: [number, number]): number => input === 0 ? 0 : input * (input < 0 ? limits[0] : limits[1])
++  const degrees = (angle: number, limits: [number, number]): number => THREE.MathUtils.clamp(Number.isFinite(angle) ? angle * THREE.MathUtils.RAD2DEG : 0, -limits[0], limits[1])
+   return (ref: string): number => {
+     const control = ref.match(/\/(flap[12]|aileron[12]|speedbrake[12]|spoiler[12])_deg\[/)?.[1]
+     const travel = (control ? ranges.get(control) : undefined) ?? ranges.get(ref) ?? 0
+     if (/\/gear\/deploy_ratio\[/.test(ref)) return unit(state.gearPos)
+-    if (/\/(?:prop|engine)_rotation_angle_deg\[/.test(ref)) return angle
+-    if (/\/engine_rotation_speed_rad_sec\[/.test(ref)) return rpm * Math.PI / 30
++    if (/\/(?:prop|engine)_rotation_angle_deg\[/.test(ref)) return Number.isFinite(angle) ? angle : 0
++    if (/\/engine_rotation_speed_rad_sec\[/.test(ref)) return Number.isFinite(rpm) ? Math.max(0, rpm) * Math.PI / 30 : 0
+     if (/\/prop_is_disc\[/.test(ref)) return rpm > 900 ? 1 : 0
+     if (/\/thrust_reverser_deploy_ratio\[/.test(ref)) return unit(state.reverseFrac ?? 0)
+     if (/\/flap[12]_deg\[/.test(ref)) return unit(state.flapFrac) * travel
+     if (/\/slat[12]_deploy_ratio$/.test(ref) || ref === 'sim/flightmodel/controls/flaprat') return unit(state.flapFrac)
+     if (/\/(speedbrake|spoiler)[12]_deg\[/.test(ref)) return unit(state.spoilerFrac) * travel
+-    if (/\/aileron[12]_deg\[/.test(ref)) {
+-      const index = Number(ref.match(/\[(\d+)\]/)?.[1] ?? 0)
+-      return (state.roll ?? 0) * travel * (index % 2 ? -1 : 1)
+-    }
+-    if (/\/flight_controls\/composite_(inner|outer)[LR]_ail$/.test(ref)) return (state.roll ?? 0) * travel * (ref.includes('R_ail') ? -1 : 1)
++    if (ref === 'sim/flightmodel2/controls/elevator_trim' || ref === 'sim/cockpit2/controls/elevator_trim') return signed(state.trim)
++    if (ref === 'sim/flightmodel2/controls/rudder_trim') return signed(state.rudderTrim)
++    if (calibration) {
++      if (/\/elevator[12]_deg\[/.test(ref) || /\/composite_elev[LR]$/.test(ref)) {
++        const angle = calibration.stabilizer ? state.elevatorCommandRad ?? state.elevatorRad : state.elevatorRad
++        return angle !== undefined ? degrees(angle, calibration.elevator) : deflection(-signed(state.pitch), calibration.elevator)
++      }
++      if (/\/rudder[12]_deg\[/.test(ref)) {
++        const yaw = signed(state.yaw)
++        return yaw * (ref.includes('rudder2') ? calibration.rudder2 ?? 0 : calibration.rudder[yaw < 0 ? 0 : 1])
++      }
++      if (ref === 'sim/flightmodel2/controls/stabilizer_deflection_degrees' && calibration.stabilizer) {
++        const angle = state.trimRad ?? state.stabilizerRad
++        const value = angle !== undefined ? degrees(angle, calibration.stabilizer) : deflection(-signed(state.trim), calibration.stabilizer)
++        return value * (calibration.stabilizerSign ?? 1)
++      }
++      if (/\/aileron[12]_deg\[/.test(ref) || /\/composite_(inner|outer)[LR]_ail$/.test(ref)) {
++        const index = Number(ref.match(/\[(\d+)\]/)?.[1] ?? -1)
++        const side = calibration.leftAilerons.includes(index) || /L_ail$/.test(ref) ? -1 : calibration.rightAilerons.includes(index) || /R_ail$/.test(ref) ? 1 : 0
++        return deflection(-signed(state.roll) * side, calibration.aileron)
++      }
++    }
+     return 0
+   }
+ }
+ 
+ /** Disposes geometry/materials only. Procedural atlas caches own their maps. */
+ export function disposeAircraftGeometry(root: THREE.Object3D): void {
+   const geometries = new Set<THREE.BufferGeometry>(), materials = new Set<THREE.Material>()
+   root.traverse(o => { if (o instanceof THREE.Mesh) {
+     geometries.add(o.geometry)
+     for (const material of Array.isArray(o.material) ? o.material : [o.material]) materials.add(material)
+@@ -110,56 +131,60 @@
+     }
+     const animated = parts.flatMap(p => p.animated)
+     const ranges = new Map<string, number>(Object.entries(XP_CONTROL_LIMITS[modelKey(key)] ?? {}))
+     for (const part of parts) for (const node of part.parsed.anims) for (const spec of node.specs) {
+       if (spec.kind === 'rotate' || spec.kind === 'trans') {
+         const max = Math.max(0, ...spec.keys.map(k => Math.abs(k[0])))
+         ranges.set(spec.dataref, Math.max(ranges.get(spec.dataref) ?? 0, max))
+       }
+     }
+     let state: SurfaceState = {flapFrac: 0, spoilerFrac: 0, gearPos: 1}, angle = 0, rpm = 0
++    const surfaceRefs = [...new Set(parts.flatMap(p => p.parsed.anims.flatMap(n => n.specs.map(s => s.dataref))))]
++      .filter(ref => /\/(?:aileron|elevator|rudder|flap|slat|spoiler|speedbrake)[12]_|\/composite_|\/stabilizer_deflection|\/controls\/(?:elevator|rudder)_trim/.test(ref))
+     const pose = (): void => {
+-      const read = localDatarefReader(state, angle, rpm, ranges)
++      const read = localDatarefReader(state, angle, rpm, ranges, key)
+       for (const node of animated) { applyObj8Anim(node, read); applyObj8Visibility(node, read) }
++      group.userData.surfaceValues = Object.fromEntries(surfaceRefs.map(ref => [ref, read(ref)]))
+     }
+     pose()
+     group.userData.assetEvidence = {
+       objects: parts.length,
++      surfaceRefs,
+       triangles: parts.reduce((sum, p) => sum + p.parsed.draws.filter(d => d.lod === 0).reduce((n, d) => n + d.count / 3, 0), 0),
+       textureSets: textureCache.size,
+       warnings: parts.flatMap(p => p.warnings),
+     }
+     const propNode = animated.find(node => (node.userData.anim as Array<{dataref: string}>).some(spec => /\/(?:prop|engine)_rotation_angle_deg\[/.test(spec.dataref)))
+     let propDisc: THREE.Mesh | undefined
+     ;(propNode ?? group.getObjectByName('engineNacelle') ?? group).traverse(o => { if (!propDisc && o instanceof THREE.Mesh) propDisc = o })
+     if (!propDisc) throw new Error('Invalid OBJ8 exterior: no focus geometry')
+-    return {group, propDisc, dispose, surfaces: s => { state = s; pose() }, updateProp: (nextRpm, dt) => {
+-      rpm = Math.max(0, nextRpm); angle = (angle + rpm * 6 * Math.max(0, dt)) % 360; pose()
++    return {group, propDisc, dispose, surfaces: s => { state = {...s}; pose() }, updateProp: (nextRpm, dt) => {
++      rpm = Number.isFinite(nextRpm) ? Math.max(0, nextRpm) : 0; angle = (angle + rpm * 6 * (Number.isFinite(dt) ? Math.max(0, dt) : 0)) % 360; pose()
+     }}
+   } catch (error) { dispose(); throw error }
+ }
+ 
+ /** Wrap immediately, swap only after success, preserve the public root and
+  * attachments. Call once directly after the synchronous procedural build. */
+ export async function upgradePlayerAircraft(ship: AircraftMesh, key: string, load: (signal?: AbortSignal) => Promise<LocalAircraftVisual | null> = signal => loadLocalAircraft(key, signal)): Promise<void> {
+   if (ship.group.userData.localUpgradeStarted) return
+   ship.group.userData.localUpgradeStarted = true
+   ship.group.userData.visualSource = 'procedural'
+   const exterior = new THREE.Group()
+   exterior.name = 'player-exterior'
+   exterior.userData.exteriorCabin = true
+   const original = [...ship.group.children]
+   exterior.add(...original); ship.group.add(exterior)
+   const fallbackSurfaces = ship.surfaces
+   let state: SurfaceState = {flapFrac: 0, spoilerFrac: 0, gearPos: 1}
+   let loaded: LocalAircraftVisual | null = null, disposed = false
+-  ship.surfaces = s => { state = s; if (loaded) loaded.surfaces(s); else fallbackSurfaces?.(s) }
++  ship.surfaces = s => { state = {...s}; if (loaded) loaded.surfaces(s); else fallbackSurfaces?.(s) }
+   const controller = new AbortController()
+   const previousDispose = ship.group.userData.dispose as (() => void) | undefined
+   ship.group.userData.dispose = () => {
+     if (disposed) return
+     disposed = true; controller.abort(); loaded?.dispose(); previousDispose?.()
+   }
+   try {
+     const next = await load(controller.signal)
+     if (!next) return
+     if (disposed) { next.dispose(); return }
+--- before/src/render/xplane-manifest.ts
++++ after/src/render/xplane-manifest.ts
+@@ -119,10 +119,28 @@
+     "flap1": 35.0,
+     "flap2": 0.0,
+     "aileron1": 25.0,
+     "aileron2": 0.0,
+     "speedbrake1": 40.0,
+     "speedbrake2": 0.0,
+     "spoiler1": 35.0,
+     "spoiler2": 35.0
+   }
+ }
++
++/** ACF travel (up/down, left/right degrees), with physical sides verified
++ * against each authored OBJ's indexed exterior geometry. Never infer parity:
++ * an array index identifies a wing station, not a physical side contract. */
++export const XP_SURFACE_CALIBRATION: Record<string, {
++  aileron: [number, number]; elevator: [number, number]; rudder: [number, number]
++  leftAilerons: number[]; rightAilerons: number[]
++  stabilizer?: [number, number]; stabilizerSign?: number; rudder2?: number
++}> = {
++  C172: {aileron:[20,15], elevator:[20,15], rudder:[20,20], leftAilerons:[2], rightAilerons:[3]},
++  B738: {aileron:[20,16], elevator:[20,22], rudder:[29,29], leftAilerons:[4], rightAilerons:[5], stabilizer:[8.5,8.5]},
++  A333: {aileron:[25,25], elevator:[30,15], rudder:[35,35], leftAilerons:[], rightAilerons:[], stabilizer:[8,8]},
++  SR22: {aileron:[30,10], elevator:[25,20], rudder:[15,15], leftAilerons:[4], rightAilerons:[5]},
++  BE58: {aileron:[18,12], elevator:[25,20], rudder:[27,27], leftAilerons:[2], rightAilerons:[3]},
++  PA18: {aileron:[18,18], elevator:[34,29], rudder:[30,30], leftAilerons:[0], rightAilerons:[1], stabilizer:[4,2.5], stabilizerSign:-1},
++  AS21: {aileron:[29,17], elevator:[30,15], rudder:[35,35], leftAilerons:[0], rightAilerons:[1]},
++  C750: {aileron:[25,25], elevator:[27,22], rudder:[30,30], rudder2:18, leftAilerons:[2], rightAilerons:[3], stabilizer:[12,2]},
++}
+--- before/src/sim/aircraft.ts
++++ after/src/sim/aircraft.ts
+@@ -105,21 +105,21 @@
+     this.jetState = params.jet ? makeTurbofanState(params.jet) : null
+   }
+ 
+   readonly controls: Controls = {
+     pitch: 0, roll: 0, yaw: 0, throttle: 0, mixture: 1,
+     flapsIndex: 0, brakeLeft: 0, brakeRight: 0, trim: 0,
+   }
+ 
+   /** Last inputs/surface angles actually passed to physics. Animation reads
+    * this snapshot after AP/SAS and trim mixing, never a restored command. */
+-  readonly appliedControlSurfaces = { pitch: 0, roll: 0, yaw: 0, elevatorRad: 0, aileronRad: 0, rudderRad: 0 }
++  readonly appliedControlSurfaces = { pitch: 0, roll: 0, yaw: 0, trim: 0, elevatorCommandRad: 0, trimRad: 0, elevatorSurfaceRad: 0, stabilizerRad: 0, elevatorRad: 0, aileronRad: 0, rudderRad: 0 }
+ 
+   /** Extra wind in NED (from WindModel), applied as air-mass motion. */
+   readonly windNed = v3()
+ 
+   /** Terrain elevation (m MSL) at frame-local NED (north, east); Phase 2+. */
+   groundElevAt: ((n: number, e: number) => number) | null = null
+ 
+   /** Live-weather ISA temperature offset, °C (Phase 5 §11): shifts air
+    *  density (hot day → thinner air → longer takeoff, weaker climb) while
+    *  leaving pressure untouched — the dominant density-altitude term. 0 =
+@@ -329,21 +329,24 @@
+     // elevator travel (C172, bit-exact). Trimmable-stabilizer aircraft: the
+     // stab is its own surface; its authority adds beyond elevator stops.
+     ai.elevatorRad = this.P.trimIsStabilizer
+       ? clamp(-c.pitch * this.P.elevatorMaxRad, -this.P.elevatorMaxRad, this.P.elevatorMaxRad) - c.trim * this.P.trimMaxRad
+       : clamp(-c.pitch * this.P.elevatorMaxRad - c.trim * this.P.trimMaxRad, -this.P.elevatorMaxRad, this.P.elevatorMaxRad)
+     ai.aileronRad = c.roll * this.P.aileronMaxRad
+     // Convention bridge: +input = right pedal = nose right. The aero
+     // derivatives use Roskam's +δr = trailing-edge-left (nose left), so the
+     // aerodynamic rudder angle is the negative of the pilot input.
+     ai.rudderRad = -c.yaw * this.P.rudderMaxRad
+-    Object.assign(this.appliedControlSurfaces, {pitch:c.pitch,roll:c.roll,yaw:c.yaw,
++    Object.assign(this.appliedControlSurfaces, {pitch:c.pitch,roll:c.roll,yaw:c.yaw,trim:c.trim,
++      elevatorCommandRad:-c.pitch*this.P.elevatorMaxRad,trimRad:-c.trim*this.P.trimMaxRad,
++      elevatorSurfaceRad:this.P.trimIsStabilizer ? -c.pitch*this.P.elevatorMaxRad : ai.elevatorRad,
++      stabilizerRad:this.P.trimIsStabilizer ? -c.trim*this.P.trimMaxRad : 0,
+       elevatorRad:ai.elevatorRad,aileronRad:ai.aileronRad,rudderRad:ai.rudderRad})
+     ai.flapsDeg = this.flapsDeg
+     ai.thrustN = this.prop.thrustN
+     ai.propTorqueNm = this.prop.torqueNm
+     ai.mach = mach
+     ai.extraCd = (this.P.gearRetractable ? this.P.gearRetractable.dCdExtended * this.gearPos : 0) +
+       (this.P.spoilers ? this.P.spoilers.dCd * this.spoilerPos : 0)
+     ai.extraClDump = this.P.spoilers ? this.P.spoilers.dCl * this.spoilerPos : 0
+     const groundElev = this.safeGroundElev(this.posNed.x, this.posNed.y)
+     ai.heightAglM = altM - groundElev
+--- before/tests/browser/aircraft-studio.html
++++ after/tests/browser/aircraft-studio.html
+@@ -1,3 +1,4 @@
+ <!doctype html><html><head><meta charset="utf-8"><title>OpenHorizon · Aircraft inspection</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+ *{box-sizing:border-box}body{margin:0;background:#b4bdc4;color:#17242e;font:13px system-ui}canvas{display:block}header{position:fixed;left:22px;top:20px;z-index:3}h1{font-size:19px;letter-spacing:-.04em;margin:0 0 4px}small{color:#425462}nav{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);display:flex;gap:8px;align-items:center;flex-wrap:wrap;width:max-content;max-width:94vw;padding:12px;background:#f4f6f7ee;border:1px solid #ffffff8a;border-radius:12px;box-shadow:0 6px 28px #18324720}button,select{font:inherit;color:#203644;background:#fff;border:1px solid #bdcbd4;padding:7px 10px;border-radius:5px;cursor:pointer}label{display:flex;gap:5px;align-items:center}output{position:fixed;right:22px;top:22px;font:11px ui-monospace;color:#314653}
+-</style></head><body><header><h1>Aircraft inspection</h1><small>Actual flight models & lighting · drag to orbit · scroll to inspect</small></header><nav><select aria-label="Aircraft"><option value="172">Cessna 172S</option><option value="cub">Piper J-3 Cub</option><option value="737">Boeing 737-800</option><option value="a320">Airbus A320</option></select><button id="front">Front quarter</button><button id="rear">Rear quarter</button><button id="side">Side</button><button id="opposite">Opposite side</button><button id="detail">Close detail</button><button id="engine">Engine</button><label><input id="gear" type="checkbox" checked>Gear</label><label><input id="flaps" type="checkbox">Flaps</label><label><input id="props" type="checkbox">Run engines</label><label><input id="sunset" type="checkbox">Low sun</label></nav><output id="stats"></output><script type="module" src="./aircraft-studio.ts"></script></body></html>
++input[type=range]{width:88px}#surface-state{position:fixed;right:22px;top:45px;max-width:45vw;max-height:30vh;overflow:auto;background:#f4f6f7dd;padding:10px;border-radius:8px;font:11px ui-monospace;white-space:pre-wrap}nav{width:1100px}
++</style></head><body><header><h1>Aircraft inspection</h1><small>Actual flight models & lighting · drag to orbit · scroll to inspect</small></header><nav><select aria-label="Aircraft"><option value="172">Cessna 172S</option><option value="cub">Piper J-3 Cub</option><option value="737">Boeing 737-800</option><option value="a320">Airbus A320</option></select><button id="front">Front quarter</button><button id="rear">Rear quarter</button><button id="side">Side</button><button id="opposite">Opposite side</button><button id="detail">Close detail</button><button id="engine">Engine</button><label><input id="gear" type="checkbox" checked>Gear</label><label>Pitch (pull +)<input id="pitch" aria-label="Pitch" type="range" min="-1" max="1" step="0.01" value="0"></label><label>Roll (right +)<input id="roll" aria-label="Roll" type="range" min="-1" max="1" step="0.01" value="0"></label><label>Rudder (right +)<input id="yaw" aria-label="Rudder" type="range" min="-1" max="1" step="0.01" value="0"></label><label>Pitch trim<input id="trim" aria-label="Pitch trim" type="range" min="-1" max="1" step="0.01" value="0"></label><label>Rudder trim<input id="rudderTrim" aria-label="Rudder trim" type="range" min="-0.3" max="0.3" step="0.01" value="0"></label><label>Flaps / slats<input id="flaps" aria-label="Flaps" type="range" min="0" max="1" step="0.01" value="0"></label><label>Spoilers / speedbrakes<input id="spoilers" aria-label="Spoilers" type="range" min="0" max="1" step="0.01" value="0"></label><button id="neutral-surfaces">Neutral surfaces</button><button id="full-surfaces">Full deployment</button><button id="positive-controls">Full pull / right</button><button id="negative-controls">Full push / left</button><label><input id="props" type="checkbox">Run engines</label><label><input id="sunset" type="checkbox">Low sun</label></nav><output id="stats"></output><pre id="surface-state" aria-label="Surface state" role="status"></pre><script type="module" src="./aircraft-studio.ts"></script></body></html>
+--- before/tests/browser/aircraft-studio.ts
++++ after/tests/browser/aircraft-studio.ts
+@@ -1,17 +1,18 @@
+ import * as THREE from 'three'
+ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+ import { createScene } from '../../src/render/scene'
+ import { SkyDome } from '../../src/render/sky'
+-import { updateProp, type AircraftMesh } from '../../src/render/aircraft-mesh'
++import { updateProp, type AircraftMesh, type SurfaceState } from '../../src/render/aircraft-mesh'
+ import { PLAYER_AIRCRAFT, buildPlayerAircraft, playerAircraftParams } from '../../src/render/player-aircraft'
+ import { upgradePlayerAircraft, disposeAircraftGeometry } from '../../src/render/local-aircraft'
++import { XP_SURFACE_CALIBRATION } from '../../src/render/xplane-manifest'
+ import { pavementMaterial } from '../../src/render/surface-materials'
+ 
+ const {scene,camera,renderer}=createScene(document.body)
+ camera.fov=42;camera.near=.08;camera.updateProjectionMatrix()
+ const sky=new SkyDome(scene)
+ const controls=new OrbitControls(camera,renderer.domElement)
+ controls.enableDamping=true;controls.dampingFactor=.12;controls.maxPolarAngle=Math.PI*.49
+ const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),pavementMaterial(0x969a9b,'xy','concrete'))
+ ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;scene.add(ground)
+ const chooser=document.querySelector('[aria-label="Aircraft"]') as HTMLSelectElement
+@@ -51,25 +52,54 @@
+   const focus=box.isEmpty()?ship.group.position.clone():box.getCenter(new THREE.Vector3())
+   const scale=Math.max(1,size.x,size.y,size.z)
+   controls.target.copy(focus);camera.position.copy(focus).add(new THREE.Vector3(scale*.85,scale*.35,-scale*1.8));controls.update();return
+  }
+  const target=new THREE.Vector3(0,groundHeight+span*.04,0)
+  const vector=view==='rear'?new THREE.Vector3(1,.48,1.2):view==='side'?new THREE.Vector3(1,.12,0):view==='opposite'?new THREE.Vector3(-1,.20,-.15):view==='detail'?new THREE.Vector3(.24,.15,-.26):new THREE.Vector3(1,.38,-1.15)
+  camera.position.copy(target).addScaledVector(vector,span*(view==='side'||view==='opposite'?1.7:1.12))
+  controls.target.copy(target);controls.update()
+ }
+ for(const id of ['front','rear','side','opposite','detail','engine'])document.getElementById(id)!.onclick=()=>pose(id)
++const surfaceInputs = ['pitch','roll','yaw','trim','rudderTrim','flaps','spoilers'] as const
++const slider = (id:string) => document.getElementById(id) as HTMLInputElement
++const value = (id:string) => Number(slider(id).value)
++function setSurfaces(values:Partial<Record<typeof surfaceInputs[number],number>>) {
++ for(const id of surfaceInputs)if(values[id]!==undefined)slider(id).value=String(values[id])
++}
++document.getElementById('neutral-surfaces')!.onclick=()=>setSurfaces({pitch:0,roll:0,yaw:0,trim:0,rudderTrim:0,flaps:0,spoilers:0})
++document.getElementById('full-surfaces')!.onclick=()=>setSurfaces({flaps:1,spoilers:1})
++document.getElementById('positive-controls')!.onclick=()=>setSurfaces({pitch:1,roll:1,yaw:1})
++document.getElementById('negative-controls')!.onclick=()=>setSurfaces({pitch:-1,roll:-1,yaw:-1})
++function surfaceState():SurfaceState {
++ const trim=value('trim'),pitch=value('pitch'),params=playerAircraftParams(chooser.value)
++ // Match flight's effective controls, including trim and its separate native
++ // stabilizer path; never add rudder trim again in the visual adapter.
++ const calibration=XP_SURFACE_CALIBRATION[chooser.value==='172'?'C172':chooser.value==='737'?'B738':chooser.value]
++ const travel=calibration?.elevator.map(v=>v*THREE.MathUtils.DEG2RAD)??[params.elevatorMaxRad,params.elevatorMaxRad]
++ const command=-pitch*travel[pitch>=0?0:1]!
++ const trimRad=-trim*(calibration?.stabilizer ? calibration.stabilizer[trim>=0?0:1]*THREE.MathUtils.DEG2RAD : params.trimMaxRad)
++ return {flapFrac:slider('flaps').disabled?0:value('flaps'),spoilerFrac:slider('spoilers').disabled?0:value('spoilers'),gearPos:slider('gear').checked?1:0,
++  pitch,roll:value('roll'),yaw:THREE.MathUtils.clamp(value('yaw')+value('rudderTrim'),-1,1),trim,rudderTrim:value('rudderTrim'),
++  elevatorRad:THREE.MathUtils.clamp(command+trimRad,-travel[0]!,travel[1]!),elevatorCommandRad:command,trimRad}
++}
+ chooser.onchange=select
+ select()
+ let frames=0,lastStats=performance.now(),lastFrame=performance.now()
+ function render(now:number){
+  controls.update()
+  sky.update(new Date((document.getElementById('sunset') as HTMLInputElement).checked?'2026-09-08T01:55:00Z':'2026-09-08T20:00:00Z'),37.5,-122.5)
+  sky.setShadowTarget(ship.group.position)
+  sky.updateEnvironment(renderer,scene,camera.position)
+- ship.surfaces?.({flapFrac:(document.getElementById('flaps') as HTMLInputElement).checked?1:0,gearPos:(document.getElementById('gear') as HTMLInputElement).checked?1:0,spoilerFrac:0})
++ const native=ship.group.getObjectByName(`local-aircraft:${chooser.value==='172'?'C172':chooser.value==='737'?'B738':chooser.value}`)
++ const refs=(ship.group.userData.assetEvidence?.surfaceRefs??[]) as string[]
++ if(native){slider('flaps').disabled=!refs.some(r=>/flap[12]_deg|slat[12]_deploy/.test(r));slider('spoilers').disabled=!refs.some(r=>/(spoiler|speedbrake)[12]_deg/.test(r))}
++ else{slider('flaps').disabled=playerAircraftParams(chooser.value).flapDetentsDeg.length<2;slider('spoilers').disabled=false}
++ const state=surfaceState();ship.surfaces?.(state)
++ const evidenceText=JSON.stringify({aircraft:chooser.value,source:ship.group.userData.visualSource??'procedural',controls:state,authored:native?.userData.surfaceValues??{}},null,2)
++ const evidenceOutput=document.getElementById('surface-state')!
++ if(evidenceOutput.textContent!==evidenceText)evidenceOutput.textContent=evidenceText
+  updateProp(ship,(document.getElementById('props') as HTMLInputElement).checked?1200:0,Math.min((now-lastFrame)/1000,.05));lastFrame=now
+  renderer.render(scene,camera);frames++
+  if(now-lastStats>1000){document.getElementById('stats')!.textContent=`${Math.round(frames*1000/(now-lastStats))} fps · ${renderer.info.render.calls} draws · ${renderer.info.render.triangles.toLocaleString()} triangles · ${ship.group.userData.visualSource ?? "procedural"}${ship.group.userData.localAssetError ? " (local asset unavailable)" : ""}`;frames=0;lastStats=now}
+  requestAnimationFrame(render)
+ }
+ requestAnimationFrame(render)
+--- before/tests/captain-systems.test.ts
++++ after/tests/captain-systems.test.ts
+@@ -99,10 +99,21 @@
+ it('records final applied control surfaces for animation, with trim already mixed into yaw',()=>{
+  const a=new Aircraft(B738)
+  a.controls.yaw=.5;a.controls.pitch=.2;a.controls.trim=.1;a.controls.roll=-.3
+  a.posNed.z=-1000;a.velBody.x=100;a.step(.02)
+  expect(a.appliedControlSurfaces.yaw).toBe(.5)
+  expect(a.appliedControlSurfaces.rudderRad).toBeCloseTo(-.5*a.P.rudderMaxRad)
+  expect(a.appliedControlSurfaces.aileronRad).toBeCloseTo(-.3*a.P.aileronMaxRad)
+  a.controls.yaw=.2
+  expect(a.appliedControlSurfaces.yaw).toBe(.5)
+ })
++
++it('keeps stabilizer trim separate from elevator motion and clears the complete snapshot on reset',()=>{
++ const a=new Aircraft(B738)
++ a.controls.pitch=.2;a.controls.trim=.3;a.posNed.z=-1000;a.velBody.x=100;a.step(.02)
++ expect(a.appliedControlSurfaces.trim).toBe(.3)
++ expect(a.appliedControlSurfaces.elevatorSurfaceRad).toBeCloseTo(-.2*a.P.elevatorMaxRad)
++ expect(a.appliedControlSurfaces.stabilizerRad).toBeCloseTo(-.3*a.P.trimMaxRad)
++ expect(a.appliedControlSurfaces.elevatorSurfaceRad+a.appliedControlSurfaces.stabilizerRad).toBeCloseTo(a.appliedControlSurfaces.elevatorRad)
++ a.spawnOnGround(0,0,0)
++ expect(Object.values(a.appliedControlSurfaces).every(v=>v===0)).toBe(true)
++})
+--- before/tests/render/local-aircraft.test.ts
++++ after/tests/render/local-aircraft.test.ts
+@@ -91,10 +91,19 @@
+   expect(disposals).toHaveBeenCalledTimes(2)
+   expect(visual.group.children).toHaveLength(0)
+  }finally{textureStub.mockRestore();vi.unstubAllGlobals()}
+ })
+ 
+ it('includes the authored 737 cockpit glazing and Cessna cabin behind transparent windows',()=>{
+  expect(exactLocalModel('737')!.objs).toContain('Boeing 737-800/objects/738_cockpit_glass.obj')
+  expect(exactLocalModel('172')!.objs).toContain('Cessna 172 SP/objects/cockpit_1.obj')
+  expect(exactLocalModel('172')!.objs).toContain('Cessna 172 SP/objects/cockpit_seats_front.obj')
+ })
++
++it('preserves a value snapshot across asynchronous swaps even when the caller reuses its input object',async()=>{
++ const ship=fallback();let resolve!:(v:LocalAircraftVisual|null)=>void
++ const pending=upgradePlayerAircraft(ship,'172',()=>new Promise(r=>{resolve=r}))
++ const input={flapFrac:.25,gearPos:1,spoilerFrac:.5,pitch:.6,yaw:-.3,roll:.2,trim:.1}
++ ship.surfaces!(input);input.pitch=-1;input.yaw=1
++ const loaded=visual();resolve(loaded);await pending
++ expect(loaded.surfaces).toHaveBeenCalledWith({...input,pitch:.6,yaw:-.3})
++})
+--- before/tests/render/native-surfaces.test.ts
++++ after/tests/render/native-surfaces.test.ts
+@@ -0,0 +1,97 @@
++import {existsSync,readFileSync,readdirSync} from 'node:fs'
++import * as THREE from 'three'
++import {describe,it,expect} from 'vitest'
++import {localDatarefReader} from '../../src/render/local-aircraft'
++import {XP_MODELS,XP_CONTROL_LIMITS,XP_SURFACE_CALIBRATION} from '../../src/render/xplane-manifest'
++import {parseObj8,buildObj8,applyObj8Anim,applyObj8Visibility,type AnimSpec} from '../../src/render/xplane-obj8'
++import type {SurfaceState} from '../../src/render/aircraft-mesh'
++const base='/Users/davidgartenberg/X-Plane 12/Aircraft/Laminar Research/'
++const neutral:SurfaceState={flapFrac:0,spoilerFrac:0,gearPos:1}
++const refs={elevator:'sim/flightmodel2/wing/elevator1_deg[8]',rudder:'sim/flightmodel2/wing/rudder1_deg[10]'}
++it('uses authored pitch/yaw endpoints and sanitizes nonfinite controls',()=>{
++ const reader=(s:Partial<SurfaceState>)=>localDatarefReader({...neutral,...s},0,0,new Map(Object.entries(XP_CONTROL_LIMITS.C172!)),'C172')
++ expect(reader({pitch:1})(refs.elevator)).toBe(-20)
++ expect(reader({pitch:-1})(refs.elevator)).toBe(15)
++ expect(reader({yaw:1})(refs.rudder)).toBe(20)
++ expect(reader({yaw:-1})(refs.rudder)).toBe(-20)
++ for(const ref of [refs.elevator,refs.rudder,'sim/flightmodel2/wing/aileron1_deg[2]'])expect(reader({pitch:NaN,yaw:Infinity,roll:-Infinity})(ref)).toBe(0)
++ expect(reader({roll:10})('sim/flightmodel2/wing/aileron1_deg[2]')).toBe(15)
++ expect(reader({roll:10})('sim/flightmodel2/wing/aileron1_deg[3]')).toBe(-20)
++})
++it('keeps actual elevator and stabilizer angles separate and failure refs healthy',()=>{
++ const read=localDatarefReader({...neutral,pitch:.5,trim:.6,elevatorRad:-.1,stabilizerRad:-.05},0,0,new Map(),'A333')
++ expect(read('laminar/A333/flight_controls/composite_elevL')).toBeCloseTo(-.1*180/Math.PI)
++ expect(read('sim/flightmodel2/controls/stabilizer_deflection_degrees')).toBeCloseTo(-.05*180/Math.PI)
++ expect(read('sim/operation/failures/rel_fcon_elev_1_lft_gone')).toBe(0)
++})
++/** Only indexed vertices belonging to each TRIS draw: OBJ buffers are shared. */
++function points(meshes:THREE.Mesh[]){return meshes.flatMap(mesh=>{const g=mesh.geometry,idx=g.index!,pos=g.attributes.position!,pts:THREE.Vector3[]=[];for(let i=g.drawRange.start;i<g.drawRange.start+g.drawRange.count;i++)pts.push(new THREE.Vector3().fromBufferAttribute(pos,idx.getX(i)).applyMatrix4(mesh.matrixWorld));return pts})}
++// Spatial index of actual fixed-wing vertices; use physical mesh contacts,
++// not shared-buffer bounds or group origins, to detect detached assemblies.
++function fixedContacts(vertices:THREE.Vector3[]) {
++ const cell=.1,bins=new Map<string,THREE.Vector3[]>()
++ const key=(x:number,y:number,z:number)=>`${x},${y},${z}`
++ for(const p of vertices){const k=key(Math.floor(p.x/cell),Math.floor(p.y/cell),Math.floor(p.z/cell));const bin=bins.get(k)??[];bin.push(p);bins.set(k,bin)}
++ return (moving:THREE.Vector3[])=>{
++  let best=Infinity
++  for(const p of moving){const x=Math.floor(p.x/cell),y=Math.floor(p.y/cell),z=Math.floor(p.z/cell)
++   for(let a=-1;a<=1;a++)for(let b=-1;b<=1;b++)for(let c=-1;c<=1;c++)for(const q of bins.get(key(x+a,y+b,z+c))??[])best=Math.min(best,p.distanceTo(q))
++  }
++  return best
++ }
++}
++describe.skipIf(!existsSync(base))('installed indexed exterior geometry',()=>{
++ for(const [key,entry] of Object.entries(XP_MODELS).filter(([k])=>k!=='MD82'))it(`${key}: real trailing edges move correctly; authored deployment and fixed geometry stay coherent`,()=>{
++  const root=new THREE.Group(),animated:THREE.Group[]=[],byRef=new Map<string,THREE.Mesh[]>(),fixed:THREE.Mesh[]=[]
++  for(const path of entry.objs){const parsed=parseObj8(readFileSync(base+path,'utf8')),built=buildObj8(parsed,new THREE.MeshBasicMaterial());root.add(built.group);animated.push(...built.animated)}
++  root.traverse(o=>{if(!(o instanceof THREE.Mesh))return;const refs=new Set<string>();let p=o.parent;while(p){for(const s of (p.userData.anim??[]) as AnimSpec[])if(/\/(?:aileron\d_deg|elevator\d_deg|rudder\d_deg|flap\d_deg|spoiler\d_deg|speedbrake\d_deg|slat\d_deploy_ratio)|\/composite_/.test(s.dataref))refs.add(s.dataref);p=p.parent}if(!refs.size)fixed.push(o);for(const r of refs){const list=byRef.get(r)??[];list.push(o);byRef.set(r,list)}})
++  const pose=(state:SurfaceState)=>{const read=localDatarefReader(state,0,0,new Map(Object.entries(XP_CONTROL_LIMITS[key]!)),key);for(const n of animated){applyObj8Anim(n,read);applyObj8Visibility(n,read)};root.updateMatrixWorld(true)}
++  pose(neutral)
++  // Fixed vertices are sampled from the actual index ranges as well.
++  const fixedMatrices=fixed.map(m=>m.matrixWorld.clone())
++  const fixedSamples=fixed.slice(0,5).map(m=>points([m]).filter((_,i)=>i%100===0))
++  const contact=fixedContacts(points(fixed));let largestContactGap=0
++  const gapLimit:Record<string,number>={C172:.025,B738:.04,A333:.035,SR22:.015,BE58:.03,PA18:.015,AS21:.05,C750:.085}
++  for(const [ref,meshes] of byRef){
++   pose(neutral);const before=points(meshes),zMax=Math.max(...before.map(v=>v.z)),zMin=Math.min(...before.map(v=>v.z));const trailing=before.map((v,i)=>v.z>zMax-(zMax-zMin)*.12?i:-1).filter(i=>i>=0)
++   const centerX=before.reduce((n,v)=>n+v.x,0)/before.length
++   const control=/aileron|_ail$/.test(ref)?'roll':/elevator|_elev[LR]$/.test(ref)?'pitch':/rudder/.test(ref)?'yaw':undefined
++   if(control){for(const sign of [-1,-.5,.5,1]){pose({...neutral,[control]:sign});const after=points(meshes);const gap=contact(after);largestContactGap=Math.max(largestContactGap,gap);expect(gap,`${key} ${ref} hinge contact`).toBeLessThan(gapLimit[key]!);const delta=trailing.reduce((v,i)=>v.add(after[i]!.clone().sub(before[i]!)),new THREE.Vector3()).divideScalar(trailing.length);const desired=control==='yaw'?delta.x*sign:control==='roll'?delta.y*Math.sign(centerX)*sign:delta.y*sign;expect(desired,`${key} ${ref} ${control} ${sign} trailing edge ${delta.toArray()}`).toBeGreaterThan(.00001)}}
++   else {let previous=before;for(const fraction of [.25,.5,.75,1]){pose({...neutral,flapFrac:fraction,spoilerFrac:fraction});const after=points(meshes);expect(after.every(v=>v.toArray().every(Number.isFinite))).toBe(true);const parents=[...byRef].filter(([other,list])=>other!==ref&&meshes.every(m=>list.includes(m))).flatMap(([,list])=>list.filter(m=>!meshes.includes(m)));const gap=Math.min(contact(after),parents.length?fixedContacts(points(parents))(after):Infinity);largestContactGap=Math.max(largestContactGap,gap);expect(gap,`${key} ${ref} attached at ${fraction}`).toBeLessThan(gapLimit[key]!);const motion=after.reduce((n,p,i)=>n+p.distanceToSquared(previous[i]!),0)/after.length;expect(motion,`${key} ${ref} travel ${fraction}`).toBeGreaterThan(1e-10);previous=after}}
++  }
++  for(const ref of ['sim/flightmodel2/controls/stabilizer_deflection_degrees','sim/flightmodel2/controls/elevator_trim','sim/flightmodel2/controls/rudder_trim']) {
++   const meshes:THREE.Mesh[]=[]
++   root.traverse(o=>{if(!(o instanceof THREE.Mesh))return;let p=o.parent;while(p){if(((p.userData.anim??[]) as AnimSpec[]).some(s=>s.dataref===ref)){meshes.push(o);break}p=p.parent}})
++   if(!meshes.length)continue
++   pose(neutral);const before=points(meshes)
++   pose({...neutral,trim:1,rudderTrim:1});const after=points(meshes)
++   const motion=after.reduce((n,p,i)=>n+p.distanceToSquared(before[i]!),0)/after.length
++   expect(motion,`${key} ${ref} actual trim geometry`).toBeGreaterThan(1e-8)
++  }
++  pose({...neutral,pitch:1,yaw:1,roll:1,flapFrac:1,spoilerFrac:1})
++  fixed.forEach((m,i)=>expect(m.matrixWorld.elements).toEqual(fixedMatrices[i]!.elements))
++  fixed.slice(0,5).forEach((m,i)=>expect(points([m]).filter((_,j)=>j%100===0)).toEqual(fixedSamples[i]))
++  console.log(`${key}: ${byRef.size} moving datarefs, largest sampled attachment contact gap ${(largestContactGap*1000).toFixed(1)} mm`)
++  root.traverse(o=>{if(o instanceof THREE.Mesh){o.geometry.dispose();(o.material as THREE.Material).dispose()}})
++ },120000)
++})
++
++it('decomposes native stabilizer aircraft even when the shared aerodynamic model uses trim tabs',()=>{
++ const read=localDatarefReader({...neutral,pitch:0,trim:.5,elevatorRad:-.1,elevatorCommandRad:0,trimRad:-.1,stabilizerRad:0},0,0,new Map(),'PA18')
++ expect(read(refs.elevator)).toBe(0)
++ expect(read('sim/flightmodel2/controls/stabilizer_deflection_degrees')).toBe(4)
++})
++
++
++it.skipIf(!existsSync(base))('calibration preserves the installed ACF asymmetric physical limits',()=>{
++ for(const [key,calibration] of Object.entries(XP_SURFACE_CALIBRATION)) {
++  const folder=base+XP_MODELS[key]!.folder
++  const acf=readdirSync(folder).find(name=>name.endsWith('.acf')&&!/seaplane|G1000|_AI/.test(name))!
++  const values=new Map(readFileSync(folder+'/'+acf,'utf8').split('\n').map(line=>line.trim().split(/\s+/)).filter(parts=>parts[0]==='P').map(parts=>[parts[1],Number(parts[2])]))
++  const check=(actual:number,field:string)=>expect(actual,`${key} ${field}`).toBeCloseTo(values.get('acf/_'+field)!,5)
++  check(calibration.aileron[0],'ailn1_up');check(calibration.aileron[1],'ailn1_dn')
++  check(calibration.elevator[0],'elev1_up');check(calibration.elevator[1],'elev1_dn')
++  check(calibration.rudder[0],'rudd1_lf');check(calibration.rudder[1],'rudd1_rt')
++  if(calibration.stabilizer){check(calibration.stabilizer[0],'stab_trim_up');check(calibration.stabilizer[1],'stab_trim_dn')}
++ }
++})

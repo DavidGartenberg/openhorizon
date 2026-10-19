@@ -1,0 +1,901 @@
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/main.ts
++++ src/main.ts
+@@ -172,13 +172,14 @@
+   }
+ })()
+ const FLEET_ACTIVE = ((): (typeof FLEET)[string] => {
+   if (FLEET[fleetKey]) return FLEET[fleetKey]!
+   const entry = ROSTER.find((r) => r.spec.designator === fleetKey)!
+   const params = rosterParams(fleetKey)!
+-  const lastIdx = entry.spec.flapDetentsDeg.length - 1
++  // DG80 final explicitly selects +13°, leaving L a deliberate landing selection.
++  const lastIdx = params.flaperons ? params.flapDetentsDeg.indexOf(13) : entry.spec.flapDetentsDeg.length - 1
+   return {
+     params,
+     label: `${entry.spec.label} (Tier B)`,
+     build: () => buildPlayerAircraft(fleetKey, params),
+     final: {
+       kias: entry.spec.vSpeeds.approachKcas,
+@@ -530,14 +531,14 @@
+     // TAS at the FIELD's density (a sea-level conversion spawned ~8 kt slow
+     // at Tahoe — Phase-7 finding). Per-aircraft pitot cal; none = IAS=CAS.
+     const kcas = aircraft.P.pitotCal ? kcasFromKias(fin.kias, fin.flapsDeg, aircraft.P.pitotCal) : fin.kias
+     const tas = kcas * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
+     const gearCd = aircraft.P.gearRetractable ? aircraft.P.gearRetractable.dCdExtended : 0
+     const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg: fin.flapsDeg, gammaRad: -0.052, params: aircraft.P, extraCd: gearCd, isaTempOffsetC: aircraft.isaTempOffsetC })
+-    aircraft.flapsDeg = fin.flapsDeg
+-    aircraft.controls.flapsIndex = fin.flapsIndex
++    if (aircraft.P.flaperons) { aircraft.spoilerCmd = 0; aircraft.spoilerPos = 0; aircraft.spoilerArmed = false }
++    aircraft.resetFlaps(fin.flapsIndex)
+     aircraft.gearDownCommanded = true
+     aircraft.gearPos = 1
+     aircraft.applyTrimState(tas, t.alphaRad, altM, hRad, t.gammaRad, t.elevatorRad, t.throttle, t.rpm)
+     aircraft.posNed.x = n
+     aircraft.posNed.y = e
+   }
+@@ -546,15 +547,14 @@
+     // Ground spawns start with a clean cockpit: stale trim/flaps/throttle
+     // from a previous flight made a KSFO 1L takeoff refuse to rotate at 65
+     // KIAS (found by the §27 flight; KeyR always did this — search-box and
+     // hook spawns must too). applyTrimState covers the onFinal branch.
+     aircraft.controls.throttle = 0
+     aircraft.controls.trim = 0
+-    aircraft.controls.flapsIndex = 0
++    aircraft.resetFlaps()
+     aircraft.controls.pitch = aircraft.controls.roll = aircraft.controls.yaw = 0
+-    aircraft.flapsDeg = 0
+     aircraft.gearDownCommanded = true
+     aircraft.gearPos = 1
+   }
+   parkingBrake = !onFinal // hold position on ground spawns until power-up
+   setDaytimeAt(ap.lo)
+   spawnDesc = `${ap.i} ${rwyIdent ?? ''}${onFinal ? ' final' : ''}`.trim()
+@@ -590,12 +590,13 @@
+ // ---- Phase 9b: save/load snapshot (§17 subset) + payload loading ----
+ // A snapshot restores a *trimmed* flight state (position/alt/hdg/speed/
+ // config/fuel/clock), not mid-maneuver rates — documented deviation; the
+ // full 6-DOF state doesn't survive a floating-origin rebase honestly.
+ interface Snapshot {
+   v: 1
++  aircraftId?: string; flapSchema?: 1; flapCommandDeg?: number
+   lat: number; lon: number; altFt: number; hdgDeg: number; kias: number
+   flapsIndex: number; fuelKg: number; payloadKg: number
+   fuelLeftKg?: number; fuelRightKg?: number
+   simMs: number; onGround: boolean; spawn: string
+ }
+ 
+@@ -607,13 +608,13 @@
+ }
+ 
+ function saveSnapshot(): void {
+   const d = aircraft.data
+   const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+   const snap: Snapshot = {
+-    v: 1, lat: ll.lat, lon: ll.lon, altFt: d.altitudeFt, hdgDeg: d.headingDeg,
++    v: 1, aircraftId: fleetKey, flapSchema: 1, flapCommandDeg: aircraft.P.flapDetentsDeg[aircraft.controls.flapsIndex], lat: ll.lat, lon: ll.lon, altFt: d.altitudeFt, hdgDeg: d.headingDeg,
+     kias: d.kias, flapsIndex: aircraft.controls.flapsIndex, fuelKg: aircraft.fuelKg,
+     fuelLeftKg: fuelState.leftKg, fuelRightKg: fuelState.rightKg,
+     payloadKg: aircraft.payloadKg,
+     simMs: baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000,
+     // 9A: a ground save restores to where you ARE — spawnDesc is the
+     // last spawn point, wrong after landing somewhere else.
+@@ -634,12 +635,14 @@
+     snap = JSON.parse(localStorage.getItem('oh-save') ?? 'null') as Snapshot | null
+   } catch { /* corrupt save — treat as absent */ }
+   if (!snap || snap.v !== 1) {
+     toast('NO SAVE')
+     return false
+   }
++  if (snap.aircraftId !== undefined && snap.aircraftId !== fleetKey) { toast('SAVE AIRCRAFT MISMATCH'); return false }
++  if (![snap.lat,snap.lon,snap.altFt,snap.hdgDeg,snap.kias,snap.simMs].every(Number.isFinite) || typeof snap.spawn !== 'string') { toast('INVALID SAVE'); return false }
+   const snapshotLoading = loadingFromSnapshot(snap, FLEET_ACTIVE.params)
+   aircraft.payloadKg = snapshotLoading.payloadKg
+   if (snap.onGround) {
+     // Ground saves restore to the saved runway's spawn point (the exact
+     // ramp spot isn't part of the trimmed-state contract).
+     const parts = snap.spawn.split(' ')
+@@ -656,18 +659,24 @@
+     frame.anchor = { lat: snap.lat, lon: snap.lon }
+     tiles.onRebase()
+     airports.positionAll()
+     const altM = snap.altFt * FT
+     // 9A: the airborne restore used to trim EVERY type as a C172 —
+     // hardcoded detents, default params, default pitot cal.
+-    const flapsDeg = aircraft.P.flapDetentsDeg[snap.flapsIndex] ?? 0
++    // Trimmed-flight restoration deliberately clears actuator/linkage history.
++    let index = aircraft.P.flapDefaultIndex ?? 0
++    if (snap.flapSchema === 1 && Number.isFinite(snap.flapCommandDeg)) {
++      const found = aircraft.P.flapDetentsDeg.findIndex(deg => Math.abs(deg-snap.flapCommandDeg!) < 1e-6)
++      if (found >= 0) index = found
++    } else if (!aircraft.P.flaperons && snap.flapSchema === undefined) index = snap.flapsIndex
++    if (aircraft.P.flaperons) { aircraft.spoilerCmd = 0; aircraft.spoilerPos = 0; aircraft.spoilerArmed = false }
++    aircraft.resetFlaps(index)
++    const flapsDeg = aircraft.flapsDeg
+     aircraft.fuelKg = snapshotLoading.leftKg + snapshotLoading.rightKg // before trim: mass affects the solve
+     const tas = kcasFromKias(Math.max(snap.kias, 55), flapsDeg, aircraft.P.pitotCal) * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
+     const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg, gammaRad: 0, params: aircraft.P, isaTempOffsetC: aircraft.isaTempOffsetC })
+-    aircraft.flapsDeg = flapsDeg
+-    aircraft.controls.flapsIndex = snap.flapsIndex
+     aircraft.applyTrimState(tas, t.alphaRad, altM, (snap.hdgDeg * Math.PI) / 180, t.gammaRad, t.elevatorRad, t.throttle, t.rpm)
+     parkingBrake = false
+     spawnDesc = snap.spawn
+     tiles.update(aircraft.posNed.x, aircraft.posNed.y)
+     airports.updateVisuals(frame.anchor.lat, frame.anchor.lon)
+   }
+@@ -911,13 +920,13 @@
+   const signature=pads.filter(Boolean).map(p=>`${p!.id}:${p!.index}:${p!.axes.length}:${p!.buttons.length}`).join('|')
+   if(signature!==lastPadIdentity){
+     lastPadIdentity=signature;clearControllerTransient();voicePtt?.reset()
+     const preset=tcaPresetFor(pads.filter((p):p is Gamepad=>!!p).map(p=>({id:p.id,index:p.index,axes:p.axes.length})))
+     if(preset){gamepadMap=mergePreset(gamepadMap,preset);saveJoyMap()}
+   }
+-  controllerPanel.update(pads,`SIM · thrust ${Math.round(aircraft.controls.throttle*100)}% · ${loop.paused?'PAUSED':'RUNNING'} · ${document.hasFocus()?'FOCUSED':'BACKGROUND'}\nKeyboard W ${input.isHeld('KeyW')?'DOWN':'up'} / S ${input.isHeld('KeyS')?'DOWN':'up'} · override ${ctlOverride?JSON.stringify(ctlOverride):'none'}\nSIM · flaps ${aircraft.controls.flapsIndex} · speedbrake ${Math.round(aircraft.spoilerCmd*100)}% ${aircraft.spoilerArmed?'ARM':''}\nParking ${parkingBrake?'ON':'OFF'} · TX ${voicePtt?.state.phase??'idle'} · trigger ${physicalPttState()===true?'held':'released / unavailable'}\nEngines ${captainSystems.engine1Running?'1 RUN':'1 STOP'} / ${captainSystems.engine2Running?'2 RUN':'2 STOP'} · ignition ${captainSystems.ignitionMode}\nAutobrake ${captainSystems.autobrakeMode} ${captainSystems.autobrakeActive?'ACTIVE':captainSystems.autobrakeDisarmed?'DISARMED':'armed / waiting'} · rudder trim ${captainSystems.rudderTrim.toFixed(2)}`)
++  controllerPanel.update(pads,`SIM · thrust ${Math.round(aircraft.controls.throttle*100)}% · ${loop.paused?'PAUSED':'RUNNING'} · ${document.hasFocus()?'FOCUSED':'BACKGROUND'}\nKeyboard W ${input.isHeld('KeyW')?'DOWN':'up'} / S ${input.isHeld('KeyS')?'DOWN':'up'} · override ${ctlOverride?JSON.stringify(ctlOverride):'none'}\nSIM · flaps ${aircraft.P.flapLabels?.[aircraft.controls.flapsIndex] ?? aircraft.controls.flapsIndex}${aircraft.P.flaperons ? ` · actual ${aircraft.flapsDeg.toFixed(1)}° · lever 1..5: -9° / 0° / +5° / +13° / L (flaps0 = first lever position); steps/axis: all 7` : ''} · speedbrake ${Math.round(aircraft.spoilerCmd*100)}% ${aircraft.spoilerArmed?'ARM':''}\nParking ${parkingBrake?'ON':'OFF'} · TX ${voicePtt?.state.phase??'idle'} · trigger ${physicalPttState()===true?'held':'released / unavailable'}\n${aircraft.P.spoilers?.groundAutoDeploy === false ? 'UNPOWERED · airbrakes' : `Engines ${captainSystems.engine1Running?'1 RUN':'1 STOP'} / ${captainSystems.engine2Running?'2 RUN':'2 STOP'} · ignition ${captainSystems.ignitionMode}`}\nAutobrake ${captainSystems.autobrakeMode} ${captainSystems.autobrakeActive?'ACTIVE':captainSystems.autobrakeDisarmed?'DISARMED':'armed / waiting'} · rudder trim ${captainSystems.rudderTrim.toFixed(2)}`)
+ }
+ function shapeAxis(current: number, held: number, dt: number, attack = 2.2, recenter = 3.0): number {
+   if (held !== 0) return Math.min(Math.max(current + held * attack * dt, -1), 1)
+   const mag = Math.max(Math.abs(current) - recenter * dt, 0)
+   return Math.sign(current) * mag
+ }
+@@ -1005,24 +1014,24 @@
+     }
+   }
+   if (input.wasPressed('KeyC')) {
+     cameraMode =
+       cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'free' : cameraMode === 'free' ? 'cockpit' : 'chase'
+   }
+-  if (input.wasPressed('KeyF')) c.flapsIndex = Math.min(c.flapsIndex + 1, aircraft.P.flapDetentsDeg.length - 1)
+-  if (input.wasPressed('KeyG')) c.flapsIndex = Math.max(c.flapsIndex - 1, 0)
++  if (input.wasPressed('KeyF')) aircraft.selectFlaps(c.flapsIndex + 1)
++  if (input.wasPressed('KeyG')) aircraft.selectFlaps(c.flapsIndex - 1)
+   if (input.wasPressed('KeyR')) {
+     // 9A: reset returns to YOUR runway — the no-ident call re-picked the
+     // airport's longest/default runway instead.
+     const parts = spawnDesc.split(' ')
+     const ap = airports.find(parts[0] || 'KHAF')
+     if (ap) spawnAtAirport(ap, parts[1])
+     aircraft.crashed = false
+     c.throttle = 0
+     c.trim = 0
+-    c.flapsIndex = 0
++    aircraft.resetFlaps()
+   }
+ }
+ 
+ function pollControls(dt: number): void {
+   if (!input.enabled || document.hidden || !document.hasFocus() || controllerPanel.capturing) {clearControllerTransient();return}
+   const c = aircraft.controls
+@@ -1069,20 +1078,20 @@
+   const heldReverse=down('reverse')||down('reverse2')
+   const ownsReverse=aggregate.reverse||aggregate.mixed||heldReverse
+   if(aircraft.P.reversers && (ownsReverse||hardwareReverseOwned))aircraft.reverseCmd=ownsReverse?aggregate.reverse&&!aggregate.mixed || heldReverse&&!aggregate.mixed:keyboardReverse
+   hardwareReverseOwned=ownsReverse
+   const jm=joyRead('mixture');if(jm!==null)c.mixture=calibratedUnipolar(jm,gamepadMap.mixture)
+   const jb=joyRead('brakes');if(jb!==null)c.brakeLeft=c.brakeRight=Math.max(c.brakeLeft,calibratedUnipolar(jb,gamepadMap.brakes))
+-  const jf=joyRead('flaps');if(jf!==null)c.flapsIndex=Math.round(calibratedUnipolar(jf,gamepadMap.flaps)*(aircraft.P.flapDetentsDeg.length-1))
++  const jf=joyRead('flaps');if(jf!==null)aircraft.selectFlaps(Math.round(calibratedUnipolar(jf,gamepadMap.flaps)*(aircraft.P.flapDetentsDeg.length-1)),false)
+   const js=joyRead('speedbrake');if(js!==null && aircraft.P.spoilers){aircraft.spoilerCmd=calibratedUnipolar(js,gamepadMap.speedbrake);aircraft.spoilerArmed=false}
+   const latched=(fn:BindableButton):boolean|null=>readButton(gamepadMap,fn,pads)
+   if(pressed('gear') && aircraft.P.gearRetractable)aircraft.gearDownCommanded=!aircraft.gearDownCommanded
+   if(aircraft.P.gearRetractable){if(latched('gearDown')===true)aircraft.gearDownCommanded=true;else if(latched('gearUp')===true)aircraft.gearDownCommanded=false}
+-  if(pressed('flapsDown'))c.flapsIndex=Math.min(c.flapsIndex+1,aircraft.P.flapDetentsDeg.length-1)
+-  if(pressed('flapsUp'))c.flapsIndex=Math.max(c.flapsIndex-1,0)
+-  for(const [i,fn] of (['flaps0','flaps1','flaps2','flaps3','flapsFull'] as const).entries())if(latched(fn)===true)c.flapsIndex=Math.round(i/4*(aircraft.P.flapDetentsDeg.length-1))
++  if(pressed('flapsDown'))aircraft.selectFlaps(c.flapsIndex+1)
++  if(pressed('flapsUp'))aircraft.selectFlaps(c.flapsIndex-1)
++  for(const [i,fn] of (['flaps0','flaps1','flaps2','flaps3','flapsFull'] as const).entries())if(latched(fn)===true)aircraft.selectFlaps(Math.round(i/4*(aircraft.P.flapDetentsDeg.length-1)),false)
+   if(aircraft.P.spoilers){
+     if(latched('speedbrakeDown')===true){aircraft.spoilerCmd=0;aircraft.spoilerArmed=false}
+     if(latched('speedbrakeFull')===true){aircraft.spoilerCmd=1;aircraft.spoilerArmed=false}
+     if(latched('speedbrakeArm')===true)armSpeedbrake(aircraft)
+   }
+   if(down('trimUp'))c.trim=Math.max(-1,c.trim-.25*dt)
+@@ -1465,13 +1474,13 @@
+ })
+ const safetySpeech = new SafetySpeechController(browserSpeech)
+ // Next-stage PTT integration: this never mutes critical cockpit warnings.
+ function setRadioListening(listening: boolean): void { safetySpeech.setRadioSuspended(listening) }
+ 
+ // ---- Slice 4: copilot (pure engine in src/sim/copilot.ts) ----
+-const copilotSpeeds = copilotSpeedsFor({
++const copilotSpeeds = FLEET_ACTIVE.params.spoilers?.groundAutoDeploy === false ? {vrKt:0,v1Kt:0,flapsUpKt:0} : copilotSpeedsFor({
+   vs1Kt: FLEET_ACTIVE.params.vSpeeds.vs1,
+   clMaxClean: FLEET_ACTIVE.params.clMaxClean,
+   flapDClMax: FLEET_ACTIVE.params.flapDClMax,
+   flapDetentsDeg: FLEET_ACTIVE.params.flapDetentsDeg,
+   jet: !!FLEET_ACTIVE.params.jet,
+ })
+@@ -1487,12 +1496,14 @@
+     kias: d.kias,
+     aglFt: d.aglFt,
+     vsFpm: d.verticalSpeedFpm,
+     onGround: d.onGround,
+     gearDown: aircraft.P.gearRetractable ? aircraft.gearDownCommanded : true,
+     flapsIndex: aircraft.controls.flapsIndex,
++    flapsDeg: aircraft.flapsDeg,
++    glider: aircraft.P.spoilers?.groundAutoDeploy === false,
+     throttle: aircraft.controls.throttle,
+   }
+   if (copilotPrev) {
+     const calls = copilotCallouts(o, copilotPrev, copilotSpeeds, copilotLatches, !!aircraft.P.gearRetractable)
+     if (calls.length > 0) {
+       copilotLine = calls.join(' · ')
+@@ -1558,12 +1569,13 @@
+ 
+   // TAWS.
+   const nav = computeTunedNav(ll0, d.altitudeFt)
+   const tw = taws.step(0.5, {
+     onGround: d.onGround, aglFt: d.aglFt, altFt: d.altitudeFt, vsFpm: d.verticalSpeedFpm, gsKt: d.groundSpeedKt,
+     headingDeg: d.headingDeg, rollDeg: d.rollDeg, flapsDeg: d.flapsDeg,
++    landingFlapWarning: aircraft.P.spoilers?.groundAutoDeploy !== false,
+     sinceTakeoffS: liftoffSimS === null ? Infinity : loop.simTime - liftoffSimS,
+     terrainAheadFt: (la) => {
+       const elevM = aircraft.groundElevAt?.(pos.x + Math.cos(trackRad) * gsMs * la, pos.y + Math.sin(trackRad) * gsMs * la) ?? 0
+       return elevM / 0.3048
+     },
+     nearRunwayFinal: inRunwayApproach(ll0, d.trackDeg, d.altitudeFt, airports.near(ll0.lat, ll0.lon, 6 * 1852).flatMap(ap => ap.r)),
+@@ -2460,13 +2472,15 @@
+   mesh.group.rotation.order = 'YXZ'
+   mesh.group.rotation.y = (-d.headingDeg * Math.PI) / 180
+   mesh.group.rotation.x = (d.pitchDeg * Math.PI) / 180
+   mesh.group.rotation.z = (-d.rollDeg * Math.PI) / 180
+   updateProp(mesh, d.rpm, elapsed)
+   mesh.surfaces?.({
+-    flapFrac: aircraft.flapsDeg / Math.max(FLEET_ACTIVE.params.flapDetentsDeg[FLEET_ACTIVE.params.flapDetentsDeg.length - 1] ?? 1, 1),
++    flapFrac: Math.max(0,Math.min(1,aircraft.flapsDeg / Math.max(FLEET_ACTIVE.params.flapDetentsDeg[FLEET_ACTIVE.params.flapDetentsDeg.length - 1] ?? 1, 1))),
++    flapsDeg: aircraft.appliedControlSurfaces.flapsDeg,
++    ...(aircraft.P.flaperons ? {flaperonLeftRad: aircraft.appliedControlSurfaces.flaperonLeftRad, flaperonRightRad: aircraft.appliedControlSurfaces.flaperonRightRad} : {}),
+     spoilerFrac: aircraft.spoilerPos,
+     roll: aircraft.appliedControlSurfaces.roll,
+     pitch: aircraft.appliedControlSurfaces.pitch,
+     yaw: aircraft.appliedControlSurfaces.yaw,
+     trim: aircraft.appliedControlSurfaces.trim,
+     elevatorRad: aircraft.appliedControlSurfaces.elevatorSurfaceRad,
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/input/speedbrake-control.ts
++++ src/input/speedbrake-control.ts
+@@ -9,13 +9,13 @@
+ export function cycleSpeedbrake(target: SpeedbrakeControlTarget): string {
+   const capability = target.P.spoilers
+   if (!capability) return 'NO SPEEDBRAKES ON THIS TYPE'
+   if (!capability.groundAutoDeploy) {
+     target.spoilerArmed = false
+     target.spoilerCmd = target.spoilerCmd > 0.5 ? 0 : 1
+-    return target.spoilerCmd > 0.5 ? 'SPEEDBRAKE — FLIGHT DETENT' : 'SPEEDBRAKE DOWN'
++    return target.spoilerCmd > 0.5 ? 'AIRBRAKES FULL' : 'AIRBRAKES DOWN'
+   }
+   if (target.spoilerArmed) {
+     target.spoilerArmed = false
+     target.spoilerCmd = 1
+     return 'SPEEDBRAKE — FLIGHT DETENT'
+   }
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/sim/flaperons.ts
++++ src/sim/flaperons.ts
+@@ -0,0 +1,20 @@
++import type { AircraftParams } from './aircraft/params'
++export function flapIndex(p: AircraftParams, index: number): number {
++ return Number.isFinite(index) ? Math.max(0,Math.min(p.flapDetentsDeg.length-1,Math.round(index))) : (p.flapDefaultIndex ?? 0)
++}
++/** MM endpoint is handle 10 mm beyond +5; linear -9..+5 floor and held
++ * displacement are explicit approximations pending a measured lever map. */
++export function airbrakeFlapFloor(p: AircraftParams, position: number): number {
++ const f=p.flaperons
++ return f ? f.airbrakeFloorMinDeg+(f.airbrakeFloorMaxDeg-f.airbrakeFloorMinDeg)*Math.max(0,Math.min(1,Number.isFinite(position)?position:0)) : 0
++}
++/** Neutral-flap MM roll differential, extrapolated at other flap settings.
++ * No invented combined stops: pure flap endpoints are not roll limits. */
++export function mixFlaperons(p: AircraftParams, baseDeg: number, roll: number, out: {flapsDeg:number;aileronRad:number;flaperonLeftRad:number;flaperonRightRad:number}): void {
++ const f=p.flaperons!
++ const r=Math.max(-1,Math.min(1,Number.isFinite(roll)?roll:0)), base=baseDeg*Math.PI/180
++ out.flaperonLeftRad=base+(r>=0?r*f.downRad:r*f.upRad)
++ out.flaperonRightRad=base+(r>=0?-r*f.upRad:-r*f.downRad)
++ out.flapsDeg=(out.flaperonLeftRad+out.flaperonRightRad)*90/Math.PI
++ out.aileronRad=(out.flaperonLeftRad-out.flaperonRightRad)/2
++}
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/sim/aircraft.ts
++++ src/sim/aircraft.ts
+@@ -1,6 +1,7 @@
++import { flapIndex, airbrakeFlapFloor, mixFlaperons } from './flaperons'
+ /**
+  * The aircraft (§5): 6-DOF rigid body integrating aero + propulsion + gear +
+  * gravity at the fixed timestep. Body axes x fwd / y right / z down; world is
+  * local flat NED for Phase 1 (geodetic truth state arrives with Phase 2).
+  * Zero heap allocation in step() — all scratch preallocated.
+  */
+@@ -95,12 +96,13 @@
+    *  weight-on-wheels (real airplane behavior). */
+   reverseCmd = false
+   reversePos = 0
+ 
+   constructor(params: AircraftParams = C172S) {
+     this.P = params
++    this.resetFlaps()
+     this.fuelKg = params.fuelCapacityKg
+     // Preserve the established 250 kg default where it fits, while small
+     // aircraft and gliders cannot boot heavier than their published MTOW.
+     this.payloadKg = Math.min(250, Math.max(params.mtowKg - params.emptyMassKg - this.fuelKg, 0))
+     this.jetState = params.jet ? makeTurbofanState(params.jet) : null
+   }
+@@ -109,13 +111,13 @@
+     pitch: 0, roll: 0, yaw: 0, throttle: 0, mixture: 1,
+     flapsIndex: 0, brakeLeft: 0, brakeRight: 0, trim: 0,
+   }
+ 
+   /** Last inputs/surface angles actually passed to physics. Animation reads
+    * this snapshot after AP/SAS and trim mixing, never a restored command. */
+-  readonly appliedControlSurfaces = { pitch: 0, roll: 0, yaw: 0, trim: 0, elevatorCommandRad: 0, trimRad: 0, elevatorSurfaceRad: 0, stabilizerRad: 0, elevatorRad: 0, aileronRad: 0, rudderRad: 0 }
++  readonly appliedControlSurfaces = { pitch: 0, roll: 0, yaw: 0, trim: 0, elevatorCommandRad: 0, trimRad: 0, elevatorSurfaceRad: 0, stabilizerRad: 0, elevatorRad: 0, aileronRad: 0, rudderRad: 0, flapsDeg: 0, flaperonLeftRad: 0, flaperonRightRad: 0 }
+ 
+   /** Extra wind in NED (from WindModel), applied as air-mass motion. */
+   readonly windNed = v3()
+ 
+   /** Terrain elevation (m MSL) at frame-local NED (north, east); Phase 2+. */
+   groundElevAt: ((n: number, e: number) => number) | null = null
+@@ -186,12 +188,28 @@
+   private alphaDotFilt = 0
+ 
+   get massKg(): number {
+     return this.P.emptyMassKg + this.fuelKg + this.payloadKg
+   }
+ 
++  heldFlapFloorDeg = 0
++  private selectedFlapIndex = 0
++  selectFlaps(index: number, deliberate = true): void {
++    const next = flapIndex(this.P,index)
++    if (deliberate || next !== this.selectedFlapIndex) this.heldFlapFloorDeg = airbrakeFlapFloor(this.P,this.spoilerPos)
++    this.controls.flapsIndex = this.selectedFlapIndex = next
++  }
++  resetFlaps(index = this.P.flapDefaultIndex ?? 0): void {
++    this.controls.flapsIndex = this.selectedFlapIndex = flapIndex(this.P,index)
++    this.heldFlapFloorDeg = airbrakeFlapFloor(this.P,0)
++    this.flapsDeg = this.P.flapDetentsDeg[this.controls.flapsIndex]!
++    this.data.flapsDeg = this.flapsDeg
++    this.appliedControlSurfaces.flapsDeg = this.flapsDeg
++    if(this.P.flaperons) mixFlaperons(this.P,this.flapsDeg,0,this.appliedControlSurfaces)
++  }
++
+   /** Place the aircraft on the ground at rest, heading ψ (rad). A tricycle
+    *  sits at the tuned C172 attitude (bit-exact legacy path); a taildragger
+    *  rests three-point at the pitch where mains and tailwheel touch
+    *  together: tanθ = (z_main − z_tail)/(x_main − x_tail) in body frame. */
+   spawnOnGround(north: number, east: number, headingRad: number, groundElevM = 0): void {
+     const tail = this.P.gear.tail
+@@ -208,12 +226,13 @@
+     v3set(this.rates, 0, 0, 0)
+     this.prop.omegaRadS = (700 * Math.PI) / 30
+     // Respawn hygiene (9B): a respawned jet used to come back at the
+     // last flight's N1 against the brakes, with speedbrakes armed and
+     // reversers still commanded; interlocks also read one step of stale
+     // flight data.
++    this.resetFlaps()
+     this.spoilerCmd = 0
+     this.spoilerPos = 0
+     this.spoilerArmed = false
+     this.reverseCmd = false
+     this.reversePos = 0
+     for(const key of Object.keys(this.appliedControlSurfaces) as Array<keyof typeof this.appliedControlSurfaces>)this.appliedControlSurfaces[key]=0
+@@ -236,17 +255,12 @@
+     if (this.isaTempOffsetC !== 0) {
+       this.air.temperatureK += this.isaTempOffsetC
+       this.air.densityKgM3 = this.air.pressurePa / (R_AIR * this.air.temperatureK)
+     }
+     const rho = this.air.densityKgM3
+ 
+-    // Flap actuator. Detent count is per-aircraft (Cub has one, 737 six).
+-    const flapTarget = this.P.flapDetentsDeg[clamp(c.flapsIndex, 0, this.P.flapDetentsDeg.length - 1)]!
+-    const dFlap = clamp(flapTarget - this.flapsDeg, -this.P.flapRateDegS * dt, this.P.flapRateDegS * dt)
+-    this.flapsDeg += dFlap
+-
+     // Air-relative velocity in body frame.
+     qrotateInv(this.windBody, this.quat, this.windNed)
+     v3set(
+       this.vAirBody,
+       this.velBody.x - this.windBody.x,
+       this.velBody.y - this.windBody.y,
+@@ -265,12 +279,19 @@
+     if (this.P.spoilers) {
+       // ARM → auto-deploy on touchdown (ground spoilers).
+       if (this.P.spoilers.groundAutoDeploy && this.spoilerArmed && this.data.onGround) { this.spoilerCmd = 1; this.spoilerArmed = false }
+       const sRate = this.P.spoilers.ratePerS * dt
+       this.spoilerPos = clamp(this.spoilerPos + clamp(this.spoilerCmd - this.spoilerPos, -sRate, sRate), 0, 1)
+     }
++    this.selectFlaps(c.flapsIndex, false)
++    let flapTarget = this.P.flapDetentsDeg[c.flapsIndex]!
++    if (this.P.flaperons) {
++      this.heldFlapFloorDeg = Math.max(this.heldFlapFloorDeg,airbrakeFlapFloor(this.P,this.spoilerPos))
++      flapTarget = Math.max(flapTarget,this.heldFlapFloorDeg)
++    }
++    this.flapsDeg += clamp(flapTarget-this.flapsDeg,-this.P.flapRateDegS*dt,this.P.flapRateDegS*dt)
+     if (this.P.reversers) {
+       const tgt = this.reverseCmd && this.data.onGround ? 1 : 0
+       const rRate = dt / this.P.reversers.transitS
+       this.reversePos = clamp(this.reversePos + clamp(tgt - this.reversePos, -rRate, rRate), 0, 1)
+     }
+     if (this.P.gearRetractable) {
+@@ -338,13 +359,18 @@
+     ai.rudderRad = -c.yaw * this.P.rudderMaxRad
+     Object.assign(this.appliedControlSurfaces, {pitch:c.pitch,roll:c.roll,yaw:c.yaw,trim:c.trim,
+       elevatorCommandRad:-c.pitch*this.P.elevatorMaxRad,trimRad:-c.trim*this.P.trimMaxRad,
+       elevatorSurfaceRad:this.P.trimIsStabilizer ? -c.pitch*this.P.elevatorMaxRad : ai.elevatorRad,
+       stabilizerRad:this.P.trimIsStabilizer ? -c.trim*this.P.trimMaxRad : 0,
+       elevatorRad:ai.elevatorRad,aileronRad:ai.aileronRad,rudderRad:ai.rudderRad})
+-    ai.flapsDeg = this.flapsDeg
++    this.appliedControlSurfaces.flapsDeg = this.flapsDeg
++    if(this.P.flaperons) {
++      mixFlaperons(this.P,this.flapsDeg,c.roll,this.appliedControlSurfaces)
++      ai.aileronRad = this.appliedControlSurfaces.aileronRad
++    }
++    ai.flapsDeg = this.appliedControlSurfaces.flapsDeg
+     ai.thrustN = this.prop.thrustN
+     ai.propTorqueNm = this.prop.torqueNm
+     ai.mach = mach
+     ai.extraCd = (this.P.gearRetractable ? this.P.gearRetractable.dCdExtended * this.gearPos : 0) +
+       (this.P.spoilers ? this.P.spoilers.dCd * this.spoilerPos : 0)
+     ai.extraClDump = this.P.spoilers ? this.P.spoilers.dCl * this.spoilerPos : 0
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/sim/trim.ts
++++ src/sim/trim.ts
+@@ -1,6 +1,7 @@
++import { mixFlaperons } from './flaperons'
+ /**
+  * Trim solver (§5.5): given TAS, altitude, and either flight-path angle γ
+  * (solve for throttle) or throttle (solve for γ), find α, δe, and the third
+  * unknown such that longitudinal accelerations vanish. Damped Newton with
+  * numeric Jacobian over the same force model the sim flies with. Lateral
+  * trim assumed neutral (symmetric flight).
+@@ -121,12 +122,18 @@
+     rho, vAir: s.tasMs, alpha, beta: 0, alphaDot: 0, p: 0, q: 0, r: 0,
+     elevatorRad: elevator, aileronRad: 0, rudderRad: 0, flapsDeg: s.flapsDeg,
+     thrustN: prop.thrustN, propTorqueNm: prop.torqueNm, heightAglM: 1000,
+     mach: P.machModel ? s.tasMs / air.speedOfSoundMs : 0,
+     extraCd: s.extraCd ?? 0,
+     extraClDump: s.extraClDump ?? 0,
++  }
++  if (P.flaperons) {
++    const mixed = {flapsDeg:0,aileronRad:0,flaperonLeftRad:0,flaperonRightRad:0}
++    mixFlaperons(P, Number.isFinite(s.flapsDeg) ? s.flapsDeg : 0, 0, mixed)
++    ai.flapsDeg = mixed.flapsDeg
++    ai.aileronRad = mixed.aileronRad
+   }
+   computeAero(ai, aeroOut, P)
+   const qS = 0.5 * rho * s.tasMs * s.tasMs * P.wingAreaM2
+   const Lift = qS * aeroOut.cl
+   const Drag = qS * aeroOut.cd
+   return {
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/sim/copilot.ts
++++ src/sim/copilot.ts
+@@ -19,12 +19,14 @@
+   aglFt: number
+   vsFpm: number
+   onGround: boolean
+   /** Gear commanded/positioned down (true for fixed gear). */
+   gearDown: boolean
+   flapsIndex: number
++  flapsDeg?: number
++  glider?: boolean
+   throttle: number
+ }
+ 
+ export interface CopilotSpeeds {
+   /** Rotate speed. */
+   vrKt: number
+@@ -100,27 +102,27 @@
+     for (const k of TAKEOFF_KEYS) L.fired.delete(k)
+   }
+ 
+   if (s.onGround) {
+     // Takeoff roll: power up AND accelerating — a landing rollout under
+     // reverse thrust also reads high "throttle" but decelerates.
+-    if (s.throttle > 0.6 && s.kias >= prev.kias) {
++    if (!s.glider && s.throttle > 0.6 && s.kias >= prev.kias) {
+       if (s.kias >= 40) fire('alive', 'airspeed alive')
+       if (s.kias >= 80 && sp.vrKt > 90) fire('eighty', 'eighty knots')
+       if (sp.v1Kt >= 80 && s.kias >= sp.v1Kt) fire('v1', 'vee one')
+       if (s.kias >= sp.vrKt) fire('rotate', 'rotate')
+     }
+     // Rollout after a flight: sixty knots decelerating.
+     if (L.wasAirborne && prev.kias > 60 && s.kias <= 60) {
+       fire('sixty', 'sixty knots')
+       L.wasAirborne = false
+     }
+   } else {
+-    if (s.vsFpm > 300 && s.aglFt > 20) fire('posRate', 'positive rate')
++    if (!s.glider && s.vsFpm > 300 && s.aglFt > 20) fire('posRate', 'positive rate')
+     if (gearRetractable && prev.gearDown && !s.gearDown) fire('gearUp', 'gear up')
+-    if (s.flapsIndex > 0 && s.kias >= sp.flapsUpKt && s.vsFpm > 0 && s.aglFt > 400) {
++    if (!s.glider && (s.flapsDeg !== undefined ? s.flapsDeg > 0 : s.flapsIndex > 0) && s.kias >= sp.flapsUpKt && s.vsFpm > 0 && s.aglFt > 400) {
+       fire('flapsUp', 'flaps up speed')
+     }
+     // Descending through 1000 AGL ("five hundred" belongs to TAWS).
+     if (s.vsFpm < -200 && prev.aglFt > 1000 && s.aglFt <= 1000) fire('oneThousand', 'one thousand')
+   }
+ 
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/sim/taws.ts
++++ src/sim/taws.ts
+@@ -14,12 +14,14 @@
+   altFt: number
+   vsFpm: number
+   gsKt: number
+   headingDeg: number
+   rollDeg: number
+   flapsDeg: number
++  /** False for sailplanes without powered-aircraft landing flap procedures. */
++  landingFlapWarning?: boolean
+   /** Seconds since liftoff (Infinity/large when not in the takeoff phase). */
+   sinceTakeoffS: number
+   /** Terrain elevation (ft MSL) at `lookaheadS` seconds along track. */
+   terrainAheadFt: (lookaheadS: number) => number
+   /** Within ~4 nm of a runway, roughly aligned — inhibits modes 2/4 and
+    *  the look-ahead so normal landings stay silent. */
+@@ -99,13 +101,13 @@
+       }
+     } else if (inp.sinceTakeoffS > 120) {
+       this.maxAglSinceTakeoff = 0
+     }
+ 
+     // ---- Mode 4: too low in cruise configuration ----
+-    if ((!inp.nearRunwayFinal || inp.jetProfile) && inp.sinceTakeoffS > 60 && inp.aglFt < 245 && inp.gsKt > 60 && inp.flapsDeg < 10 && !(inp.jetProfile && inp.gearDown === false)) {
++    if (inp.landingFlapWarning !== false && (!inp.nearRunwayFinal || inp.jetProfile) && inp.sinceTakeoffS > 60 && inp.aglFt < 245 && inp.gsKt > 60 && inp.flapsDeg < 10 && !(inp.jetProfile && inp.gearDown === false)) {
+       consider('CAUTION', 'TOO LOW, FLAPS')
+     }
+     // Mode 4A (jet): gear up low and slow — deliberately NOT inhibited near
+     // the runway; a gear-up approach is exactly what this mode exists for.
+     if (inp.jetProfile && inp.sinceTakeoffS > 60 && inp.gearDown === false && inp.aglFt < 500 && inp.gsKt > 60) {
+       consider('CAUTION', 'TOO LOW, GEAR')
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/sim/aircraft/c172s.ts
++++ src/sim/aircraft/c172s.ts
+@@ -166,13 +166,13 @@
+ export function flapInterp(
+   table: readonly number[],
+   flapsDeg: number,
+   detents: readonly number[] = C172S.flapDetentsDeg,
+ ): number {
+   if (detents.length < 2) return table[0] ?? 0 // flapless aircraft
+-  const f = Math.min(Math.max(flapsDeg, 0), detents[detents.length - 1]!)
++  const f = Math.min(Math.max(Number.isFinite(flapsDeg) ? flapsDeg : 0, detents[0]!), detents[detents.length - 1]!)
+   for (let i = 1; i < detents.length; i++) {
+     if (f <= detents[i]!) {
+       const t = (f - detents[i - 1]!) / (detents[i]! - detents[i - 1]!)
+       return table[i - 1]! + t * (table[i]! - table[i - 1]!)
+     }
+   }
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/sim/aircraft/roster-ext.ts
++++ src/sim/aircraft/roster-ext.ts
+@@ -570,12 +570,24 @@
+   variant(b744, { designator: 'B748', label: 'Boeing 747-8i', wingAreaM2: 554, spanM: 68.4, lengthM: 76.25, emptyKg: 220_128, mtowKg: 447_700, powerplant: { kind: 'jet', staticThrustN: 296_000, count: 4 }, stallCleanKcas: 160, tuning: { machModel: { mdd: 0.87, dragRiseK: 20 } } }, { jetCruise: { mach: 0.855, altFt: 35_000 } }),
+   variant(b744, { designator: 'A343', label: 'Airbus A340-300', fuelKg: 110_000, wingAreaM2: 361.6, spanM: 60.3, lengthM: 63.69, emptyKg: 130_200, mtowKg: 276_500, powerplant: { kind: 'jet', staticThrustN: 151_000, count: 4 }, stallCleanKcas: 140, vSpeeds: { vyKcas: 250, approachKcas: 140, vneKcas: 330 /* A340 Vmo (X-Plane audit) */, glideKcas: 240 }, tuning: { machModel: { mdd: 0.85, dragRiseK: 20 } } }, { jetCruise: { mach: 0.82, altFt: 37_000 } }),
+   variant(b744, { designator: 'MD11', label: 'McDonnell Douglas MD-11', fuelKg: 93_900, wingAreaM2: 338.9, spanM: 51.77, lengthM: 61.62, emptyKg: 130_165, mtowKg: 285_990, powerplant: { kind: 'jet', staticThrustN: 274_000, count: 3 }, stallCleanKcas: 150, tuning: { machModel: { mdd: 0.86, dragRiseK: 20 } } }, { jetCruise: { mach: 0.83, altFt: 35_000 } }),
+   // Antiques & oddballs
+   variant(WAVE2.find((e) => e.spec.designator === 'DHC2')!, { designator: 'AN2', label: 'Antonov An-2', fuelKg: 650, wingAreaM2: 71.5, spanM: 18.18, lengthM: 12.4, emptyKg: 3300, mtowKg: 5440, powerplant: { kind: 'piston', ratedPowerW: 745_700, count: 1, propDiameterM: 3.6, redlineRpm: 2200, governed: true }, stallCleanKcas: 49, tuning: { cd0: 0.058 } }, { cruiseTasKt: 100, cruiseAltFt: 5000 }),
+   // Gliders
+-  variant(as21, { designator: 'DG80', label: 'DG-800', wingAreaM2: 11.8, spanM: 18.0, lengthM: 7.0, emptyKg: 305, mtowKg: 525, stallCleanKcas: 37, vSpeeds: { vyKcas: 51, approachKcas: 51, vneKcas: 146, glideKcas: 54 } }, { glideRatio: 48 }),
++  variant(as21, { designator: 'DG80', label: 'DG-800S (18 m)', wingAreaM2: 11.8, spanM: 18.0, lengthM: 7.0, emptyKg: 305, mtowKg: 525, stallCleanKcas: 84 / 1.852,
++    // FM 18 m/525 kg retracted-airbrake stalls; IAS≈CAS is approximate.
++    flapDetentsDeg: [-9,-5,0,5,10,13,Math.asin(38/122)*180/Math.PI], flapMaxDClMax: 0.289948651,
++    tuning: {
++      flapDefaultIndex: 2, flapLabels: ['-9°','-5°','0°','+5°','+10°','+13°','L'],
++      // MM travel measured at zero flap; constant increments elsewhere approximate.
++      flaperons: { upRad: Math.asin(42/122), downRad: Math.asin(21/122), airbrakeFloorMinDeg: -9, airbrakeFloorMaxDeg: 5 },
++      flapDClMax: [-0.116241553,-0.064578640,0,0.095654945,0.191309890,0.248702857,0.289948651],
++      // Estimated whole-wing increments, NOT identified by stall data.
++      flapDCl0: [-0.09,-0.05,0,0.05,0.10,0.13,0.18],
++      flapDCd: [0.0008,0.0003,0,0.0004,0.0016,0.003,0.006],
++      flapDCm: [0.018,0.010,0,-0.010,-0.020,-0.026,-0.036],
++    }, vSpeeds: { vyKcas: 51, approachKcas: 51, vneKcas: 146, glideKcas: 54 } }, { glideRatio: 48 }),
+   variant(as21, { designator: 'LS8', label: 'Rolladen-Schneider LS8', wingAreaM2: 10.5, spanM: 15.0, lengthM: 6.66, emptyKg: 250, mtowKg: 525, stallCleanKcas: 36, vSpeeds: { vyKcas: 49, approachKcas: 49, vneKcas: 146, glideKcas: 51 } }, { glideRatio: 43 }),
+   variant(as21, { designator: 'DISC', label: 'Schempp-Hirth Discus', wingAreaM2: 10.58, spanM: 15.0, lengthM: 6.58, emptyKg: 233, mtowKg: 525, stallCleanKcas: 35, vSpeeds: { vyKcas: 49, approachKcas: 49, vneKcas: 135, glideKcas: 51 } }, { glideRatio: 42 }),
+ ]
+ 
+ export const ROSTER_EXT: RosterEntry[] = [...WAVE2, ...WAVE3]
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/sim/aircraft/derive.ts
++++ src/sim/aircraft/derive.ts
+@@ -368,8 +368,16 @@
+   }
+   const { jet: jetTuning, ...flatTuning } = spec.tuning ?? {}
+   const merged: AircraftParams = { ...p, ...flatTuning }
+   // Partial jet-block tuning deep-merges over the derived CFM56-anchored
+   // block (X-Plane engine audit: per-type spool/TSFC/idle overrides).
+   if (jetTuning && p.jet) merged.jet = { ...p.jet, ...jetTuning }
++  const ds = merged.flapDetentsDeg
++  if (!ds.length || ds.some((v,i)=>!Number.isFinite(v)||(i>0&&v<=ds[i-1]!))) throw new Error('Invalid flap detents')
++  for(const table of [merged.flapDCl0,merged.flapDClMax,merged.flapDCd,merged.flapDCm]) {
++    if(table.length!==ds.length || table.some(v=>!Number.isFinite(v))) throw new Error('Invalid flap coefficients')
++  }
++  if (merged.flapDefaultIndex !== undefined && (!Number.isInteger(merged.flapDefaultIndex)||merged.flapDefaultIndex<0||merged.flapDefaultIndex>=ds.length)) throw new Error('Invalid flap default')
++  if (merged.flapLabels && merged.flapLabels.length!==ds.length) throw new Error('Invalid flap labels')
++  if (merged.flaperons) merged.vSpeeds = {...merged.vSpeeds, vs0: Math.round(Math.sqrt(2*merged.mtowKg*G/(RHO0*merged.wingAreaM2*(merged.clMaxClean+merged.flapDClMax[ds.length-1]!)))/KT)}
+   return merged
+ }
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/src/sim/aircraft/params.ts
++++ src/sim/aircraft/params.ts
+@@ -95,12 +95,15 @@
+   cnP: number
+   cnR: number
+   cnDa: number
+   cnDr: number
+ 
+   // flaps (increments per detent; a flapless aircraft uses single-entry [0])
++  flapDefaultIndex?: number
++  flapLabels?: readonly string[]
++  flaperons?: { upRad: number; downRad: number; airbrakeFloorMinDeg: number; airbrakeFloorMaxDeg: number }
+   flapDetentsDeg: readonly number[]
+   flapDCl0: readonly number[]
+   flapDClMax: readonly number[]
+   flapDCd: readonly number[]
+   flapDCm: readonly number[]
+   flapRateDegS: number
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/tests/controller-main.test.ts
++++ tests/controller-main.test.ts
+@@ -10,13 +10,13 @@
+ function harness(){
+  const pad={id:'TCA Q-Eng 1&2',index:1,connected:true,axes:[-1,-1,-1,-1],buttons:Array.from({length:8},()=>({pressed:false}))}
+  const m=mapping.tcaPresetFor([{id:pad.id,index:1,axes:7}])!
+  m.flaps={pad:1,deviceId:pad.id,axis:2,sign:1};m.speedbrake={pad:1,deviceId:pad.id,axis:3,sign:1}
+  m.btn={...m.btn,parkingBrake:{pad:1,deviceId:pad.id,btn:2},engineMaster1:{pad:1,deviceId:pad.id,btn:3},engineMaster2:{pad:1,deviceId:pad.id,btn:4}}
+  const controls={pitch:0,roll:0,yaw:0,throttle:0,trim:0,mixture:1,flapsIndex:0,brakeLeft:0,brakeRight:0}
+- const aircraft={controls,P:{reversers:{},spoilers:{groundAutoDeploy:true},flapDetentsDeg:[0,1,2,3,4],gearRetractable:{}},data:{onGround:true},rates:{z:0},reverseCmd:false,spoilerCmd:0,spoilerArmed:false}
++ const aircraft={controls,selectFlaps(index:number){controls.flapsIndex=index},P:{reversers:{},spoilers:{groundAutoDeploy:true},flapDetentsDeg:[0,1,2,3,4],gearRetractable:{}},data:{onGround:true},rates:{z:0},reverseCmd:false,spoilerCmd:0,spoilerArmed:false}
+  const presses=new Set<string>();const pads:typeof pad[]=[pad]
+  const ctx={...mapping,armSpeedbrake,cycleSpeedbrake,aircraft,gamepadMap:m,navigator:{getGamepads:()=>pads},document:{hidden:false,hasFocus:()=>true},controllerPanel:{capturing:false},input:{enabled:true,axis:()=>0,isHeld:()=>false,wasPressed:(k:string)=>presses.has(k),setVirtualHeld:()=>{},injectPress:()=>{}},controllerRuntime:new ControllerRuntime(),clearControllerTransient:()=>{},toast:()=>{},performance:{now:()=>0},systemsControls:{apMaster:false}}
+  const declarations=`let shaped={pitch:0,roll:0,yaw:0},parkingBrake=false,keyboardReverse=false,hardwareReverseOwned=false,pilotBrake=0,baroSetInHg=29.92,captainCommands={},assistMode='off',groundHeadingLockDeg=null,airbornePitchLockDeg=null,airborneHeadingLockDeg=null,scrubSeconds=0;`
+  const code=ts.transpileModule(declarations+body+';return ()=>{pollControls(.02);return {parkingBrake,captainCommands}}',{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
+  const poll=new Function(...Object.keys(ctx),code)(...Object.values(ctx)) as ()=>{parkingBrake:boolean;captainCommands:Record<string,unknown>}
+  return {pad,pads,aircraft,presses,poll,m}
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/tests/safety-snapshot.test.ts
++++ tests/safety-snapshot.test.ts
+@@ -19,13 +19,13 @@
+  const spoken:string[]=[],ends:Array<()=>void>=[]
+  const safetySpeech=new SafetySpeechController({cancel:()=>{},speak:(m,end)=>{spoken.push(m.text);ends.push(end)}})
+  safetySpeech.radio('old radio',0);safetySpeech.radio('queued old radio',1)
+  let cancelledTimers=0
+  const noop=()=>{}
+  const ctx={tcas,taws,safetySpeech,localStorage:{getItem:()=>JSON.stringify({v:1,onGround:false,lat:1,lon:1,altFt:3000,kias:100,flapsIndex:0,fuelKg:100,payloadKg:100,hdgDeg:0,simMs:0,spawn:'saved'})},
+- toast:noop,aircraft:{P:{...C172S,flapDetentsDeg:[0]},controls:{},posNed:{x:0,y:0},massKg:1000,applyTrimState:noop},resetSystemsState:noop,frame:{anchor:{}},tiles:{onRebase:noop,update:noop},airports:{positionAll:noop,updateVisuals:noop},
++ toast:noop,aircraft:{P:{...C172S,flapDetentsDeg:[0]},controls:{},posNed:{x:0,y:0},massKg:1000,resetFlaps:noop,applyTrimState:noop},resetSystemsState:noop,frame:{anchor:{}},tiles:{onRebase:noop,update:noop},airports:{positionAll:noop,updateVisuals:noop},
+  FLEET_ACTIVE:{params:C172S},loadingFromSnapshot,applyLoading,
+  FT:.3048,KT:.514444,kcasFromKias:(n:number)=>n,isa:()=>({densityKgM3:1.225}),trim:()=>({alphaRad:0,gammaRad:0,elevatorRad:0,throttle:0,rpm:0}),fuelState:{},baseDate:new Date(0),loop:{simTime:0},makeCopilotLatches:()=>({}),cancelAtcTimers:()=>{cancelledTimers++}}
+  const declarations=`let liftoffSimS=99,safetyWasGrounded=true,lastSafetyAt=0,safetyLine='old',trafficDots=[1],copilotLine='old',copilotUntil=999,copilotLatches={},copilotPrev={},parkingBrake=true,spawnDesc='',scrubSeconds=0,lastTcasDebug={level:'RA',trackLevels:['old']},flightVoiceEpoch=0,voicePtt=undefined;`
+  const code=ts.transpileModule(declarations+functions+`; return {ok:loadSnapshot(), phase:()=>({liftoffSimS,safetyWasGrounded,lastSafetyAt,safetyLine,copilotLine,copilotPrev})};`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
+  const loaded=new Function(...Object.keys(ctx),code)(...Object.values(ctx))
+  expect(loaded.ok).toBe(true)
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/tests/loading-main.test.ts
++++ tests/loading-main.test.ts
+@@ -43,12 +43,13 @@
+ 
+   it('applies complete snapshot loading before airborne trim', () => {
+     let trimMass = -1
+     const aircraft = {
+       P: C172S, payloadKg: 250, fuelKg: 60, controls: {} as Record<string, number>, posNed: { x: 0, y: 0 }, crashed: false,
+       get massKg() { return C172S.emptyMassKg + this.payloadKg + this.fuelKg },
++      flapsDeg: 0, resetFlaps(index=0) { this.controls.flapsIndex=index; this.flapsDeg=C172S.flapDetentsDeg[index]??0 },
+       applyTrimState: () => {},
+     }
+     const fuelState = makeFuelState(30, 30)
+     const snapshot = { v: 1, onGround: false, lat: 1, lon: 1, altFt: 3000, kias: 100, flapsIndex: 0, fuelKg: 50, fuelLeftKg: 10, fuelRightKg: 40, payloadKg: 80, hdgDeg: 0, simMs: 0, spawn: 'saved' }
+     const noop = () => {}
+     const ctx = {
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/tests/dg800-main.test.ts
++++ tests/dg800-main.test.ts
+@@ -0,0 +1,111 @@
++/** Executes main's real input/save functions with a real Aircraft, without WebGL. */
++import {readFileSync} from 'node:fs'
++import ts from 'typescript'
++import {expect,it} from 'vitest'
++import {Aircraft} from '../src/sim/aircraft'
++import {rosterParams} from '../src/sim/aircraft/roster'
++import * as mapping from '../src/sim/gamepad-map'
++import * as flaperons from '../src/sim/flaperons'
++import {ControllerRuntime} from '../src/input/controller-runtime'
++import {armSpeedbrake,cycleSpeedbrake} from '../src/input/speedbrake-control'
++import {applyLoading,loadingFromSnapshot} from '../src/sim/loading'
++import {makeFuelState} from '../src/sim/systems/fuel'
++const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8')
++const ast=ts.createSourceFile('main.ts',source,ts.ScriptTarget.Latest,true)
++const names=['pollControls','joyRead','shapeAxis','handleDiscreteKeys','loadSnapshot','saveSnapshot','updateControllers','spawnAtAirport']
++const body=ast.statements.filter(n=>ts.isFunctionDeclaration(n)&&names.includes(n.name?.text??'')).map(n=>n.getText(ast)).join('\n')
++function harness(){
++ const aircraft=new Aircraft(rosterParams('DG80')!)
++ const pad={id:'DG80 test quadrant',index:0,connected:true,axes:[-1],buttons:Array.from({length:8},()=>({pressed:false}))}
++ const map:mapping.GamepadMap={btn:{}} as mapping.GamepadMap
++ const keys=new Set<string>(),messages:string[]=[]
++ let stored:Record<string,unknown>|null=null,diagnostic='',trimAngle=NaN
++ const noop=()=>{}
++ const ctx={...mapping,...flaperons,aircraft,gamepadMap:map,navigator:{getGamepads:()=>[pad]},document:{hidden:false,hasFocus:()=>true},
++ controllerPanel:{capturing:false,update:(_p:unknown,s:string)=>{diagnostic=s}},input:{enabled:true,axis:()=>0,isHeld:()=>false,wasPressed:(k:string)=>keys.has(k),setVirtualHeld:noop,injectPress:noop},
++ controllerRuntime:new ControllerRuntime(),clearControllerTransient:noop,toast:(s:string)=>messages.push(s),performance:{now:()=>0},systemsControls:{apMaster:false},armSpeedbrake,cycleSpeedbrake,
++ loop:{paused:true,simTime:0},physicalPttState:()=>false,saveJoyMap:noop,
++ localStorage:{getItem:()=>JSON.stringify(stored),setItem:(_k:string,s:string)=>{stored=JSON.parse(s)}},
++ loadingFromSnapshot,applyLoading,FLEET_ACTIVE:{params:aircraft.P,final:{kias:60,flapsIndex:5,flapsDeg:13}},fleetKey:'DG80',resetSystemsState:noop,resetFlightSafety:noop,
++ recorder:{reset:noop},pickRunway:()=>({fromHigh:false,r:{la1:1,lo1:1,e1:0,la2:1.1,lo2:1,e2:0}}),bearingDeg:()=>0,setDaytimeAt:noop,
++ frame:{anchor:{},toLocal:()=>({n:0,e:0}),fromLocal:()=>({lat:1,lon:1})},tiles:{onRebase:noop,update:noop},airports:{find:()=>null,positionAll:noop,updateVisuals:noop,near:()=>[]},
++ FT:.3048,KT:.5144444444444445,kcasFromKias:(n:number)=>n,isa:()=>({densityKgM3:1.225}),
++ trim:(o:{flapsDeg:number})=>{trimAngle=o.flapsDeg;return {alphaRad:0,gammaRad:0,elevatorRad:0,throttle:0,rpm:0}},fuelState:makeFuelState(0,0),baseDate:new Date(0)}
++ const declarations=`let flightStartSimS=null,lastOnGround=true,debriefLine='',shaped={pitch:0,roll:0,yaw:0},parkingBrake=false,keyboardReverse=false,hardwareReverseOwned=false,pilotBrake=0,baroSetInHg=29.92,captainCommands={},assistMode='off',groundHeadingLockDeg=null,airbornePitchLockDeg=null,airborneHeadingLockDeg=null,scrubSeconds=0,atcMenuOpen=false,activeAtc=null,spawnDesc='',ctlOverride=null,voicePtt=undefined,lastPadIdentity='DG80 test quadrant:0:1:8',captainSystems={engine1Running:false,engine2Running:false,rudderTrim:0};`
++ const code=ts.transpileModule(declarations+body+';return {poll:()=>pollControls(.02),key:handleDiscreteKeys,load:loadSnapshot,save:saveSnapshot,diagnostics:updateControllers,spawn:spawnAtAirport}',{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
++ const run=new Function(...Object.keys(ctx),code)(...Object.values(ctx))
++ return {aircraft,pad,map,keys,messages,run,get diagnostic(){return diagnostic},get stored(){return stored},get trimAngle(){return trimAngle},snapshot:(s:Record<string,unknown>)=>{stored={v:1,onGround:false,lat:1,lon:1,altFt:3000,kias:70,flapsIndex:0,fuelKg:0,payloadKg:80,hdgDeg:0,simMs:0,spawn:'saved',...s}}}
++}
++it('keyboard F/G reaches all seven signed settings and R resets to neutral',()=>{
++ const h=harness();h.aircraft.resetFlaps(0)
++ h.keys.add('KeyF');for(let i=1;i<7;i++){h.run.key();expect(h.aircraft.controls.flapsIndex).toBe(i)}
++ h.keys.clear();h.keys.add('KeyG');for(let i=5;i>=0;i--){h.run.key();expect(h.aircraft.controls.flapsIndex).toBe(i)}
++ h.keys.clear();h.keys.add('KeyR');h.run.key();expect(h.aircraft.controls.flapsIndex).toBe(2);expect(h.aircraft.flapsDeg).toBe(0)
++})
++it('five-position quadrant maps to the documented signed subset',()=>{
++ const h=harness();const functions=['flaps0','flaps1','flaps2','flaps3','flapsFull'] as const
++ for(const [i,fn]of functions.entries())h.map.btn![fn]={pad:0,deviceId:h.pad.id,btn:i}
++ for(const [i,expected]of [0,2,3,5,6].entries()){h.pad.buttons.forEach((b,j)=>b.pressed=j===i);h.run.poll();expect(h.aircraft.controls.flapsIndex).toBe(expected)}
++})
++it('analog flap axis reaches every setting without releasing an airbrake displacement on steady polling',()=>{
++ const h=harness();h.map.flaps={pad:0,deviceId:h.pad.id,axis:0,sign:1}
++ for(let i=0;i<7;i++){h.pad.axes[0]=-1+i/3;h.run.poll();expect(h.aircraft.controls.flapsIndex).toBe(i)}
++ h.pad.axes[0]=-1;h.run.poll();h.aircraft.heldFlapFloorDeg=5;h.aircraft.flapsDeg=5;h.run.poll();expect(h.aircraft.heldFlapFloorDeg).toBe(5)
++ h.pad.axes[0]=0;h.run.poll();expect(h.aircraft.heldFlapFloorDeg).toBe(-9)
++})
++it('keyboard deliberate selection releases held linkage',()=>{
++ const h=harness();h.aircraft.resetFlaps(0);h.aircraft.heldFlapFloorDeg=5
++ h.keys.add('KeyF');h.run.key();expect(h.aircraft.heldFlapFloorDeg).toBe(-9)
++})
++it('legacy DG80 index zero restores neutral and trims the same physical angle',()=>{
++ const h=harness();h.snapshot({});expect(h.run.load()).toBe(true)
++ expect(h.aircraft.controls.flapsIndex).toBe(2);expect(h.aircraft.flapsDeg).toBe(0);expect(h.trimAngle).toBe(0)
++})
++it('rejects foreign snapshots before changing aircraft loading or flaps',()=>{
++ const h=harness();h.aircraft.resetFlaps(4);const payload=h.aircraft.payloadKg
++ h.snapshot({aircraftId:'737',flapSchema:1,flapCommandDeg:30,payloadKg:120})
++ expect(h.run.load()).toBe(false);expect(h.aircraft.controls.flapsIndex).toBe(4);expect(h.aircraft.payloadKg).toBe(payload)
++})
++it('saves commanded physical angle and restores it independently of an obsolete index',()=>{
++ const h=harness();h.aircraft.resetFlaps(0);h.aircraft.heldFlapFloorDeg=5;h.aircraft.flapsDeg=5;h.run.save()
++ expect(h.stored).toMatchObject({aircraftId:'DG80',flapSchema:1,flapCommandDeg:-9})
++ h.snapshot({...h.stored,onGround:false,flapsIndex:6});expect(h.run.load()).toBe(true)
++ expect(h.aircraft.controls.flapsIndex).toBe(0);expect(h.aircraft.flapsDeg).toBe(-9);expect(h.aircraft.heldFlapFloorDeg).toBe(-9);expect(h.trimAngle).toBe(-9)
++})
++it('controller diagnostics distinguish the signed selection, constrained angle and five physical positions',()=>{
++ const h=harness();h.aircraft.resetFlaps(0);h.aircraft.flapsDeg=5;h.run.diagnostics()
++ expect(h.diagnostic).toContain('-9');expect(h.diagnostic).toContain('5');expect(h.diagnostic).toContain('all 7');expect(h.diagnostic).toContain('L')
++})
++it('hardware step buttons reach all detents and release held linkage on a fresh press',()=>{
++ const h=harness();h.map.btn={flapsDown:{pad:0,deviceId:h.pad.id,btn:6},flapsUp:{pad:0,deviceId:h.pad.id,btn:7}}
++ h.aircraft.resetFlaps(0);h.run.poll()
++ for(let i=1;i<7;i++){h.aircraft.heldFlapFloorDeg=5;h.pad.buttons[6]!.pressed=true;h.run.poll();expect(h.aircraft.controls.flapsIndex).toBe(i);expect(h.aircraft.heldFlapFloorDeg).toBe(-9);h.pad.buttons[6]!.pressed=false;h.run.poll()}
++ for(let i=5;i>=0;i--){h.pad.buttons[7]!.pressed=true;h.run.poll();expect(h.aircraft.controls.flapsIndex).toBe(i);h.pad.buttons[7]!.pressed=false;h.run.poll()}
++})
++it('unpowered aircraft diagnostics do not imply running engines or ignition',()=>{
++ const h=harness();h.run.diagnostics();expect(h.diagnostic).toContain('UNPOWERED');expect(h.diagnostic).not.toMatch(/Engines.*(?:RUN|STOP)/)
++})
++it('nonfinite serialized commanded angle restores finite neutral state',()=>{
++ const h=harness();h.snapshot({aircraftId:'DG80',flapSchema:1,flapCommandDeg:null,flapsIndex:6});expect(h.run.load()).toBe(true)
++ expect(h.aircraft.controls.flapsIndex).toBe(2);expect(h.aircraft.flapsDeg).toBe(0);expect(h.trimAngle).toBe(0)
++})
++it('trimmed airborne restoration resets actual airbrake linkage before the next physics tick',()=>{
++ const h=harness();h.aircraft.spoilerPos=1;h.aircraft.spoilerCmd=1;h.aircraft.heldFlapFloorDeg=5
++ h.snapshot({aircraftId:'DG80',flapSchema:1,flapCommandDeg:-9});expect(h.run.load()).toBe(true)
++ expect(h.aircraft.spoilerPos).toBe(0);expect(h.aircraft.spoilerCmd).toBe(0)
++ h.aircraft.step(1/120);expect(h.aircraft.flapsDeg).toBe(-9);expect(h.aircraft.heldFlapFloorDeg).toBe(-9)
++})
++
++it('ground and final airport spawns initialize coherent signed control state',()=>{
++ const h=harness();const airport={i:'TEST',la:1,lo:1}
++ h.aircraft.resetFlaps(0);h.aircraft.spoilerPos=1;h.aircraft.spoilerCmd=1;h.aircraft.heldFlapFloorDeg=5
++ h.run.spawn(airport,'01',false);expect(h.aircraft.controls.flapsIndex).toBe(2);expect(h.aircraft.flapsDeg).toBe(0);expect(h.aircraft.spoilerPos).toBe(0)
++ h.aircraft.spoilerPos=1;h.aircraft.spoilerCmd=1;h.aircraft.heldFlapFloorDeg=5
++ h.run.spawn(airport,'01',true);expect(h.aircraft.controls.flapsIndex).toBe(5);expect(h.aircraft.flapsDeg).toBe(13);expect(h.trimAngle).toBe(13);expect(h.aircraft.spoilerPos).toBe(0);expect(h.aircraft.heldFlapFloorDeg).toBe(-9)
++ h.aircraft.step(1/120);expect(h.aircraft.appliedControlSurfaces.flapsDeg).toBeCloseTo(13,10)
++})
++it('invalid flight state rejects before mutating valid aircraft state',()=>{
++ const h=harness();h.aircraft.resetFlaps(4);const payload=h.aircraft.payloadKg
++ h.snapshot({aircraftId:'DG80',altFt:null,payloadKg:80});expect(h.run.load()).toBe(false)
++ expect(h.aircraft.payloadKg).toBe(payload);expect(h.aircraft.controls.flapsIndex).toBe(4)
++})
+--- /tmp/openhorizon-dg800-sim-baseline-sept21/tests/dg800-simulation.test.ts
++++ tests/dg800-simulation.test.ts
+@@ -0,0 +1,110 @@
++import { describe, expect, it } from 'vitest'
++import { Aircraft } from '../src/sim/aircraft'
++import { rosterParams } from '../src/sim/aircraft/roster'
++import { flapInterp } from '../src/sim/aircraft/c172s'
++const p = rosterParams('DG80')!
++describe('DG800 signed simulation', () => {
++ it('interpolates signed and invalid angles at neutral', () => {
++  expect(flapInterp([-9,0,13], -5, [-9,0,13])).toBe(-5)
++  expect(flapInterp([-9,0,13], NaN, [-9,0,13])).toBe(0)
++ })
++ it('starts and respawns at the physical neutral detent', () => {
++  const a = new Aircraft(p)
++  expect(p.flapDetentsDeg).toHaveLength(7)
++  expect(a.controls.flapsIndex).toBe(2)
++  a.controls.flapsIndex = 0; a.flapsDeg = -9; a.spawnOnGround(0,0,0)
++  expect(a.controls.flapsIndex).toBe(2); expect(a.flapsDeg).toBe(0)
++ })
++})
++it('uses one physical differential output for aero at every signed setting and roll', () => {
++ for (let i=0;i<7;i++) for (const roll of [-1,0,1]) {
++  const a = new Aircraft(p); a.resetFlaps(i); a.applyTrimState(30,0.03,1000,0,0,0,0,0); a.controls.roll=roll; a.step(1/120)
++  const out = a.appliedControlSurfaces
++  expect(out.flapsDeg).toBeCloseTo((out.flaperonLeftRad+out.flaperonRightRad)*90/Math.PI,10)
++  const actual=(a as unknown as {aeroIn:{flapsDeg:number;aileronRad:number}}).aeroIn
++  expect(actual.flapsDeg).toBe(out.flapsDeg);expect(actual.aileronRad).toBe(out.aileronRad)
++  expect(out.aileronRad).toBeCloseTo((out.flaperonLeftRad-out.flaperonRightRad)/2,10)
++  expect(out.flaperonLeftRad).toBeCloseTo(p.flapDetentsDeg[i]!*Math.PI/180 + (roll<0 ? -Math.asin(42/122) : roll*Math.asin(21/122)),10)
++ }
++})
++it('holds displaced flap after retraction until a deliberate selection; steady poll does not release', () => {
++ const a = new Aircraft(p); a.resetFlaps(0); a.applyTrimState(30,0.03,1000,0,0,0,0,0)
++ a.spoilerCmd=1
++ for(let i=0;i<240;i++) a.step(1/120)
++ expect(a.flapsDeg).toBeCloseTo(5,8)
++ a.spoilerCmd=0
++ for(let i=0;i<240;i++) { a.selectFlaps(0,false); a.step(1/120) }
++ expect(a.flapsDeg).toBeCloseTo(5,8)
++ a.selectFlaps(0)
++ for(let i=0;i<240;i++) a.step(1/120)
++ expect(a.flapsDeg).toBeCloseTo(-9,8)
++ a.controls.flapsIndex=NaN; a.step(1/120)
++ expect(a.controls.flapsIndex).toBe(2); expect(Number.isFinite(a.flapsDeg)).toBe(true)
++})
++it('rejects invalid coefficient metadata after tuning and derives landing speed from final tables', async () => {
++ const {deriveParams}=await import('../src/sim/aircraft/derive'); const {ROSTER}=await import('../src/sim/aircraft/roster')
++ const entry=ROSTER.find(e=>e.spec.designator==='DG80')!
++ expect(()=>deriveParams({...entry.spec,tuning:{...entry.spec.tuning,flapDCd:[0]}},entry.opts)).toThrow()
++ const changed=deriveParams({...entry.spec,tuning:{...entry.spec.tuning,flapDClMax:[0,0,0,0,0,0,0.5]}},entry.opts)
++ expect(changed.vSpeeds.vs0).toBe(Math.round(Math.sqrt(2*525*9.80665/(1.225*11.8*(changed.clMaxClean+0.5)))/0.5144444444444445))
++})
++it('keeps partial linkage subdivision invariant and higher positive settings unaffected', () => {
++ function run(dt:number,index:number){const a=new Aircraft(p);a.resetFlaps(index);a.applyTrimState(30,0.03,1000,0,0,0,0,0);a.spoilerCmd=.5;for(let t=0;t<1.99;t+=dt)a.step(dt);return a}
++ const a=run(1/120,0),b=run(1/240,0)
++ expect(a.flapsDeg).toBeCloseTo(-2,8);expect(a.flapsDeg).toBeCloseTo(b.flapsDeg,8)
++ expect(run(1/120,4).flapsDeg).toBe(10)
++ a.spawnOnGround(0,0,0);expect(a.heldFlapFloorDeg).toBe(-9);expect(a.appliedControlSurfaces.flapsDeg).toBe(0)
++})
++it('produces attainable trim and distinct actual forces across signed settings', async () => {
++ const {trim,stallTasMs}=await import('../src/sim/trim');const {KT}=await import('../src/sim/atmosphere')
++ const forces:number[]=[]
++ for(let i=0;i<7;i++){
++  const deg=p.flapDetentsDeg[i]!,t=trim({tasMs:30,altM:1000,massKg:525,flapsDeg:deg,throttle:0,params:p})
++  expect(t.converged).toBe(true);expect(t.residual).toBeLessThan(.01)
++  const a=new Aircraft(p);a.resetFlaps(i);a.applyTrimState(30,t.alphaRad,1000,0,t.gammaRad,t.elevatorRad,0,t.rpm);a.step(1/120)
++  expect(Number.isFinite(a.data.kias)).toBe(true);forces.push(a.data.verticalSpeedFpm)
++ }
++ expect(new Set(forces).size).toBe(7)
++ for(const [deg,v]of [[-9,88],[0,84],[13,77],[p.flapDetentsDeg[6]!,76]]) expect(stallTasMs(525,0,deg!,p)*3.6).toBeCloseTo(v!,2)
++ const t=trim({tasMs:54*KT,altM:1000,massKg:525,flapsDeg:0,throttle:0,params:p})
++ console.log("DG80 neutral glide at 54kt TAS /1000m /525kg",-1/Math.tan(t.gammaRad),"residual",t.residual)
++ expect(-1/Math.tan(t.gammaRad)).toBeGreaterThan(35)
++})
++it('labels glider airbrakes and suppresses powered-aircraft flap/takeoff calls', async()=>{
++ const {cycleSpeedbrake}=await import('../src/input/speedbrake-control')
++ expect(cycleSpeedbrake(new Aircraft(p))).toBe('AIRBRAKES FULL')
++ const {copilotCallouts,makeCopilotLatches}=await import('../src/sim/copilot')
++ const s={kias:70,aglFt:500,vsFpm:600,onGround:false,gearDown:true,flapsIndex:2,flapsDeg:0,throttle:0,glider:true}
++ expect(copilotCallouts(s,s,{vrKt:50,v1Kt:0,flapsUpKt:55},makeCopilotLatches(),false)).not.toContain('flaps up speed')
++ expect(copilotCallouts(s,s,{vrKt:50,v1Kt:0,flapsUpKt:55},makeCopilotLatches(),false)).not.toContain('positive rate')
++ const {TawsComputer}=await import('../src/sim/taws')
++ const t=new TawsComputer();const o=t.step(1,{aglFt:200,altFt:200,vsFpm:0,gsKt:70,headingDeg:0,rollDeg:0,flapsDeg:0,sinceTakeoffS:100,terrainAheadFt:()=>-1000,nearRunwayFinal:false,gsDeviation:null,landingFlapWarning:false})
++ expect(o.aural).not.toBe('TOO LOW, FLAPS')
++})
++it('reaches a deterministic trimmed stall near FM anchors at 525 kg and lighter holdout', async()=>{
++ const {trim}=await import('../src/sim/trim')
++ for(const mass of [525,440])for(const index of [0,2,5,6]){
++  const a=new Aircraft(p);a.payloadKg=mass-p.emptyMassKg;a.resetFlaps(index)
++  const t=trim({tasMs:32,altM:1000,massKg:mass,flapsDeg:a.flapsDeg,throttle:0,params:p})
++  a.applyTrimState(32,t.alphaRad,1000,0,t.gammaRad,t.elevatorRad,0,t.rpm)
++  let pitch=0,stall=0
++  for(let i=0;i<14400;i++){
++   const target=Math.max(-1,Math.min(1,pitch-.0001*a.data.verticalSpeedFpm/120-0.03*a.rates.y))
++   pitch+=Math.max(-.4/120,Math.min(.4/120,target-pitch));a.controls.pitch=pitch;a.step(1/120)
++   if(a.data.stallFraction>.5){stall=a.data.kias;break}
++  }
++  const nominal=(mass===525 ? {0:88,2:84,5:77,6:76} : {0:80,2:76,5:70,6:69})[index as 0|2|5|6]/1.852
++  console.log('DG80 actual stall',mass,index,stall,'nominal',nominal,'end',a.data.kias,a.data.stallFraction,a.controls.pitch,a.controls.trim,a.data.verticalSpeedFpm)
++  expect(stall).toBeGreaterThan(nominal-4.5);expect(stall).toBeLessThan(nominal+4.5)
++ }
++})
++it('preserves legacy interpolation and bypasses mixing for representative other aircraft', async()=>{
++ const {C172S}=await import('../src/sim/aircraft/c172s');const {B738}=await import('../src/sim/aircraft/b738');const {J3CUB}=await import('../src/sim/aircraft/j3cub')
++ for(const q of [C172S,B738,J3CUB,rosterParams('AS21')!,rosterParams('LS8')!,rosterParams('DISC')!]){
++  const a=new Aircraft(q);expect(a.controls.flapsIndex).toBe(0);a.applyTrimState(40,.03,1000,0,0,0,0,0);a.controls.roll=.4;a.step(1/120)
++  expect(a.appliedControlSurfaces.aileronRad).toBe(.4*q.aileronMaxRad);expect(a.appliedControlSurfaces.flapsDeg).toBe(0)
++  q.flapDetentsDeg.forEach((deg,i)=>expect(flapInterp(q.flapDClMax,deg,q.flapDetentsDeg)).toBe(q.flapDClMax[i]))
++ }
++ for(const [angle,expected] of [[-99,-9],[-7,-7],[-2,-2],[2,2],[99,13],[NaN,0],[Infinity,0],[-Infinity,0]])expect(flapInterp([-9,0,13],angle!,[-9,0,13])).toBe(expected)
++ expect(flapInterp([7],NaN,[0])).toBe(7)
++})

@@ -1,0 +1,487 @@
+--- a/src/sim/aircraft/params.ts
++++ b/src/sim/aircraft/params.ts
+@@ -23,26 +23,25 @@
+ import type { JetParams } from '../turbofan'
+ 
+ export interface AircraftParams {
+   /** Turbofan powerplant (Phase 11e). Present = jet: the piston/prop path
+    *  (torque, P-factor, RPM) is bypassed; thrust comes from turbofan.ts.
+    *  Jet aircraft should also set pFactorK/swirlK/propwashTailFactor to 0. */
+   jet?: JetParams
+   /** Retractable gear: transit time and the drag increment when extended.
+    *  Absent = fixed gear (always down, no extra drag term). */
+   gearRetractable?: { transitS: number; dCdExtended: number }
+-  /** Flight spoilers / speedbrakes (737-class): drag increment, lift
+-   *  dump (ΔCL removed at full deploy), and actuator rate (fraction/s).
+-   *  Absent = no spoilers (piston fleet). Simplification (documented):
+-   *  symmetric speedbrake only — no roll-spoiler mixing, no ground
+-   *  auto-deploy arming. */
+-  spoilers?: { dCd: number; dCl: number; ratePerS: number }
++  /** Symmetric flight spoilers / speedbrakes: drag increment, lift dump
++   *  (ΔCL removed at full deploy), actuator rate (fraction/s), and an
++   *  explicit ground-auto-deploy capability. Glider airbrakes use the same
++   *  normalized actuator but never inherit jet touchdown logic. */
++  spoilers?: { dCd: number; dCl: number; ratePerS: number; groundAutoDeploy: boolean }
+   /** Thrust reversers (jets): effective reverse thrust as a fraction of
+    *  forward thrust at the same N1, and sleeve transit time. Deploy is
+    *  interlocked to weight-on-wheels like the real airplane. */
+   reversers?: { effectiveness: number; transitS: number }
+   /** Compressibility (Phase 11e): Prandtl–Glauert lift-slope correction and
+    *  quadratic drag rise past the drag-divergence Mach. Absent = no Mach
+    *  effects (piston fleet never gets near them). */
+   machModel?: { mdd: number; dragRiseK: number }
+   /** true = pitch trim is a trimmable STABILIZER (jet transports): its
+    *  authority adds beyond the elevator's travel stops. Absent/false =
+--- a/src/sim/aircraft/derive.ts
++++ b/src/sim/aircraft/derive.ts
+@@ -307,23 +307,32 @@
+     rotInertiaKgM2: glider || jet ? 1 : Math.max(1.6 * (totalPowerW / C172S.ratedPowerW), 0.6),
+     bsfcKgPerWs: pp.kind === 'turboprop' ? 9.3e-8 : 7.27e-8, // TP ~0.55 lb/shp/hr
+     ...propTables,
+     ...(pp.kind === 'turboprop' ? { thermoMargin: pp.thermoMargin ?? 2.1 } : {}),
+     ...(governed ? { propGoverned: true as const, ...(spec.propThrustScale ? { propEtaScale: spec.propThrustScale } : {}) } : {}),
+     carburetor: false,
+     propwashTailFactor: glider || jet ? 0 : multiEngineProp ? 0.35 : 0.7,
+     ...propGains,
+     swirlRollRecovery,
+     ...rigging,
++    ...(glider
++      ? {
++          // CALIBRATED approximation: the source types establish dive-brake
++          // fit, and ASK 21 establishes one-second travel, but publish no
++          // coefficient increments. These values give useful approach-path
++          // control while leaving the clean polar untouched.
++          spoilers: { dCd: 0.12, dCl: 0.35, ratePerS: 1, groundAutoDeploy: false },
++        }
++      : {}),
+     ...(jet && pp.kind === 'jet'
+       ? {
+-          spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85 },
++          spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85, groundAutoDeploy: true },
+           reversers: { effectiveness: 0.45, transitS: 1.5 },
+           jet: {
+             ...CFM56_7B26,
+             engines: pp.count,
+             staticThrustN: pp.staticThrustN,
+             // Windmill drag scales with fan area (∝ per-engine thrust
+             // ratio vs the 117 kN CFM56-7B26 anchor) — the fixed 0.47
+             // gave a Williams FJ44 bizjet a CFM56's dead-engine drag and
+             // a Trent-class widebody a quarter of its real value.
+             windmillCdA: 0.47 * (pp.staticThrustN / 117_000),
+--- a/src/sim/aircraft/b738.ts
++++ b/src/sim/aircraft/b738.ts
+@@ -97,21 +97,21 @@
+   bsfcKgPerWs: 0,
+   propCtTable: [[0, 0], [1, 0]],
+   propCpTable: [[0, 0], [1, 0]],
+ 
+   propwashTailFactor: 0, // no propwash
+   pFactorK: 0, // no P-factor
+   swirlK: 0,
+   // Flight spoilers/speedbrake: in-flight drag + lift dump at full
+   // deflection (class figures for a narrowbody: ΔCD ≈ 0.05, ΔCL ≈ 0.35);
+   // ~1.2 s full travel. Symmetric speedbrake only (documented above).
+-  spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85 },
++  spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85, groundAutoDeploy: true },
+   // CFM56 fan-air cascade reversers: ~45% of forward thrust at the same
+   // N1 (class figure), ~1.5 s sleeve transit, weight-on-wheels interlock.
+   reversers: { effectiveness: 0.45, transitS: 1.5 },
+ 
+   jet: CFM56_7B26,
+   machModel: { mdd: 0.82, dragRiseK: 20 },
+   gearRetractable: { transitS: 9, dCdExtended: 0.02 },
+   trimIsStabilizer: true, // jackscrew stab: authority beyond elevator stops
+ 
+   // ---- gear: wheelbase 15.6 m, track 5.72 m; CG just ahead of mains ----
+--- a/src/sim/aircraft.ts
++++ b/src/sim/aircraft.ts
+@@ -257,21 +257,21 @@
+     const beta = Math.asin(clamp(this.vAirBody.y / vAir, -1, 1))
+ 
+     // Filtered alpha-dot (downwash lag terms).
+     const alphaDotRaw = (alpha - this.alphaPrev) / dt
+     this.alphaDotFilt += clamp(alphaDotRaw - this.alphaDotFilt, -50 * dt, 50 * dt)
+     this.alphaPrev = alpha
+ 
+     // ---- gear transit (Phase 11e; fixed gear pins at 1) ----
+     if (this.P.spoilers) {
+       // ARM → auto-deploy on touchdown (ground spoilers).
+-      if (this.spoilerArmed && this.data.onGround) { this.spoilerCmd = 1; this.spoilerArmed = false }
++      if (this.P.spoilers.groundAutoDeploy && this.spoilerArmed && this.data.onGround) { this.spoilerCmd = 1; this.spoilerArmed = false }
+       const sRate = this.P.spoilers.ratePerS * dt
+       this.spoilerPos = clamp(this.spoilerPos + clamp(this.spoilerCmd - this.spoilerPos, -sRate, sRate), 0, 1)
+     }
+     if (this.P.reversers) {
+       const tgt = this.reverseCmd && this.data.onGround ? 1 : 0
+       const rRate = dt / this.P.reversers.transitS
+       this.reversePos = clamp(this.reversePos + clamp(tgt - this.reversePos, -rRate, rRate), 0, 1)
+     }
+     if (this.P.gearRetractable) {
+       const rate = dt / this.P.gearRetractable.transitS
+--- a/src/sim/trim.ts
++++ b/src/sim/trim.ts
+@@ -29,20 +29,22 @@
+   altM: number
+   massKg: number
+   flapsDeg: number
+   /** Provide exactly one of gammaRad (solve throttle) or throttle (solve γ). */
+   gammaRad?: number
+   throttle?: number
+   /** Aircraft to trim (fleet, Phase 10a); defaults to the C172S. */
+   params?: AircraftParams
+   /** Extra parasite drag in the trim condition (extended gear). Default 0. */
+   extraCd?: number
++  /** Symmetric lift dump in the trim condition (deployed speedbrakes). */
++  extraClDump?: number
+   /** Live ISA temperature offset, °C (9B): a hot/cold-day final spawn was
+    *  trimmed for the standard atmosphere and arrived mistrimmed. */
+   isaTempOffsetC?: number
+ }
+ 
+ interface Propelled {
+   thrustN: number
+   torqueNm: number
+   rpm: number
+   powerW: number
+@@ -114,20 +116,21 @@
+   const prop = P.jet
+     ? jetAt(throttle, s.tasMs, rho, air.speedOfSoundMs, P)
+     : propAt(throttle, s.tasMs * Math.cos(alpha), rho, P)
+ 
+   const ai: AeroInput = {
+     rho, vAir: s.tasMs, alpha, beta: 0, alphaDot: 0, p: 0, q: 0, r: 0,
+     elevatorRad: elevator, aileronRad: 0, rudderRad: 0, flapsDeg: s.flapsDeg,
+     thrustN: prop.thrustN, propTorqueNm: prop.torqueNm, heightAglM: 1000,
+     mach: P.machModel ? s.tasMs / air.speedOfSoundMs : 0,
+     extraCd: s.extraCd ?? 0,
++    extraClDump: s.extraClDump ?? 0,
+   }
+   computeAero(ai, aeroOut, P)
+   const qS = 0.5 * rho * s.tasMs * s.tasMs * P.wingAreaM2
+   const Lift = qS * aeroOut.cl
+   const Drag = qS * aeroOut.cd
+   return {
+     fx: prop.thrustN * Math.cos(alpha) - Drag - W * Math.sin(gamma),
+     fz: Lift + prop.thrustN * Math.sin(alpha) - W * Math.cos(gamma),
+     m: aeroOut.moment.y,
+     prop,
+--- a/src/input/speedbrake-control.ts
++++ b/src/input/speedbrake-control.ts
+@@ -0,0 +1,39 @@
++export interface SpeedbrakeControlTarget {
++  P: { spoilers?: { groundAutoDeploy: boolean } }
++  spoilerCmd: number
++  spoilerArmed: boolean
++}
++
++/** Advance the pilot lever cycle. Sailplane airbrakes have only DOWN/FULL;
++ * transport spoilers retain their DOWN/ARM/FLIGHT cycle. */
++export function cycleSpeedbrake(target: SpeedbrakeControlTarget): string {
++  const capability = target.P.spoilers
++  if (!capability) return 'NO SPEEDBRAKES ON THIS TYPE'
++  if (!capability.groundAutoDeploy) {
++    target.spoilerArmed = false
++    target.spoilerCmd = target.spoilerCmd > 0.5 ? 0 : 1
++    return target.spoilerCmd > 0.5 ? 'SPEEDBRAKE — FLIGHT DETENT' : 'SPEEDBRAKE DOWN'
++  }
++  if (target.spoilerArmed) {
++    target.spoilerArmed = false
++    target.spoilerCmd = 1
++    return 'SPEEDBRAKE — FLIGHT DETENT'
++  }
++  if (target.spoilerCmd > 0.5) {
++    target.spoilerCmd = 0
++    return 'SPEEDBRAKE DOWN'
++  }
++  target.spoilerArmed = true
++  return 'SPEEDBRAKE ARMED — auto-deploys on touchdown'
++}
++
++/** Apply a hardware ARM detent only where touchdown auto-deploy exists. */
++export function armSpeedbrake(target: SpeedbrakeControlTarget): boolean {
++  if (!target.P.spoilers?.groundAutoDeploy) {
++    target.spoilerArmed = false
++    return false
++  }
++  target.spoilerCmd = 0
++  target.spoilerArmed = true
++  return true
++}
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -64,20 +64,21 @@
+ import { GraphicsPanel } from './ui/graphics-panel'
+ import { LoadingPanel } from './ui/loading-panel'
+ import { sunPosition } from './math/solar'
+ import { WorldFrame, TileManager } from './world/tiles'
+ import { Airports, type AirportData, type RunwayData } from './world/airports'
+ import { makeElectricalState, stepElectrical } from './sim/systems/electrical'
+ import { c172WeightBalance, C172S_ENVELOPE } from './sim/weight-balance'
+ import { applyDeadzone, leverWithReverse, parseGamepadMap, serializeGamepadMap, tcaPresetFor, HELD_ALIASES, readAxis, readButton, readAlias, calibratedUnipolar, mergePreset, combineLevers, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
+ import { ControllerPanel } from './ui/controller-panel'
+ import { ControllerRuntime } from './input/controller-runtime'
++import { armSpeedbrake, cycleSpeedbrake } from './input/speedbrake-control'
+ import { createCaptainSystems, stepCaptainSystems, type CaptainSystemsInput } from './sim/captain-systems'
+ import { makeFuelState, stepFuel, type FuelSelector } from './sim/systems/fuel'
+ import { applyLoading, defaultLoading, loadingFromSnapshot, preferenceFor, setPreference, type LoadingSelection, type MassUnit } from './sim/loading'
+ import { PitotStaticSystem } from './sim/systems/pitot'
+ import { stepEngineStart, type EngineStartState, type MagnetoPosition } from './sim/systems/engine-start'
+ import { makeEngineTemps, stepEngineTemps } from './sim/systems/engine-temps'
+ import { NavaidsIndex } from './sim/nav/navaids'
+ import { FlightPlan, gpsCdiDeflection, determinePhase, activeLegProgress } from './sim/nav/gps'
+ import { airspacesContaining, type AirspacePolygon } from './sim/nav/airspace'
+ import { makeAutopilotState, stepAutopilot, disconnect as disconnectAutopilot, type LateralMode, type VerticalMode } from './sim/autopilot'
+@@ -1034,28 +1035,21 @@
+   c.throttle = Math.min(Math.max(c.throttle + input.axis('KeyW', 'KeyS') * 0.5 * dt, 0), 1)
+   c.trim = Math.min(Math.max(c.trim + input.axis('Period', 'Comma') * 0.25 * dt, -1), 1)
+   baroSetInHg = Math.min(Math.max(baroSetInHg + input.axis('Quote', 'Semicolon') * 0.2 * dt, 27.5), 31.5)
+   // Parking brake: set on ground spawn, auto-releases when power comes up.
+   const pads=navigator.getGamepads?.()??[]
+   const latchedParking=readButton(gamepadMap,'parkingBrake',pads)
+   if(latchedParking!==null)parkingBrake=latchedParking
+   if (latchedParking===null && !gamepadMap.btn?.parkingBrake && parkingBrake && c.throttle > 0.15) parkingBrake = false
+   c.brakeLeft = c.brakeRight = input.isHeld('KeyB') || parkingBrake ? 1 : 0
+   if (input.wasPressed('KeyV')) {
+-    if (aircraft.P.spoilers) {
+-      // Lever cycle: DOWN → ARM → FLIGHT DETENT → DOWN (737 quadrant).
+-      if (aircraft.spoilerArmed) { aircraft.spoilerArmed = false; aircraft.spoilerCmd = 1; toast('SPEEDBRAKE — FLIGHT DETENT') }
+-      else if (aircraft.spoilerCmd > 0.5) { aircraft.spoilerCmd = 0; toast('SPEEDBRAKE DOWN') }
+-      else { aircraft.spoilerArmed = true; toast('SPEEDBRAKE ARMED — auto-deploys on touchdown') }
+-    } else {
+-      toast('NO SPEEDBRAKES ON THIS TYPE')
+-    }
++    toast(cycleSpeedbrake(aircraft))
+   }
+   if (input.wasPressed('KeyZ')) {
+     if (aircraft.P.reversers) {
+       keyboardReverse = !keyboardReverse
+       aircraft.reverseCmd = keyboardReverse
+       toast(aircraft.reverseCmd ? 'REVERSE THRUST (deploys on ground)' : 'REVERSERS STOWED')
+     } else {
+       toast('NO REVERSERS ON THIS TYPE')
+     }
+   }
+@@ -1082,21 +1076,21 @@
+   const js=joyRead('speedbrake');if(js!==null && aircraft.P.spoilers){aircraft.spoilerCmd=calibratedUnipolar(js,gamepadMap.speedbrake);aircraft.spoilerArmed=false}
+   const latched=(fn:BindableButton):boolean|null=>readButton(gamepadMap,fn,pads)
+   if(pressed('gear') && aircraft.P.gearRetractable)aircraft.gearDownCommanded=!aircraft.gearDownCommanded
+   if(aircraft.P.gearRetractable){if(latched('gearDown')===true)aircraft.gearDownCommanded=true;else if(latched('gearUp')===true)aircraft.gearDownCommanded=false}
+   if(pressed('flapsDown'))c.flapsIndex=Math.min(c.flapsIndex+1,aircraft.P.flapDetentsDeg.length-1)
+   if(pressed('flapsUp'))c.flapsIndex=Math.max(c.flapsIndex-1,0)
+   for(const [i,fn] of (['flaps0','flaps1','flaps2','flaps3','flapsFull'] as const).entries())if(latched(fn)===true)c.flapsIndex=Math.round(i/4*(aircraft.P.flapDetentsDeg.length-1))
+   if(aircraft.P.spoilers){
+     if(latched('speedbrakeDown')===true){aircraft.spoilerCmd=0;aircraft.spoilerArmed=false}
+     if(latched('speedbrakeFull')===true){aircraft.spoilerCmd=1;aircraft.spoilerArmed=false}
+-    if(latched('speedbrakeArm')===true){aircraft.spoilerCmd=0;aircraft.spoilerArmed=true}
++    if(latched('speedbrakeArm')===true)armSpeedbrake(aircraft)
+   }
+   if(down('trimUp'))c.trim=Math.max(-1,c.trim-.25*dt)
+   if(down('trimDown'))c.trim=Math.min(1,c.trim+.25*dt)
+   if(pressed('apDisconnect'))systemsControls.apMaster=false
+   if(down('brakes'))c.brakeLeft=c.brakeRight=1
+   captainCommands={trimLeft:down('rudderTrimLeft'),trimRight:down('rudderTrimRight'),trimReset:down('rudderTrimReset')}
+   for(const fn of ['engineMaster1','engineMaster2'] as const){const v=latched(fn);if(v!==null)captainCommands[fn]=v}
+   if(latched('ignitionCrank')===false && latched('ignitionStart')===false)captainCommands.ignitionMode='norm'
+   for(const [fn,mode] of [['ignitionCrank','crank'],['ignitionNorm','norm'],['ignitionStart','start']] as const)if(latched(fn)===true)captainCommands.ignitionMode=mode
+   for(const [fn,mode] of [['autobrakeOff','off'],['autobrakeLow','low'],['autobrakeMedium','medium'],['autobrakeMax','max'],['autobrakeRto','rto']] as const)if(latched(fn)===true)captainCommands.autobrakeMode=mode
+--- a/tests/controller-main.test.ts
++++ b/tests/controller-main.test.ts
+@@ -1,46 +1,70 @@
+ import {readFileSync} from 'node:fs'
+ import ts from 'typescript'
+ import {it,expect} from 'vitest'
+ import * as mapping from '../src/sim/gamepad-map'
+ import {ControllerRuntime} from '../src/input/controller-runtime'
++import {armSpeedbrake,cycleSpeedbrake} from '../src/input/speedbrake-control'
+ const source=readFileSync(new URL('../src/main.ts',import.meta.url),'utf8')
+ const ast=ts.createSourceFile('main.ts',source,ts.ScriptTarget.Latest,true)
+ const body=ast.statements.filter(n=>ts.isFunctionDeclaration(n)&&['pollControls','joyRead','shapeAxis'].includes(n.name?.text??'')).map(n=>n.getText(ast)).join('\n')
+ function harness(){
+  const pad={id:'TCA Q-Eng 1&2',index:1,connected:true,axes:[-1,-1,-1,-1],buttons:Array.from({length:8},()=>({pressed:false}))}
+  const m=mapping.tcaPresetFor([{id:pad.id,index:1,axes:7}])!
+  m.flaps={pad:1,deviceId:pad.id,axis:2,sign:1};m.speedbrake={pad:1,deviceId:pad.id,axis:3,sign:1}
+  m.btn={...m.btn,parkingBrake:{pad:1,deviceId:pad.id,btn:2},engineMaster1:{pad:1,deviceId:pad.id,btn:3},engineMaster2:{pad:1,deviceId:pad.id,btn:4}}
+  const controls={pitch:0,roll:0,yaw:0,throttle:0,trim:0,mixture:1,flapsIndex:0,brakeLeft:0,brakeRight:0}
+- const aircraft={controls,P:{reversers:{},spoilers:{},flapDetentsDeg:[0,1,2,3,4],gearRetractable:{}},data:{onGround:true},rates:{z:0},reverseCmd:false,spoilerCmd:0,spoilerArmed:false}
++ const aircraft={controls,P:{reversers:{},spoilers:{groundAutoDeploy:true},flapDetentsDeg:[0,1,2,3,4],gearRetractable:{}},data:{onGround:true},rates:{z:0},reverseCmd:false,spoilerCmd:0,spoilerArmed:false}
+  const presses=new Set<string>();const pads:typeof pad[]=[pad]
+- const ctx={...mapping,aircraft,gamepadMap:m,navigator:{getGamepads:()=>pads},document:{hidden:false,hasFocus:()=>true},controllerPanel:{capturing:false},input:{enabled:true,axis:()=>0,isHeld:()=>false,wasPressed:(k:string)=>presses.has(k),setVirtualHeld:()=>{},injectPress:()=>{}},controllerRuntime:new ControllerRuntime(),clearControllerTransient:()=>{},toast:()=>{},performance:{now:()=>0},systemsControls:{apMaster:false}}
++ const ctx={...mapping,armSpeedbrake,cycleSpeedbrake,aircraft,gamepadMap:m,navigator:{getGamepads:()=>pads},document:{hidden:false,hasFocus:()=>true},controllerPanel:{capturing:false},input:{enabled:true,axis:()=>0,isHeld:()=>false,wasPressed:(k:string)=>presses.has(k),setVirtualHeld:()=>{},injectPress:()=>{}},controllerRuntime:new ControllerRuntime(),clearControllerTransient:()=>{},toast:()=>{},performance:{now:()=>0},systemsControls:{apMaster:false}}
+  const declarations=`let shaped={pitch:0,roll:0,yaw:0},parkingBrake=false,keyboardReverse=false,hardwareReverseOwned=false,pilotBrake=0,baroSetInHg=29.92,captainCommands={},assistMode='off',groundHeadingLockDeg=null,airbornePitchLockDeg=null,airborneHeadingLockDeg=null,scrubSeconds=0;`
+  const code=ts.transpileModule(declarations+body+';return ()=>{pollControls(.02);return {parkingBrake,captainCommands}}',{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
+  const poll=new Function(...Object.keys(ctx),code)(...Object.values(ctx)) as ()=>{parkingBrake:boolean;captainCommands:Record<string,unknown>}
+  return {pad,pads,aircraft,presses,poll,m}
+ }
+ it('main applies flap/speedbrake axes, absolute parking brake and both master switch levels',()=>{
+  const h=harness();h.poll();h.pad.axes=[-1,-1,1,0];h.pad.buttons[2]!.pressed=true;h.pad.buttons[3]!.pressed=true
+  const s=h.poll();expect(h.aircraft.controls.flapsIndex).toBe(4);expect(h.aircraft.spoilerCmd).toBe(.5);expect(s.parkingBrake).toBe(true);expect(s.captainCommands).toMatchObject({engineMaster1:true,engineMaster2:false})
+  h.pad.axes[0]=1;h.poll();expect(h.aircraft.controls.brakeLeft).toBe(1)
+  h.pad.buttons[2]!.pressed=false;expect(h.poll().parkingBrake).toBe(false);expect(h.aircraft.controls.brakeLeft).toBe(0)
+ })
+ it('main releases either lift symmetrically, rejects opposing levers and preserves keyboard reverse without hardware ownership',()=>{
+  const h=harness();h.poll();h.pad.buttons[0]!.pressed=true;h.pad.buttons[1]!.pressed=true;h.poll();expect(h.aircraft.reverseCmd).toBe(true)
+  h.pad.buttons[0]!.pressed=false;h.poll();expect(h.aircraft.reverseCmd).toBe(true)
+  h.pad.buttons[1]!.pressed=false;h.poll();expect(h.aircraft.reverseCmd).toBe(false)
+  h.pad.buttons[0]!.pressed=true;h.pad.axes[1]=1;h.poll();expect(h.aircraft.controls.throttle).toBe(0);expect(h.aircraft.reverseCmd).toBe(false)
+  h.pads.length=0;h.presses.add('KeyZ');h.poll();expect(h.aircraft.reverseCmd).toBe(true)
+ })
+ 
++it('main cycles non-auto airbrakes directly DOWN/FULL and rejects their ARM binding',()=>{
++ const h=harness();h.aircraft.P.spoilers.groundAutoDeploy=false;delete h.m.speedbrake
++ h.presses.add('KeyV');h.poll();h.presses.delete('KeyV')
++ expect(h.aircraft).toMatchObject({spoilerCmd:1,spoilerArmed:false})
++ h.presses.add('KeyV');h.poll();h.presses.delete('KeyV')
++ expect(h.aircraft).toMatchObject({spoilerCmd:0,spoilerArmed:false})
++ h.m.btn={...h.m.btn,speedbrakeArm:{pad:1,deviceId:h.pad.id,btn:5}}
++ h.pad.buttons[5]!.pressed=true;h.poll()
++ expect(h.aircraft).toMatchObject({spoilerCmd:0,spoilerArmed:false})
++})
++
++it('main preserves the jet DOWN/ARM/FLIGHT keyboard cycle and ARM binding',()=>{
++ const h=harness();h.aircraft.P.spoilers.groundAutoDeploy=true;delete h.m.speedbrake
++ h.presses.add('KeyV');h.poll();h.presses.delete('KeyV')
++ expect(h.aircraft).toMatchObject({spoilerCmd:0,spoilerArmed:true})
++ h.presses.add('KeyV');h.poll();h.presses.delete('KeyV')
++ expect(h.aircraft).toMatchObject({spoilerCmd:1,spoilerArmed:false})
++ h.aircraft.spoilerCmd=0
++ h.m.btn={...h.m.btn,speedbrakeArm:{pad:1,deviceId:h.pad.id,btn:5}}
++ h.pad.buttons[5]!.pressed=true;h.poll()
++ expect(h.aircraft).toMatchObject({spoilerCmd:0,spoilerArmed:true})
++})
++
+ import {createCaptainSystems,stepCaptainSystems} from '../src/sim/captain-systems'
+ import {makeFuelState,stepFuel} from '../src/sim/systems/fuel'
+ import {Aircraft} from '../src/sim/aircraft'
+ import {B738} from '../src/sim/aircraft/b738'
+ it('first real systems tick reads fresh fuel metadata before Captain engine state',()=>{
+  const aircraft=new Aircraft(B738);aircraft.posNed.z=-1000;aircraft.velBody.x=100
+  const fuelState=makeFuelState(100,100)
+  const start=Math.min(source.indexOf('      captainSystems=stepCaptainSystems'),source.indexOf('      stepFuel(fuelState, dt,'))
+  const end=source.indexOf('      stepEngineStart(engineStartState, dt,',start)
+  const ctx={aircraft,fuelState,stepFuel,stepCaptainSystems,createCaptainSystems,systemsControls:{masterBattery:true,fuelSelector:'BOTH',boostPumpOn:false}}
+--- a/tests/glider-airbrakes.test.ts
++++ b/tests/glider-airbrakes.test.ts
+@@ -0,0 +1,96 @@
++import { describe, expect, it } from 'vitest'
++import { Aircraft } from '../src/sim/aircraft'
++import { rosterParams } from '../src/sim/aircraft/roster'
++import { trim } from '../src/sim/trim'
++import { KT } from '../src/sim/atmosphere'
++
++const DT = 1 / 120
++const GLIDERS = ['AS21', 'DG80', 'LS8', 'DISC'] as const
++
++describe('glider airbrakes', () => {
++  it('fits the supported glider fleet and preserves the verified ASK 21 no-flap configuration', () => {
++    for (const designator of GLIDERS) {
++      const p = rosterParams(designator)!
++      expect(p.spoilers, designator).toMatchObject({ groundAutoDeploy: false })
++      expect(p.spoilers!.dCd, designator).toBeGreaterThan(0)
++      expect(p.spoilers!.dCl, designator).toBeGreaterThan(0)
++    }
++    expect(rosterParams('AS21')!.flapDetentsDeg).toEqual([0])
++  })
++
++  it('travels over the documented one-second ASK 21 extension and retracts/reset cleanly', () => {
++    const ac = new Aircraft(rosterParams('AS21')!)
++    ac.applyTrimState(49 * KT, 0.04, 1000, 0, 0, 0, 0, 0)
++    ac.spoilerCmd = 2
++    for (let i = 0; i < 60; i++) ac.step(DT)
++    expect(ac.spoilerPos).toBeCloseTo(0.5, 2)
++    for (let i = 0; i < 90; i++) ac.step(DT)
++    expect(ac.spoilerPos).toBe(1)
++    ac.spoilerCmd = -1
++    for (let i = 0; i < 120; i++) ac.step(DT)
++    expect(ac.spoilerPos).toBeCloseTo(0, 12)
++
++    ac.spoilerCmd = 1
++    for (let i = 0; i < 30; i++) ac.step(DT)
++    ac.spawnOnGround(0, 0, 0)
++    expect(ac.spoilerCmd).toBe(0)
++    expect(ac.spoilerPos).toBe(0)
++  })
++
++  it('leaves clean glider flight unchanged when the lever is closed', () => {
++    const p = rosterParams('AS21')!
++    const clean = new Aircraft(p)
++    const legacy = new Aircraft({ ...p, spoilers: undefined })
++    for (const ac of [clean, legacy]) ac.applyTrimState(49 * KT, 0.04, 1000, 0, 0, 0, 0, 0)
++    for (let i = 0; i < 240; i++) { clean.step(DT); legacy.step(DT) }
++    expect(clean.posNed).toEqual(legacy.posNed)
++    expect(clean.velBody).toEqual(legacy.velBody)
++    expect(clean.quat).toEqual(legacy.quat)
++  })
++
++  it('produces a steeper equilibrium descent at the same safe speed and mass', () => {
++    const p = rosterParams('AS21')!
++    const tasMs = 55 * KT
++    const massKg = p.mtowKg * 0.9
++    const clean = trim({ tasMs, altM: 1000, massKg, flapsDeg: 0, throttle: 0, params: p })
++    const deployed = trim({
++      tasMs, altM: 1000, massKg, flapsDeg: 0, throttle: 0, params: p,
++      extraCd: p.spoilers!.dCd,
++      extraClDump: p.spoilers!.dCl,
++    })
++    expect(clean.converged).toBe(true)
++    expect(deployed.converged).toBe(true)
++    expect(deployed.gammaRad).toBeLessThan(clean.gammaRad - 0.05)
++  })
++
++  for (const designator of GLIDERS) {
++    it(`${designator} live command advances its actuator and removes more flight energy`, () => {
++      const p = rosterParams(designator)!
++      const tasMs = Math.max(p.vSpeeds.glide * KT, 55 * KT)
++      const massKg = p.mtowKg * 0.9
++      const steady = trim({ tasMs, altM: 1200, massKg, flapsDeg: 0, throttle: 0, params: p })
++      expect(steady.converged).toBe(true)
++      const clean = new Aircraft(p)
++      const deployed = new Aircraft(p)
++      for (const ac of [clean, deployed]) {
++        ac.fuelKg = 0
++        ac.payloadKg = Math.max(massKg - p.emptyMassKg, 0)
++        ac.applyTrimState(tasMs, steady.alphaRad, 1200, steady.gammaRad, 0, steady.elevatorRad, 0, 0)
++      }
++      deployed.spoilerCmd = 1
++      const energyM = (ac: Aircraft) => ac.data.altitudeFt * 0.3048 + (ac.data.ktas * KT) ** 2 / (2 * 9.81)
++      for (let i = 0; i < 8 / DT; i++) { clean.step(DT); deployed.step(DT) }
++      expect(deployed.spoilerPos).toBe(1)
++      expect(energyM(deployed), designator).toBeLessThan(energyM(clean) - 8)
++    })
++  }
++
++  it('does not turn an armed glider lever into jet touchdown autodeploy', () => {
++    const ac = new Aircraft(rosterParams('AS21')!)
++    ac.spawnOnGround(0, 0, 0)
++    ac.spoilerArmed = true
++    for (let i = 0; i < 30; i++) ac.step(DT)
++    expect(ac.spoilerCmd).toBe(0)
++    expect(ac.spoilerPos).toBe(0)
++  })
++})
+--- a/tests/validate/roster.test.ts
++++ b/tests/validate/roster.test.ts
+@@ -102,22 +102,22 @@
+           const tas = spec.vSpeeds.glideKcas * KT
+           const t = trim({ tasMs: tas, altM: 1000, massKg, flapsDeg: 0, throttle: 0, params: P })
+           expect(t.converged).toBe(true)
+           expect(t.gammaRad).toBeLessThan(0)
+           const ld = -1 / Math.tan(t.gammaRad)
+           expect(ld).toBeGreaterThan(targets.glideRatio! * 0.8)
+           expect(ld).toBeLessThan(targets.glideRatio! * 1.2)
+         })
+       }
+ 
+-      // Gliders can't hold −3° at best-glide without spoilers (not
+-      // modeled) — their approach check is the glide row above.
++      // Glider approach-path control uses the separate airbrake condition;
++      // this generic flap-config check does not command that actuator.
+       const approachIt = spec.powerplant.kind === 'none' ? it.skip : it
+       approachIt('approach-config trim on a −3° path converges', () => {
+         const flaps = spec.flapDetentsDeg[spec.flapDetentsDeg.length - 1]!
+         const tas = spec.vSpeeds.approachKcas * KT
+         const gearCd = P.gearRetractable ? P.gearRetractable.dCdExtended : 0
+         const t = trim({ tasMs: tas, altM: 300, massKg: massKg * 0.9, flapsDeg: flaps, gammaRad: -0.0524, params: P, extraCd: gearCd })
+         expect(t.converged).toBe(true)
+         expect(t.throttle).toBeGreaterThanOrEqual(0)
+         expect(t.throttle).toBeLessThanOrEqual(1)
+       })

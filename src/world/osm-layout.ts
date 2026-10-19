@@ -1,11 +1,12 @@
 import * as THREE from 'three'
+import { mappedTerminalFacade, footprintObstacle, disposeAirportObject, ownMaterial, type GroundPoint, type SurfaceObstacle } from './airport-scenery'
 
 /**
  * Real airport ground layouts (night-shift N8): render the airport's
  * ACTUAL taxiway network, aprons, and terminal footprints from the OSM
  * aeroway pipeline (/api/osm/{ICAO}.json — cached forever server-side).
- * When data lands, the procedural taxiway stand-in is removed; where OSM
- * has nothing, the stand-in stays (recorded honest fallback).
+ * Mapped pavement replaces procedural pavement only. Facilities retain their
+ * own missing-component fallback and are replanned around mapped surfaces.
  *
  * Height ladder (N5 anti-flash): apron +0.02 < taxiway +0.04 < runway
  * +0.06 < centerline stripes +0.08 (lead-on lines legitimately paint over
@@ -35,6 +36,30 @@ interface OsmLayout {
   ap: [number, number][][]
   tm: [number, number][][]
   st: { r: string; p: [number, number][] }[]
+}
+
+
+/** Drop malformed features as units (never join across missing coordinates).
+ * Caps keep untrusted OSM geometry, facade batches and signs bounded. */
+function normalizedLayout(raw: unknown): OsmLayout {
+  const data = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  const points = (p: unknown, minimum: number): [number, number][] | null => {
+    if (!Array.isArray(p) || p.length < minimum || p.length > 512) return null
+    if (!p.every(q => Array.isArray(q) && q.length === 2 && q.every(Number.isFinite) && Math.abs(q[0]) <= 90 && Math.abs(q[1]) <= 180)) return null
+    return p as [number, number][]
+  }
+  const polygons = (v: unknown): [number, number][][] => !Array.isArray(v) ? [] : v.slice(0, 80).flatMap(p => {
+    const valid = points(p, 3)
+    if (!valid) return []
+    const area = valid.reduce((n, a, i) => { const b = valid[(i + 1) % valid.length]!; return n + a[0] * b[1] - b[0] * a[1] }, 0)
+    return Math.abs(area) > 1e-12 ? [valid] : []
+  })
+  const lines = (v: unknown, minimum: number): OsmLayout['tw'] => !Array.isArray(v) ? [] : v.slice(0, 600).flatMap(p => {
+    if (!p || typeof p !== 'object') return []
+    const valid = points(p.p, minimum)
+    return valid ? [{ r: typeof p.r === 'string' ? p.r.slice(0, 12) : '', p: valid }] : []
+  })
+  return { tw: lines(data.tw, 2), ap: polygons(data.ap), tm: polygons(data.tm), st: lines(data.st, 1) }
 }
 
 /** Butt-jointed ribbon strip along a polyline (local x/z), one quad per
@@ -81,10 +106,11 @@ export async function enhanceAirportWithOsm(
   try {
     const res = await fetch(`/api/osm/${icao}.json?lat=${refLat}&lon=${refLon}`)
     if (!res.ok) return
-    data = await res.json()
+    data = normalizedLayout(await res.json())
   } catch {
     return
   }
+  if (group.userData.airportDisposed || group.getObjectByName('osmLayout')) return
   if (!data.tw.length && !data.ap.length && !data.tm.length) return // unmapped — keep the stand-in
 
   const mLat = 111_320
@@ -93,6 +119,13 @@ export async function enhanceAirportWithOsm(
     x: (lon - refLon) * mLon,
     z: -(lat - refLat) * mLat,
   })
+  // Reject remote/corrupt coordinates before allocating geometry.
+  const nearby = (p: [number, number][]) => p.every(([lat, lon]) => { const q = toLocal(lat, lon); return Math.hypot(q.x, q.z) < 20_000 })
+  data.tw = data.tw.filter(t => nearby(t.p))
+  data.st = data.st.filter(t => nearby(t.p))
+  data.ap = data.ap.filter(nearby)
+  data.tm = data.tm.filter(nearby)
+  if (!data.tw.length && !data.ap.length && !data.tm.length) return
   const osm = new THREE.Group()
   osm.name = 'osmLayout'
   // N7 route naming: every ident'd segment's midpoint.
@@ -158,6 +191,7 @@ export async function enhanceAirportWithOsm(
     m.castShadow = true
     m.receiveShadow = true
     osm.add(m)
+    osm.add(mappedTerminalFacade(poly.map(([lat, lon]) => toLocal(lat, lon)), elevM))
   }
 
   // N9: HOLD-SHORT BARS where real taxiways meet the runway — a taxiway
@@ -175,7 +209,7 @@ export async function enhanceAirportWithOsm(
       }
       return best
     }
-    const HOLD = new THREE.MeshBasicMaterial({ color: 0xd8b23a })
+    const HOLD = STRIPE
     const barXf: { x: number; z: number; ang: number }[] = []
     let bars = 0
     for (const tw of data.tw) {
@@ -251,7 +285,8 @@ export async function enhanceAirportWithOsm(
     c.textBaseline = 'middle'
     c.fillText(ref.slice(0, 4), 64, 34)
     const tex = new THREE.CanvasTexture(canvas)
-    const board = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.2), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }))
+    tex.userData.airportOwned = true
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 1.2), ownMaterial(new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })))
     board.position.set(mid.x + 10, elevM + 1.0, mid.z + 10)
     osm.add(board)
     postXf.push({ x: mid.x + 10, z: mid.z + 10, h: 0.9 })
@@ -276,7 +311,8 @@ export async function enhanceAirportWithOsm(
     c.textBaseline = 'middle'
     c.fillText(st.r.slice(0, 5), 48, 26)
     const tex = new THREE.CanvasTexture(canvas)
-    const board = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.9), new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }))
+    tex.userData.airportOwned = true
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.9), ownMaterial(new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })))
     board.position.set(p.x, elevM + 2.4, p.z)
     osm.add(board)
     postXf.push({ x: p.x, z: p.z, h: 2.0 })
@@ -295,13 +331,37 @@ export async function enhanceAirportWithOsm(
     osm.add(inst)
   }
 
-  // Real layout in — retire the procedural taxiway stand-in.
+  // Components replace only their matching fallback. Stand/terminal-only data
+  // does not pretend to supply a taxiway network.
   const stale: THREE.Object3D[] = []
-  group.traverse((o) => { if (o.name === 'proceduralTaxi') stale.push(o) })
-  for (const o of stale) {
-    o.removeFromParent()
-    // 9C: the stand-in's geometry leaked on every OSM upgrade.
-    o.traverse((c) => { if (c instanceof THREE.Mesh) c.geometry.dispose() })
+  group.updateMatrixWorld(true)
+  const airportInverse = group.matrixWorld.clone().invert()
+  const mappedBounds = [...data.ap, ...data.tm].map(poly => {
+    const box = new THREE.Box3()
+    for (const [lat, lon] of poly) { const p = toLocal(lat, lon); box.expandByPoint(new THREE.Vector3(p.x, 0, p.z)) }
+    box.min.y = -Infinity; box.max.y = Infinity
+    return box
+  })
+  group.traverse(o => {
+    if (o.name !== 'proceduralTaxi') return
+    const bounds = new THREE.Box3().setFromObject(o).applyMatrix4(airportInverse)
+    if (data.tw.length || (!bounds.isEmpty() && mappedBounds.some(b => b.intersectsBox(bounds)))) stale.push(o)
+  })
+  for (const o of stale) disposeAirportObject(o)
+  if (stale.length) {
+    const colors = (group.userData.night?.pts as THREE.Points | undefined)?.geometry.getAttribute('color')
+    if (colors) {
+      for (const i of group.userData.proceduralTaxiLightIndices ?? []) colors.setXYZ(i, 0, 0, 0)
+      colors.needsUpdate = true
+    }
   }
+  const polygons = data.ap.map(poly => poly.map(([lat, lon]) => toLocal(lat, lon)))
+  const obstacles: SurfaceObstacle[] = data.tm.map(poly => footprintObstacle(poly.map(([lat, lon]) => toLocal(lat, lon))))
+  for (const tw of data.tw) {
+    const pts = tw.p.map(([lat, lon]) => toLocal(lat, lon))
+    for (let i = 1; i < pts.length; i++) obstacles.push({ a: pts[i - 1]!, b: pts[i]!, radius: 18 })
+  }
+  const rebuild = group.userData.rebuildFacilities as ((obstacles: SurfaceObstacle[], aprons: GroundPoint[][], realTerminals: boolean, elevation: number) => void) | undefined
+  rebuild?.(obstacles, polygons, data.tm.length > 0, elevM)
   group.add(osm)
 }

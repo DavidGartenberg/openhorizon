@@ -9,6 +9,7 @@
  */
 
 export interface TawsInput {
+  onGround?: boolean
   aglFt: number
   altFt: number
   vsFpm: number
@@ -16,6 +17,8 @@ export interface TawsInput {
   headingDeg: number
   rollDeg: number
   flapsDeg: number
+  /** False for sailplanes without powered-aircraft landing flap procedures. */
+  landingFlapWarning?: boolean
   /** Seconds since liftoff (Infinity/large when not in the takeoff phase). */
   sinceTakeoffS: number
   /** Terrain elevation (ft MSL) at `lookaheadS` seconds along track. */
@@ -38,6 +41,7 @@ export interface TawsOutput {
   level: TawsLevel
   aural?: string
   newAural: boolean
+  callout?: boolean
 }
 
 const JET_CALLOUT_GATES: ReadonlyArray<[number, string]> = [
@@ -47,11 +51,16 @@ const JET_CALLOUT_GATES: ReadonlyArray<[number, string]> = [
 export class TawsComputer {
   private lastAural: string | undefined
   private maxAglSinceTakeoff = 0
-  private prevAglFt = 0
-  private calloutIdx = 0
+  private prevAglFt: number | undefined
+  private crossed = new Set<number>()
+  reset(): void { this.lastAural = undefined; this.maxAglSinceTakeoff = 0; this.prevAglFt = undefined; this.crossed.clear() }
 
   step(dt: number, inp: TawsInput): TawsOutput {
     void dt
+    if (inp.onGround || (inp.gsKt < 30 && inp.aglFt < 30)) {
+      this.reset()
+      return { level: 'NONE', newAural: false }
+    }
     let level: TawsLevel = 'NONE'
     let aural: string | undefined
 
@@ -75,7 +84,7 @@ export class TawsComputer {
     }
 
     // ---- Forward-looking terrain (and classic mode 2 closure) ----
-    if (!inp.nearRunwayFinal) {
+    if (!inp.nearRunwayFinal && inp.gsKt > 40 && inp.aglFt > 30) {
       const alt30 = inp.altFt + (inp.vsFpm / 60) * 30
       const alt60 = inp.altFt + (inp.vsFpm / 60) * 60
       const terr30 = inp.terrainAheadFt(30)
@@ -95,18 +104,18 @@ export class TawsComputer {
     }
 
     // ---- Mode 4: too low in cruise configuration ----
-    if (!inp.nearRunwayFinal && inp.aglFt < 245 && inp.gsKt > 60 && inp.flapsDeg < 10) {
+    if (inp.landingFlapWarning !== false && (!inp.nearRunwayFinal || inp.jetProfile) && inp.sinceTakeoffS > 60 && inp.aglFt < 245 && inp.gsKt > 60 && inp.flapsDeg < 10 && !(inp.jetProfile && inp.gearDown === false)) {
       consider('CAUTION', 'TOO LOW, FLAPS')
     }
     // Mode 4A (jet): gear up low and slow — deliberately NOT inhibited near
     // the runway; a gear-up approach is exactly what this mode exists for.
-    if (inp.jetProfile && inp.gearDown === false && inp.aglFt < 500 && inp.gsKt > 60) {
+    if (inp.jetProfile && inp.sinceTakeoffS > 60 && inp.gearDown === false && inp.aglFt < 500 && inp.gsKt > 60) {
       consider('CAUTION', 'TOO LOW, GEAR')
     }
 
     // ---- Mode 5: below the glideslope on approach ----
-    // Deliberately NOT gated on `nearRunwayFinal`: that flag's ~4 nm-of-
-    // airport-center envelope exists to inhibit modes 2/4 during normal
+    // Deliberately NOT gated on `nearRunwayFinal`: that flag's incoming
+    // runway-corridor envelope exists to inhibit modes 2/4 during normal
     // landings, and borrowing it here capped glideslope protection at the
     // last ~2.5 nm of final — an EGLL acceptance flight dragged in 600 ft
     // below the beam at 4.5 nm, established and receiving, in silence.
@@ -118,36 +127,21 @@ export class TawsComputer {
 
     // ---- Mode 6: callouts + bank angle ----
     if (Math.abs(inp.rollDeg) > 45) consider('CAUTION', 'BANK ANGLE')
-    // FIVE HUNDRED fires only on a true descending CROSSING of 500 ft
-    // (15a: the old vs<0-below-500 gate let a parked gear bounce call it).
-    if (this.prevAglFt > 500 && inp.aglFt <= 500 && inp.vsFpm < 0) {
-      if (level === 'NONE') {
-        level = 'CAUTION'
-        aural = 'FIVE HUNDRED'
+    // Crossings, never a backlog. A go-around rearms only gates climbed above.
+    const gates: ReadonlyArray<readonly [number, string]> = inp.jetProfile ? [[500, 'FIVE HUNDRED'], ...JET_CALLOUT_GATES] : [[500, 'FIVE HUNDRED']]
+    let callout: string | undefined
+    for (const [gate, text] of gates) {
+      if (inp.aglFt > gate + Math.max(10, gate * 0.1)) this.crossed.delete(gate)
+      if (this.prevAglFt !== undefined && this.prevAglFt > gate && inp.aglFt <= gate && inp.vsFpm < 0 && inp.gsKt > 40 && !this.crossed.has(gate)) {
+        this.crossed.add(gate)
+        callout = text
       }
     }
     this.prevAglFt = inp.aglFt
-
-    // Jet short-final cadence: FIFTY, FORTY, THIRTY, TWENTY, TEN (once per
-    // descending crossing; rearmed climbing back through 200).
-    // Gated on flying speed: a parked jet sits ~9 ft AGL at its origin and
-    // used to call "FORTY" on the ramp at spawn.
-    if (inp.jetProfile) {
-      if (inp.aglFt > 200) this.calloutIdx = 0
-      else if (inp.vsFpm < 0 && inp.gsKt > 40 && this.calloutIdx < JET_CALLOUT_GATES.length) {
-        const [gateFt, word] = JET_CALLOUT_GATES[this.calloutIdx]!
-        if (inp.aglFt <= gateFt) {
-          this.calloutIdx++
-          if (level === 'NONE') {
-            level = 'CAUTION'
-            aural = word
-          }
-        }
-      }
-    }
+    if (level === 'NONE') aural = callout
 
     const newAural = aural !== undefined && aural !== this.lastAural
     this.lastAural = aural
-    return { level, aural, newAural }
+    return { level, aural, newAural, callout: level === 'NONE' && !!aural }
   }
 }

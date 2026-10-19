@@ -74,9 +74,10 @@ export class AircraftLights {
     // Physical lens fixtures ON the airframe (user: "put the lights on
     // the plane") — the additive glows float at these same points; the
     // lenses make the hardware visible up close and in daylight.
+    const fixtureScale = THREE.MathUtils.clamp(a.wingtipR.distanceTo(a.wingtipL) / 35, .3, 1)
     const lens = (x: number, y: number, z: number, color: number, r = 0.09): void => {
       const m = new THREE.Mesh(
-        new THREE.SphereGeometry(r, 8, 6),
+        new THREE.SphereGeometry(r * fixtureScale, 12, 8),
         new THREE.MeshBasicMaterial({ color }),
       )
       m.position.set(x, y, z)
@@ -109,7 +110,15 @@ export class AircraftLights {
     group.add(this.pts)
   }
 
-  update(tS: number, powered: boolean, aglM: number, group: THREE.Group, groundYAt: (xE: number, zS: number) => number): void {
+  update(tS: number, powered: boolean, aglM: number, group: THREE.Group, groundYAt: (xE: number, zS: number) => number, dayness = 0): void {
+    // A daylight lens should remain a small point on the skin, not a meter-wide
+    // neon orb. Retain the visible bloom around lights in the night environment.
+    if(this.pts){
+      const mat=this.pts.material as THREE.PointsMaterial
+      const daylight=THREE.MathUtils.clamp(dayness,0,1)
+      mat.size=THREE.MathUtils.lerp(1.6,.32,daylight)
+      mat.opacity=THREE.MathUtils.lerp(1,.60,daylight)
+    }
     if (this.colorAttr) {
       const set = (i: number, c: THREE.Color, on: boolean): void => {
         const cc = on ? c : OFF
