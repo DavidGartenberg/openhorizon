@@ -10,6 +10,7 @@ import { ShellWindow } from './window'
 import { Toolbar } from './toolbar'
 import { Notifier } from './notify'
 import type { Launcher } from './launcher'
+import { buildApWindow, type ApWindowDeps } from './ap-window'
 
 export type CameraMode = 'chase' | 'orbit' | 'free' | 'cockpit'
 export type AssistMode = 'off' | 'sas' | 'full'
@@ -17,6 +18,11 @@ export type AssistMode = 'off' | 'sas' | 'full'
 export interface ShellDeps {
   launcher: Launcher
   flightInfo: { visible: boolean }
+  ap: ApWindowDeps
+  /** Add the active departure/destination to the nav log; returns an error or null. */
+  directTo(ident: string): string | null
+  clearPlan(): void
+  instruments: { visible: boolean; on: boolean; set(v: boolean): void }
   camera: { get(): CameraMode; set(m: CameraMode): void }
   assist: { get(): AssistMode; set(m: AssistMode): void }
   pause: { paused(): boolean; toggle(): void }
@@ -73,9 +79,20 @@ export class Shell {
     cam.body.appendChild(camRow)
     this.camButtons = camButtons
 
-    // Nav log: the flight plan.
-    const nav = win('navlog', 'Nav log', 'navlog', 300, vw - 330, 70)
-    this.navBody = nav.body
+    // Nav log: the flight plan, with a direct-to entry.
+    const nav = win('navlog', 'Nav log', 'navlog', 320, vw - 350, 70)
+    const entry = document.createElement('div'); entry.style.cssText = 'display:flex;gap:6px;margin-bottom:10px'
+    const dto = document.createElement('input'); dto.placeholder = 'Direct to airport (ICAO)…'; dto.setAttribute('aria-label', 'Direct to airport'); dto.style.flex = '1'
+    dto.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') go.click() })
+    const go = document.createElement('button'); go.textContent = 'GO'
+    const clr = document.createElement('button'); clr.textContent = 'CLEAR'
+    const err = document.createElement('div'); err.style.cssText = 'color:#ffd98a;font-size:12px;min-height:16px;margin-bottom:6px'
+    go.onclick = () => { const e = d.directTo(dto.value.trim().toUpperCase()); err.textContent = e ?? ''; if (!e) dto.value = '' }
+    clr.onclick = () => { d.clearPlan(); err.textContent = '' }
+    entry.append(dto, go, clr)
+    nav.body.append(entry, err)
+    const list = document.createElement('div'); nav.body.appendChild(list)
+    this.navBody = list
 
     // Re-hosted panels.
     const host = (id: string, title: string, iconName: string, el: HTMLElement | null | undefined, width: number, x: number, y: number): void => {
@@ -87,6 +104,10 @@ export class Shell {
     host('fuel', 'Fuel & payload', 'fuel', d.panels.fuel, 340, vw - 370, 120)
     host('controls', 'Controls', 'controls', d.panels.controls, 460, vw - 490, 90)
     document.getElementById('flight-panel-dock')?.remove()
+
+    // Autopilot.
+    const apw = win('ap', 'Autopilot', 'autopilot', 340, vw / 2 - 170, 70)
+    this.updateAp = buildApWindow(apw.body, d.ap)
 
     // Assistance.
     const assist = win('assist', 'Assistance', 'assist', 320, vw / 2 - 160, 70)
@@ -121,17 +142,23 @@ export class Shell {
       { id: 'pause', label: 'Pause', icon: 'pause', onClick: () => d.pause.toggle(), active: () => d.pause.paused() },
       { id: 'camera', label: 'Camera', icon: 'camera', onClick: toggle('camera'), active: open('camera'), separatorBefore: true },
       { id: 'atc', label: 'ATC', icon: 'atc', onClick: toggle('atc'), active: open('atc') },
+      { id: 'instruments', label: 'Instruments', icon: 'gauge', onClick: () => d.instruments.set(!d.instruments.on), active: () => d.instruments.on },
       { id: 'info', label: 'Flight info', icon: 'info', onClick: () => { d.flightInfo.visible = !d.flightInfo.visible; this.saveInfo() }, active: () => d.flightInfo.visible },
       { id: 'navlog', label: 'Nav log', icon: 'navlog', onClick: toggle('navlog'), active: open('navlog') },
       { id: 'conditions', label: 'Weather & view', icon: 'weather', onClick: toggle('conditions'), active: open('conditions') },
       { id: 'fuel', label: 'Fuel & payload', icon: 'fuel', onClick: toggle('fuel'), active: open('fuel') },
       { id: 'controls', label: 'Controls', icon: 'controls', onClick: toggle('controls'), active: open('controls'), separatorBefore: true },
+      { id: 'ap', label: 'Autopilot', icon: 'autopilot', onClick: toggle('ap'), active: () => !!d.ap.read().master || open('ap')() },
       { id: 'assist', label: 'Assistance', icon: 'assist', onClick: toggle('assist'), active: open('assist') },
       { id: 'help', label: 'Keys', icon: 'keys', onClick: toggle('help'), active: open('help') },
     ])
-    try { if (localStorage.getItem('oh-flight-info') === 'off') d.flightInfo.visible = false } catch { /* storage unavailable */ }
+    // The tile panel is optional now (the instrument overlay is the default).
+    let infoOn = false
+    try { infoOn = localStorage.getItem('oh-flight-info') === 'on' } catch { /* storage unavailable */ }
+    d.flightInfo.visible = infoOn
   }
 
+  private updateAp: (() => void) | null = null
   private camButtons: Array<[CameraMode, HTMLButtonElement]> = []
   private assistButtons: Array<[AssistMode, HTMLButtonElement]> = []
 
@@ -150,6 +177,7 @@ export class Shell {
     for (const [m, b] of this.camButtons) b.classList.toggle('sel', m === cam)
     const as = this.d.assist.get()
     for (const [m, b] of this.assistButtons) b.classList.toggle('sel', m === as)
+    if (this.windows.get('ap')?.isOpen) this.updateAp?.()
     if (this.navBody && this.windows.get('navlog')?.isOpen) {
       const legs = this.d.navLog()
       const key = legs.map((l) => `${l.ident}${l.active ? '*' : ''}${l.distNm?.toFixed(0) ?? ''}`).join('|')

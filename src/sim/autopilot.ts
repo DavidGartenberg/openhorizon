@@ -266,6 +266,10 @@ export function disconnect(state: AutopilotState): void {
  *  autopilot STCs (many cap around 25-30 deg in heading/nav modes). */
 export const MAX_BANK_DEG = 25
 
+/** ALT hold: vertical speed commanded per foot of altitude error, and its
+ *  cap. 6.5 fpm/ft = a 9.2 s first-order return. */
+export const ALT_HOLD_FPM_PER_FT = 6.5
+export const ALT_HOLD_MAX_VS_FPM = 700
 /** Commanded pitch-attitude cap for ALT/VS/FLC/GS — keeps captures gentle
  *  rather than commanding an aggressive attitude off a large error. */
 export const MAX_PITCH_CMD_DEG = 10
@@ -477,8 +481,16 @@ function verticalPitchTarget(mode: UnderlyingVerticalMode | 'ALT', state: Autopi
     return clamp(inputs.pitchCommandDeg, -30, 30)
   }
   if (mode === 'ALT') {
+    // Cascaded hold: altitude error sets a bounded vertical-speed command
+    // (a first-order return with a ~9 s time constant, at most
+    // ±ALT_HOLD_MAX_VS_FPM), and the vertical-speed loop flies it. The old
+    // direct error→pitch law recovered from a 60 ft dip at a few feet per
+    // minute; this returns to the altitude in well under a minute without
+    // overshoot, and its steady pitch offset lives in the VS loop's
+    // integrator, so the hold stays on altitude through speed changes.
     const error = inputs.altitudeBugFt - inputs.altitudeFt // +ft = need to climb
-    return clamp(pidUpdate(state.altPitch, error, dt, 0.02, 0.0006, 0.05, 200), -MAX_PITCH_CMD_DEG, MAX_PITCH_CMD_DEG)
+    const vsCmd = clamp(error * ALT_HOLD_FPM_PER_FT, -ALT_HOLD_MAX_VS_FPM, ALT_HOLD_MAX_VS_FPM)
+    return clamp(pidUpdate(state.vsPitch, vsCmd - inputs.verticalSpeedFpm, dt, 0.016, 0.003, 0.002, 3000), -MAX_PITCH_CMD_DEG, MAX_PITCH_CMD_DEG)
   }
   if (mode === 'VS') {
     const error = inputs.vsTargetFpm - inputs.verticalSpeedFpm // +fpm = need more climb rate

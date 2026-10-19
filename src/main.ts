@@ -31,7 +31,7 @@ import { TowerController, pilotPhrase, type PilotRequestKind, type TrafficView }
 import { GroundController } from './sim/atc/ground'
 import { trim } from './sim/trim'
 import { FT, KT, isa, kcasFromKias, indicatedAltitudeFt } from './sim/atmosphere'
-import { C172S } from './sim/aircraft/c172s'
+import { C172S, flapInterp } from './sim/aircraft/c172s'
 import { bearingDeg, distanceM, windDirFromNed, type LatLon } from './math/geo'
 import { createScene } from './render/scene'
 import { SkyDome } from './render/sky'
@@ -43,6 +43,9 @@ import { CockpitCamera, EYE_BY_LAYOUT } from './render/cockpit-camera'
 import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from './render/aircraft-mesh'
 import { planeMenuEntries } from './render/plane-menu'
 import { Shell } from './ui/shell/shell'
+import { applyApFeedback, apEnvelopeFault, disconnectAp, makeApPanel, pressAlt, pressAp, pressApr, pressFlc, pressHdg, pressNav, pressVs, toApTargets, turnKnob, type ApAvailability, type ApPanel, type ApSnapshot, type Knob } from './sim/ap-panel'
+import type { ApAction, ApReadout, IlsChoice } from './ui/shell/ap-window'
+import { KNOWN_ILS_FREQUENCIES } from './sim/nav/tuning'
 import { Launcher, launchCommand, parsePendingLaunch, PENDING_LAUNCH_KEY, type LaunchChoice, type LauncherAirport } from './ui/shell/launcher'
 import { loadIls, ilsLoaded, ilsCount } from './world/ils'
 import { osmIdentSegs } from './world/osm-layout'
@@ -76,6 +79,7 @@ import { kgToGal, TANK_CAPACITY_GAL } from './sim/systems/fuel'
 import { Input } from './input/input'
 import { EngineSound } from './audio/engine-sound'
 import { Hud } from './ui/hud'
+import { InstrumentOverlay, type OverlayState } from './ui/instrument-overlay'
 import { GraphicsPanel, type GraphicsActions } from './ui/graphics-panel'
 import { LoadingPanel } from './ui/loading-panel'
 import { sunPosition } from './math/solar'
@@ -150,6 +154,11 @@ const sky = new SkyDome(scene)
 const ocean = new Ocean(scene, sky.radianceTexture)
 const clouds = new Clouds(scene)
 const hud = new Hud()
+const instruments = new InstrumentOverlay()
+let instrumentsOn = true
+try { instrumentsOn = localStorage.getItem('oh-instruments') !== 'off' } catch { /* storage unavailable */ }
+/** Selected course of the tuned nav source, for the compass course pointer. */
+let lastCourseDeg: number | undefined
 const loop = new FixedTimestepLoop(120)
 
 const frame = new WorldFrame(KHAF)
@@ -445,6 +454,16 @@ const apTargets = {
   bankCommandDeg: 0,
   pitchCommandDeg: 0,
 }
+/** Armed-capture underlying mode fed to the control laws (ap-panel.ts). */
+let apUnderlying: 'PIT' | 'VS' | 'FLC' = 'VS'
+/** The flight-guidance panel: the pilot's side of the autopilot. */
+let apPanel: ApPanel = makeApPanel()
+let apMessage = ''
+let knobHoldAt = 0
+let knobHoldStart = 0
+let apMessageUntil = 0
+let lastTunedNavResult: TunedNavResult | undefined
+let lastGpsLegCourse: number | undefined
 
 /** Scenario/failure flags — the debug-hook side of the failures the phase
  *  plan calls out (`__ohFail`); no in-sim UI to trigger these yet (that's
@@ -1048,6 +1067,7 @@ function handleDiscreteKeys(): void {
       if (input.wasPressed(key)) loop.setRate(rate as SimRate)
     }
   }
+  if (input.wasPressed('KeyY')) apPress('ap')
   if (input.wasPressed('KeyJ')) { if (shell) shell.windows.get('controls')?.toggle(); else controllerPanel.toggle() }
   if (input.wasPressed('KeyX')) {
     assistMode = assistMode === 'sas' ? 'full' : assistMode === 'full' ? 'off' : 'sas'
@@ -2529,6 +2549,18 @@ function advanceFrame(elapsed: number, now: number): void {
   const preStepLL = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
   const tunedNav = computeTunedNav(preStepLL, aircraft.data.altitudeFt)
   const gpsCdi = computeGpsCdi(preStepLL)
+  lastCourseDeg = tunedNav.source ? tunedNav.courseDeg : undefined
+  lastTunedNavResult = tunedNav
+  {
+    const legsNow = flightPlan.legs()
+    const prog = legsNow.length ? activeLegProgress(legsNow, preStepLL) : undefined
+    lastGpsLegCourse = prog ? legsNow[prog.legIndex]!.courseDeg : undefined
+    // Route complete: reaching the last waypoint drops NAV to heading hold.
+    if (prog && prog.legIndex === legsNow.length - 1 && prog.distanceRemainingM < 926 && apPanel.lateral === 'NAV' && apPanel.master) {
+      apPanel = { ...apPanel, sel: { ...apPanel.sel, headingDeg: Math.round(aircraft.data.headingDeg) || 360 }, touched: { ...apPanel.touched, heading: true }, lateral: 'HDG' }
+      toast('ROUTE COMPLETE — HDG HOLD')
+    }
+  }
   let navDeviationForAp = 0
   let glideslopeDeviationForAp = 0
   let navRangeForAp: number | undefined
@@ -2563,7 +2595,31 @@ function advanceFrame(elapsed: number, now: number): void {
     loop.advance(chunk, (dt) => {
       wind.step(dt, aircraft.windNed)
 
+      // Flight-guidance panel → control-law targets.
+      if (systemsControls.apMaster && !apPanel.master) apPanel = pressAp(apPanel, apSnapshot()).panel
+      else if (!systemsControls.apMaster && apPanel.master) apPanel = disconnectAp(apPanel)
+      if (!apPanel.direct) {
+        apPanel = applyApFeedback(apPanel, { altsCaptured: apState.altsCaptured })
+        const t = toApTargets(apPanel, apSnapshot())
+        apTargets.lateralMode = t.lateralMode
+        apTargets.verticalMode = t.verticalMode
+        apUnderlying = t.underlyingVerticalMode
+        apTargets.altitudeBugFt = t.altitudeBugFt
+        apTargets.vsTargetFpm = t.vsTargetFpm
+        apTargets.iasTargetKt = t.iasTargetKt
+        // The course datum for tracking modes: the localizer course once
+        // APR is tracking (pinned below), the flight-plan leg for NAV, the
+        // OBS course for a VOR; otherwise the pilot's heading bug.
+        const pinned = !apState.lateralArmed && (t.lateralMode === 'APR') && lastTunedNavResult?.courseDeg !== undefined
+        if (!pinned) {
+          apTargets.headingBugDeg = t.lateralMode === 'NAV'
+            ? (lastGpsLegCourse ?? (lastTunedNavResult?.source === 'VOR' ? radios.obs1Deg : t.headingBugDeg))
+            : t.headingBugDeg
+        }
+      }
+
       stepAutopilot(apState, dt, {
+        underlyingVerticalMode: apUnderlying,
         iasKt: aircraft.data.kias,
         altitudeFt: aircraft.data.altitudeFt,
         verticalSpeedFpm: aircraft.data.verticalSpeedFpm,
@@ -2584,6 +2640,16 @@ function advanceFrame(elapsed: number, now: number): void {
         navRangeM: navRangeForAp,
         trackDeg: aircraft.data.trackDeg,
       })
+      if (systemsControls.apMaster) {
+        const fault = apEnvelopeFault({ rollDeg: aircraft.data.rollDeg, pitchDeg: aircraft.data.pitchDeg, kias: aircraft.data.kias, vneKt: aircraft.P.vSpeeds.vne, stallFraction: aircraft.data.stallFraction, onGround: aircraft.data.onGround })
+        if (fault) {
+          systemsControls.apMaster = false
+          apPanel = disconnectAp(apPanel)
+          disconnectAutopilot(apState)
+          apDisconnectPressedFlag = false
+          toast(fault === 'ON THE GROUND' ? 'AUTOPILOT OFF — TOUCHDOWN' : `AUTOPILOT DISCONNECT — ${fault}`)
+        }
+      }
       if (DECK_PROFILE?.autothrottle) {
         const atCmd = stepAutothrottle(autothrottle, dt, {
           armSwitch: atArmSwitch, speedPressed: atSpeedPressed, disconnectPressed: atDisconnectPressed, resetLight: atResetPressed,
@@ -2849,14 +2915,23 @@ function advanceFrame(elapsed: number, now: number): void {
     }
     cockpitInteraction.update(input, cockpit, systemsControls, aircraft.controls, radios)
     const deckClick = cockpitInteraction.consumeDeckClick()
+    // Held guidance-panel knob halves auto-repeat (faster the longer held).
+    const held = cockpitInteraction.heldDeckControl
+    if (held?.startsWith('apKnob:') && !deckClick && performance.now() > knobHoldAt) {
+      const [, k, d] = held.split(':')
+      const sinceFirst = performance.now() - knobHoldStart
+      apTurn(k as Knob, Number(d) * (sinceFirst > 1500 ? 10 : 1))
+      knobHoldAt = performance.now() + (sinceFirst > 1500 ? 160 : 110)
+    }
+    if (!held) knobHoldStart = performance.now()
     // Turboprop decks have no G1000 starter button: holding an overhead
     // ENGINE START selector cranks the engine.
     if (DECK_PROFILE?.turboprop) systemsControls.starterEngaged = cockpitInteraction.heldDeckControl === 'engStart'
     if (deckClick === 'hornCutout') auralHornCutout = true
     else if (deckClick === 'mcpDisengage') { systemsControls.apMaster = false; apDisconnectPressedFlag = true }
-    else if (deckClick === 'mcpCmdA') systemsControls.apMaster = !systemsControls.apMaster
-    else if (deckClick === 'mcpAtArm') atArmSwitch = !atArmSwitch
-    else if (deckClick === 'mcpSpeed') atSpeedPressed = true
+    else if (deckClick === 'apBtn:speedBtn') atSpeedPressed = true
+    else if (deckClick?.startsWith('apBtn:')) apPress(deckClick.slice(6) as ApAction)
+    else if (deckClick?.startsWith('apKnob:')) { const [, k, d] = deckClick.split(':'); apTurn(k as Knob, Number(d)); knobHoldAt = performance.now() + 450 }
     else if (deckClick === 'atDisconnect') atDisconnectPressed = true
     else if (deckClick === 'atReset') atResetPressed = true
     else if (deckClick === 'apReset') apDisconnectPressedFlag = true
@@ -3109,6 +3184,44 @@ function advanceFrame(elapsed: number, now: number): void {
     },
     loop.ticks,
   )
+  // On-screen flight instruments (external views; the cockpit has its own).
+  instruments.visible = instrumentsOn && cameraMode !== 'cockpit'
+  if (instruments.visible) {
+    const f = aircraft.data, P = aircraft.P
+    const arcs = vSpeedArcs(P.vSpeeds)
+    const jetN = P.jet?.engines
+    const nEng = jetN ?? Math.max(1, COCKPIT_PROFILE.ga?.engines ?? engineCount)
+    const redline = P.jet ? P.jet.n1MaxPct : 100
+    const power = P.jet ? f.n1Pct : Math.min(120, Math.max(0, (f.shaftPowerW / Math.max(1, P.ratedPowerW)) * 100))
+    const lever = aircraft.controls.throttle * 100
+    const hasEngine = P.fuelCapacityKg >= 1
+    // Stall-onset angle of attack for the current flap setting — the same
+    // lift-curve arithmetic the aero model uses (clMax − cl0 over the slope).
+    const stallDeg = (((P.clMaxClean + flapInterp(P.flapDClMax, aircraft.flapsDeg, P.flapDetentsDeg)) - (P.cl0 + flapInterp(P.flapDCl0, aircraft.flapsDeg, P.flapDetentsDeg))) / P.clAlpha) * (180 / Math.PI)
+    const olState: OverlayState = {
+      headingDeg: f.headingDeg,
+      headingBugDeg: apTargets.headingBugDeg,
+      ...(lastCourseDeg !== undefined ? { courseDeg: lastCourseDeg } : {}),
+      iasKt: f.kias,
+      ...(apState.masterEnabled && (apTargets.verticalMode === 'FLC' || autothrottle.engaged) ? { selSpeedKt: apTargets.iasTargetKt } : {}),
+      tasKt: f.ktas,
+      groundSpeedKt: f.groundSpeedKt,
+      altitudeFt: f.altitudeFt,
+      ...(apState.masterEnabled && apTargets.altitudeBugFt > 0 ? { selAltFt: apTargets.altitudeBugFt } : {}),
+      baroInHg: baroSetInHg,
+      verticalSpeedFpm: f.verticalSpeedFpm,
+      engines: hasEngine ? Array.from({ length: nEng }, () => ({ lever, value: power, redline })) : [],
+      ...(hasEngine ? { fuelPct: Math.min(100, Math.max(0, (aircraft.fuelKg / Math.max(1, P.fuelCapacityKg)) * 100)) } : {}),
+      aoaDeg: f.alphaDeg,
+      aoaStallDeg: stallDeg,
+      ...(P.flapDetentsDeg.length > 1 ? { flapsFrac: Math.min(1, aircraft.flapsDeg / Math.max(1, P.flapDetentsDeg[P.flapDetentsDeg.length - 1]!)), flapsDeg: aircraft.flapsDeg } : {}),
+      ...(P.trimMaxRad > 0 ? { trim: aircraft.controls.trim } : {}),
+      greenLowKt: arcs.greenLowKt, greenHighKt: arcs.greenHighKt, yellowHighKt: arcs.yellowHighKt,
+      ...((safetyLine || f.stallFraction > 0.35) ? { alert: safetyLine || 'STALL', alertRed: !!safetyLine ? /PULL UP|TERRAIN|CRASH/i.test(safetyLine) : true } : {}),
+      ...(performance.now() < copilotUntil ? { callout: copilotLine } : {}),
+    }
+    instruments.update(olState)
+  }
 
   renderer.render(scene, camera)
   graphicsPanel.update(now, cameraMode, performance.now()-perfT0, renderer)
@@ -3269,7 +3382,12 @@ Object.assign(window as unknown as Record<string, unknown>, {
         if (v !== null) (apTargets as unknown as Record<string, number>)[k] = v
       }
     }
+    // The hook owns the targets until the next panel press (automation).
+    apPanel = { ...apPanel, direct: true }
   },
+  __ohApPanel: () => ({ ...apPanel, sel: { ...apPanel.sel } }),
+  __ohApPress: (a: ApAction) => { if (typeof a === 'string') { apPanel = { ...apPanel, direct: false }; apPress(a) } },
+  __ohApTurn: (k: Knob, steps: number) => { const n = finiteOr(steps); if (n !== null && (k === 'heading' || k === 'altitude' || k === 'vs' || k === 'ias')) { apPanel = { ...apPanel, direct: false }; apTurn(k, n) } },
   __ohApState: () => ({ ...apState }),
   __ohSetRadioListening: setRadioListening,
   __ohSafety: () => ({ safetyLine, dots: trafficDots, tcas: lastTcasDebug }),
@@ -3607,6 +3725,93 @@ new LoadingPanel(FLEET_ACTIVE.params, {
   enableInput: restoreSimInputIfNoEditorFocused,
 }, loadingUnit)
 
+
+// ---- autopilot operation (flight-guidance panel: sim/ap-panel.ts) ----
+function apSnapshot(): ApSnapshot {
+  const d = aircraft.data
+  return { headingDeg: d.headingDeg, altitudeFt: d.altitudeFt, verticalSpeedFpm: d.verticalSpeedFpm, iasKt: d.kias, rollDeg: d.rollDeg }
+}
+function apAvailability(): ApAvailability {
+  const n = lastTunedNavResult
+  return { gps: lastGpsLegCourse !== undefined, nav: !!n?.source, loc: n?.source === 'LOC', gs: !!n?.hasGlideslope }
+}
+function apSay(msg: string | undefined): void {
+  if (!msg) return
+  apMessage = msg
+  apMessageUntil = performance.now() + 6000
+  toast(msg)
+}
+/** One press on the guidance panel (window, deck MCP, or key). */
+function apPress(a: ApAction): void {
+  apPanel = { ...apPanel, direct: false }
+  const snap = apSnapshot()
+  if (a === 'at') {
+    if (!DECK_PROFILE?.autothrottle) { apSay('NO AUTOTHROTTLE ON THIS AIRPLANE'); return }
+    atArmSwitch = !atArmSwitch
+    apSay(atArmSwitch ? 'AUTOTHROTTLE ARMED' : 'AUTOTHROTTLE OFF')
+    return
+  }
+  if (a === 'ap') {
+    if (!apPanel.master && aircraft.data.onGround) { apSay('AUTOPILOT NOT AVAILABLE ON THE GROUND'); return }
+    const r = pressAp(apPanel, snap)
+    apPanel = r.panel
+    systemsControls.apMaster = r.panel.master
+    if (!r.panel.master) disconnectAutopilot(apState)
+    apSay(r.message)
+    return
+  }
+  const r = a === 'hdg' ? pressHdg(apPanel, snap)
+    : a === 'nav' ? pressNav(apPanel, apAvailability())
+      : a === 'apr' ? pressApr(apPanel, snap, apAvailability())
+        : a === 'alt' ? pressAlt(apPanel, snap)
+          : a === 'vs' ? pressVs(apPanel, snap)
+            : pressFlc(apPanel, snap)
+  apPanel = r.panel
+  apSay(r.message)
+}
+function apTurn(k: Knob, steps: number): void {
+  apPanel = turnKnob(apPanel, k, steps, apSnapshot())
+}
+const AP_LAT_TEXT: Record<string, string> = { ROL: 'ROL', HDG: 'HDG', NAV: 'NAV', APR: 'LOC', BC: 'B/C' }
+function apReadout(): ApReadout {
+  const lat = apState.lateralMode, ver = apState.verticalMode
+  const vText = ver === 'ALTS' ? (apPanel.vertical === 'FLC' ? 'FLC' : 'VS') : ver === 'PIT' ? 'PIT' : ver
+  return {
+    master: systemsControls.apMaster,
+    lateral: systemsControls.apMaster ? (apState.lateralArmed && lat !== 'ROL' ? 'ROL' : AP_LAT_TEXT[lat] ?? lat) : '—',
+    lateralArmed: systemsControls.apMaster && apState.lateralArmed ? `${AP_LAT_TEXT[lat] ?? lat} ARM` : '',
+    vertical: systemsControls.apMaster ? (apState.verticalArmed && ver === 'GS' ? 'PIT' : vText) : '—',
+    verticalArmed: systemsControls.apMaster && apState.verticalArmed ? (ver === 'GS' ? 'GS ARM' : 'ALT ARM') : '',
+    lit: {
+      ap: apPanel.master, hdg: apPanel.lateral === 'HDG', nav: apPanel.lateral === 'NAV', apr: apPanel.lateral === 'APR',
+      alt: apPanel.vertical === 'ALT', vs: apPanel.vertical === 'VS', flc: apPanel.vertical === 'FLC', at: atArmSwitch,
+    },
+    hasAutothrottle: !!DECK_PROFILE?.autothrottle,
+    atText: autothrottle.mode,
+    sel: { heading: apPanel.sel.headingDeg, altitude: apPanel.sel.altitudeFt, vs: apPanel.sel.vsFpm, ias: apPanel.sel.iasKt },
+    nav1: radios.nav1.activeMhz,
+    ...(performance.now() < apMessageUntil ? { message: apMessage } : {}),
+  }
+}
+function ilsChoices(): IlsChoice[] {
+  const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+  const out: IlsChoice[] = []
+  for (const ap of airports.near(ll.lat, ll.lon, 30 * 1852)) {
+    for (const e of KNOWN_ILS_FREQUENCIES) if (e.icao === ap.i) out.push({ ident: ap.i, runway: e.runway, freqMhz: e.freqMhz })
+  }
+  return out.sort((a, b) => a.ident.localeCompare(b.ident) || a.runway.localeCompare(b.runway)).slice(0, 24)
+}
+function directTo(ident: string): string | null {
+  if (!ident) return 'Enter an airport identifier.'
+  if (!airports.loaded) return 'Airport data still loading.'
+  const ap = airports.find(ident)
+  if (!ap) return `No airport "${ident}".`
+  const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+  flightPlan.setWaypoints([{ ident: 'PPOS', lat: ll.lat, lon: ll.lon }, { ident: ap.i, lat: ap.la, lon: ap.lo }])
+  toast(`DIRECT TO ${ap.i}`)
+  return null
+}
+
 // ---- shell: free-flight start screen, toolbar, windows, notifications ----
 const toLauncherAirport = (a: AirportData): LauncherAirport => ({
   ident: a.i, name: a.n, size: a.t,
@@ -3647,6 +3852,10 @@ launcher = new Launcher({
 shell = new Shell({
   launcher,
   flightInfo: hud,
+  ap: { read: apReadout, press: apPress, turn: apTurn, ils: ilsChoices, tune: (f) => { radios.nav1.activeMhz = f; radios.nav1.standbyMhz = f; toast(`NAV1 ${f.toFixed(2)}`) } },
+  directTo,
+  clearPlan: () => { flightPlan.setWaypoints([]); toast('FLIGHT PLAN CLEARED') },
+  instruments: { get visible() { return instruments.visible }, get on() { return instrumentsOn }, set: (v) => { instrumentsOn = v; try { localStorage.setItem('oh-instruments', v ? 'on' : 'off') } catch { /* storage unavailable */ } } },
   camera: { get: () => cameraMode, set: (m) => { cameraMode = m } },
   assist: { get: () => assistMode, set: (m) => { assistMode = m } },
   pause: { paused: () => loop.paused, toggle: () => loop.setRate(loop.paused ? 1 : 0) },

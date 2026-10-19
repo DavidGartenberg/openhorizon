@@ -16,6 +16,8 @@ export const ICONS: Record<string, string> = {
   plane: '<path d="M12 3c.8 0 1.4.8 1.4 1.8V10l7 4v2l-7-2v4l2 1.5V21l-3.4-1-3.4 1v-1.5l2-1.5v-4l-7 2v-2l7-4V4.8C10.6 3.8 11.2 3 12 3z"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   search: '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/>',
+  gauge: '<path d="M4.5 17a8.5 8.5 0 1 1 15 0"/><path d="M12 13l4-5"/><circle cx="12" cy="13" r="1.2"/><path d="M6.5 17h11"/>',
+  autopilot: '<path d="M3 13l7-1.5L21 5l-6 11-2.5-3.5L8 17z"/><path d="M10 11.5l2.5 1"/>',
   pause: '<path d="M8 5v14M16 5v14"/>',
   play: '<path d="M7 5l12 7-12 7z"/>',
 }

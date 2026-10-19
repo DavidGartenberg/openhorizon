@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import {
   MIP, PRST_UP, paintPrst, paintMip, paintOverhead, landingSwitchBox, lightsRowItemBox, ENGINE_START_ITEMS, paintEfis, paintAnnunciators, paintMcp737, paintAisle, paintCdu, paintCduKeys,
-  plate, engrave, knob, gauge, lamp, AMBER, GREEN, RED, ENGRAVE, PANEL_GRAY, setPanelPalette, deckLayout, duGlass, FCU_HITS,
+  plate, engrave, knob, gauge, lamp, AMBER, GREEN, RED, ENGRAVE, PANEL_GRAY, setPanelPalette, deckLayout, duGlass, mcpControls,
   type Mcp737State, type AisleState, type DeckLayout, type PanelStyle,
 } from './cockpit-737-paint'
 import { PALETTES, type Maker } from './cockpit-profile'
@@ -412,11 +412,13 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
     interactive.push(m)
   }
   const mcpLat = (fx: number): number => -0.43 + fx * 0.86
-  const fh = FCU_HITS[style.panel]
-  hit('mcpCmdA', mcpLat(fh.cmdA), faceUp - faceH * 0.2, 0.035, 0.03)
-  if (style.autothrottle && fh.atArm !== undefined) hit('mcpAtArm', mcpLat(fh.atArm), style.panel === 'boeing' ? faceUp : faceUp - faceH * 0.2, 0.035, style.panel === 'boeing' ? 0.06 : 0.03)
-  if (style.autothrottle && fh.speed !== undefined) hit('mcpSpeed', mcpLat(fh.speed), faceUp - faceH * 0.2, 0.035, 0.03)
-  if (fh.disengage !== undefined) hit('mcpDisengage', mcpLat(fh.disengage), faceUp + faceH * 0.24, 0.06, 0.015)
+  // Every button and knob half of the guidance panel is clickable; the
+  // knobs auto-repeat while held (see main.ts) so the altitude can be dialled.
+  const MW = 2400, MH = 310
+  for (const c of mcpControls(style.panel, MW, MH, style.autothrottle)) {
+    hit(c.id, -0.43 + c.fx * 0.86, faceUp + faceH * (0.5 - c.fy), Math.max(0.012, c.fw * 0.86), Math.max(0.008, c.fh * faceH))
+  }
+  if (style.panel === 'boeing') hit('mcpDisengage', mcpLat(0.95), faceUp + faceH * 0.24, 0.06, 0.015)
   hit('masterCaution', -0.69, faceUp + faceH * 0.27, 0.075, 0.035)
   hit('masterCaution', 0.79, faceUp + faceH * 0.27, 0.075, 0.035)
   void mcpMesh
