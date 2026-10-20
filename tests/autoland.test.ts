@@ -142,7 +142,7 @@ describe('stepAutoland state machine', () => {
     expect(s.phase).toBe('LAND')
     const o = stepAutoland(s, dt, inputs({ radioAltFt: 38, verticalSpeedFpm: -730, pitchDeg: 2.6 }), jet)
     expect(s.phase).toBe('FLARE')
-    expect(o.annunciation).toBe('FLARE')
+    expect(o.annunciation).toBe('LAND') // the flare is never shown on screen
     expect(o.pitchTargetDeg).toBeDefined()
     expect(o.maxBankDeg).toBe(5)
   })

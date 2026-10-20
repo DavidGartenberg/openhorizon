@@ -107,8 +107,10 @@ const FRAG = /* glsl */ `
     float firstDensityT = -1.0;
     vec3 accumulated = vec3(0.0);
     float shadow = 1.0;
-    float forward = pow(max(dot(ray, sun), 0.0), 12.0);
-    vec3 sunlight = mix(vec3(1.0, 0.97, 0.91), vec3(1.0, 0.43, 0.19), uDusk);
+    // Low sun: a wider forward lobe so cloud edges glow toward the sun, and
+    // brighter (HDR — the post chain blooms it) golden light.
+    float forward = pow(max(dot(ray, sun), 0.0), mix(12.0, 5.0, uDusk));
+    vec3 sunlight = mix(vec3(1.0, 0.97, 0.91), vec3(1.0, 0.46, 0.18), uDusk) * (1.0 + 1.6 * uDusk);
     for (int i = 0; i < 24; i++) {
       if (float(i) >= steps || transmittance < 0.025) break;
       float t = entry + (float(i) + 0.5) * stepM;
@@ -125,8 +127,11 @@ const FRAG = /* glsl */ `
       float heightLight = smoothstep(-0.8, 0.8, p.y);
       vec3 ambient = mix(vec3(0.022, 0.029, 0.048), vec3(0.23, 0.29, 0.38), uDayness);
       ambient *= mix(0.55, 1.25, heightLight);
+      // Dusk: shaded undersides pick up the violet-rose of the sky, tops stay warm.
+      vec3 duskAmbient = mix(vec3(0.17, 0.16, 0.29), vec3(0.58, 0.33, 0.29), heightLight) * (0.35 + uDayness * 0.9);
+      ambient = mix(ambient, duskAmbient, uDusk * 0.85);
       // A bounded forward lobe produces silver edges without a white clip.
-      vec3 direct = sunlight * uDayness * (0.85 + forward * 1.7) * shadow;
+      vec3 direct = sunlight * uDayness * (0.85 + forward * (1.7 + 3.0 * uDusk)) * shadow;
       vec3 multipleScatter = sunlight * uDayness * 0.16 * (1.0 - shadow);
       float absorbed = 1.0 - exp(-d * extinction * stepM);
       accumulated += transmittance * absorbed * (ambient + direct + multipleScatter);
@@ -138,6 +143,7 @@ const FRAG = /* glsl */ `
     // cell boundary. Straight alpha is required by Three's normal blending.
     vec3 radiance = accumulated / max(alpha, 0.001);
     vec3 haze = mix(vec3(0.012, 0.02, 0.042), vec3(0.36, 0.47, 0.61), uDayness);
+    haze = mix(haze, vec3(0.66, 0.40, 0.31) * (0.4 + uDayness * 0.7), uDusk * 0.6); // warm horizon haze
     radiance = mix(radiance, haze, 1.0 - exp(-distanceToCloud * 0.000025));
     gl_FragColor = vec4(radiance, alpha * fade);
     vec4 clipEntry = projectionMatrix * viewMatrix * vec4(cameraPosition + ray * firstDensityT, 1.0);

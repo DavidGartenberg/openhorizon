@@ -19,7 +19,7 @@ export interface ApReadout {
   lit: Partial<Record<ApAction, boolean>>
   hasAutothrottle: boolean
   atText: string
-  /** Autoland fitted, and its phase annunciation (LAND ARM / LAND / FLARE / ROLLOUT), or ''. */
+  /** Autoland fitted, and its phase annunciation (LAND ARM / LAND / ROLLOUT), or ''. */
   hasAutoland: boolean
   landText: string
   sel: { heading: number; altitude: number; vs: number; ias: number }

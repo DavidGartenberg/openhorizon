@@ -84,11 +84,12 @@ export function boeingFma(s: { master: boolean; fdOn: boolean; lateral: string; 
   const rollArmed = engaged && s.lateralArmed ? rollMap[s.lateral] ?? s.lateral : s.lateral === 'APR' && s.lateralArmed ? 'VOR/LOC' : ''
   const pitch = engaged && !s.verticalArmed ? pitchMap[s.vertical] ?? s.vertical : ''
   const pitchArmed = engaged && s.verticalArmed ? (s.vertical === 'GS' ? 'G/S' : pitchMap[s.vertical] ?? '') : ''
-  // Autoland: FLARE in the pitch box, ROLLOUT in the roll box (737NG style).
+  // Autoland: ROLLOUT in the roll box once on the runway. The flare itself is
+  // not annunciated on screen (the pitch box just keeps showing G/S).
   const phase = s.master ? s.autoland : undefined
   return {
     at: phase === 'FLARE' || phase === 'ROLLOUT' ? 'RETARD' : s.atMode && s.atMode !== 'OFF' ? s.atMode : s.speedMode ? 'MCP SPD' : '',
-    roll: phase === 'ROLLOUT' ? 'ROLLOUT' : roll, rollArmed, pitch: phase === 'FLARE' ? 'FLARE' : phase === 'ROLLOUT' ? '' : pitch, pitchArmed,
+    roll: phase === 'ROLLOUT' ? 'ROLLOUT' : roll, rollArmed, pitch: phase === 'FLARE' ? 'G/S' : phase === 'ROLLOUT' ? '' : pitch, pitchArmed,
     ap: s.master ? 'CMD' : s.fdOn ? 'FD' : '',
     land: phase === 'ARMED' ? 'LAND ARM' : phase === 'LAND' || phase === 'FLARE' || phase === 'ROLLOUT' ? 'LAND' : '',
   }

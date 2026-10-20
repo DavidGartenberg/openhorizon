@@ -311,7 +311,6 @@ export function stepAutoland(s: AutolandState, dt: number, i: AutolandInputs, cf
         s.alpha0 = i.alphaDeg
         s.ias0 = Math.max(i.iasKt, 30)
       }
-      announce('FLARE')
     }
   }
 
@@ -420,7 +419,7 @@ export function stepAutoland(s: AutolandState, dt: number, i: AutolandInputs, cf
   }
 
   if (s.phase === 'FLARE') {
-    out.annunciation = 'FLARE'
+    out.annunciation = 'LAND' // the flare is silent on screen: autoland just keeps saying LAND
     s.flareT += dt
     out.gearDown = cfg.retractableGear
     out.spoilerArm = cfg.spoilers

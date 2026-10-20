@@ -3931,7 +3931,7 @@ function apReadout(): ApReadout {
       alt: apPanel.vertical === 'ALT', vs: apPanel.vertical === 'VS', flc: apPanel.vertical === 'FLC', at: atArmSwitch, land: apPanel.autoland,
     },
     hasAutoland: autolandConfig() !== null,
-    landText: apPanel.autoland ? (autoland.phase === 'OFF' ? 'LAND ARM' : autoland.phase === 'ARMED' ? 'LAND ARM' : autoland.phase === 'DONE' ? 'DONE' : autoland.phase) : '',
+    landText: apPanel.autoland ? (autoland.phase === 'OFF' || autoland.phase === 'ARMED' ? 'LAND ARM' : autoland.phase === 'DONE' ? 'DONE' : autoland.phase === 'FLARE' ? 'LAND' : autoland.phase) : '',
     hasAutothrottle: !!DECK_PROFILE?.autothrottle,
     atText: autothrottle.mode,
     sel: { heading: apPanel.sel.headingDeg, altitude: apPanel.sel.altitudeFt, vs: apPanel.sel.vsFpm, ias: apPanel.sel.iasKt },
