@@ -25,6 +25,7 @@ import { loadCustomPack } from './audio/custom-audio-pack'
 import { LocalVoiceClient } from './voice/client'
 import { PushToTalk } from './voice/ptt'
 import { captureMicrophone } from './voice/recorder'
+import { captureWebSpeech, webSpeechAvailable } from './voice/web-speech'
 import { bindPushToTalk } from './voice/bindings'
 import { FlightRecorder, analyzeLanding, type RunwayRef } from './sim/recorder'
 import { buildAtis } from './sim/atc/atis'
@@ -1841,16 +1842,27 @@ const talkButton=document.createElement('button');talkButton.textContent='Hold t
 const menuButton=document.createElement('button');menuButton.textContent='ATC menu · `';menuButton.onclick=()=>{if(!activeAtc){toast('NO ATC IN RANGE');return}atcMenuOpen=!atcMenuOpen;renderAtcMenu()}
 const cancelVoice=document.createElement('button');cancelVoice.textContent='Cancel';cancelVoice.onclick=()=>voicePtt?.cancel()
 const retryVoice=document.createElement('button');retryVoice.textContent='Check local voice';retryVoice.onclick=()=>{void refreshVoice()}
-const voiceStatus=document.createElement('div');voiceStatus.id='atc-voice-status';voiceStatus.setAttribute('role','status');voiceStatus.textContent='Checking local speech…'
+const voiceStatus=document.createElement('div');voiceStatus.id='atc-voice-status';voiceStatus.setAttribute('role','status');voiceStatus.textContent='Checking speech…'
 const voiceHelp=document.createElement('div');voiceHelp.textContent='Microphone only while held · local Whisper · max 20 seconds · typed ATC in menu'
 voicePanel.append(talkButton,menuButton,cancelVoice,retryVoice,voiceStatus,voiceHelp);document.body.append(voicePanel)
-voicePtt=new PushToTalk({capture:captureMicrophone,transcribe:(audio,signal)=>localVoice.transcribe(audio,signal),send:sendFreeTextAtc,suspend:setRadioListening,context:()=>`${flightVoiceEpoch}:${activeAtc?.ident}:${radios.com1.activeMhz}`,allowed:()=>document.hasFocus()&&!document.hidden&&localVoice.status.transcription&&!!activeAtc&&!loop.paused&&input.enabled&&!safetySpeech.captureBlocked,onState:state=>{voiceStatus.textContent=state.message;talkButton.setAttribute('aria-pressed',String(state.phase==='listening'));voicePanel.dataset.phase=state.phase}})
+/** Local Whisper when it is set up (audio never leaves this computer); otherwise the
+ *  browser's own speech recognition, so talking to ATC works with nothing installed. */
+const useBrowserSpeech=()=>!localVoice.status.transcription&&webSpeechAvailable()
+voicePtt=new PushToTalk({capture:signal=>useBrowserSpeech()?captureWebSpeech(signal,text=>{if(voicePtt?.state.phase==='listening')voiceStatus.textContent=text?`Hearing: “${text}”`:'Listening — speak now'},()=>voicePtt?.hold('toggle',false)):captureMicrophone(signal,()=>voicePtt?.hold('toggle',false)),transcribe:(audio,signal)=>localVoice.transcribe(audio,signal),send:sendFreeTextAtc,suspend:setRadioListening,context:()=>`${flightVoiceEpoch}:${activeAtc?.ident}:${radios.com1.activeMhz}`,allowed:()=>document.hasFocus()&&!document.hidden&&(localVoice.status.transcription||webSpeechAvailable())&&!!activeAtc&&!loop.paused&&input.enabled&&!safetySpeech.captureBlocked,onState:state=>{voiceStatus.textContent=useBrowserSpeech()&&state.phase==='processing'?'Understanding…':useBrowserSpeech()&&state.phase==='listening'?'Listening — speak, then release to transmit':state.message;talkButton.setAttribute('aria-pressed',String(state.phase==='listening'));voicePanel.dataset.phase=state.phase}})
 const unbindVoice=bindPushToTalk(voicePtt,talkButton,window,()=>input.enabled&&!loop.paused)
 window.addEventListener('pagehide',()=>{unbindVoice();browserSpeech.cancel()},{once:true})
 async function refreshVoice():Promise<void>{
   retryVoice.disabled=true
-  try{const status=await localVoice.refresh();voiceStatus.textContent=status.transcription?'Local Whisper ready — hold T to talk':'Local Whisper unavailable — use typed ATC; see docs/voice-atc.md';voiceHelp.textContent=`Mic only while held · local processing · max 20s · ${status.synthesis?'local spoken replies':'browser spoken replies (may be unsupported)'}`}
-  catch{voiceStatus.textContent='Local speech service unavailable — use typed ATC; see docs/voice-atc.md'}
+  try{
+    const status=await localVoice.refresh()
+    if(status.transcription){voiceStatus.textContent='Local Whisper ready — hold T to talk';voiceHelp.textContent=`Mic only while held · local processing · max 20s · ${status.synthesis?'local spoken replies':'browser spoken replies (may be unsupported)'}`}
+    else if(webSpeechAvailable()){voiceStatus.textContent='Voice ready — hold T and talk to ATC';voiceHelp.textContent='Mic only while held · uses your browser’s speech recognition (its speech service processes the audio) · local Whisper is the offline option, see docs/voice-atc.md'}
+    else{voiceStatus.textContent='No speech recognition in this browser — use Chrome, Edge or Safari, or typed ATC; see docs/voice-atc.md'}
+  }
+  catch{
+    if(webSpeechAvailable()){voiceStatus.textContent='Voice ready — hold T and talk to ATC';voiceHelp.textContent='Mic only while held · uses your browser’s speech recognition (its speech service processes the audio) · local Whisper is the offline option, see docs/voice-atc.md'}
+    else voiceStatus.textContent='Speech unavailable — use typed ATC; see docs/voice-atc.md'
+  }
   finally{retryVoice.disabled=false}
 }
 void refreshVoice()
@@ -1867,6 +1879,7 @@ function sendFreeTextAtc(said: string): void {
     windKt: wxBlended?.windKt ?? 0,
     altimeterInHg: wxBlended?.qnhInHg,
     taxiVia: taxiRouteIdents(),
+    altitudeFt: aircraft.data.altitudeFt,
   })
   const facility = `${a.ident.startsWith('K') ? a.ident.slice(1) : a.ident} Tower`
   const keyUp = (freq: number): void => {
@@ -4007,6 +4020,17 @@ shell = new Shell({
     fov: { get: () => viewFovDeg, set: (v) => { viewFovDeg = Math.min(100, Math.max(40, v)); try { localStorage.setItem('oh-fov', String(viewFovDeg)) } catch { /* storage unavailable */ } }, min: 40, max: 100 },
   },
   checklist: { state: checklistState },
+  voice: {
+    // Click once, talk, and it sends itself when you stop (or click again to send now).
+    toggle: () => {
+      const p = voicePtt?.state.phase
+      if (p === 'listening' || p === 'requesting') { voicePtt?.hold('toggle', false); return }
+      if (!activeAtc) { toast('NO ATC IN RANGE\nTUNE A TOWER OR GROUND FREQUENCY, THEN CLICK TALK'); return }
+      shell?.open('atc')
+      voicePtt?.hold('toggle', true)
+    },
+    listening: () => voicePtt?.state.phase === 'listening' || voicePtt?.state.phase === 'requesting',
+  },
   assist: { get: () => assistMode, set: (m) => { assistMode = m } },
   pause: { paused: () => loop.paused, toggle: () => loop.setRate(loop.paused ? 1 : 0) },
   navLog: () => {

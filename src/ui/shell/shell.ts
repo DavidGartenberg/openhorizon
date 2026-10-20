@@ -41,6 +41,8 @@ export interface ShellDeps {
   clearPlan(): void
   instruments: { visible: boolean; on: boolean; set(v: boolean): void }
   camera: { get(): CameraMode; set(m: CameraMode): void; fov: { get(): number; set(deg: number): void; min: number; max: number } }
+  /** Click-to-talk: start/stop listening for an ATC transmission. */
+  voice: { toggle(): void; listening(): boolean }
   /** Real aircraft state for the checklists. */
   checklist: { state(): ChecklistState }
   assist: { get(): AssistMode; set(m: AssistMode): void }
@@ -197,6 +199,7 @@ export class Shell {
       { id: 'camera', label: 'Camera', icon: 'camera', onClick: toggle('camera'), active: open('camera'), separatorBefore: true },
       { id: 'checklist', label: 'Checklist', icon: 'checklist', onClick: toggle('checklist'), active: open('checklist') },
       { id: 'atc', label: 'ATC', icon: 'atc', onClick: toggle('atc'), active: open('atc') },
+      { id: 'talk', label: 'Talk to ATC', icon: 'mic', onClick: () => d.voice.toggle(), active: () => d.voice.listening() },
       { id: 'instruments', label: 'Instruments', icon: 'gauge', onClick: () => d.instruments.set(!d.instruments.on), active: () => d.instruments.on },
       { id: 'info', label: 'Flight info', icon: 'info', onClick: () => { d.flightInfo.visible = !d.flightInfo.visible; this.saveInfo() }, active: () => d.flightInfo.visible },
       { id: 'navlog', label: 'Nav log', icon: 'navlog', onClick: toggle('navlog'), active: open('navlog') },

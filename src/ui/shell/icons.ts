@@ -15,6 +15,7 @@ export const ICONS: Record<string, string> = {
   keys: '<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h1M11 10h1M15 10h1M7 14h10"/>',
   plane: '<path d="M12 3c.8 0 1.4.8 1.4 1.8V10l7 4v2l-7-2v4l2 1.5V21l-3.4-1-3.4 1v-1.5l2-1.5v-4l-7 2v-2l7-4V4.8C10.6 3.8 11.2 3 12 3z"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/>',
   minimize: '<path d="M6 12h12"/>',
   checklist: '<rect x="5" y="4" width="14" height="17" rx="1.5"/><path d="M9 3v3h6V3"/><path d="M8.5 11l1.6 1.6 2.9-3M8.5 17l1.6 1.6 2.9-3"/>',
   search: '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5"/>',
