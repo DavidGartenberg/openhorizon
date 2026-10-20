@@ -23,7 +23,7 @@ import { animate737, update737Live } from './render/cockpit-737'
 import { BoeingAuralsAudio } from './audio/boeing-aurals-audio'
 import { loadCustomPack } from './audio/custom-audio-pack'
 import { LocalVoiceClient } from './voice/client'
-import { PushToTalk } from './voice/ptt'
+import { PushToTalk, normalizeAviation } from './voice/ptt'
 import { captureMicrophone } from './voice/recorder'
 import { captureWebSpeech, webSpeechAvailable } from './voice/web-speech'
 import { bindPushToTalk } from './voice/bindings'
@@ -1817,7 +1817,7 @@ atcTypeBox.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && atcTypeBox.value.trim()) {
     const said = atcTypeBox.value.trim()
     atcTypeBox.value = ''
-    sendFreeTextAtc(said)
+    sendFreeTextAtc(normalizeAviation(said)) // typed "heading two seven zero" works like spoken
   } else if (e.key === 'Escape') {
     atcTypeBox.style.display = 'none'
     input.enabled = true
