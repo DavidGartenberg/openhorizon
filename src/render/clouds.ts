@@ -147,7 +147,7 @@ const FRAG = /* glsl */ `
     // Sunset clouds read as saturated orange-rose, not cream: push chroma
     // away from the luma before tone mapping desaturates it.
     float cloudLuma = dot(radiance, vec3(0.2126, 0.7152, 0.0722));
-    radiance = max(mix(vec3(cloudLuma), radiance, 1.0 + 0.45 * uDusk), vec3(0.0)) * (1.0 - 0.14 * uDusk);
+    radiance = max(mix(vec3(cloudLuma), radiance, 1.0 + 0.7 * uDusk), vec3(0.0)) * (1.0 - 0.26 * uDusk);
     vec3 haze = mix(vec3(0.012, 0.02, 0.042), vec3(0.36, 0.47, 0.61), uDayness);
     haze = mix(haze, vec3(0.66, 0.40, 0.31) * (0.4 + uDayness * 0.7), uDusk * 0.6); // warm horizon haze
     radiance = mix(radiance, haze, 1.0 - exp(-distanceToCloud * 0.000025));
