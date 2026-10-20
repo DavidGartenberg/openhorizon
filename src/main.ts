@@ -103,7 +103,7 @@ import { FlightPlan, gpsCdiDeflection, determinePhase, activeLegProgress } from 
 import { airspacesContaining, AirspaceKind, type AirspacePolygon } from './sim/nav/airspace'
 import { makeAutopilotState, stepAutopilot, disconnect as disconnectAutopilot, type LateralMode, type VerticalMode } from './sim/autopilot'
 import {
-  findTunedVor, vorCdiFraction, ilsRefFromRunwayThreshold, localizerFraction, glideslopeFraction, findKnownIls,
+  findTunedVor, vorCdiFraction, ilsRefFromRunwayThreshold, runwayOffsets, localizerFraction, glideslopeFraction, findKnownIls,
   ilsOnFinal, NO_NAV_RESULT, type TunedNavResult,
 } from './sim/nav/tuning'
 import { finiteOr } from './sim/guards'
@@ -2298,8 +2298,9 @@ function computeTunedNav(aircraftLL: { lat: number; lon: number }, altitudeFt: n
     return {
       source: 'LOC', identifier: `${ap.i} ${known.runway}`,
       deflectionFraction: loc.deflectionFraction, hasGlideslope: true, glideslopeFraction: gs,
-      stationRangeM: distanceM(aircraftLL, { lat: threshold.lat, lon: threshold.lon }),
+      stationRangeM: distanceM(aircraftLL, ils.locAntenna ?? { lat: threshold.lat, lon: threshold.lon }),
       courseDeg: ils.courseDeg,
+      runway: { ...runwayOffsets(ils, aircraftLL), lengthM: distanceM({ lat: threshold.lat, lon: threshold.lon }, opposite) },
     }
   }
   const nearbyNavaids = navaidsIndex.near(aircraftLL.lat, aircraftLL.lon, 200 * 1852)

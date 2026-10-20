@@ -105,6 +105,21 @@ export interface AutopilotInputs {
    *  integrator to discover ~12° of crab over minutes — the crosswind
    *  instant-capture case diverged without this). Falls back to heading. */
   trackDeg?: number
+
+  // ---- autoland overrides (sim/autoland.ts owns these for the flare and
+  //      rollout; all optional, so every other caller is untouched) ----
+  /** Fly this pitch attitude instead of the vertical-mode law (flare,
+   *  derotation). Trim stops following while it is set. */
+  pitchTargetOverrideDeg?: number
+  /** Fly this bank angle instead of the lateral-mode law (autoland's
+   *  centerline tracking from short final through the flare). */
+  bankTargetOverrideDeg?: number
+  /** Tighter bank limit than MAX_BANK_DEG (wings nearly level in the flare,
+   *  exactly level on the rollout). */
+  maxBankDeg?: number
+  /** Rudder / nosewheel demand [-1, 1] replacing the turn-coordination
+   *  feed-forward (decrab in the flare, centerline steering on the rollout). */
+  yawOverride?: number
 }
 
 // ---- output / state ----
@@ -715,6 +730,8 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       targetBankDeg = clamp(2.0 * headingErrorDeg(desiredHeadingDeg, refDeg), -MAX_BANK_DEG, MAX_BANK_DEG)
     }
   }
+  if (inputs.bankTargetOverrideDeg !== undefined) targetBankDeg = inputs.bankTargetOverrideDeg
+  if (inputs.maxBankDeg !== undefined) targetBankDeg = clamp(targetBankDeg, -inputs.maxBankDeg, inputs.maxBankDeg)
   state.fdBankDeg = targetBankDeg
 
   // ================= VERTICAL =================
@@ -799,6 +816,10 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       trimEligible = true
     }
   }
+  if (inputs.pitchTargetOverrideDeg !== undefined) {
+    targetPitchDeg = clamp(inputs.pitchTargetOverrideDeg, -8, 15)
+    trimEligible = false
+  }
   state.fdPitchDeg = targetPitchDeg
 
   // ================= INNER ATTITUDE LOOPS -> CONTROL SURFACES =================
@@ -816,10 +837,19 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
   // overshoot once the target passed). See fix report for before/after
   // convergence numbers across 20/40/60/180 deg initial errors.
   const bankError = targetBankDeg - inputs.rollDeg
-  const rawRoll = clamp(pidUpdateOnMeasurement(state.bankAttitude, bankError, inputs.rollDeg, dt, 0.05, 0.005, 0.4, 3) * gain, -1, 1)
+  // Autoland's centerline tracking commands bank of a degree or two, where
+  // the ordinary loop's proportional gain leaves a large steady error
+  // (found in closed loop: the 737 banked half of what was asked and the
+  // path rang) — it flies with stiffer gains and a real integral.
+  const stiff = inputs.bankTargetOverrideDeg !== undefined
+  const rawRoll = clamp(pidUpdateOnMeasurement(state.bankAttitude, bankError, inputs.rollDeg, dt, stiff ? 0.14 : 0.05, stiff ? 0.03 : 0.005, 0.4, stiff ? 4 : 3) * gain, -1, 1)
 
   const pitchError = targetPitchDeg - inputs.pitchDeg
-  const rawPitch = clamp(pidUpdate(state.pitchAttitude, pitchError, dt, 0.08, 0.03, 0.02, 30) * gain, -1, 1)
+  // The flare commands pitch changes of several degrees in a couple of
+  // seconds; the ordinary loop lags them by ~2 s on a transport, which
+  // balloons the flare (found in closed loop) — so it flies stiffer.
+  const stiffPitch = inputs.pitchTargetOverrideDeg !== undefined
+  const rawPitch = clamp(pidUpdate(state.pitchAttitude, pitchError, dt, stiffPitch ? 0.2 : 0.08, stiffPitch ? 0.04 : 0.03, stiffPitch ? 0.05 : 0.02, 30) * gain, -1, 1)
 
   if (state.masterEnabled) {
     state.rollCmd = rateLimit(state.rollCmd, rawRoll, SERVO_RATE_PER_S, dt)
@@ -827,7 +857,9 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
     // Basic turn-coordination feed-forward (a design choice, not a full yaw
     // damper): a little rudder in the direction of the commanded roll to
     // offset adverse yaw.
-    state.yawCmd = clamp(state.rollCmd * 0.2, -1, 1)
+    state.yawCmd = inputs.yawOverride !== undefined
+      ? rateLimit(state.yawCmd, clamp(inputs.yawOverride, -1, 1), 4, dt)
+      : clamp(state.rollCmd * 0.2, -1, 1)
 
     if (trimEligible) {
       state.trimCommand = clamp(state.trimCommand + state.pitchCmd * TRIM_FOLLOWUP_RATE_PER_S * dt, -1, 1)
