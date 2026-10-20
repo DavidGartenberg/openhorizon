@@ -57,7 +57,7 @@ describe('cockpit profiles tailor the deck to each airplane', () => {
     expect(cub.ga).toMatchObject({ control: 'stick', hasElectrical: false, hasFlaps: false, hasEngine: true })
     expect(cub.placard).toBe('PIPER J-3 CUB')
     expect(cockpitProfile('172', C172S, { label: 'Cessna 172S', powerplant: { kind: 'piston', count: 1 } }).ga).toMatchObject({ control: 'yoke', hasFlaps: true, hasElectrical: true })
-    expect(cockpitProfile('737', B738, { label: 'Boeing 737-800', powerplant: { kind: 'jet', count: 2 } }).deck).toMatchObject({ maker: 'boeing', du: 'six', engines: 2 })
+    expect(cockpitProfile('737', B738, { label: 'Boeing 737-800', powerplant: { kind: 'jet', count: 2 } }).deck).toMatchObject({ maker: 'boeing', du: 'fourWide', engines: 2 }) // the default 737 flies the MAX-style four-display deck (pilot's request)
   })
   it('every roster type resolves to a complete profile with a palette and its own name plate', () => {
     for (const e of ROSTER) {
