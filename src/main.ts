@@ -2399,7 +2399,7 @@ function makeBoeingPfdInput(d: typeof aircraft.data, nav: ReturnType<typeof comp
     ...(arcs ? { vArcs: { whiteLow: arcs.whiteLowKt, whiteHigh: arcs.whiteHighKt, greenLow: arcs.greenLowKt, greenHigh: arcs.greenHighKt, yellowLow: arcs.yellowLowKt, yellowHigh: arcs.yellowHighKt } } : {}),
     ...(nav.source === 'LOC' ? { loc: nav.deflectionFraction * 2 } : {}),
     ...(nav.hasGlideslope && nav.glideslopeFraction !== undefined ? { gs: nav.glideslopeFraction * 2 } : {}),
-    fma: boeingFma({ master: apState.masterEnabled, fdOn, lateral: apState.lateralMode, lateralArmed: apState.lateralArmed, vertical: apState.verticalMode, verticalArmed: apState.verticalArmed, speedMode: atMode === 'MCP SPD', atMode, onGround: d.onGround }),
+    fma: boeingFma({ master: apState.masterEnabled, fdOn, lateral: apState.lateralMode, lateralArmed: apState.lateralArmed, vertical: apState.verticalMode, verticalArmed: apState.verticalArmed, speedMode: atMode === 'MCP SPD', atMode, onGround: d.onGround, autoland: apPanel.autoland ? autoland.phase : undefined }),
   }
 }
 
