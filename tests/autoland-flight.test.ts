@@ -30,7 +30,7 @@ function check(P: AircraftParams, o: Omit<LandingOpts, 'P'>, lim: Limits): void 
   expect(r.tailStrike, 'tail strike attitude').toBe(false)
   expect(r.maxCrossRolloutM, 'centerline excursion on the rollout').toBeLessThanOrEqual(lim.rolloutXt)
   expect(r.doneAtS, 'rollout completed').not.toBeNull()
-  expect(r.stoppedOrSlowKt, 'handed back at taxi speed').toBeLessThanOrEqual(21)
+  expect(r.stoppedOrSlowKt, 'rollout runs to a stop').toBeLessThanOrEqual(5)
 }
 
 describe('autoland: Cessna 172 (5 nm final, flaps and speed managed by autoland)', () => {
@@ -42,6 +42,8 @@ describe('autoland: Cessna 172 (5 nm final, flaps and speed managed by autoland)
   it('15 kt crosswind from the right', () => check(C172S, { ...base, crosswindKt: 15 }, lim))
   it('15 kt crosswind from the left', () => check(C172S, { ...base, crosswindKt: -15 }, lim))
   it('gusty headwind', () => check(C172S, { ...base, headwindKt: 8, gustKt: 5 }, lim))
+  it('ILS datum 15 ft higher than the real runway', () => check(C172S, { ...base, ilsElevErrorFt: 15 }, lim))
+  it('ILS datum 15 ft lower than the real runway', () => check(C172S, { ...base, ilsElevErrorFt: -15 }, lim))
   it('starting 150 m right of the localizer', () => check(C172S, { ...base, offsetM: 150 }, lim))
   it('starting 150 m left of the localizer', () => check(C172S, { ...base, offsetM: -150 }, lim))
   it('20 kt crosswind with gusts', () => check(C172S, { ...base, crosswindKt: 20, headwindKt: 5, gustKt: 4 }, lim))
@@ -57,6 +59,8 @@ describe('autoland: Boeing 737-800 (7 nm final, flaps 5 → landing flaps by aut
   it('15 kt crosswind from the left', () => check(B738, { ...base, crosswindKt: -15 }, lim))
   it('gusty headwind', () => check(B738, { ...base, headwindKt: 8, gustKt: 5 }, lim))
   it('gusty headwind, different gust phase', () => check(B738, { ...base, headwindKt: 8, gustKt: 5, gustPhaseS: 17 }, lim))
+  it('ILS datum 20 ft higher than the real runway', () => check(B738, { ...base, ilsElevErrorFt: 20 }, lim))
+  it('ILS datum 20 ft lower than the real runway', () => check(B738, { ...base, ilsElevErrorFt: -20 }, lim))
   it('starting 150 m off the localizer', () => check(B738, { ...base, offsetM: 150 }, lim))
   it('20 kt crosswind with gusts', () => check(B738, { ...base, crosswindKt: 20, headwindKt: 5, gustKt: 4 }, { ...lim, rolloutXt: 16 }))
 })

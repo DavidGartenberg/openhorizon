@@ -168,7 +168,7 @@ describe('stepAutoland state machine', () => {
     expect(o.throttle).toBe(0)
   })
 
-  it('touchdown → ROLLOUT: spoilers, reversers and brakes only after the nose settles; hands back near taxi speed', () => {
+  it('touchdown → ROLLOUT: spoilers, reversers and brakes only after the nose settles; ends stopped on the runway', () => {
     const { s } = step(makeAutolandState(), inputs())
     stepAutoland(s, dt, inputs({ radioAltFt: 38, verticalSpeedFpm: -730 }), jet)
     let o = stepAutoland(s, dt, inputs({ radioAltFt: 0, onGround: true, verticalSpeedFpm: 0, groundSpeedKt: 140, pitchDeg: 7 }), jet)
@@ -183,12 +183,12 @@ describe('stepAutoland state machine', () => {
     expect(o.throttle).toBe(0)
     let handedBack: typeof o | null = null
     for (let k = 0; k < 400 && !handedBack; k++) {
-      o = stepAutoland(s, dt, inputs({ radioAltFt: 0, onGround: true, verticalSpeedFpm: 0, groundSpeedKt: 15, pitchDeg: 0 }), jet)
+      o = stepAutoland(s, dt, inputs({ radioAltFt: 0, onGround: true, verticalSpeedFpm: 0, groundSpeedKt: 3, pitchDeg: 0 }), jet)
       if (o.disconnect) handedBack = o
     }
     expect(s.phase).toBe('DONE')
     expect(handedBack).not.toBeNull() // a one-shot, so the app disconnects exactly once
-    expect(handedBack!.brake).toBe(0)
+    expect(handedBack!.brake).toBeGreaterThan(0) // the airplane is held still, not released
     expect(handedBack!.reverse).toBe(false)
     expect(handedBack!.message).toMatch(/AUTOLAND COMPLETE/)
     expect(stepAutoland(s, dt, inputs({ onGround: true, groundSpeedKt: 10 }), jet).disconnect).toBe(false)

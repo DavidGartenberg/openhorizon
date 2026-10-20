@@ -7,7 +7,7 @@
  */
 import type { Knob } from '../../sim/ap-panel'
 
-export type ApAction = 'ap' | 'hdg' | 'nav' | 'apr' | 'alt' | 'vs' | 'flc' | 'at'
+export type ApAction = 'ap' | 'hdg' | 'nav' | 'apr' | 'alt' | 'vs' | 'flc' | 'at' | 'land'
 
 export interface ApReadout {
   master: boolean
@@ -19,6 +19,9 @@ export interface ApReadout {
   lit: Partial<Record<ApAction, boolean>>
   hasAutothrottle: boolean
   atText: string
+  /** Autoland fitted, and its phase annunciation (LAND ARM / LAND / FLARE / ROLLOUT), or ''. */
+  hasAutoland: boolean
+  landText: string
   sel: { heading: number; altitude: number; vs: number; ias: number }
   /** Currently tuned NAV1 frequency, MHz. */
   nav1: number
@@ -46,6 +49,8 @@ const CSS = `
 .oh-ap .oh-btns button{padding:10px 0 !important;letter-spacing:.1em;font-weight:700 !important}
 .oh-ap .oh-btns button.lit{background:var(--oh-accent) !important;border-color:var(--oh-accent) !important;color:#04121f !important}
 .oh-ap .oh-btns button.ap{grid-column:span 2}
+.oh-ap .oh-btns button.land{grid-column:span 4;letter-spacing:.14em}
+.oh-ap .oh-btns button.land.lit{background:#3fe06a !important;border-color:#3fe06a !important}
 .oh-ap .oh-btns button.ap.lit{background:#3fe06a !important;border-color:#3fe06a !important}
 .oh-ap .oh-btns button[hidden]{display:none}
 .oh-ap .oh-sel{display:grid;grid-template-columns:70px 1fr;gap:4px 10px;align-items:center;margin-top:12px}
@@ -85,7 +90,7 @@ export function buildApWindow(body: HTMLElement, d: ApWindowDeps): () => void {
     btns.appendChild(b)
     buttons.set(a, b)
   }
-  mk('ap', 'AUTOPILOT', 'ap'); mk('at', 'A/T'); mk('hdg', 'HDG'); mk('nav', 'NAV'); mk('apr', 'APR'); mk('alt', 'ALT'); mk('vs', 'VS'); mk('flc', 'FLC')
+  mk('ap', 'AUTOPILOT', 'ap'); mk('at', 'A/T'); mk('hdg', 'HDG'); mk('nav', 'NAV'); mk('apr', 'APR'); mk('alt', 'ALT'); mk('vs', 'VS'); mk('flc', 'FLC'); mk('land', 'AUTOLAND', 'land')
   const sel = document.createElement('div')
   sel.className = 'oh-sel'
   const values = new Map<Knob, HTMLElement>()
@@ -125,6 +130,12 @@ export function buildApWindow(body: HTMLElement, d: ApWindowDeps): () => void {
     for (const [a, b] of buttons) {
       b.classList.toggle('lit', !!r.lit[a])
       if (a === 'at') { b.hidden = !r.hasAutothrottle; if (r.hasAutothrottle) b.title = r.atText }
+      if (a === 'land') {
+        b.hidden = !r.hasAutoland
+        const label = r.landText ? `AUTOLAND · ${r.landText}` : 'AUTOLAND'
+        if (b.textContent !== label) b.textContent = label
+        b.title = 'Arms the localizer, glideslope, flare and rollout: tune an ILS, press once, and the airplane lands itself.'
+      }
     }
     const set = (k: Knob, text: string): void => { const v = values.get(k); if (v && v.textContent !== text) v.textContent = text }
     set('heading', `${String(r.sel.heading).padStart(3, '0')}°`)

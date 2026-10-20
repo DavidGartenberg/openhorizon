@@ -241,6 +241,8 @@ export interface TunedNavResult {
   /** Distance to the tracked station (LOC: runway threshold), meters — feeds
    *  `AutopilotInputs.navRangeM` for range-normalized angular tracking. */
   stationRangeM?: number
+  /** Distance to the glideslope antenna (LOC with a glideslope), metres. */
+  glideslopeRangeM?: number
   /** Localizer front course, degrees true — the AP's course datum once APR
    *  captures (the heading bug is slewed to it, standing in for a real
    *  GFC700's CDI-course input). */
@@ -248,7 +250,7 @@ export interface TunedNavResult {
   /** Present for a localizer: where the aircraft is on the runway (metres
    *  along from the threshold / across from the centerline, right +) and
    *  the runway length — autoland's flare and rollout geometry. */
-  runway?: { alongM: number; crossM: number; lengthM: number }
+  runway?: { alongM: number; crossM: number; lengthM: number; glidepathHeightFt: number; glidepathAngleDeg: number }
 }
 
 /** The "no signal" result — used whenever nothing is tuned/receivable, so
@@ -265,4 +267,14 @@ export function runwayOffsets(ils: IlsRef, aircraft: LatLon): { alongM: number; 
   const d = distanceM(ils.threshold, aircraft)
   const rel = bearing - (ils.courseDeg * Math.PI) / 180
   return { alongM: d * Math.cos(rel), crossM: d * Math.sin(rel) }
+}
+
+/** Height of the glidepath above the runway at a position along it, ft:
+ *  the beam rises at its angle from the glideslope antenna, so it is zero at
+ *  the antenna (the touchdown point) and climbs back down the approach.
+ *  `alongM` is the aircraft's distance from the threshold (negative on final). */
+export function glidepathHeightFt(ils: IlsRef, alongM: number): number {
+  const antennaAlongM = runwayOffsets(ils, ils.gsAntenna).alongM
+  const angleRad = ((ils.gsAngleDeg ?? 3) * Math.PI) / 180
+  return Math.max(0, antennaAlongM - alongM) * Math.tan(angleRad) / 0.3048
 }

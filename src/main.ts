@@ -17,6 +17,7 @@ import { BrowserSpeechDriver } from './audio/browser-speech'
 import { makeSurfaceSmoother } from './render/surface-smoother'
 import { boeingAurals, makeAuralLatches } from './sim/boeing-aurals'
 import { makeAutothrottle, stepAutothrottle } from './sim/autothrottle'
+import { autolandConfigFor, makeAutolandState, stepAutoland, radioAltitudeFt, type AutolandConfig, type AutolandOutput } from './sim/autoland'
 import { drawBoeingNd, drawBoeingEicas, drawIsfd, boeingFma, egtFromN1, drawSquareFitted, drawMfdWithEngines, type BoeingEicasInput, type BoeingNdInput, type BoeingPfdInput } from './cockpit/boeing-displays'
 import { animate737, update737Live } from './render/cockpit-737'
 import { BoeingAuralsAudio } from './audio/boeing-aurals-audio'
@@ -43,7 +44,7 @@ import { CockpitCamera, EYE_BY_LAYOUT } from './render/cockpit-camera'
 import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from './render/aircraft-mesh'
 import { planeMenuEntries } from './render/plane-menu'
 import { Shell } from './ui/shell/shell'
-import { applyApFeedback, apEnvelopeFault, disconnectAp, makeApPanel, pressAlt, pressAp, pressApr, pressFlc, pressHdg, pressNav, pressVs, toApTargets, turnKnob, type ApAvailability, type ApPanel, type ApSnapshot, type Knob } from './sim/ap-panel'
+import { applyApFeedback, apEnvelopeFault, disconnectAp, makeApPanel, pressAlt, pressAp, pressApr, pressFlc, pressHdg, pressLand, pressNav, pressVs, toApTargets, turnKnob, type ApAvailability, type ApPanel, type ApSnapshot, type Knob } from './sim/ap-panel'
 import type { ApAction, ApReadout, IlsChoice } from './ui/shell/ap-window'
 import { KNOWN_ILS_FREQUENCIES } from './sim/nav/tuning'
 import { Launcher, launchCommand, parsePendingLaunch, PENDING_LAUNCH_KEY, type LaunchChoice, type LauncherAirport } from './ui/shell/launcher'
@@ -103,7 +104,7 @@ import { FlightPlan, gpsCdiDeflection, determinePhase, activeLegProgress } from 
 import { airspacesContaining, AirspaceKind, type AirspacePolygon } from './sim/nav/airspace'
 import { makeAutopilotState, stepAutopilot, disconnect as disconnectAutopilot, type LateralMode, type VerticalMode } from './sim/autopilot'
 import {
-  findTunedVor, vorCdiFraction, ilsRefFromRunwayThreshold, runwayOffsets, localizerFraction, glideslopeFraction, findKnownIls,
+  findTunedVor, vorCdiFraction, ilsRefFromRunwayThreshold, runwayOffsets, glidepathHeightFt, localizerFraction, glideslopeFraction, findKnownIls,
   ilsOnFinal, NO_NAV_RESULT, type TunedNavResult,
 } from './sim/nav/tuning'
 import { finiteOr } from './sim/guards'
@@ -141,6 +142,20 @@ let atArmSwitch = false
 let atSpeedPressed = false
 let atDisconnectPressed = false
 let atResetPressed = false
+/** Autoland (sim/autoland.ts): state machine + the pieces of its output that
+ *  persist between frames (brake demand, last lever it commanded). */
+const autoland = makeAutolandState()
+let autolandBrake = 0
+/** Stopped on the runway after an autoland: brakes keep holding until the pilot takes over. */
+let autolandHoldBrake = false
+let autolandLastThrottle: number | null = null
+let autolandCfgFor: unknown = null
+let autolandCfgCache: AutolandConfig | null = null
+/** Autoland config for the airplane in use (null = not available on this type). */
+function autolandConfig(): AutolandConfig | null {
+  if (autolandCfgFor !== aircraft.P) { autolandCfgFor = aircraft.P; autolandCfgCache = autolandConfigFor(aircraft.P) }
+  return autolandCfgCache
+}
 /** Hardware-lever position frozen while the A/T drives the levers: the
  *  physical lever only overrides (and disconnects) once the pilot moves it. */
 let atHwRef = NaN
@@ -487,6 +502,10 @@ const failures = { alternatorFailed: false, icingConditions: false, staticBlocke
 function resetSystemsState(): void {
   Object.assign(autothrottle, makeAutothrottle())
   atArmSwitch = false
+  Object.assign(autoland, makeAutolandState())
+  autolandBrake = 0
+  autolandHoldBrake = false
+  autolandLastThrottle = null
   // A respawn uses this aircraft's saved loading selection. Snapshot loading
   // is restored after respawn and therefore has explicit higher priority.
   Object.assign(fuelState, makeFuelState(selectedLoading.leftKg, selectedLoading.rightKg))
@@ -2299,8 +2318,9 @@ function computeTunedNav(aircraftLL: { lat: number; lon: number }, altitudeFt: n
       source: 'LOC', identifier: `${ap.i} ${known.runway}`,
       deflectionFraction: loc.deflectionFraction, hasGlideslope: true, glideslopeFraction: gs,
       stationRangeM: distanceM(aircraftLL, ils.locAntenna ?? { lat: threshold.lat, lon: threshold.lon }),
+      glideslopeRangeM: distanceM(aircraftLL, ils.gsAntenna),
       courseDeg: ils.courseDeg,
-      runway: { ...runwayOffsets(ils, aircraftLL), lengthM: distanceM({ lat: threshold.lat, lon: threshold.lon }, opposite) },
+      runway: (() => { const o = runwayOffsets(ils, aircraftLL); return { ...o, lengthM: distanceM({ lat: threshold.lat, lon: threshold.lon }, opposite), glidepathHeightFt: glidepathHeightFt(ils, o.alongM), glidepathAngleDeg: ils.gsAngleDeg ?? 3 } })(),
     }
   }
   const nearbyNavaids = navaidsIndex.near(aircraftLL.lat, aircraftLL.lon, 200 * 1852)
@@ -2571,6 +2591,7 @@ function advanceFrame(elapsed: number, now: number): void {
   let navDeviationForAp = 0
   let glideslopeDeviationForAp = 0
   let navRangeForAp: number | undefined
+  let glideslopeRangeForAp: number | undefined
   if (apTargets.lateralMode === 'APR' || apTargets.lateralMode === 'BC') {
     // SIGN CONTRACT (found by round-4's independent review — the un-negated
     // feed made app-side APR diverge even after the control law was fixed):
@@ -2579,6 +2600,7 @@ function advanceFrame(elapsed: number, now: number): void {
     navDeviationForAp = tunedNav.source === 'LOC' ? -tunedNav.deflectionFraction : 0
     glideslopeDeviationForAp = tunedNav.hasGlideslope ? tunedNav.glideslopeFraction ?? 0 : 0
     navRangeForAp = tunedNav.source === 'LOC' ? tunedNav.stationRangeM : undefined
+    glideslopeRangeForAp = tunedNav.source === 'LOC' && tunedNav.hasGlideslope ? tunedNav.glideslopeRangeM : undefined
   } else if (apTargets.lateralMode === 'NAV') {
     // GPS CDI is already in the AP's aircraft-offset convention (positive =
     // right of course, fixed-width scale). VOR is a NEEDLE deflection like
@@ -2625,7 +2647,47 @@ function advanceFrame(elapsed: number, now: number): void {
         }
       }
 
+      // ---- Autoland: owns speed/config on the approach and the flare +
+      // rollout; its overrides ride on the autopilot's own control laws. ----
+      let al: AutolandOutput | null = null
+      const alCfg = autolandConfig()
+      if (alCfg) {
+        const d = aircraft.data
+        const courseRad = ((tunedNav.courseDeg ?? 0) * Math.PI) / 180
+        const windAlongKt = (aircraft.windNed.x * Math.cos(courseRad) + aircraft.windNed.y * Math.sin(courseRad)) / 0.514444
+        // Pilot grabs the throttle against autoland: it lets go (like a real A/T override).
+        if (autolandLastThrottle !== null && (autoland.phase === 'LAND' || autoland.phase === 'FLARE') && Math.abs(aircraft.controls.throttle - autolandLastThrottle) > 0.12) {
+          apPanel = { ...apPanel, autoland: false }
+          apSay('AUTOLAND OFF — THROTTLE OVERRIDE')
+        }
+        al = stepAutoland(autoland, dt, {
+          armed: apPanel.autoland && systemsControls.apMaster,
+          locCaptured: apState.lateralMode === 'APR' && !apState.lateralArmed,
+          gsCaptured: apState.verticalMode === 'GS' && !apState.verticalArmed,
+          radioAltFt: radioAltitudeFt(d.aglFt, d.pitchDeg, aircraft.P),
+          iasKt: d.kias, tasKt: d.ktas, alphaDeg: d.alphaDeg, groundSpeedKt: d.groundSpeedKt, verticalSpeedFpm: d.verticalSpeedFpm,
+          pitchDeg: d.pitchDeg, rollDeg: d.rollDeg, headingDeg: d.headingDeg, trackDeg: d.trackDeg,
+          yawRateDegS: (aircraft.rates.z * 180) / Math.PI, onGround: d.onGround,
+          courseDeg: tunedNav.courseDeg, crossTrackM: tunedNav.runway?.crossM, headwindKt: -windAlongKt,
+          glidepathHeightFt: tunedNav.runway?.glidepathHeightFt, glidepathAngleDeg: tunedNav.runway?.glidepathAngleDeg,
+          throttle: aircraft.controls.throttle, flapIndex: aircraft.controls.flapsIndex, gearDown: aircraft.gearPos > 0.99,
+        }, alCfg)
+        if (al.message) apSay(al.message)
+        if (al.phase === 'LAND' || al.phase === 'FLARE') apTargets.iasTargetKt = Math.round(al.speedTargetKt)
+        if (al.disconnect) {
+          autolandHoldBrake = true
+          systemsControls.apMaster = false
+          apPanel = disconnectAp(apPanel)
+          disconnectAutopilot(apState)
+          apDisconnectPressedFlag = false
+          Object.assign(autoland, makeAutolandState())
+        }
+      }
       stepAutopilot(apState, dt, {
+        pitchTargetOverrideDeg: al?.pitchTargetDeg,
+        maxBankDeg: al?.maxBankDeg,
+        bankTargetOverrideDeg: al?.bankTargetDeg,
+        yawOverride: al?.yawCmd,
         underlyingVerticalMode: apUnderlying,
         iasKt: aircraft.data.kias,
         altitudeFt: aircraft.data.altitudeFt,
@@ -2645,10 +2707,11 @@ function advanceFrame(elapsed: number, now: number): void {
         navDeviation: navDeviationForAp,
         glideslopeDeviation: glideslopeDeviationForAp,
         navRangeM: navRangeForAp,
+        glideslopeRangeM: glideslopeRangeForAp,
         trackDeg: aircraft.data.trackDeg,
       })
       if (systemsControls.apMaster) {
-        const fault = apEnvelopeFault({ rollDeg: aircraft.data.rollDeg, pitchDeg: aircraft.data.pitchDeg, kias: aircraft.data.kias, vneKt: aircraft.P.vSpeeds.vne, stallFraction: aircraft.data.stallFraction, onGround: aircraft.data.onGround })
+        const fault = apEnvelopeFault({ rollDeg: aircraft.data.rollDeg, pitchDeg: aircraft.data.pitchDeg, kias: aircraft.data.kias, vneKt: aircraft.P.vSpeeds.vne, stallFraction: aircraft.data.stallFraction, onGround: aircraft.data.onGround, autolandRollout: autoland.phase === 'ROLLOUT' })
         if (fault) {
           systemsControls.apMaster = false
           apPanel = disconnectAp(apPanel)
@@ -2657,7 +2720,8 @@ function advanceFrame(elapsed: number, now: number): void {
           toast(fault === 'ON THE GROUND' ? 'AUTOPILOT OFF — TOUCHDOWN' : `AUTOPILOT DISCONNECT — ${fault}`)
         }
       }
-      if (DECK_PROFILE?.autothrottle) {
+      const alThrottle = al?.throttle ?? null
+      if (DECK_PROFILE?.autothrottle && alThrottle === null) {
         const atCmd = stepAutothrottle(autothrottle, dt, {
           armSwitch: atArmSwitch, speedPressed: atSpeedPressed, disconnectPressed: atDisconnectPressed, resetLight: atResetPressed,
           iasKt: aircraft.data.kias, targetKt: apTargets.iasTargetKt, verticalMode: apTargets.verticalMode,
@@ -2667,6 +2731,24 @@ function advanceFrame(elapsed: number, now: number): void {
         })
         atSpeedPressed = atDisconnectPressed = atResetPressed = false
         if (atCmd !== null && !aircraft.reverseCmd) aircraft.controls.throttle = atCmd
+      }
+      // Autoland outputs: lever, configuration, spoilers, reversers, brakes.
+      if (al) {
+        if (alThrottle !== null) {
+          aircraft.controls.throttle = alThrottle
+          autolandLastThrottle = alThrottle
+          if (DECK_PROFILE?.autothrottle) { autothrottle.engaged = true; autothrottle.mode = al.phase === 'LAND' ? 'MCP SPD' : 'RETARD' }
+        } else autolandLastThrottle = null
+        if (al.flapIndex !== null) aircraft.selectFlaps(al.flapIndex, false)
+        if (al.gearDown && aircraft.P.gearRetractable) aircraft.gearDownCommanded = true
+        if (al.spoilerArm && aircraft.P.spoilers && !aircraft.data.onGround && aircraft.spoilerCmd < 0.02) aircraft.spoilerArmed = true
+        if (al.phase === 'ROLLOUT' || al.disconnect) aircraft.reverseCmd = al.reverse || (al.disconnect ? keyboardReverse : false)
+        autolandBrake = al.brake
+      } else autolandBrake = 0
+      if (autolandHoldBrake) {
+        const pilotTakesOver = pilotBrake > 0.05 || aircraft.controls.throttle > 0.15 || !aircraft.data.onGround || aircraft.data.groundSpeedKt > 12 || parkingBrake
+        if (pilotTakesOver) autolandHoldBrake = false
+        else autolandBrake = Math.max(autolandBrake, 0.4)
       }
       // While localizer TRACKING is active, the heading bug is this AP's
       // course datum — pin it to the front course continuously (a real
@@ -2699,8 +2781,8 @@ function advanceFrame(elapsed: number, now: number): void {
 
       const untrimmedYaw=aircraft.controls.yaw
       aircraft.controls.yaw=Math.min(1,Math.max(-1,untrimmedYaw+captainSystems.rudderTrim))
-      aircraft.controls.brakeLeft=Math.max(pilotBrake,captainSystems.autobrakeDemand)
-      aircraft.controls.brakeRight=Math.max(pilotBrake,captainSystems.autobrakeDemand)
+      aircraft.controls.brakeLeft=Math.max(pilotBrake,captainSystems.autobrakeDemand,autolandBrake)
+      aircraft.controls.brakeRight=Math.max(pilotBrake,captainSystems.autobrakeDemand,autolandBrake)
       aircraft.step(dt)
       aircraft.controls.yaw=untrimmedYaw
 
@@ -3761,7 +3843,7 @@ function apSnapshot(): ApSnapshot {
 }
 function apAvailability(): ApAvailability {
   const n = lastTunedNavResult
-  return { gps: lastGpsLegCourse !== undefined, nav: !!n?.source, loc: n?.source === 'LOC', gs: !!n?.hasGlideslope }
+  return { gps: lastGpsLegCourse !== undefined, nav: !!n?.source, loc: n?.source === 'LOC', gs: !!n?.hasGlideslope, land: autolandConfig() !== null }
 }
 function apSay(msg: string | undefined): void {
   if (!msg) return
@@ -3788,13 +3870,16 @@ function apPress(a: ApAction): void {
     apSay(r.message)
     return
   }
-  const r = a === 'hdg' ? pressHdg(apPanel, snap)
+  if (a === 'land' && !apPanel.master && aircraft.data.onGround) { apSay('AUTOLAND NOT AVAILABLE ON THE GROUND'); return }
+  const r = a === 'land' ? pressLand(apPanel, snap, apAvailability())
+    : a === 'hdg' ? pressHdg(apPanel, snap)
     : a === 'nav' ? pressNav(apPanel, apAvailability())
       : a === 'apr' ? pressApr(apPanel, snap, apAvailability())
         : a === 'alt' ? pressAlt(apPanel, snap)
           : a === 'vs' ? pressVs(apPanel, snap)
             : pressFlc(apPanel, snap)
   apPanel = r.panel
+  if (a === 'land' && r.panel.master) systemsControls.apMaster = true
   apSay(r.message)
 }
 function apTurn(k: Knob, steps: number): void {
@@ -3812,8 +3897,10 @@ function apReadout(): ApReadout {
     verticalArmed: systemsControls.apMaster && apState.verticalArmed ? (ver === 'GS' ? 'GS ARM' : 'ALT ARM') : '',
     lit: {
       ap: apPanel.master, hdg: apPanel.lateral === 'HDG', nav: apPanel.lateral === 'NAV', apr: apPanel.lateral === 'APR',
-      alt: apPanel.vertical === 'ALT', vs: apPanel.vertical === 'VS', flc: apPanel.vertical === 'FLC', at: atArmSwitch,
+      alt: apPanel.vertical === 'ALT', vs: apPanel.vertical === 'VS', flc: apPanel.vertical === 'FLC', at: atArmSwitch, land: apPanel.autoland,
     },
+    hasAutoland: autolandConfig() !== null,
+    landText: apPanel.autoland ? (autoland.phase === 'OFF' ? 'LAND ARM' : autoland.phase === 'ARMED' ? 'LAND ARM' : autoland.phase === 'DONE' ? 'DONE' : autoland.phase) : '',
     hasAutothrottle: !!DECK_PROFILE?.autothrottle,
     atText: autothrottle.mode,
     sel: { heading: apPanel.sel.headingDeg, altitude: apPanel.sel.altitudeFt, vs: apPanel.sel.vsFpm, ias: apPanel.sel.iasKt },

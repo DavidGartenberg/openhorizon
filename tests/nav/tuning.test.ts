@@ -6,6 +6,7 @@ import {
   vorCdiFraction,
   ilsRefFromRunwayThreshold,
   runwayOffsets,
+  glidepathHeightFt,
   localizerFraction,
   glideslopeFraction,
   findKnownIls,
@@ -210,5 +211,29 @@ describe('localizer antenna at the far runway end + runwayOffsets', () => {
     expect(b.alongM).toBeCloseTo(800, -1)
     expect(b.crossM).toBeCloseTo(12, 0)
     expect(runwayOffsets(ils, at(100, -7)).crossM).toBeCloseTo(-7, 0)
+  })
+})
+
+describe('glidepathHeightFt', () => {
+  const t = { thresholdLat: 37.6, thresholdLon: -122.0, thresholdElevFt: 13, oppositeLat: 37.637, oppositeLon: -122.0 }
+  const ils = ilsRefFromRunwayThreshold(t)
+
+  it('crosses the threshold at the standard ~52 ft and touches down at the antenna', () => {
+    expect(glidepathHeightFt(ils, 0)).toBeGreaterThan(48)
+    expect(glidepathHeightFt(ils, 0)).toBeLessThan(56)
+    expect(glidepathHeightFt(ils, 300)).toBeLessThan(1)
+    expect(glidepathHeightFt(ils, 800)).toBe(0) // never negative past the antenna
+  })
+
+  it('rises 3° per unit run back up the approach (≈ 318 ft per nm)', () => {
+    const a = glidepathHeightFt(ils, -1852)
+    const b = glidepathHeightFt(ils, 0)
+    expect(a - b).toBeGreaterThan(300)
+    expect(a - b).toBeLessThan(335)
+  })
+
+  it('honors a different glidepath angle', () => {
+    const steep = ilsRefFromRunwayThreshold(t, 3.5)
+    expect(glidepathHeightFt(steep, -1000)).toBeGreaterThan(glidepathHeightFt(ils, -1000))
   })
 })

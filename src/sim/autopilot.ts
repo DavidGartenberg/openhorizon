@@ -98,6 +98,9 @@ export interface AutopilotInputs {
    *  law goes unstable inside ~5-7 km (confirmed with a 0°-error coupled
    *  GS-descent control case — not an intercept-geometry problem). */
   navRangeM?: number
+  /** Distance to the GLIDESLOPE antenna, m — normalizes the GS law's gain
+   *  (its beam narrows toward that antenna). Falls back to `navRangeM`. */
+  glideslopeRangeM?: number
   /** Ground-track direction, deg true. When provided, localizer TRACKING
    *  steers the TRACK onto the course instead of the heading — wind drift
    *  becomes transparent (the loop's output is a track command; the
@@ -361,6 +364,14 @@ export const NAV_REF_RANGE_M = 8000
 
 function navRangeFactor(inputs: AutopilotInputs): number {
   return inputs.navRangeM !== undefined ? clamp(inputs.navRangeM / NAV_REF_RANGE_M, 0, 2.5) : 1
+}
+
+/** The glideslope's angular beam narrows toward ITS antenna (which sits
+ *  ~300 m down the runway), not toward the localizer's — so its gain
+ *  normalization uses `glideslopeRangeM` when the caller has it. */
+function gsRangeFactor(inputs: AutopilotInputs): number {
+  const r = inputs.glideslopeRangeM ?? inputs.navRangeM
+  return r !== undefined ? clamp(r / NAV_REF_RANGE_M, 0, 2.5) : 1
 }
 
 export const NAV_INTERCEPT_GAIN_K_DEG = 25
@@ -810,7 +821,7 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       // never null — the narrowing beam then amplified the standoff to
       // 0.53 fraction near DH (reviewer finding, now a regression test).
       targetPitchDeg = clamp(
-        pidUpdate(state.gsPitch, -inputs.glideslopeDeviation * navRangeFactor(inputs), dt, 6, 0.5, 1, 6),
+        pidUpdate(state.gsPitch, -inputs.glideslopeDeviation * gsRangeFactor(inputs), dt, 6, 0.5, 1, 6),
         -MAX_PITCH_CMD_DEG, MAX_PITCH_CMD_DEG,
       )
       trimEligible = true

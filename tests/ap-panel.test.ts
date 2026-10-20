@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  apEnvelopeFault, applyApFeedback, defaultSelectedAltitude, disconnectAp, makeApPanel, pressAlt, pressAp, pressApr, pressFlc, pressHdg, pressNav, pressVs, toApTargets, turnKnob,
+  apEnvelopeFault, applyApFeedback, defaultSelectedAltitude, disconnectAp, makeApPanel, pressAlt, pressAp, pressApr, pressFlc, pressHdg, pressLand, pressNav, pressVs, toApTargets, turnKnob,
   type ApAvailability, type ApSnapshot,
 } from '../src/sim/ap-panel'
 
@@ -122,4 +122,63 @@ describe('envelope protection', () => {
     ['BANK ANGLE', { rollDeg: -70 }], ['PITCH ATTITUDE', { pitchDeg: 35 }], ['PITCH ATTITUDE', { pitchDeg: -30 }],
     ['STALL', { stallFraction: 0.6 }], ['OVERSPEED', { kias: 170 }], ['ON THE GROUND', { onGround: true }],
   ])('disconnects for %s', (reason, over) => { expect(apEnvelopeFault({ ...ok, ...over })).toBe(reason) })
+})
+
+describe('LAND (autoland)', () => {
+  const ils: ApAvailability = { gps: false, nav: true, loc: true, gs: true }
+
+  it('arms the whole approach in one press, engaging the autopilot if it is off', () => {
+    const r = pressLand(makeApPanel(), snap, ils)
+    expect(r.panel).toMatchObject({ master: true, lateral: 'APR', vertical: 'GS', autoland: true })
+    expect(r.message).toBe('AUTOLAND ARMED — LOC + GS')
+  })
+
+  it('works from an already-armed approach without cancelling it', () => {
+    const apr = pressApr(engaged(), snap, ils).panel
+    const r = pressLand(apr, snap, ils)
+    expect(r.panel).toMatchObject({ master: true, lateral: 'APR', vertical: 'GS', autoland: true })
+  })
+
+  it('a second press cancels autoland but leaves the approach flying', () => {
+    const on = pressLand(makeApPanel(), snap, ils).panel
+    const off = pressLand(on, snap, ils)
+    expect(off.panel).toMatchObject({ master: true, lateral: 'APR', autoland: false })
+    expect(off.message).toBe('AUTOLAND OFF — APPROACH CONTINUES')
+  })
+
+  it('is refused honestly without an ILS, without a glideslope, or on a type that cannot do it', () => {
+    expect(pressLand(makeApPanel(), snap, none)).toMatchObject({ message: 'NO ILS TUNED — TUNE NAV1 TO A LOCALIZER' })
+    expect(pressLand(makeApPanel(), snap, { ...ils, gs: false }).message).toMatch(/NEEDS A GLIDESLOPE/)
+    expect(pressLand(makeApPanel(), snap, { ...ils, land: false }).message).toMatch(/NOT AVAILABLE/)
+    for (const a of [none, { ...ils, gs: false }, { ...ils, land: false }]) {
+      expect(pressLand(makeApPanel(), snap, a).panel.autoland).toBe(false)
+      expect(pressLand(makeApPanel(), snap, a).panel.master).toBe(false)
+    }
+  })
+
+  it('is dropped by anything that ends the approach: AP off, disconnect, APR off', () => {
+    const on = pressLand(makeApPanel(), snap, ils).panel
+    expect(pressAp(on, snap).panel.autoland).toBe(false)
+    expect(disconnectAp(on).autoland).toBe(false)
+    expect(pressApr(on, snap, ils).panel.autoland).toBe(false)
+  })
+
+  it('does not disturb selections the pilot has set', () => {
+    let p = turnKnob(makeApPanel(), 'altitude', 20, snap)
+    p = pressAp(p, snap).panel
+    const r = pressLand(p, snap, ils)
+    expect(r.panel.sel.altitudeFt).toBe(p.sel.altitudeFt)
+  })
+})
+
+describe('apEnvelopeFault during an autoland rollout', () => {
+  const grounded = { rollDeg: 0, pitchDeg: 0, kias: 90, vneKt: 340, stallFraction: 0, onGround: true }
+  it('still drops the autopilot on the ground by default', () => {
+    expect(apEnvelopeFault(grounded)).toBe('ON THE GROUND')
+  })
+  it('allows being on the ground while autoland flies the rollout, but nothing else', () => {
+    expect(apEnvelopeFault({ ...grounded, autolandRollout: true })).toBeNull()
+    expect(apEnvelopeFault({ ...grounded, autolandRollout: true, rollDeg: 70 })).toBe('BANK ANGLE')
+    expect(apEnvelopeFault({ ...grounded, autolandRollout: true, kias: 400 })).toBe('OVERSPEED')
+  })
 })

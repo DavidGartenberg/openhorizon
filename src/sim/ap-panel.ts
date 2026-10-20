@@ -47,6 +47,8 @@ export interface ApPanel {
   /** True after the debug hook wrote the targets directly; cleared by any
    *  panel press (see `main.ts`). */
   direct: boolean
+  /** LAND: autoland armed on top of an ILS approach (sim/autoland.ts). */
+  autoland: boolean
 }
 
 export interface ApSnapshot {
@@ -66,6 +68,8 @@ export interface ApAvailability {
   loc: boolean
   /** The tuned localizer has a glideslope. */
   gs: boolean
+  /** This airplane can autoland (nosewheel gear). Omitted = yes. */
+  land?: boolean
 }
 
 export interface ApResult {
@@ -85,6 +89,7 @@ export function makeApPanel(): ApPanel {
     altHoldFt: 0,
     touched: { heading: false, altitude: false, ias: false },
     direct: false,
+    autoland: false,
   }
 }
 
@@ -109,18 +114,18 @@ function sync(p: ApPanel, s: ApSnapshot): void {
 export function pressAp(p0: ApPanel, s: ApSnapshot): ApResult {
   const p = clone(p0)
   if (p.master) {
-    p.master = false; p.lateral = 'ROL'; p.vertical = 'PIT'
+    p.master = false; p.lateral = 'ROL'; p.vertical = 'PIT'; p.autoland = false
     return { panel: p, message: 'AUTOPILOT OFF' }
   }
   sync(p, s)
-  p.master = true; p.lateral = 'ROL'; p.vertical = 'PIT'
+  p.master = true; p.lateral = 'ROL'; p.vertical = 'PIT'; p.autoland = false
   return { panel: p, message: 'AUTOPILOT ENGAGED' }
 }
 
 /** Disconnect without the toggle (switch on the yoke, envelope fault). */
 export function disconnectAp(p0: ApPanel): ApPanel {
   const p = clone(p0)
-  p.master = false; p.lateral = 'ROL'; p.vertical = 'PIT'
+  p.master = false; p.lateral = 'ROL'; p.vertical = 'PIT'; p.autoland = false
   return p
 }
 
@@ -155,6 +160,7 @@ export function pressApr(p0: ApPanel, s: ApSnapshot, a: ApAvailability): ApResul
   if (p.lateral === 'APR') {
     p.lateral = 'ROL'
     if (p.vertical === 'GS') p.vertical = 'PIT'
+    p.autoland = false
     return { panel: p, message: 'APPROACH OFF' }
   }
   if (!a.loc) return { panel: p, message: 'NO ILS TUNED — TUNE NAV1 TO A LOCALIZER' }
@@ -166,6 +172,26 @@ export function pressApr(p0: ApPanel, s: ApSnapshot, a: ApAvailability): ApResul
     p.vertical = 'GS'
   }
   return { panel: p, message: a.gs ? 'APPROACH ARMED — LOC + GS' : 'APPROACH — LOC ONLY' }
+}
+
+/** LAND: one press arms the whole autoland — engages the autopilot if it is
+ *  off, arms the localizer and glideslope, and arms the flare / rollout. A
+ *  second press cancels autoland and leaves the approach flying. */
+export function pressLand(p0: ApPanel, s: ApSnapshot, a: ApAvailability): ApResult {
+  const p = clone(p0)
+  if (p.autoland) { p.autoland = false; return { panel: p, message: 'AUTOLAND OFF — APPROACH CONTINUES' } }
+  if (a.land === false) return { panel: p, message: 'AUTOLAND NOT AVAILABLE ON THIS AIRPLANE' }
+  if (!a.loc) return { panel: p, message: 'NO ILS TUNED — TUNE NAV1 TO A LOCALIZER' }
+  if (!a.gs) return { panel: p, message: 'AUTOLAND NEEDS A GLIDESLOPE — THIS ILS HAS NONE' }
+  if (!p.master) {
+    sync(p, s)
+    p.master = true; p.lateral = 'ROL'; p.vertical = 'PIT'
+  }
+  const q = clone(p)
+  if (q.lateral === 'APR') q.lateral = 'ROL' // pressApr toggles; re-arm rather than cancel
+  const out = clone(pressApr(q, s, a).panel)
+  out.autoland = true
+  return { panel: out, message: 'AUTOLAND ARMED — LOC + GS' }
 }
 
 export function pressAlt(p0: ApPanel, s: ApSnapshot): ApResult {
@@ -306,13 +332,15 @@ export interface EnvelopeInput {
   vneKt: number
   stallFraction: number
   onGround: boolean
+  /** Autoland is flying the rollout: being on the ground is expected. */
+  autolandRollout?: boolean
 }
 
 /** Reasons the autopilot must disconnect itself, or null. Real flight
  *  guidance systems drop out in unusual attitudes, at the stall warning
  *  and beyond the speed limit rather than fly the airplane into them. */
 export function apEnvelopeFault(e: EnvelopeInput): string | null {
-  if (e.onGround) return 'ON THE GROUND'
+  if (e.onGround && !e.autolandRollout) return 'ON THE GROUND'
   if (Math.abs(e.rollDeg) > 65) return 'BANK ANGLE'
   if (e.pitchDeg > 30 || e.pitchDeg < -25) return 'PITCH ATTITUDE'
   if (e.stallFraction > 0.5) return 'STALL'

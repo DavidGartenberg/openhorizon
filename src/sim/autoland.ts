@@ -55,6 +55,9 @@ export interface AutolandConfig {
   flareTriggerMargin: number
   /** Pitch ceiling in the flare (tail-strike / stall margin). */
   maxFlarePitchDeg: number
+  /** Radio altitude below which autoland flies the glidepath itself, ft, and its height-error gain (1/s). */
+  pathOwnRaFt: number
+  pathGain: number
   /** Radio altitude below which the throttle is retarded, ft. */
   retardRaFt: number
   retardRatePerS: number
@@ -64,7 +67,7 @@ export interface AutolandConfig {
   speedSlewPerS: number
   /** Brake demand once the nose is down, and its ramp. */
   brakeLevel: number
-  /** Ground speed at which the rollout hands back to the pilot, kt. */
+  /** Ground speed at which the rollout ends (stopped on the runway), kt. */
   handBackKt: number
 }
 
@@ -100,13 +103,15 @@ export function autolandConfigFor(P: AircraftParams): AutolandConfig | null {
     flareTriggerMargin: 1.0,
     touchdownSinkFps: jet ? 1.8 : 1.4,
     maxFlarePitchDeg: jet ? 8.5 : 10,
+    pathOwnRaFt: jet ? 400 : 250,
+    pathGain: 0.12,
     retardRaFt: jet ? 22 : 14,
     retardRatePerS: jet ? 0.25 : 0.7,
     speedKi: jet ? 0.0018 : 0.004,
     speedKd: jet ? 0.035 : 0.05,
     speedSlewPerS: jet ? 0.12 : 0.25,
     brakeLevel: jet ? 0.55 : 0.4,
-    handBackKt: 20,
+    handBackKt: 4,
   }
 }
 
@@ -138,6 +143,8 @@ export interface AutolandState {
   /** Short-final lateral tracking owned by autoland (geometric cross-track). */
   lateralOwned: boolean
   xtInt: number
+  /** Short-final glidepath tracking owned by autoland (radio altitude vs. beam geometry). */
+  verticalOwned: boolean
   /** Why autoland dropped back to ARMED, for the panel message. */
   lostReason: string | null
 }
@@ -146,7 +153,7 @@ export function makeAutolandState(): AutolandState {
   return {
     phase: 'OFF', clock: 0, throttle: 0, lastIas: Number.NaN, iasRate: 0, lastVs: Number.NaN, vsAcc: 0,
     pitchBaseDeg: 0, flarePitchDeg: 0, vsInt: 0, flareT: 0, alpha0: 0, ias0: 100,
-    groundT: 0, brake: 0, derotatePitchDeg: 0, lastFlapStepT: -99, touchdownVsFpm: null, lateralOwned: false, xtInt: 0, lostReason: null,
+    groundT: 0, brake: 0, derotatePitchDeg: 0, lastFlapStepT: -99, touchdownVsFpm: null, lateralOwned: false, xtInt: 0, verticalOwned: false, lostReason: null,
   }
 }
 
@@ -173,6 +180,11 @@ export interface AutolandInputs {
    *  positive to the RIGHT. */
   courseDeg: number | undefined
   crossTrackM: number | undefined
+  /** Height of the glidepath above the runway at the aircraft's position, ft
+   *  (from the ILS geometry), and its angle, deg. Undefined = no geometry:
+   *  the autopilot's own glideslope law flies to the flare. */
+  glidepathHeightFt?: number
+  glidepathAngleDeg?: number
   /** Headwind component along the final approach, kt (+ headwind). */
   headwindKt: number
   /** Current throttle lever, flap detent index, gear state. */
@@ -201,7 +213,8 @@ export interface AutolandOutput {
   spoilerArm: boolean
   reverse: boolean
   brake: number
-  /** Rollout complete: hand the airplane back to the pilot. */
+  /** Rollout complete: hand the airplane back to the pilot (brakes keep
+   *  holding — `brake` stays set — until the app sees the pilot take over). */
   disconnect: boolean
   /** One-shot text for the pilot (phase changes). */
   message?: string
@@ -290,12 +303,14 @@ export function stepAutoland(s: AutolandState, dt: number, i: AutolandInputs, cf
     const cmd = flareSinkFps(ra, cfg)
     if ((ra < 120 && cmd * cfg.flareTriggerMargin <= sinkFps) || ra <= 10) {
       s.phase = 'FLARE'
-      s.pitchBaseDeg = i.pitchDeg
-      s.flarePitchDeg = i.pitchDeg
-      s.vsInt = 0
       s.flareT = 0
-      s.alpha0 = i.alphaDeg
-      s.ias0 = Math.max(i.iasKt, 30)
+      if (!s.verticalOwned) {
+        s.pitchBaseDeg = i.pitchDeg
+        s.flarePitchDeg = i.pitchDeg
+        s.vsInt = 0
+        s.alpha0 = i.alphaDeg
+        s.ias0 = Math.max(i.iasKt, 30)
+      }
       announce('FLARE')
     }
   }
@@ -329,6 +344,48 @@ export function stepAutoland(s: AutolandState, dt: number, i: AutolandInputs, cf
     return out
   }
 
+  /** θ = α + γ. Command the flight-path angle a sink-rate target calls for on
+   *  top of the angle of attack the airplane will need at this speed (α ∝ 1/V²
+   *  from where the law took over — the reason a fixed "pitch up N degrees"
+   *  flare balloons or drops), with feedback on the flight-path error and a
+   *  predictive damping term (γ + Td·γ̇). `rateFpmS` is how fast the target
+   *  is moving (the flight path lags pitch by a second or two, so chase it). */
+  const pitchForSink = (vsCmdFpm: number, rateFpmS: number): number => {
+    const tasFps = Math.max(i.tasKt, 40) * FT_PER_NM_KT
+    const lead = vsCmdFpm + cfg.flareLeadS * rateFpmS
+    const gammaCmdDeg = (Math.asin(clamp(lead / 60 / tasFps, -0.5, 0.5)) * 180) / Math.PI
+    const gammaNowDeg = (Math.asin(clamp(i.verticalSpeedFpm / 60 / tasFps, -0.5, 0.5)) * 180) / Math.PI
+    const gammaRateDegS = (((s.vsAcc / 60) / tasFps) * 180) / Math.PI
+    const e = gammaCmdDeg - (gammaNowDeg + cfg.flareDampS * gammaRateDegS) // + = sinking faster than wanted
+    s.vsInt = clamp(s.vsInt + cfg.flareIntGain * e * dt, -1.5, 1.5)
+    const alphaEst = s.alpha0 * Math.pow(s.ias0 / Math.max(i.iasKt, 30), 2)
+    const wanted = clamp(alphaEst + gammaCmdDeg + cfg.flareGain * e + s.vsInt, s.pitchBaseDeg - 3, cfg.maxFlarePitchDeg)
+    const maxStep = (wanted > s.flarePitchDeg ? 2.5 : 2) * dt
+    s.flarePitchDeg += clamp(wanted - s.flarePitchDeg, -maxStep, maxStep)
+    return s.flarePitchDeg
+  }
+
+  // Short-final vertical guidance: below `pathOwnRaFt` the beam is too
+  // narrow to fly by (and sits on a different datum than the wheels), so
+  // follow the glidepath geometry against RADIO altitude instead — flown
+  // with the same θ = α + γ law as the flare, so the two join seamlessly.
+  const ownVertical = (): void => {
+    if (i.glidepathHeightFt === undefined) return
+    if (!s.verticalOwned && ra < cfg.pathOwnRaFt) {
+      s.verticalOwned = true
+      s.pitchBaseDeg = i.pitchDeg
+      s.flarePitchDeg = i.pitchDeg
+      s.vsInt = 0
+      s.alpha0 = i.alphaDeg
+      s.ias0 = Math.max(i.iasKt, 30)
+    }
+    if (!s.verticalOwned) return
+    const tanG = Math.tan(((i.glidepathAngleDeg ?? 3) * Math.PI) / 180)
+    const vsPath = -Math.max(i.groundSpeedKt, 40) * FT_PER_NM_KT * tanG * 60
+    const hErr = ra - i.glidepathHeightFt // + above the path
+    out.pitchTargetDeg = pitchForSink(vsPath - cfg.pathGain * hErr * 60, 0)
+  }
+
   // Short-final lateral guidance: take over from the AP's soft LOC law once
   // low and close to the centerline; keep it through the flare.
   const ownLateral = (): void => {
@@ -353,6 +410,7 @@ export function stepAutoland(s: AutolandState, dt: number, i: AutolandInputs, cf
     }
     out.spoilerArm = cfg.spoilers && ra < 1200
     ownLateral()
+    ownVertical()
     // Speed: velocity-form PI with speed-rate damping, slew-limited.
     const err = vapp - i.iasKt
     const du = clamp((cfg.speedKi * err - cfg.speedKd * s.iasRate) * dt, -cfg.speedSlewPerS * dt, cfg.speedSlewPerS * dt)
@@ -366,28 +424,8 @@ export function stepAutoland(s: AutolandState, dt: number, i: AutolandInputs, cf
     s.flareT += dt
     out.gearDown = cfg.retractableGear
     out.spoilerArm = cfg.spoilers
-    // ---- pitch: θ = α + γ. Command the flight-path angle the exponential
-    // sink profile calls for on top of the MEASURED angle of attack (which
-    // rises as the airplane slows — the reason a fixed "pitch up N degrees"
-    // flare balloons or drops), with feedback on the sink-rate error. ----
-    const tasFps = Math.max(i.tasKt, 40) * FT_PER_NM_KT
-    const vsCmd = -flareSinkFps(ra, cfg) * 60
-    // Lead on the command: the flight path lags pitch by a second or two, so
-    // also chase where the command is going.
-    const vsCmdRate = -i.verticalSpeedFpm / cfg.flareTauS // fpm/s the command climbs as the ground nears
-    const vsCmdLead = vsCmd + cfg.flareLeadS * vsCmdRate
-    const gammaCmdDeg = (Math.asin(clamp(vsCmdLead / 60 / tasFps, -0.5, 0.5)) * 180) / Math.PI
-    const gammaNowDeg = (Math.asin(clamp(i.verticalSpeedFpm / 60 / tasFps, -0.5, 0.5)) * 180) / Math.PI
-    // Predictive damping: judge the flight path where it is HEADING (γ + Td·γ̇),
-    // not where it is — otherwise the law over-rotates and balloons.
-    const gammaRateDegS = (((s.vsAcc / 60) / tasFps) * 180) / Math.PI
-    const e = gammaCmdDeg - (gammaNowDeg + cfg.flareDampS * gammaRateDegS) // + = sinking faster than wanted
-    s.vsInt = clamp(s.vsInt + cfg.flareIntGain * e * dt, -1.5, 1.5)
-    const alphaEst = s.alpha0 * Math.pow(s.ias0 / Math.max(i.iasKt, 30), 2) // lift ∝ α·V²: α rises as the airplane slows
-    const wanted = clamp(alphaEst + gammaCmdDeg + cfg.flareGain * e + s.vsInt, s.pitchBaseDeg - 2, cfg.maxFlarePitchDeg)
-    const maxStep = (wanted > s.flarePitchDeg ? 2.5 : 2) * dt
-    s.flarePitchDeg += clamp(wanted - s.flarePitchDeg, -maxStep, maxStep)
-    out.pitchTargetDeg = s.flarePitchDeg
+    // ---- pitch: θ = α + γ (see pitchForSink) on the exponential sink profile ----
+    out.pitchTargetDeg = pitchForSink(-flareSinkFps(ra, cfg) * 60, -i.verticalSpeedFpm / cfg.flareTauS)
     // ---- throttle: hold, then retard to idle ----
     if (ra <= cfg.retardRaFt) s.throttle = Math.max(0, s.throttle - cfg.retardRatePerS * dt)
     else {
@@ -422,8 +460,8 @@ export function stepAutoland(s: AutolandState, dt: number, i: AutolandInputs, cf
   out.maxBankDeg = 0
   // Autobrake: after the nose is down, ramp to the configured level; ease off near hand-back.
   if (s.groundT > 1.2 && i.pitchDeg < 2.5) s.brake = Math.min(cfg.brakeLevel, s.brake + 0.5 * dt)
-  const easeOff = clamp((i.groundSpeedKt - cfg.handBackKt) / 20, 0, 1)
-  out.brake = s.brake * (0.4 + 0.6 * easeOff)
+  const easeOff = clamp((i.groundSpeedKt - cfg.handBackKt) / 30, 0, 1)
+  out.brake = s.brake * (0.5 + 0.5 * easeOff)
   // Steering: hold the runway heading, biased back toward the centerline.
   if (course !== undefined) {
     const xt = i.crossTrackM ?? 0
@@ -436,9 +474,9 @@ export function stepAutoland(s: AutolandState, dt: number, i: AutolandInputs, cf
     s.phase = 'DONE'
     out.phase = 'DONE'
     out.disconnect = true
-    out.brake = 0
+    out.brake = cfg.brakeLevel * 0.6 // keep holding the airplane still
     out.reverse = false
-    announce('AUTOLAND COMPLETE — YOU HAVE THE AIRPLANE')
+    announce('AUTOLAND COMPLETE — STOPPED ON THE RUNWAY, BRAKES HOLDING')
   }
   return out
 }

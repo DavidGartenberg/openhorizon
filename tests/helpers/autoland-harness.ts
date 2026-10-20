@@ -9,7 +9,7 @@ import type { AircraftParams } from '../../src/sim/aircraft/params'
 import { trim } from '../../src/sim/trim'
 import { KT, FT, isa } from '../../src/sim/atmosphere'
 import { localizerDeflection, glideslopeDeflection, LOC_FULL_SCALE_DEG, GS_FULL_SCALE_DEG, type IlsRef } from '../../src/sim/nav/navaids'
-import { runwayOffsets } from '../../src/sim/nav/tuning'
+import { runwayOffsets, glidepathHeightFt } from '../../src/sim/nav/tuning'
 import { fromNedMeters, distanceM, type LatLon } from '../../src/math/geo'
 import { autolandConfigFor, makeAutolandState, stepAutoland, radioAltitudeFt, type AutolandPhase } from '../../src/sim/autoland'
 
@@ -38,6 +38,8 @@ export interface LandingOpts {
   maxSeconds?: number
   /** Sinusoidal turbulence amplitude, kt, on the wind components. */
   gustKt?: number
+  /** The ILS thinks the field is this many ft higher than the ground really is (datum mismatch). */
+  ilsElevErrorFt?: number
   /** Phase offset of the gust pattern, s (vary for robustness runs). */
   gustPhaseS?: number
   debugLateral?: boolean
@@ -91,6 +93,7 @@ export function flyLanding(o: LandingOpts): LandingResult {
   }
   wind(o.headwindKt ?? 0, o.crosswindKt ?? 0, 0)
 
+  const ils: IlsRef = { ...ILS, thresholdElevFt: FIELD_ELEV_FT + (o.ilsElevErrorFt ?? 0), gsAntennaElevFt: FIELD_ELEV_FT + (o.ilsElevErrorFt ?? 0) }
   const ap = makeAutopilotState()
   const al = makeAutolandState()
   const inputs: AutopilotInputs = {
@@ -113,7 +116,7 @@ export function flyLanding(o: LandingOpts): LandingResult {
     const d = ac.data
     const ll = fromNedMeters(ac.posNed.x, ac.posNed.y, THRESHOLD)
     const locDev = -localizerDeflection(ILS, ll) / LOC_FULL_SCALE_DEG
-    const gsDev = glideslopeDeflection(ILS, ll, d.altitudeFt) / GS_FULL_SCALE_DEG
+    const gsDev = glideslopeDeflection(ils, ll, d.altitudeFt) / GS_FULL_SCALE_DEG
     const off = runwayOffsets(ILS, ll)
     const ra = radioAltitudeFt(d.aglFt, d.pitchDeg, P)
     const locCaptured = !ap.lateralArmed && ap.lateralMode === 'APR'
@@ -123,7 +126,7 @@ export function flyLanding(o: LandingOpts): LandingResult {
       armed: true, locCaptured, gsCaptured, radioAltFt: ra, iasKt: d.kias, tasKt: d.ktas, alphaDeg: d.alphaDeg, groundSpeedKt: d.groundSpeedKt,
       verticalSpeedFpm: d.verticalSpeedFpm, pitchDeg: d.pitchDeg, rollDeg: d.rollDeg, headingDeg: d.headingDeg, trackDeg: d.trackDeg,
       yawRateDegS: (ac.rates.z * 180) / Math.PI, onGround: d.onGround, courseDeg: COURSE_DEG, crossTrackM: off.crossM,
-      headwindKt: headwind, throttle: ac.controls.throttle, flapIndex: ac.controls.flapsIndex, gearDown: ac.gearPos > 0.99,
+      glidepathHeightFt: glidepathHeightFt(ILS, off.alongM), glidepathAngleDeg: 3, headwindKt: headwind, throttle: ac.controls.throttle, flapIndex: ac.controls.flapsIndex, gearDown: ac.gearPos > 0.99,
     }, cfg)
     if (res.phases[res.phases.length - 1] !== out.phase) res.phases.push(out.phase)
     if (out.phase === 'FLARE' && res.reachedFlareAtS === null) res.reachedFlareAtS = tSec
@@ -132,7 +135,8 @@ export function flyLanding(o: LandingOpts): LandingResult {
     inputs.iasKt = d.kias; inputs.altitudeFt = d.altitudeFt; inputs.verticalSpeedFpm = d.verticalSpeedFpm
     inputs.headingDeg = d.headingDeg; inputs.rollDeg = d.rollDeg; inputs.pitchDeg = d.pitchDeg; inputs.trackDeg = d.trackDeg
     inputs.navDeviation = locDev; inputs.glideslopeDeviation = gsDev
-    inputs.navRangeM = distanceM(ll, ILS.locAntenna!)
+    inputs.navRangeM = distanceM(ll, ILS.locAntenna!) // as main.ts: LOC gain normalizes on the localizer antenna…
+    inputs.glideslopeRangeM = distanceM(ll, ILS.gsAntenna) // …and the GS law on the glideslope antenna
     inputs.pitchTargetOverrideDeg = out.pitchTargetDeg
     inputs.maxBankDeg = out.maxBankDeg
     inputs.bankTargetOverrideDeg = out.bankTargetDeg
