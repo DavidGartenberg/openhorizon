@@ -112,7 +112,7 @@ const FRAG = /* glsl */ `
     // Clouds aloft stay in direct sun after the ground is in twilight.
     float sunUp = max(uDayness, uDusk * 0.95);
     float forward = pow(max(dot(ray, sun), 0.0), mix(12.0, 5.0, uDusk));
-    vec3 sunlight = mix(vec3(1.0, 0.97, 0.91), vec3(1.0, 0.42, 0.12), uDusk) * (1.0 + 2.6 * uDusk);
+    vec3 sunlight = mix(vec3(1.0, 0.97, 0.91), vec3(1.0, 0.48, 0.13), uDusk) * (1.0 + 0.5 * uDusk);
     for (int i = 0; i < 24; i++) {
       if (float(i) >= steps || transmittance < 0.025) break;
       float t = entry + (float(i) + 0.5) * stepM;
@@ -130,10 +130,10 @@ const FRAG = /* glsl */ `
       vec3 ambient = mix(vec3(0.022, 0.029, 0.048), vec3(0.23, 0.29, 0.38), uDayness);
       ambient *= mix(0.55, 1.25, heightLight);
       // Dusk: shaded undersides pick up the violet-rose of the sky, tops stay warm.
-      vec3 duskAmbient = mix(vec3(0.10, 0.11, 0.25), vec3(0.50, 0.27, 0.24), heightLight) * (0.3 + uDayness * 0.9);
+      vec3 duskAmbient = mix(vec3(0.10, 0.11, 0.25), vec3(0.50, 0.27, 0.24), heightLight) * (0.22 + uDayness * 0.9);
       ambient = mix(ambient, duskAmbient, uDusk * 0.85);
       // A bounded forward lobe produces silver edges without a white clip.
-      vec3 direct = sunlight * sunUp * (0.85 + forward * (1.7 + 3.0 * uDusk)) * shadow;
+      vec3 direct = sunlight * sunUp * (0.85 + forward * (1.7 + 2.0 * uDusk)) * shadow;
       vec3 multipleScatter = sunlight * sunUp * 0.16 * (1.0 - shadow);
       float absorbed = 1.0 - exp(-d * extinction * stepM);
       accumulated += transmittance * absorbed * (ambient + direct + multipleScatter);
@@ -144,6 +144,10 @@ const FRAG = /* glsl */ `
     // Distance haze blends the field into the atmosphere before the outer
     // cell boundary. Straight alpha is required by Three's normal blending.
     vec3 radiance = accumulated / max(alpha, 0.001);
+    // Sunset clouds read as saturated orange-rose, not cream: push chroma
+    // away from the luma before tone mapping desaturates it.
+    float cloudLuma = dot(radiance, vec3(0.2126, 0.7152, 0.0722));
+    radiance = max(mix(vec3(cloudLuma), radiance, 1.0 + 0.45 * uDusk), vec3(0.0)) * (1.0 - 0.14 * uDusk);
     vec3 haze = mix(vec3(0.012, 0.02, 0.042), vec3(0.36, 0.47, 0.61), uDayness);
     haze = mix(haze, vec3(0.66, 0.40, 0.31) * (0.4 + uDayness * 0.7), uDusk * 0.6); // warm horizon haze
     radiance = mix(radiance, haze, 1.0 - exp(-distanceToCloud * 0.000025));

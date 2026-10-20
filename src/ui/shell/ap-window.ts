@@ -134,7 +134,7 @@ export function buildApWindow(body: HTMLElement, d: ApWindowDeps): () => void {
         b.hidden = !r.hasAutoland
         const label = r.landText ? `AUTOLAND · ${r.landText}` : 'AUTOLAND'
         if (b.textContent !== label) b.textContent = label
-        b.title = 'Arms the localizer, glideslope, flare and rollout: tune an ILS, press once, and the airplane lands itself.'
+        b.title = 'Arms the localizer, glideslope and rollout: tune an ILS, press once, and the airplane lands itself.'
       }
     }
     const set = (k: Knob, text: string): void => { const v = values.get(k); if (v && v.textContent !== text) v.textContent = text }
