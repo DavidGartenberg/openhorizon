@@ -123,7 +123,7 @@ const COMPOSITE_FRAG = /* glsl */ `
     // Sun glare: a soft halo plus a faint anamorphic streak around the sun.
     vec2 d = vUv - uSun; d.x *= uAspect;
     float r = length(d);
-    float halo = exp(-r * 6.5) * 0.30 + exp(-r * 22.0) * 0.55;
+    float halo = exp(-r * 7.0) * 0.07 + exp(-r * 26.0) * 0.45;
     float streak = exp(-abs(d.y) * 90.0) * exp(-abs(d.x) * 2.6) * 0.20;
     c += warm * (halo + streak) * uSunVisible * (0.4 + 0.9 * low);
     // Warm grade near the horizon: lift reds, ease blues a touch.
@@ -168,7 +168,7 @@ export class PostFx {
     if (typeof location === 'undefined' || new URLSearchParams(location.search).get('postdepth') !== '0') this.sceneRt.depthTexture = new THREE.DepthTexture(4, 4, THREE.FloatType)
     this.rays = mk()
     for (let i = 0; i < 6; i++) this.chain.push(mk())
-    this.bright = fullscreenMaterial(BRIGHT_FRAG, { tScene: { value: null }, uThreshold: { value: 1.1 } })
+    this.bright = fullscreenMaterial(BRIGHT_FRAG, { tScene: { value: null }, uThreshold: { value: 1.5 } })
     this.down = fullscreenMaterial(DOWN_FRAG, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } })
     this.up = fullscreenMaterial(UP_FRAG, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } })
     this.up.blending = THREE.AdditiveBlending

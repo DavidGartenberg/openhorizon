@@ -119,7 +119,7 @@ if (!app) throw new Error('missing #app element')
 
 const { renderer, scene, camera } = createScene(app)
 const postFx = new PostFx(renderer)
-let postStrength = { bloom: 0.3, rays: 0.25, vignette: 0.3 }
+let postStrength = { bloom: 0.22, rays: 0.2, vignette: 0.34 }
 /** Sun direction + elevation of the last frame (post-processing). */
 let lastSunDir = new THREE.Vector3(0, 1, 0)
 let lastSunElevationDeg = 45
@@ -3831,7 +3831,7 @@ const graphicsActions: GraphicsActions = {
       let bestError = Infinity
       for (let minutes=0; minutes<=720; minutes+=2) {
         const candidate = noon.getTime()+minutes*60_000
-        const error = Math.abs(sunPosition(new Date(candidate),ll.lat,ll.lon).elevationDeg-3)
+        const error = Math.abs(sunPosition(new Date(candidate),ll.lat,ll.lon).elevationDeg-1.2)
         if (error<bestError) { bestError=error; target=candidate }
       }
     }
