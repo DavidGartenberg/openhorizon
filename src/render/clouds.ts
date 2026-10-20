@@ -111,7 +111,7 @@ const FRAG = /* glsl */ `
     // brighter (HDR — the post chain blooms it) golden light.
     // Clouds aloft stay in direct sun after the ground is in twilight.
     float sunUp = max(uDayness, uDusk * 0.95);
-    float forward = pow(max(dot(ray, sun), 0.0), mix(12.0, 5.0, uDusk));
+    float forward = pow(max(dot(ray, sun), 0.0), mix(12.0, 9.0, uDusk));
     vec3 sunlight = mix(vec3(1.0, 0.97, 0.91), vec3(1.0, 0.48, 0.13), uDusk) * (1.0 + 0.5 * uDusk);
     for (int i = 0; i < 24; i++) {
       if (float(i) >= steps || transmittance < 0.025) break;
@@ -130,11 +130,14 @@ const FRAG = /* glsl */ `
       vec3 ambient = mix(vec3(0.022, 0.029, 0.048), vec3(0.23, 0.29, 0.38), uDayness);
       ambient *= mix(0.55, 1.25, heightLight);
       // Dusk: shaded undersides pick up the violet-rose of the sky, tops stay warm.
-      vec3 duskAmbient = mix(vec3(0.10, 0.11, 0.25), vec3(0.50, 0.27, 0.24), heightLight) * (0.22 + uDayness * 0.9);
+      vec3 duskAmbient = mix(vec3(0.26, 0.22, 0.38), vec3(0.50, 0.27, 0.24), heightLight) * (0.28 + uDayness * 0.9);
       ambient = mix(ambient, duskAmbient, uDusk * 0.85);
       // A bounded forward lobe produces silver edges without a white clip.
       vec3 direct = sunlight * sunUp * (0.85 + forward * (1.7 + 2.0 * uDusk)) * shadow;
-      vec3 multipleScatter = sunlight * sunUp * 0.16 * (1.0 - shadow);
+      // Light scattered inside the cloud is rose-violet at dusk (the sky's
+      // fill), not the sun's orange: shaded bases read cooler than lit tops.
+      vec3 scatterTint = mix(sunlight, vec3(0.85, 0.52, 0.62), uDusk * 0.32);
+      vec3 multipleScatter = scatterTint * sunUp * 0.16 * (1.0 - shadow);
       float absorbed = 1.0 - exp(-d * extinction * stepM);
       accumulated += transmittance * absorbed * (ambient + direct + multipleScatter);
       transmittance *= 1.0 - absorbed;
