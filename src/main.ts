@@ -79,6 +79,7 @@ import { kgToGal, TANK_CAPACITY_GAL } from './sim/systems/fuel'
 import { Input } from './input/input'
 import { EngineSound } from './audio/engine-sound'
 import { Hud } from './ui/hud'
+import { PostFx, sunScreenPosition } from './render/post-fx'
 import { InstrumentOverlay, type OverlayState } from './ui/instrument-overlay'
 import { GraphicsPanel, type GraphicsActions } from './ui/graphics-panel'
 import { LoadingPanel } from './ui/loading-panel'
@@ -114,6 +115,11 @@ const app = document.getElementById('app')
 if (!app) throw new Error('missing #app element')
 
 const { renderer, scene, camera } = createScene(app)
+const postFx = new PostFx(renderer)
+let postStrength = { bloom: 0.3, rays: 0.25, vignette: 0.3 }
+/** Sun direction + elevation of the last frame (post-processing). */
+let lastSunDir = new THREE.Vector3(0, 1, 0)
+let lastSunElevationDeg = 45
 const input = new Input(renderer.domElement)
 const engineSound = new EngineSound()
 // Browsers gate audio behind a user gesture; unlock() is idempotent so the
@@ -3112,6 +3118,8 @@ function advanceFrame(elapsed: number, now: number): void {
   sky.setCloudCover(wxSlabs.reduce((cover, slab) => camera.position.y < slab.topMslFt*FT
     ? Math.max(cover, cloudCoverage[slab.cover] ?? 0) : cover, 0))
   const sunDir = sky.update(simDate, ll.lat, ll.lon)
+  lastSunDir = sunDir
+  lastSunElevationDeg = sky.elevationDeg
   sky.updateEnvironment(renderer, scene, camera.position)
   const dayness = Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1)
   // 13e: METAR surface wind drives the sea state; sun-position dusk factor
@@ -3223,7 +3231,13 @@ function advanceFrame(elapsed: number, now: number): void {
     instruments.update(olState)
   }
 
-  renderer.render(scene, camera)
+  {
+    const sun = sunScreenPosition(camera, lastSunDir, lastSunElevationDeg)
+    postFx.render(scene, camera, {
+      sunScreen: sun.screen, sunVisibility: sun.visibility, sunElevationDeg: lastSunElevationDeg,
+      bloomStrength: postStrength.bloom, rayStrength: postStrength.rays, vignette: postStrength.vignette,
+    })
+  }
   graphicsPanel.update(now, cameraMode, performance.now()-perfT0, renderer)
   shell?.refresh()
   input.endFrame()
@@ -3397,6 +3411,12 @@ Object.assign(window as unknown as Record<string, unknown>, {
     if (o?.speed) atSpeedPressed = true
     if (o?.disconnect) atDisconnectPressed = true
     return { arm: atArmSwitch, ...autothrottle }
+  },
+  /** Post-processing controls (verification): enable, strengths. */
+  __ohPost: (o?: { enabled?: boolean; bloom?: number; rays?: number; vignette?: number }) => {
+    if (o?.enabled !== undefined) postFx.enabled = !!o.enabled
+    for (const k of ['bloom', 'rays', 'vignette'] as const) { const v = finiteOr(o?.[k]); if (v !== null) postStrength[k] = v }
+    return { enabled: postFx.enabled, ...postStrength }
   },
   /** Open / close the free-flight start screen (verification). */
   __ohLauncher: (open: boolean) => { if (open) launcher?.open(); else launcher?.close() },
@@ -3683,7 +3703,7 @@ void distanceM
 
 const graphicsActions: GraphicsActions = {
   clearInput: () => input.clearHeld(),
-  quality: mode => { clouds.setQuality(mode); tiles.setDetailEnabled(mode !== 'performance') },
+  quality: mode => { clouds.setQuality(mode); tiles.setDetailEnabled(mode !== 'performance'); postFx.setQuality(mode) },
   camera: mode => { cameraMode = mode },
   lighting: mode => {
     const ll = frame.fromLocal(aircraft.posNed.x,aircraft.posNed.y)
