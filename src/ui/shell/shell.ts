@@ -11,8 +11,25 @@ import { Toolbar } from './toolbar'
 import { Notifier } from './notify'
 import type { Launcher } from './launcher'
 import { buildApWindow, type ApWindowDeps } from './ap-window'
+import { CHECKLISTS, checklistProgress, evaluateChecklist, suggestChecklist, type ChecklistState } from '../../sim/checklists'
 
-export type CameraMode = 'chase' | 'orbit' | 'free' | 'cockpit'
+export type CameraMode = 'chase' | 'orbit' | 'free' | 'cockpit' | 'showcase'
+
+/** The camera window's tabs and the views each one offers. */
+export const CAMERA_TABS: ReadonlyArray<{ id: string; title: string; views: ReadonlyArray<{ mode: CameraMode; label: string; note: string }> }> = [
+  { id: 'cockpit', title: 'Cockpit', views: [{ mode: 'cockpit', label: 'Pilot view', note: 'Inside the flight deck' }] },
+  { id: 'external', title: 'External', views: [
+    { mode: 'chase', label: 'Chase', note: 'Behind the airplane' },
+    { mode: 'orbit', label: 'Orbit', note: 'Drag to rotate · wheel to zoom' },
+  ] },
+  { id: 'showcase', title: 'Showcase', views: [{ mode: 'showcase', label: 'Cinematic', note: 'Automatic camera shots' }] },
+  { id: 'drone', title: 'Drone', views: [{ mode: 'free', label: 'Free drone', note: 'WASD · R/F up-down · Shift fast' }] },
+]
+
+/** Which tab a camera mode lives under. Pure. */
+export function cameraTabFor(mode: CameraMode): string {
+  return CAMERA_TABS.find((t) => t.views.some((v) => v.mode === mode))?.id ?? 'external'
+}
 export type AssistMode = 'off' | 'sas' | 'full'
 
 export interface ShellDeps {
@@ -23,7 +40,9 @@ export interface ShellDeps {
   directTo(ident: string): string | null
   clearPlan(): void
   instruments: { visible: boolean; on: boolean; set(v: boolean): void }
-  camera: { get(): CameraMode; set(m: CameraMode): void }
+  camera: { get(): CameraMode; set(m: CameraMode): void; fov: { get(): number; set(deg: number): void; min: number; max: number } }
+  /** Real aircraft state for the checklists. */
+  checklist: { state(): ChecklistState }
   assist: { get(): AssistMode; set(m: AssistMode): void }
   pause: { paused(): boolean; toggle(): void }
   navLog(): Array<{ ident: string; active: boolean; distNm?: number }>
@@ -67,17 +86,52 @@ export class Shell {
       atc.body.appendChild(el)
     }
 
-    // Camera views.
-    const cam = win('camera', 'Camera', 'camera', 300, vw / 2 - 150, 70)
-    const camRow = document.createElement('div'); camRow.className = 'oh-l-chips'; camRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px'
-    const camButtons: Array<[CameraMode, HTMLButtonElement]> = []
-    for (const [m, label] of [['cockpit', 'Cockpit'], ['chase', 'Chase'], ['orbit', 'External'], ['free', 'Drone']] as const) {
-      const b = document.createElement('button'); b.className = 'oh-chip'; b.textContent = label
-      b.onclick = () => { d.camera.set(m); this.refresh() }
-      camRow.appendChild(b); camButtons.push([m, b])
+    // Camera: tabs (cockpit / external / showcase / drone), a list of views
+    // with the current one in blue, and a field-of-view slider.
+    const cam = win('camera', 'Camera', 'camera', 340, vw / 2 - 170, 70)
+    cam.body.classList.add('flush')
+    const tabBar = document.createElement('div'); tabBar.className = 'oh-tabs'; tabBar.setAttribute('role', 'tablist')
+    const viewList = document.createElement('div')
+    const tabButtons = new Map<string, HTMLButtonElement>()
+    for (const t of CAMERA_TABS) {
+      const b = document.createElement('button'); b.className = 'oh-tab'; b.textContent = t.title; b.setAttribute('role', 'tab')
+      b.onclick = () => { this.camTab = t.id; this.camKey = ''; this.refresh() }
+      tabBar.appendChild(b); tabButtons.set(t.id, b)
     }
-    cam.body.appendChild(camRow)
-    this.camButtons = camButtons
+    const camHead = document.createElement('div'); camHead.className = 'oh-sec'; camHead.textContent = 'Views'
+    const optHead = document.createElement('div'); optHead.className = 'oh-sec'; optHead.textContent = 'Options'
+    const fovRow = document.createElement('div'); fovRow.className = 'oh-slider'
+    const fovLabel = document.createElement('label'); fovLabel.textContent = 'Field of view'; fovLabel.htmlFor = 'oh-fov'
+    const fovOut = document.createElement('output'); fovOut.htmlFor = 'oh-fov'
+    const fov = document.createElement('input'); fov.type = 'range'; fov.id = 'oh-fov'
+    fov.min = String(d.camera.fov.min); fov.max = String(d.camera.fov.max); fov.step = '1'
+    fov.addEventListener('input', () => { d.camera.fov.set(Number(fov.value)); fovOut.textContent = `${Math.round(Number(fov.value))}°` })
+    fov.addEventListener('keydown', (e) => e.stopPropagation())
+    fovRow.append(fovLabel, fovOut, fov)
+    cam.body.append(tabBar, camHead, viewList, optHead, fovRow)
+    this.camParts = { tabButtons, viewList, fov, fovOut }
+
+    // Checklist: auto-checked against the real airplane where possible.
+    const chk = win('checklist', 'Checklist', 'checklist', 380, 16, 70)
+    chk.body.classList.add('flush')
+    const ckTabs = document.createElement('div'); ckTabs.className = 'oh-tabs'; ckTabs.setAttribute('role', 'tablist')
+    const ckShort: Record<string, string> = { 'before-start': 'Start', 'engine-start': 'Engine', 'before-takeoff': 'Takeoff', 'before-landing': 'Landing', 'after-landing': 'After' }
+    const ckTabButtons = new Map<string, HTMLButtonElement>()
+    for (const l of CHECKLISTS) {
+      const b = document.createElement('button'); b.className = 'oh-tab'; b.textContent = ckShort[l.id] ?? l.title; b.title = l.title; b.setAttribute('role', 'tab')
+      b.onclick = () => { this.ckPick = l.id; this.ckUserPicked = true; this.ckKey = ''; this.refresh() }
+      ckTabs.appendChild(b); ckTabButtons.set(l.id, b)
+    }
+    const ckTitle = document.createElement('div'); ckTitle.className = 'oh-sec'
+    const ckList = document.createElement('div')
+    const ckBar = document.createElement('div'); ckBar.className = 'oh-ckbar'
+    const ckProg = document.createElement('div'); ckProg.className = 'oh-prog'; const ckFill = document.createElement('i'); ckProg.appendChild(ckFill)
+    const ckCount = document.createElement('span')
+    const ckReset = document.createElement('button'); ckReset.textContent = 'RESET'; ckReset.title = 'Clear the items you ticked by hand'
+    ckReset.onclick = () => { this.ckTicked.delete(this.ckPick); this.ckKey = ''; this.refresh() }
+    ckBar.append(ckProg, ckCount, ckReset)
+    chk.body.append(ckTabs, ckTitle, ckList, ckBar)
+    this.ckParts = { tabButtons: ckTabButtons, title: ckTitle, list: ckList, fill: ckFill, count: ckCount }
 
     // Nav log: the flight plan, with a direct-to entry.
     const nav = win('navlog', 'Nav log', 'navlog', 320, vw - 350, 70)
@@ -141,6 +195,7 @@ export class Shell {
       { id: 'menu', label: 'Free flight', icon: 'menu', onClick: () => d.launcher.open(), active: () => d.launcher.isOpen },
       { id: 'pause', label: 'Pause', icon: 'pause', onClick: () => d.pause.toggle(), active: () => d.pause.paused() },
       { id: 'camera', label: 'Camera', icon: 'camera', onClick: toggle('camera'), active: open('camera'), separatorBefore: true },
+      { id: 'checklist', label: 'Checklist', icon: 'checklist', onClick: toggle('checklist'), active: open('checklist') },
       { id: 'atc', label: 'ATC', icon: 'atc', onClick: toggle('atc'), active: open('atc') },
       { id: 'instruments', label: 'Instruments', icon: 'gauge', onClick: () => d.instruments.set(!d.instruments.on), active: () => d.instruments.on },
       { id: 'info', label: 'Flight info', icon: 'info', onClick: () => { d.flightInfo.visible = !d.flightInfo.visible; this.saveInfo() }, active: () => d.flightInfo.visible },
@@ -159,7 +214,15 @@ export class Shell {
   }
 
   private updateAp: (() => void) | null = null
-  private camButtons: Array<[CameraMode, HTMLButtonElement]> = []
+  private camTab = 'external'
+  private camKey = ''
+  private lastCamMode: CameraMode | null = null
+  private camParts: { tabButtons: Map<string, HTMLButtonElement>; viewList: HTMLElement; fov: HTMLInputElement; fovOut: HTMLElement } | null = null
+  private ckPick = 'before-start'
+  private ckUserPicked = false
+  private ckKey = ''
+  private readonly ckTicked = new Map<string, Set<string>>()
+  private ckParts: { tabButtons: Map<string, HTMLButtonElement>; title: HTMLElement; list: HTMLElement; fill: HTMLElement; count: HTMLElement } | null = null
   private assistButtons: Array<[AssistMode, HTMLButtonElement]> = []
 
   private saveInfo(): void {
@@ -169,12 +232,72 @@ export class Shell {
   /** Open a window by id (e.g. the ATC window when its menu is called up). */
   open(id: string): void { this.windows.get(id)?.open() }
 
+  private refreshCamera(): void {
+    const p = this.camParts
+    if (!p) return
+    const mode = this.d.camera.get()
+    if (mode !== this.lastCamMode) { this.lastCamMode = mode; this.camTab = cameraTabFor(mode); this.camKey = '' }
+    const key = `${this.camTab}|${mode}`
+    if (key !== this.camKey) {
+      this.camKey = key
+      for (const [id, b] of p.tabButtons) { b.classList.toggle('sel', id === this.camTab); b.setAttribute('aria-selected', String(id === this.camTab)) }
+      p.viewList.textContent = ''
+      for (const v of CAMERA_TABS.find((t) => t.id === this.camTab)?.views ?? []) {
+        const b = document.createElement('button'); b.className = `oh-opt${v.mode === mode ? ' sel' : ''}`
+        const t = document.createElement('span'); t.textContent = v.label
+        const n = document.createElement('small'); n.textContent = v.note
+        b.append(t, n)
+        b.onclick = () => { this.d.camera.set(v.mode); this.refresh() }
+        p.viewList.appendChild(b)
+      }
+    }
+    const fovNow = String(Math.round(this.d.camera.fov.get()))
+    if (document.activeElement !== p.fov && p.fov.value !== fovNow) { p.fov.value = fovNow; p.fovOut.textContent = `${fovNow}°` }
+    if (!p.fovOut.textContent) p.fovOut.textContent = `${fovNow}°`
+  }
+
+  private refreshChecklist(): void {
+    const p = this.ckParts
+    if (!p) return
+    const s = this.d.checklist.state()
+    if (!this.ckUserPicked) this.ckPick = suggestChecklist(s)
+    const list = CHECKLISTS.find((l) => l.id === this.ckPick) ?? CHECKLISTS[0]!
+    const ticked = this.ckTicked.get(list.id) ?? new Set<string>()
+    const items = evaluateChecklist(list, s, ticked)
+    const key = `${list.id}|${items.map((i) => (i.status === 'done' ? '1' : '0')).join('')}`
+    if (key === this.ckKey) return
+    this.ckKey = key
+    for (const [id, b] of p.tabButtons) { b.classList.toggle('sel', id === list.id); b.setAttribute('aria-selected', String(id === list.id)) }
+    p.title.textContent = list.title
+    p.list.textContent = ''
+    for (const it of items) {
+      const r = document.createElement('button'); r.className = `oh-ck${it.status === 'done' ? ' done' : ''}${it.auto ? '' : ' manual'}`
+      const tick = document.createElement('span'); tick.className = 'oh-tick'; tick.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>'
+      const ch = document.createElement('span'); ch.textContent = it.challenge
+      const resp = document.createElement('span'); resp.className = 'oh-resp'; resp.textContent = it.response
+      r.append(tick, ch)
+      if (it.auto) { const a = document.createElement('span'); a.className = 'oh-auto'; a.textContent = 'AUTO'; a.title = 'Checked against the real airplane'; r.appendChild(a) }
+      r.appendChild(resp)
+      if (!it.auto) {
+        r.onclick = () => {
+          const set = this.ckTicked.get(list.id) ?? new Set<string>()
+          if (set.has(it.id)) set.delete(it.id); else set.add(it.id)
+          this.ckTicked.set(list.id, set); this.ckKey = ''; this.refresh()
+        }
+      } else r.setAttribute('aria-disabled', 'true')
+      p.list.appendChild(r)
+    }
+    const pr = checklistProgress(items)
+    p.fill.style.width = `${pr.total ? (pr.done / pr.total) * 100 : 0}%`
+    p.count.textContent = `${pr.done} / ${pr.total}${pr.complete ? ' ✓' : ''}`
+  }
+
   /** Per frame (cheap): toolbar visibility/lit state, selected chips and
    *  the nav log when it changes. */
   refresh(): void {
     this.toolbar.refresh()
-    const cam = this.d.camera.get()
-    for (const [m, b] of this.camButtons) b.classList.toggle('sel', m === cam)
+    if (this.windows.get('camera')?.isOpen) this.refreshCamera()
+    if (this.windows.get('checklist')?.isOpen) this.refreshChecklist()
     const as = this.d.assist.get()
     for (const [m, b] of this.assistButtons) b.classList.toggle('sel', m === as)
     if (this.windows.get('ap')?.isOpen) this.updateAp?.()

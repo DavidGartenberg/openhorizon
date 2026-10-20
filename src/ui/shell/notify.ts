@@ -7,6 +7,14 @@ export function noteKind(msg: string): NoteKind {
   return 'info'
 }
 
+/** A banner is a title and an optional hint line: "PARKING BRAKE ENGAGED\nTO RELEASE, …". Pure. */
+export function parseBanner(msg: string): { title: string; hint?: string } {
+  const i = msg.indexOf('\n')
+  if (i < 0) return { title: msg }
+  const hint = msg.slice(i + 1).trim()
+  return hint ? { title: msg.slice(0, i).trim(), hint } : { title: msg.slice(0, i).trim() }
+}
+
 /** Notification cards under the toolbar: newest on top, at most four,
  *  each fading after a few seconds. A repeat of the same text refreshes
  *  the existing card instead of stacking duplicates. */
@@ -28,7 +36,10 @@ export class Notifier {
     if (existing) { clearTimeout(existing.timer); existing.timer = this.expire(msg, existing.card, ms); return }
     const card = document.createElement('div')
     card.className = `oh-note ${noteKind(msg)}`
-    card.textContent = msg
+    const b = parseBanner(msg)
+    const title = document.createElement('div'); title.className = 'oh-note-title'; title.textContent = b.title
+    card.appendChild(title)
+    if (b.hint) { const hint = document.createElement('div'); hint.className = 'oh-note-hint'; hint.textContent = b.hint; card.appendChild(hint) }
     this.el.prepend(card)
     this.live.set(msg, { card, timer: this.expire(msg, card, ms) })
     while (this.el.children.length > 4) {

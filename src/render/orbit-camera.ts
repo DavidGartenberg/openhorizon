@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { showcaseShot } from './showcase'
 import type { Input } from '../input/input'
 
 /** External orbit camera: circles the aircraft. Drag to rotate, wheel to
@@ -38,6 +39,20 @@ export class OrbitCamera {
       target.x + this.distance * cosEl * Math.sin(this.azimuth),
       Math.max(target.y + this.distance * Math.sin(this.elevation), target.y - 2),
       target.z + this.distance * cosEl * Math.cos(this.azimuth),
+    )
+    this.camera.lookAt(target)
+  }
+
+  /** Scripted cinematic orbit (no mouse input): `t` seconds into the cycle. */
+  showcase(t: number, target: THREE.Vector3): void {
+    const shot = showcaseShot(t)
+    const base = this.distance
+    const dist = THREE.MathUtils.clamp(base * shot.distanceScale, this.minDistance, this.maxDistance)
+    const cosEl = Math.cos(shot.elevation)
+    this.camera.position.set(
+      target.x + dist * cosEl * Math.sin(shot.azimuth),
+      Math.max(target.y + dist * Math.sin(shot.elevation), target.y - 2),
+      target.z + dist * cosEl * Math.cos(shot.azimuth),
     )
     this.camera.lookAt(target)
   }

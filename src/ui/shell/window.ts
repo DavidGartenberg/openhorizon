@@ -28,6 +28,12 @@ export class ShellWindow {
     head.className = 'oh-head'
     head.innerHTML = `${icon(iconName, 18)}<span class="oh-title"></span>`
     head.querySelector('.oh-title')!.textContent = title
+    const min = document.createElement('button')
+    min.className = 'oh-min'
+    min.setAttribute('aria-label', `Minimize ${title}`)
+    min.innerHTML = icon('minimize', 16)
+    min.onclick = () => { const m = el.classList.toggle('oh-collapsed'); min.setAttribute('aria-expanded', String(!m)) }
+    head.appendChild(min)
     const x = document.createElement('button')
     x.className = 'oh-x'
     x.setAttribute('aria-label', `Close ${title}`)
@@ -45,12 +51,13 @@ export class ShellWindow {
     el.addEventListener('pointerdown', () => this.front())
     let drag: { dx: number; dy: number } | null = null
     head.addEventListener('pointerdown', (e) => {
-      if ((e.target as HTMLElement).closest('.oh-x')) return
+      if ((e.target as HTMLElement).closest('.oh-x, .oh-min')) return
       drag = { dx: e.clientX - el.offsetLeft, dy: e.clientY - el.offsetTop }
       head.setPointerCapture(e.pointerId)
     })
     head.addEventListener('pointermove', (e) => { if (drag) this.place(e.clientX - drag.dx, e.clientY - drag.dy) })
     head.addEventListener('pointerup', () => { if (drag) { drag = null; this.save() } })
+    head.addEventListener('dblclick', (e) => { if (!(e.target as HTMLElement).closest('.oh-x, .oh-min')) min.click() })
   }
 
   get isOpen(): boolean { return !this.el.hidden }

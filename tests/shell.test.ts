@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { launchCommand, parsePendingLaunch, type LaunchChoice } from '../src/ui/shell/launcher'
 import { toolbarVisible } from '../src/ui/shell/toolbar'
 import { clampWindowPos } from '../src/ui/shell/window'
-import { noteKind } from '../src/ui/shell/notify'
+import { noteKind, parseBanner } from '../src/ui/shell/notify'
+import { CAMERA_TABS, cameraTabFor, type CameraMode } from '../src/ui/shell/shell'
 import { planeMenuEntries } from '../src/render/plane-menu'
 
 const choice: LaunchChoice = { aircraft: 'A320', airport: 'KSFO', runway: '28R', final: true, time: 'sunset', weather: 'clear' }
@@ -46,5 +47,25 @@ describe('shell behaviour', () => {
     expect(noteKind('ENGINE QUIT — inverted')).toBe('alert')
     expect(noteKind('NO ATC IN RANGE')).toBe('warn')
     expect(noteKind('GEAR DOWN')).toBe('info')
+  })
+})
+
+describe('notification banners', () => {
+  it('split into a title and a hint line', () => {
+    expect(parseBanner('PARKING BRAKE ENGAGED\nTO RELEASE, PRESS SHIFT + B')).toEqual({ title: 'PARKING BRAKE ENGAGED', hint: 'TO RELEASE, PRESS SHIFT + B' })
+    expect(parseBanner('GEAR DOWN')).toEqual({ title: 'GEAR DOWN' })
+    expect(parseBanner('TITLE\n')).toEqual({ title: 'TITLE' })
+  })
+})
+
+describe('camera window tabs', () => {
+  it('every camera mode lives under exactly one tab', () => {
+    const modes: CameraMode[] = ['cockpit', 'chase', 'orbit', 'showcase', 'free']
+    for (const m of modes) expect(CAMERA_TABS.filter((t) => t.views.some((v) => v.mode === m))).toHaveLength(1)
+    expect(cameraTabFor('chase')).toBe('external')
+    expect(cameraTabFor('orbit')).toBe('external')
+    expect(cameraTabFor('cockpit')).toBe('cockpit')
+    expect(cameraTabFor('showcase')).toBe('showcase')
+    expect(cameraTabFor('free')).toBe('drone')
   })
 })

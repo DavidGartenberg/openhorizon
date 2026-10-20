@@ -44,6 +44,7 @@ import { CockpitCamera, EYE_BY_LAYOUT } from './render/cockpit-camera'
 import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from './render/aircraft-mesh'
 import { planeMenuEntries } from './render/plane-menu'
 import { Shell } from './ui/shell/shell'
+import type { ChecklistState } from './sim/checklists'
 import { applyApFeedback, apEnvelopeFault, disconnectAp, makeApPanel, pressAlt, pressAp, pressApr, pressFlc, pressHdg, pressLand, pressNav, pressVs, toApTargets, turnKnob, type ApAvailability, type ApPanel, type ApSnapshot, type Knob } from './sim/ap-panel'
 import type { ApAction, ApReadout, IlsChoice } from './ui/shell/ap-window'
 import { KNOWN_ILS_FREQUENCIES } from './sim/nav/tuning'
@@ -340,7 +341,11 @@ if (DECK_PROFILE) {
   const e = EYE_BY_LAYOUT.boeing737, k = DECK_PROFILE.scale
   cockpitCam.setEyePoint({ x: e.x * k, y: e.y * k, up: e.up * k })
 } else cockpitCam.setEye('ga')
-let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' = 'chase'
+let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' | 'showcase' = 'chase'
+/** Showcase camera clock, s. */
+let showcaseClock = 0
+/** Field of view, degrees — the camera window's slider (remembered). */
+let viewFovDeg = (() => { try { const v = Number(localStorage.getItem('oh-fov')); return Number.isFinite(v) && v >= 40 && v <= 100 ? v : 70 } catch { return 70 } })()
 const DEFAULT_NEAR = camera.near // 0.5 m (scene.ts) — correct for exterior views
 /** Rudder as drawn: pedal demand through a slew-limited actuator (±1 = full
  *  deflection, ≈2.6 full-throws/s) so it sweeps instead of snapping. */
@@ -1122,8 +1127,9 @@ function handleDiscreteKeys(): void {
   }
   if (input.wasPressed('KeyC')) {
     cameraMode =
-      cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'free' : cameraMode === 'free' ? 'cockpit' : 'chase'
+      cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'showcase' : cameraMode === 'showcase' ? 'free' : cameraMode === 'free' ? 'cockpit' : 'chase'
   }
+  if (input.wasPressed('KeyB') && (input.isHeld('ShiftLeft') || input.isHeld('ShiftRight'))) parkingBrake = !parkingBrake
   if (input.wasPressed('KeyF')) aircraft.selectFlaps(c.flapsIndex + 1)
   if (input.wasPressed('KeyG')) aircraft.selectFlaps(c.flapsIndex - 1)
   if (input.wasPressed('KeyR')) {
@@ -2992,6 +2998,7 @@ function advanceFrame(elapsed: number, now: number): void {
   for (const o of exteriorCabin) o.visible = cameraMode !== 'cockpit'
   if (cameraMode === 'chase') chase.update(elapsed, mesh.group.position, (d.headingDeg * Math.PI) / 180)
   else if (cameraMode === 'orbit') orbit.update(input, mesh.group.position)
+  else if (cameraMode === 'showcase') { showcaseClock += elapsed; orbit.showcase(showcaseClock, mesh.group.position) }
   else if (cameraMode === 'cockpit') {
     // The shared camera's default near plane (0.5 m, `scene.ts`) is tuned
     // for exterior views of a ~2 m aircraft — every cockpit control sits
@@ -3314,12 +3321,17 @@ function advanceFrame(elapsed: number, now: number): void {
     instruments.update(olState)
   }
 
+  if (camera.fov !== viewFovDeg) { camera.fov = viewFovDeg; camera.updateProjectionMatrix() }
   {
     const sun = sunScreenPosition(camera, lastSunDir, lastSunElevationDeg)
     postFx.render(scene, camera, {
       sunScreen: sun.screen, sunVisibility: sun.visibility, sunElevationDeg: lastSunElevationDeg,
       bloomStrength: postStrength.bloom, rayStrength: postStrength.rays, vignette: postStrength.vignette,
     })
+  }
+  if (parkingBrake !== lastParkingBrake) {
+    lastParkingBrake = parkingBrake
+    toast(parkingBrake ? 'PARKING BRAKE ENGAGED\nTO RELEASE, ADVANCE THE THROTTLE OR PRESS SHIFT + B' : 'PARKING BRAKE RELEASED')
   }
   graphicsPanel.update(now, cameraMode, performance.now()-perfT0, renderer)
   shell?.refresh()
@@ -3659,8 +3671,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
   /** Verification-only camera-mode switch (mirrors pressing 'C' repeatedly)
    *  — useful for headless/automated cockpit-camera checks where dispatching
    *  a real keyboard event isn't reliable. */
-  __ohCam: (mode: 'chase' | 'orbit' | 'free' | 'cockpit') => {
-    if (mode === 'chase' || mode === 'orbit' || mode === 'free' || mode === 'cockpit') cameraMode = mode
+  __ohCam: (mode: 'chase' | 'orbit' | 'free' | 'cockpit' | 'showcase') => {
+    if (mode === 'chase' || mode === 'orbit' || mode === 'free' || mode === 'cockpit' || mode === 'showcase') cameraMode = mode
   },
   __ohSpawn: (q: string) => { if (typeof q === 'string') handleSearch(q) },
   /** Park the free camera at a world offset from the aircraft (east, up, south metres) looking along yaw/pitch degrees (0 = north). */
@@ -3837,6 +3849,25 @@ new LoadingPanel(FLEET_ACTIVE.params, {
 
 
 // ---- autopilot operation (flight-guidance panel: sim/ap-panel.ts) ----
+/** Real airplane state for the checklists (sim/checklists.ts). */
+function checklistState(): ChecklistState {
+  const d = aircraft.data, P = aircraft.P
+  const landingFlapsDeg = P.flapDetentsDeg.filter((x) => x <= (P.jet ? 30 : 40)).reduce((a, b) => Math.max(a, b), 0)
+  return {
+    onGround: d.onGround, parkingBrake, engineRunning: aircraft.engineRunning, throttle: aircraft.controls.throttle,
+    masterBattery: systemsControls.masterBattery, alternator: systemsControls.masterAlternator, avionics: systemsControls.avionicsSwitch,
+    magneto: systemsControls.magneto, mixtureRich: aircraft.controls.mixture > 0.9, fuelSelector: systemsControls.fuelSelector,
+    fuelOk: aircraft.fuelKg > Math.max(P.fuelCapacityKg * 0.075, 8) || P.fuelCapacityKg < 1,
+    pitotHeat: systemsControls.pitotHeat, landingLight: aircraftLights.landingOn,
+    flapsDeg: aircraft.flapsDeg, landingFlapsDeg, trim: aircraft.controls.trim,
+    gearRetractable: !!P.gearRetractable, gearDown: aircraft.gearPos > 0.99,
+    kias: d.kias, aglFt: d.aglFt, groundSpeedKt: d.groundSpeedKt, apMaster: systemsControls.apMaster,
+    isJet: !!P.jet, hasMixture: !P.jet && P.fuelCapacityKg >= 1, hasSpoilers: !!P.spoilers,
+    spoilersArmed: aircraft.spoilerArmed, spoilersStowed: aircraft.spoilerCmd < 0.02,
+    vrefKt: 1.3 * P.vSpeeds.vs0,
+  }
+}
+let lastParkingBrake = false
 function apSnapshot(): ApSnapshot {
   const d = aircraft.data
   return { headingDeg: d.headingDeg, altitudeFt: d.altitudeFt, verticalSpeedFpm: d.verticalSpeedFpm, iasKt: d.kias, rollDeg: d.rollDeg }
@@ -3971,7 +4002,11 @@ shell = new Shell({
   directTo,
   clearPlan: () => { flightPlan.setWaypoints([]); toast('FLIGHT PLAN CLEARED') },
   instruments: { get visible() { return instruments.visible }, get on() { return instrumentsOn }, set: (v) => { instrumentsOn = v; try { localStorage.setItem('oh-instruments', v ? 'on' : 'off') } catch { /* storage unavailable */ } } },
-  camera: { get: () => cameraMode, set: (m) => { cameraMode = m } },
+  camera: {
+    get: () => cameraMode, set: (m) => { cameraMode = m },
+    fov: { get: () => viewFovDeg, set: (v) => { viewFovDeg = Math.min(100, Math.max(40, v)); try { localStorage.setItem('oh-fov', String(viewFovDeg)) } catch { /* storage unavailable */ } }, min: 40, max: 100 },
+  },
+  checklist: { state: checklistState },
   assist: { get: () => assistMode, set: (m) => { assistMode = m } },
   pause: { paused: () => loop.paused, toggle: () => loop.setRate(loop.paused ? 1 : 0) },
   navLog: () => {
@@ -3991,7 +4026,7 @@ shell = new Shell({
   keys: [
     ['↑ ↓ ← →', 'Pitch and roll'], ['A / D', 'Rudder'], ['W / S', 'Throttle'], ['F / G', 'Flaps down / up'],
     [', / .', 'Trim'], ['B', 'Brakes'], ['U', 'Gear'], ['V', 'Spoilers / speedbrake'], ['Z', 'Reverse thrust'],
-    ['C', 'Change camera'], ['X', 'Stability assistance'], ['T (hold)', 'Talk to ATC'], ['`', 'ATC menu'],
+    ['C', 'Change camera'], ['Shift + B', 'Parking brake'], ['X', 'Stability assistance'], ['T (hold)', 'Talk to ATC'], ['`', 'ATC menu'],
     ['/', 'Quick airport search'], ['M', 'Free flight (aircraft & departure)'], ['Space', 'Pause'], ['1 / 2 / 3', 'Sim rate'],
     ['[ / ]', 'Time of day'], ['R', 'Reset to runway'], ['O / P', 'Save / load flight'], ['L', 'Landing lights'],
     ['Q', 'Mute'], ['J', 'Controller setup'],
