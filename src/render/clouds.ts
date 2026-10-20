@@ -52,6 +52,7 @@ const FRAG = /* glsl */ `
     vec3 q = p * vec3(1.7, 1.35, 1.7) + vSeed * 23.7;
     float macro = texture(uNoise, q * 0.055).r;
     float detail = texture(uNoise, q * 0.25 + 0.37).r;
+    float fine = texture(uNoise, q * 0.71 + 0.13).r;
     // Broad lobes carve a coherent rounded silhouette; finer erosion only
     // affects the boundary, preserving substantial optically thick interiors.
     float envelope = 1.0 - dot(p.xz, p.xz) - pow(max(p.y, 0.0), 2.0) * 0.65;
@@ -63,7 +64,8 @@ const FRAG = /* glsl */ `
       structure = max(max(billowA, billowB), billowC) * 1.8;
     }
     float body = structure + (macro - 0.5) * 1.2 - 0.08;
-    float d = smoothstep(0.0, 0.36, body - (1.0 - detail) * 0.16);
+    // A second, finer octave (zero-mean) frays the boundary into smaller billows.
+    float d = smoothstep(0.0, 0.36, body - (1.0 - detail) * 0.16 + (fine - 0.5) * 0.12);
     return d * base * top * sideSupport * (0.65 + macro * 0.65);
   }
 
@@ -100,6 +102,10 @@ const FRAG = /* glsl */ `
     // are amortized over four view samples. No screen-space temporal history.
     float steps = floor(mix(uNearSteps, uFarSteps, smoothstep(2500.0, 11000.0, distanceToCloud)) + 0.5);
     float stepM = (exitT - entry) / steps;
+    // Per-pixel start offset (interleaved gradient noise): fixed sample
+    // positions otherwise print the step lattice as concentric bands.
+    // Held to 60% amplitude: full-strength jitter leaves visible grain in thin haze.
+    float jitter = 0.5 + (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) * 0.6;
     vec3 sun = normalize(uSunDir);
     vec3 sunStep = sun / vRadii * 190.0;
     float extinction = mix(0.0042, 0.007, uCoverage);
@@ -115,7 +121,7 @@ const FRAG = /* glsl */ `
     vec3 sunlight = mix(vec3(1.0, 0.97, 0.91), vec3(1.0, 0.48, 0.13), uDusk) * (1.0 + 0.5 * uDusk);
     for (int i = 0; i < 24; i++) {
       if (float(i) >= steps || transmittance < 0.025) break;
-      float t = entry + (float(i) + 0.5) * stepM;
+      float t = entry + (float(i) + jitter) * stepM;
       vec3 p = origin + direction * t;
       float d = density(p);
       if (d < 0.005) continue;
