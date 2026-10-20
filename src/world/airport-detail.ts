@@ -18,7 +18,10 @@
 import * as THREE from 'three'
 import { ownMaterial } from './airport-scenery'
 import { pavementMaterial } from '../render/surface-materials'
+import { runwayMarkQuads, designatorLayout, FT, type Quad } from './runway-marks'
 
+/** Painted markings: unlit, multiplied by a tiling wear map so fresh paint,
+ *  scuffs and rubber-dulled patches read like the real thing. */
 const MARK_WHITE = new THREE.MeshBasicMaterial({ color: 0xf0f2f0 })
 const MARK_WHITE_BASE = 0xf0f2f0
 const TAXI_LINE_BASE = 0xd9c04a
@@ -72,11 +75,10 @@ export interface RunwayLocal {
   elevAt: (t: number) => number // t ∈ [-0.5, 0.5] → elevation offset vs center
 }
 
-type Quad = { x: number; y: number; w: number; l: number; rotZ?: number }
-
 /** Merge flat quads (runway-local x/y, painted at z≈0) into one geometry. */
 function mergedQuads(quads: Quad[], r: RunwayLocal, lift: number): THREE.BufferGeometry {
   const pos: number[] = []
+  const uv: number[] = []
   const idx: number[] = []
   for (const q of quads) {
     const c = Math.cos(q.rotZ ?? 0)
@@ -89,75 +91,114 @@ function mergedQuads(quads: Quad[], r: RunwayLocal, lift: number): THREE.BufferG
       const y = q.y + dx * s + dy * c
       const t = y / r.lenM
       pos.push(x, r.elevAt(Math.max(-0.5, Math.min(0.5, t))) + lift, -y)
+      uv.push(x / PAINT_TILE_M, y / PAINT_TILE_M) // wear map tiles in world metres
     }
     idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
   }
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3))
+  g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2))
   g.setIndex(idx)
   g.computeVertexNormals()
   return g
 }
 
-const FT = 0.3048
+const PAINT_TILE_M = 6
+let wearTex: THREE.CanvasTexture | null = null
 
-/** FAA threshold stripe count by runway width. */
-function thresholdStripes(widM: number): number {
-  const wFt = widM / FT
-  if (wFt >= 150) return 12
-  if (wFt >= 100) return 8
-  if (wFt >= 75) return 6
-  return 4
-}
-
-/** Painted markings for one paved runway → ONE mesh + 2 number quads. */
-export function buildRunwayMarkings(r: RunwayLocal): THREE.Group {
-  const g = new THREE.Group()
-  const quads: Quad[] = []
-  const halfLen = r.lenM / 2
-
-  for (const end of [-1, 1] as const) {
-    // Threshold stripes: 30 m × 1.75 m starting 6 m from the threshold.
-    const n = thresholdStripes(r.widM)
-    const usable = r.widM * 0.85
-    const gap = usable / n
-    for (let i = 0; i < n; i++) {
-      const x = -usable / 2 + gap * (i + 0.5) + (i >= n / 2 ? gap * 0.35 : -gap * 0.35)
-      quads.push({ x, y: end * (halfLen - 6 - 15), w: 1.75, l: 30 })
-    }
-    // Aiming point: 45 m × 6 m pair at 305 m (1,000 ft), runways ≥ 4,200 ft.
-    if (r.lenM >= 1280) {
-      for (const side of [-1, 1]) {
-        quads.push({ x: side * r.widM * 0.19, y: end * (halfLen - 305 - 22.5), w: 6, l: 45 })
-      }
-    }
-    // Touchdown-zone bars at 500-ft stations (skip the aiming point), ≥ 6,000 ft.
-    if (r.lenM >= 1800) {
-      for (const stationFt of [500, 1500, 2000, 2500, 3000]) {
-        const y = end * (halfLen - stationFt * FT - 11.5)
-        if (Math.abs(y) > halfLen - 40) continue
-        for (const side of [-1, 1]) {
-          quads.push({ x: side * r.widM * 0.24, y, w: 1.8, l: 23 })
-        }
-      }
+/** Tiling grayscale wear map (1 = fresh paint, lower = scuffed / dulled). */
+function paintWearTexture(): THREE.CanvasTexture {
+  if (wearTex) return wearTex
+  const N = 128
+  const c = document.createElement('canvas')
+  c.width = N; c.height = N
+  const ctx = c.getContext('2d')!
+  const img = ctx.createImageData(N, N)
+  const hash = (x: number, y: number): number => {
+    const h = Math.sin(x * 127.1 + y * 311.7) * 43758.5453
+    return h - Math.floor(h)
+  }
+  const vnoise = (x: number, y: number, period: number): number => {
+    const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi
+    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf)
+    const h = (a: number, b: number): number => hash(((a % period) + period) % period, ((b % period) + period) % period)
+    return (h(xi, yi) * (1 - u) + h(xi + 1, yi) * u) * (1 - v) + (h(xi, yi + 1) * (1 - u) + h(xi + 1, yi + 1) * u) * v
+  }
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const broad = vnoise(x / 32 * 4, y / 32 * 4, 4) // 4 cells per tile
+      const mid = vnoise(x / 8, y / 8, 16)
+      const fine = hash(x * 1.7, y * 1.3)
+      let v = 0.9 + 0.1 * broad - 0.1 * mid
+      if (fine > 0.93) v -= 0.18 + 0.2 * (fine - 0.93) / 0.07 // chips and scuffs
+      const g = Math.max(0.45, Math.min(1, v))
+      const k = (y * N + x) * 4
+      img.data[k] = img.data[k + 1] = img.data[k + 2] = Math.round(g * 255)
+      img.data[k + 3] = 255
     }
   }
-  const paint = new THREE.Mesh(mergedQuads(quads, r, 0.16), MARK_WHITE)
+  ctx.putImageData(img, 0, 0)
+  wearTex = new THREE.CanvasTexture(c)
+  wearTex.wrapS = wearTex.wrapT = THREE.RepeatWrapping
+  wearTex.colorSpace = THREE.SRGBColorSpace
+  wearTex.anisotropy = 8
+  return wearTex
+}
+
+/** Tall, narrow runway numeral/letter glyphs (FAA numerals are ~3:5). */
+function numeralTexture(text: string): THREE.CanvasTexture {
+  const key = `numeral|${text}`
+  const hit = textureCache.get(key)
+  if (hit) return hit
+  const W = 256, H = 384
+  const c = document.createElement('canvas')
+  c.width = W; c.height = H
+  const ctx = c.getContext('2d')!
+  ctx.clearRect(0, 0, W, H)
+  ctx.fillStyle = '#f0f2f0'
+  ctx.font = `bold ${Math.round(H * 0.82)}px "Arial Narrow", Arial, sans-serif`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const m = ctx.measureText ? ctx.measureText(text) : { width: 0 }
+  const fit = m.width > W * 0.94 ? (W * 0.94) / m.width : 1
+  ctx.save()
+  ctx.translate(W / 2, H / 2 + H * 0.04)
+  ctx.scale(fit, 1)
+  ctx.fillText(text, 0, 0)
+  ctx.restore()
+  const tex = new THREE.CanvasTexture(c)
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.anisotropy = 8
+  textureCache.set(key, tex)
+  return tex
+}
+
+/** Painted markings for one paved runway → ONE mesh (edge lines, centerline,
+ *  threshold stripes, aiming points, touchdown bars) + the designator glyphs. */
+export function buildRunwayMarkings(r: RunwayLocal): THREE.Group {
+  const g = new THREE.Group()
+  const halfLen = r.lenM / 2
+  MARK_WHITE.map = paintWearTexture()
+  MARK_WHITE.needsUpdate = true
+  const paint = new THREE.Mesh(mergedQuads(runwayMarkQuads(r.lenM, r.widM), r, 0.16), MARK_WHITE)
   paint.renderOrder = 22
   g.add(paint)
 
-  // Painted runway numbers (canvas textures), reading toward the arriving pilot.
+  // Painted designators (numerals + L/R/C), reading toward the arriving pilot.
   for (const end of [-1, 1] as const) {
     const ident = end === -1 ? r.liIdent : r.hiIdent
-    const tex = textTexture(ident.length > 2 ? ident : ident, '#f0f2f0', 'transparent', 256, 256, ident.length > 2 ? 88 : 120)
-    const mat = ownMaterial(new THREE.MeshBasicMaterial({ map: tex, transparent: true }))
-    const quad = new THREE.Mesh(new THREE.PlaneGeometry(12, 15), mat)
-    const y = end * (halfLen - 55)
-    quad.rotation.x = -Math.PI / 2
-    quad.rotation.z = end === -1 ? 0 : Math.PI
-    quad.position.set(0, r.elevAt(y / r.lenM) + 0.17, -y)
-    quad.renderOrder = 22
-    g.add(quad)
+    const { glyphs, heightM } = designatorLayout(ident)
+    for (const gl of glyphs) {
+      const wM = gl.text.length > 1 ? 12 : 8
+      const mat = ownMaterial(new THREE.MeshBasicMaterial({ map: numeralTexture(gl.text), transparent: true }))
+      const quad = new THREE.Mesh(new THREE.PlaneGeometry(wM, heightM), mat)
+      const y = end * (halfLen - gl.distM)
+      quad.rotation.x = -Math.PI / 2
+      quad.rotation.z = end === -1 ? 0 : Math.PI
+      quad.position.set(0, r.elevAt(y / r.lenM) + 0.17, -y)
+      quad.renderOrder = 22
+      g.add(quad)
+    }
   }
   return g
 }

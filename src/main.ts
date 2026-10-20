@@ -3580,6 +3580,13 @@ Object.assign(window as unknown as Record<string, unknown>, {
     if (mode === 'chase' || mode === 'orbit' || mode === 'free' || mode === 'cockpit') cameraMode = mode
   },
   __ohSpawn: (q: string) => { if (typeof q === 'string') handleSearch(q) },
+  /** Park the free camera at a world offset from the aircraft (east, up, south metres) looking along yaw/pitch degrees (0 = north). */
+  __ohFreeCam: (o: { e?: number; u?: number; s?: number; yaw?: number; pitch?: number }) => {
+    const g = mesh.group.position
+    const d = (v: unknown): number => finiteOr(v as number) ?? 0
+    freeCam.setPose(g.x + d(o?.e), g.y + d(o?.u), g.z + d(o?.s), (d(o?.yaw) * Math.PI) / 180, (d(o?.pitch) * Math.PI) / 180)
+    cameraMode = 'free'
+  },
   __ohAtc: (kindOrIndex?: string | number) => {
     if (typeof kindOrIndex === 'number') {
       const it = atcMenuItems()[kindOrIndex]

@@ -238,11 +238,15 @@ export class Airports {
       // shared pavement shader can align rubber wear without per-strip uniforms.
       if (r.s === 0) {
         const ends = new Float32Array(pos.count * 2)
+        const lat = new Float32Array(pos.count * 2)
         for (let v = 0; v < pos.count; v++) {
           ends[v * 2] = pos.getY(v) + lenM / 2
           ends[v * 2 + 1] = lenM / 2 - pos.getY(v)
+          lat[v * 2] = pos.getX(v) / (widM / 2) // −1…1 across the strip
+          lat[v * 2 + 1] = widM / 2
         }
         stripGeo.setAttribute('runwayEnds', new THREE.BufferAttribute(ends, 2))
+        stripGeo.setAttribute('runwayLat', new THREE.BufferAttribute(lat, 2))
       }
       stripGeo.computeVertexNormals()
       const strip = new THREE.Mesh(stripGeo, r.s === 0 ? ASPHALT : TURF)
@@ -252,8 +256,9 @@ export class Airports {
       strip.position.set(cx, elevM + 0.06, -cy)
       strip.renderOrder = 20
       group.add(strip)
-      if (r.s === 0) {
-        // Centerline dashes.
+      if (r.s === 0 && lenM < 900) {
+        // Centerline dashes (short runways only — longer ones get the FAA
+        // dash pattern from airport-detail's marking mesh).
         const nDash = Math.max(Math.floor(lenM / 60), 2)
         const dashes = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.9, 25), STRIPE, nDash)
         const m4 = new THREE.Matrix4()
