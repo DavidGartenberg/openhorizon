@@ -52,6 +52,7 @@ const FRAG = /* glsl */ `
     vec3 q = p * vec3(1.7, 1.35, 1.7) + vSeed * 23.7;
     float macro = texture(uNoise, q * 0.055).r;
     float detail = texture(uNoise, q * 0.25 + 0.37).r;
+    float fine = texture(uNoise, q * 0.71 + 0.13).r;
     // Broad lobes carve a coherent rounded silhouette; finer erosion only
     // affects the boundary, preserving substantial optically thick interiors.
     float envelope = 1.0 - dot(p.xz, p.xz) - pow(max(p.y, 0.0), 2.0) * 0.65;
@@ -63,7 +64,8 @@ const FRAG = /* glsl */ `
       structure = max(max(billowA, billowB), billowC) * 1.8;
     }
     float body = structure + (macro - 0.5) * 1.2 - 0.08;
-    float d = smoothstep(0.0, 0.36, body - (1.0 - detail) * 0.16);
+    // A second, finer octave (zero-mean) frays the boundary into smaller billows.
+    float d = smoothstep(0.0, 0.36, body - (1.0 - detail) * 0.16 + (fine - 0.5) * 0.12);
     return d * base * top * sideSupport * (0.65 + macro * 0.65);
   }
 
@@ -100,6 +102,10 @@ const FRAG = /* glsl */ `
     // are amortized over four view samples. No screen-space temporal history.
     float steps = floor(mix(uNearSteps, uFarSteps, smoothstep(2500.0, 11000.0, distanceToCloud)) + 0.5);
     float stepM = (exitT - entry) / steps;
+    // Per-pixel start offset (interleaved gradient noise): fixed sample
+    // positions otherwise print the step lattice as concentric bands.
+    // Held to 60% amplitude: full-strength jitter leaves visible grain in thin haze.
+    float jitter = 0.5 + (fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) - 0.5) * 0.6;
     vec3 sun = normalize(uSunDir);
     vec3 sunStep = sun / vRadii * 190.0;
     float extinction = mix(0.0042, 0.007, uCoverage);
@@ -107,11 +113,15 @@ const FRAG = /* glsl */ `
     float firstDensityT = -1.0;
     vec3 accumulated = vec3(0.0);
     float shadow = 1.0;
-    float forward = pow(max(dot(ray, sun), 0.0), 12.0);
-    vec3 sunlight = mix(vec3(1.0, 0.97, 0.91), vec3(1.0, 0.43, 0.19), uDusk);
+    // Low sun: a wider forward lobe so cloud edges glow toward the sun, and
+    // brighter (HDR — the post chain blooms it) golden light.
+    // Clouds aloft stay in direct sun after the ground is in twilight.
+    float sunUp = max(uDayness, uDusk * 0.95);
+    float forward = pow(max(dot(ray, sun), 0.0), mix(12.0, 9.0, uDusk));
+    vec3 sunlight = mix(vec3(1.0, 0.97, 0.91), vec3(1.0, 0.48, 0.13), uDusk) * (1.0 + 0.5 * uDusk);
     for (int i = 0; i < 24; i++) {
       if (float(i) >= steps || transmittance < 0.025) break;
-      float t = entry + (float(i) + 0.5) * stepM;
+      float t = entry + (float(i) + jitter) * stepM;
       vec3 p = origin + direction * t;
       float d = density(p);
       if (d < 0.005) continue;
@@ -125,9 +135,15 @@ const FRAG = /* glsl */ `
       float heightLight = smoothstep(-0.8, 0.8, p.y);
       vec3 ambient = mix(vec3(0.022, 0.029, 0.048), vec3(0.23, 0.29, 0.38), uDayness);
       ambient *= mix(0.55, 1.25, heightLight);
+      // Dusk: shaded undersides pick up the violet-rose of the sky, tops stay warm.
+      vec3 duskAmbient = mix(vec3(0.26, 0.22, 0.38), vec3(0.50, 0.27, 0.24), heightLight) * (0.28 + uDayness * 0.9);
+      ambient = mix(ambient, duskAmbient, uDusk * 0.85);
       // A bounded forward lobe produces silver edges without a white clip.
-      vec3 direct = sunlight * uDayness * (0.85 + forward * 1.7) * shadow;
-      vec3 multipleScatter = sunlight * uDayness * 0.16 * (1.0 - shadow);
+      vec3 direct = sunlight * sunUp * (0.85 + forward * (1.7 + 2.0 * uDusk)) * shadow;
+      // Light scattered inside the cloud is rose-violet at dusk (the sky's
+      // fill), not the sun's orange: shaded bases read cooler than lit tops.
+      vec3 scatterTint = mix(sunlight, vec3(0.85, 0.52, 0.62), uDusk * 0.32);
+      vec3 multipleScatter = scatterTint * sunUp * 0.16 * (1.0 - shadow);
       float absorbed = 1.0 - exp(-d * extinction * stepM);
       accumulated += transmittance * absorbed * (ambient + direct + multipleScatter);
       transmittance *= 1.0 - absorbed;
@@ -137,7 +153,12 @@ const FRAG = /* glsl */ `
     // Distance haze blends the field into the atmosphere before the outer
     // cell boundary. Straight alpha is required by Three's normal blending.
     vec3 radiance = accumulated / max(alpha, 0.001);
+    // Sunset clouds read as saturated orange-rose, not cream: push chroma
+    // away from the luma before tone mapping desaturates it.
+    float cloudLuma = dot(radiance, vec3(0.2126, 0.7152, 0.0722));
+    radiance = max(mix(vec3(cloudLuma), radiance, 1.0 + 0.7 * uDusk), vec3(0.0)) * (1.0 - 0.26 * uDusk);
     vec3 haze = mix(vec3(0.012, 0.02, 0.042), vec3(0.36, 0.47, 0.61), uDayness);
+    haze = mix(haze, vec3(0.66, 0.40, 0.31) * (0.4 + uDayness * 0.7), uDusk * 0.6); // warm horizon haze
     radiance = mix(radiance, haze, 1.0 - exp(-distanceToCloud * 0.000025));
     gl_FragColor = vec4(radiance, alpha * fade);
     vec4 clipEntry = projectionMatrix * viewMatrix * vec4(cameraPosition + ray * firstDensityT, 1.0);

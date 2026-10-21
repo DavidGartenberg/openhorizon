@@ -5,17 +5,17 @@ import * as THREE from 'three'
  * instead of turning into a sparkling pattern at a grazing approach angle. */
 export function pavementMaterial(color: number, plane: 'xy' | 'xz', kind: 'asphalt' | 'concrete' | 'runway' = 'asphalt'): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({ color, roughness: 0.91, metalness: 0, envMapIntensity: 0.4 })
-  material.customProgramCacheKey = () => `pavement-v1-${plane}-${kind}`
+  material.customProgramCacheKey = () => `pavement-v2-${plane}-${kind}`
   material.onBeforeCompile = shader => {
     const runway = kind === 'runway'
     shader.vertexShader = `varying vec2 vPavement;
-${runway ? 'attribute vec2 runwayEnds; varying vec2 vRunwayEnds;' : ''}
+${runway ? 'attribute vec2 runwayEnds; attribute vec2 runwayLat; varying vec2 vRunwayEnds; varying vec2 vRunwayLat;' : ''}
 ` + shader.vertexShader
     shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
 vPavement = position.${plane};
-${runway ? 'vRunwayEnds = runwayEnds;' : ''}`)
+${runway ? 'vRunwayEnds = runwayEnds; vRunwayLat = runwayLat;' : ''}`)
     shader.fragmentShader = `varying vec2 vPavement;
-${runway ? 'varying vec2 vRunwayEnds;' : ''}
+${runway ? 'varying vec2 vRunwayEnds; varying vec2 vRunwayLat;' : ''}
 float pavementHash(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -48,14 +48,51 @@ float jointFade = 1.0 - smoothstep(0.3, 2.0, max(jointAA.x, jointAA.y));
 pavementTone *= 1.0 - 0.22 * max(joint.x, joint.y) * jointFade;
 ` : ''}
 ${runway ? `
-// Procedural rubber deposits, measured from each actual threshold.
-// Main-wheel bands leave the centerline readable; both landing directions.
+// ---- Runway wear: measured from each actual threshold / pavement edge. ----
 float endDistance = min(vRunwayEnds.x, vRunwayEnds.y);
+float edgeDistance = (1.0 - abs(vRunwayLat.x)) * vRunwayLat.y;
+float footprint = max(length(dFdx(pavementP)), length(dFdy(pavementP)));
+float detailFade = 1.0 - smoothstep(0.25, 1.2, footprint);
+
+// Rubber: main-gear tracks leave dark bands, heavy in the touchdown zone,
+// plus a smear on the first few hundred feet where tyres spin up.
 float touchdown = smoothstep(90.0, 230.0, endDistance) * (1.0 - smoothstep(420.0, 850.0, endDistance));
-float wheelOffset = (abs(pavementP.x) - 3.2) / 2.0;
-float wheelBand = exp(-wheelOffset * wheelOffset);
+float spinup = smoothstep(0.0, 40.0, endDistance) * (1.0 - smoothstep(110.0, 260.0, endDistance));
+float ax = abs(pavementP.x);
+float trackA = exp(-pow((ax - 3.3) / 1.7, 2.0));
+float trackB = exp(-pow((ax - 7.4) / 2.6, 2.0)) * 0.7;
 float streak = pavementFiltered(vec2(pavementP.x * 2.7, pavementP.y * 0.09));
-pavementTone *= 1.0 - touchdown * wheelBand * (0.13 + 0.32 * streak);
+float streakB = pavementFiltered(vec2(pavementP.x * 1.3 + 9.0, pavementP.y * 0.05));
+float rubber = touchdown * (trackA * (0.16 + 0.55 * streak * streak) + trackB * (0.08 + 0.35 * streakB * streakB)) + spinup * trackA * 0.18;
+pavementTone *= 1.0 - clamp(rubber, 0.0, 0.62);
+
+// Repair patches: a few rectangular panels a shade lighter/darker than the field.
+vec2 patchCell = floor(vec2(pavementP.x / 9.0, pavementP.y / 38.0));
+float patchR = pavementHash(patchCell + 17.0);
+vec2 patchF = fract(vec2(pavementP.x / 9.0, pavementP.y / 38.0));
+vec2 patchEdge = min(patchF, 1.0 - patchF) * vec2(9.0, 38.0);
+float patchLine = 1.0 - smoothstep(0.0, 0.07 + footprint, min(patchEdge.x, patchEdge.y));
+float isPatch = step(0.78, patchR);
+pavementTone *= 1.0 + isPatch * ((patchR - 0.78) * 0.9 * (pavementHash(patchCell + 3.0) > 0.5 ? 1.0 : -1.2));
+pavementTone *= 1.0 - isPatch * patchLine * 0.22 * detailFade;
+
+// Paving-lane joints every 7.62 m (25 ft) along the runway, hairline dark seams.
+float laneEdge = abs(fract(pavementP.x / 7.62 + 0.5) - 0.5) * 7.62;
+float lane = 1.0 - smoothstep(0.015, 0.04 + footprint * 1.4, laneEdge);
+pavementTone *= 1.0 - lane * 0.14 * detailFade;
+
+// Hairline cracks: contour lines of a stretched noise field, kept away from bands of patch repair.
+float crackN = pavementNoise(pavementP * vec2(0.55, 0.22) + vec2(3.1, 8.7));
+float crack = 1.0 - smoothstep(0.0, 0.010 + footprint * 0.02, abs(crackN - 0.5));
+float crackN2 = pavementNoise(pavementP * vec2(1.9, 1.3) + vec2(41.0, 5.0));
+float crack2 = 1.0 - smoothstep(0.0, 0.012 + footprint * 0.03, abs(crackN2 - 0.5));
+pavementTone *= 1.0 - (crack * 0.35 + crack2 * 0.18 * step(0.55, pavementWeather)) * detailFade;
+
+// Oil / jet-blast staining along the centreline, lighter bleached edges.
+float oil = exp(-pow(pavementP.x / 1.6, 2.0)) * (0.45 + 0.55 * pavementFiltered(vec2(pavementP.x * 3.0, pavementP.y * 0.12)));
+pavementTone *= 1.0 - 0.14 * oil * smoothstep(60.0, 300.0, endDistance);
+float edgeBleach = 1.0 - smoothstep(0.0, 4.5, edgeDistance);
+pavementTone *= 1.0 + 0.16 * edgeBleach * (0.6 + 0.4 * pavementMottle);
 ` : ''}
 diffuseColor.rgb *= pavementTone;`)
     shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>

@@ -214,24 +214,62 @@ export class TrafficLayer {
     }
     const ctx = this.ctx
     ctx.clearRect(0, 0, w, h)
-    ctx.font = '11px ui-monospace, monospace'
     ctx.textBaseline = 'middle'
     const camPos = (camera as THREE.PerspectiveCamera).position
+    const visible: Array<{ sx: number; sy: number; dist: number; text: string }> = []
     for (const l of labels) {
       const dx = l.x - camPos.x
       const dy = l.y - camPos.y
       const dz = l.z - camPos.z
-      if (dx * dx + dy * dy + dz * dz > 20_000 ** 2) continue // label range 20 km
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+      if (dist > 20_000) continue // label range 20 km
       this.v.set(l.x, l.y, l.z).project(camera)
       if (this.v.z > 1 || this.v.z < -1) continue // behind/clipped
       const sx = ((this.v.x + 1) / 2) * w
       const sy = ((1 - this.v.y) / 2) * h
       if (sx < -80 || sx > w + 80 || sy < -20 || sy > h + 20) continue
-      ctx.fillStyle = 'rgba(0,10,16,0.55)'
-      const tw = ctx.measureText(l.text).width
-      ctx.fillRect(sx + 6, sy - 8, tw + 8, 16)
-      ctx.fillStyle = '#9fe8ff'
-      ctx.fillText(l.text, sx + 10, sy)
+      visible.push({ sx, sy, dist, text: l.text })
     }
+    // Nearest first, no stacking: a busy ramp shows its closest callsigns, not a smear.
+    const shown = declutterLabels(visible, 132, 22)
+    for (let i = shown.length - 1; i >= 0; i--) drawTrafficLabel(ctx, shown[i]!)
   }
+}
+
+/** Fade a label with distance (full inside 4 km, down to 35 % at 20 km). Pure. */
+export function labelAlpha(distM: number): number {
+  return distM <= 4000 ? 1 : Math.max(0.35, 1 - ((distM - 4000) / 16000) * 0.65)
+}
+
+/** Keep the nearest label of any group whose boxes would overlap. Pure. */
+export function declutterLabels<T extends { sx: number; sy: number; dist: number }>(items: readonly T[], boxW: number, boxH: number): T[] {
+  const kept: T[] = []
+  for (const it of [...items].sort((a, b) => a.dist - b.dist)) {
+    if (!kept.some((k) => Math.abs(k.sx - it.sx) < boxW && Math.abs(k.sy - it.sy) < boxH)) kept.push(it)
+  }
+  return kept
+}
+
+/** One traffic callout: a marker ring, a short leader and a slate pill with the callsign in bold. */
+function drawTrafficLabel(ctx: CanvasRenderingContext2D, l: { sx: number; sy: number; dist: number; text: string }): void {
+  const [call, ...rest] = l.text.split(' ')
+  const more = rest.join(' ')
+  const a = labelAlpha(l.dist)
+  ctx.save()
+  ctx.globalAlpha = a
+  ctx.font = '700 11px system-ui, -apple-system, "Segoe UI", sans-serif'
+  const w1 = ctx.measureText(call ?? '').width
+  ctx.font = '500 10.5px system-ui, -apple-system, "Segoe UI", sans-serif'
+  const w2 = more ? ctx.measureText(more).width + 8 : 0
+  const bx = l.sx + 12, by = l.sy - 26, bw = w1 + w2 + 18, bh = 20
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1.2
+  ctx.beginPath(); ctx.arc(l.sx, l.sy, 3.2, 0, Math.PI * 2); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(l.sx + 2.5, l.sy - 2.5); ctx.lineTo(bx, by + bh); ctx.stroke()
+  ctx.fillStyle = 'rgba(27,34,45,0.9)'
+  ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 2); ctx.fill()
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)'; ctx.stroke()
+  ctx.fillStyle = '#2b7fd6'; ctx.fillRect(bx, by, 3, bh)
+  ctx.fillStyle = '#f3f6fb'; ctx.font = '700 11px system-ui, -apple-system, "Segoe UI", sans-serif'; ctx.fillText(call ?? '', bx + 9, by + bh / 2 + 0.5)
+  if (more) { ctx.fillStyle = '#aab6c8'; ctx.font = '500 10.5px system-ui, -apple-system, "Segoe UI", sans-serif'; ctx.fillText(more, bx + 9 + w1 + 8, by + bh / 2 + 0.5) }
+  ctx.restore()
 }

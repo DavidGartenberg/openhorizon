@@ -77,15 +77,46 @@ export class SkyDome {
   private readonly shadowTarget = new THREE.Vector3()
   private shadowHalf = 120
 
+  private spanM = 12
+  private cockpitShadows = false
+
   /** Spend shadow texels on the selected airframe, not an empty 240m box. */
   setShadowSize(spanM: number): void {
-    this.shadowHalf = THREE.MathUtils.clamp(spanM*1.4, 24, 120)
-    const c = this.sunLight.shadow.camera
+    this.spanM = spanM
+    if (this.cockpitShadows) return
+    this.applyExteriorShadows()
+  }
+
+  private applyExteriorShadows(): void {
+    this.shadowHalf = THREE.MathUtils.clamp(this.spanM*1.4, 24, 120)
+    const sh = this.sunLight.shadow, c = sh.camera
     c.left = c.bottom = -this.shadowHalf
     c.right = c.top = this.shadowHalf
+    c.near = 10; c.far = 1600
     c.updateProjectionMatrix()
-    this.sunLight.shadow.normalBias = this.shadowHalf/1000
+    sh.bias = -0.00002
+    sh.normalBias = this.shadowHalf/1000
   }
+
+  /** In the cockpit the whole 2048² shadow map is spent on the flight deck
+   *  (a ±3 m box, ~3 mm texels), so window frames, seats and panel edges cast
+   *  crisp sunlight instead of 5 cm mush. The airframe's own ground shadow
+   *  returns the moment the camera leaves the cockpit. */
+  setCockpitShadows(on: boolean): void {
+    if (on === this.cockpitShadows) return
+    this.cockpitShadows = on
+    if (!on) { this.applyExteriorShadows(); return }
+    this.shadowHalf = COCKPIT_SHADOW_HALF_M
+    const sh = this.sunLight.shadow, c = sh.camera
+    c.left = c.bottom = -this.shadowHalf
+    c.right = c.top = this.shadowHalf
+    // The light sits 700 m from the target: bracket just the box depth.
+    c.near = 700 - 18; c.far = 700 + 18
+    c.updateProjectionMatrix()
+    sh.bias = -0.00006
+    sh.normalBias = 0.006
+  }
+  get inCockpitShadowMode(): boolean { return this.cockpitShadows }
 
   constructor(scene: THREE.Scene) {
     this.lookup.texture.name = 'Atmospheric radiance (linear HDR)'
@@ -172,5 +203,7 @@ export class SkyDome {
       .addScaledVector(_up, Math.round(u/texel)*texel-u)
   }
 }
+/** Half-width of the cockpit shadow box, metres. */
+export const COCKPIT_SHADOW_HALF_M = 3.2
 const _X = new THREE.Vector3(1,0,0), _Y = new THREE.Vector3(0,1,0)
 const _right = new THREE.Vector3(), _up = new THREE.Vector3()

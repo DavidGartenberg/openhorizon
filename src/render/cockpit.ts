@@ -816,7 +816,9 @@ export function updateCockpitControls(
 
 export type DraggableAxis = 'throttle' | 'mixture' | 'trim' | 'flap'
 
-const DECK_CLICK_IDS = new Set(['engStart', 'fireTest', 'hornCutout', 'mcpCmdA', 'mcpDisengage', 'masterCaution', 'landingLights', 'mcpAtArm', 'mcpSpeed', 'atDisconnect', 'atReset', 'apReset'])
+const DECK_CLICK_IDS = new Set(['engStart', 'fireTest', 'hornCutout', 'mcpDisengage', 'masterCaution', 'landingLights', 'atDisconnect', 'atReset', 'apReset'])
+/** Deck controls routed to main: the fixed ids above plus every guidance-panel button / knob half. */
+const isDeckClick = (id: string): boolean => DECK_CLICK_IDS.has(id) || id.startsWith('apBtn:') || id.startsWith('apKnob:')
 
 const DRAG_PX_FOR_FULL_RANGE = 220
 
@@ -905,7 +907,7 @@ export class CockpitInteraction {
       }
       else if (id === 'starterButton') systems.starterEngaged = true
       else if (id === 'fuelSelector') systems.fuelSelector = cycleFuelSelector(systems.fuelSelector)
-      else if (id && DECK_CLICK_IDS.has(id)) { this.deckClick = id; this.deckHold = id }
+      else if (id && isDeckClick(id)) { this.deckClick = id; this.deckHold = id }
       else if (id === 'mfdScreen' && hit?.uv) {
         // 15c: hit UV → canvas pixel → softkey bezel region.
         const px = hit.uv.x * MFD_CANVAS_W

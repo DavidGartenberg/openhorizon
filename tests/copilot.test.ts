@@ -41,7 +41,7 @@ describe('copilotSpeedsFor', () => {
 })
 
 describe('copilot takeoff sequence (jet)', () => {
-  it('calls airspeed alive, eighty knots, vee one, rotate, positive rate, gear up, flaps up in order', () => {
+  it('calls airspeed alive, eighty knots, one hundred knots, vee one, rotate, positive rate, gear up, flaps up in order', () => {
     const L = makeCopilotLatches()
     const calls: string[] = []
     let prev = obs({ kias: 10 })
@@ -57,7 +57,7 @@ describe('copilot takeoff sequence (jet)', () => {
     step(obs({ kias: 165, onGround: false, aglFt: 300, vsFpm: 1500, gearDown: false }))
     step(obs({ kias: 215, onGround: false, aglFt: 2000, vsFpm: 1800, gearDown: false, flapsIndex: 2 }))
     expect(calls).toEqual([
-      'airspeed alive', 'eighty knots', 'vee one', 'rotate',
+      'airspeed alive', 'eighty knots', 'one hundred knots', 'vee one', 'rotate',
       'positive rate', 'gear up', 'flaps up speed',
     ])
   })
@@ -118,5 +118,14 @@ describe('copilot arrival + re-arm', () => {
     // Second takeoff.
     o = obs({ kias: 146 })
     expect(copilotCallouts(o, prev, JET, L, true)).toContain('rotate')
+  })
+})
+
+import { COPILOT_CALLOUTS, COPILOT_CALLOUT_TEXT } from '../src/sim/copilot'
+describe('copilot callout inventory (used to render the voice ahead of time)', () => {
+  it('lists every callout the copilot can say, with no duplicates', () => {
+    expect(COPILOT_CALLOUTS).toHaveLength(Object.keys(COPILOT_CALLOUT_TEXT).length)
+    expect(new Set(COPILOT_CALLOUTS).size).toBe(COPILOT_CALLOUTS.length)
+    for (const t of ['airspeed alive', 'rotate', 'positive rate', 'vee one', 'gear up', 'one thousand']) expect(COPILOT_CALLOUTS).toContain(t)
   })
 })

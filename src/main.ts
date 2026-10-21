@@ -16,14 +16,16 @@ import { SafetySpeechController } from './audio/safety-speech'
 import { BrowserSpeechDriver } from './audio/browser-speech'
 import { makeSurfaceSmoother } from './render/surface-smoother'
 import { boeingAurals, makeAuralLatches } from './sim/boeing-aurals'
-import { makeAutothrottle, stepAutothrottle } from './sim/autothrottle'
+import { atFitment, atGainsFor, makeAutothrottle, stepAutothrottle } from './sim/autothrottle'
+import { autolandConfigFor, makeAutolandState, stepAutoland, radioAltitudeFt, type AutolandConfig, type AutolandOutput } from './sim/autoland'
 import { drawBoeingNd, drawBoeingEicas, drawIsfd, boeingFma, egtFromN1, drawSquareFitted, drawMfdWithEngines, type BoeingEicasInput, type BoeingNdInput, type BoeingPfdInput } from './cockpit/boeing-displays'
-import { animate737, update737Live } from './render/cockpit-737'
+import { animate737, setInteriorFillScale, update737Live } from './render/cockpit-737'
 import { BoeingAuralsAudio } from './audio/boeing-aurals-audio'
 import { loadCustomPack } from './audio/custom-audio-pack'
 import { LocalVoiceClient } from './voice/client'
-import { PushToTalk } from './voice/ptt'
+import { PushToTalk, normalizeAviation } from './voice/ptt'
 import { captureMicrophone } from './voice/recorder'
+import { captureWebSpeech, webSpeechAvailable } from './voice/web-speech'
 import { bindPushToTalk } from './voice/bindings'
 import { FlightRecorder, analyzeLanding, type RunwayRef } from './sim/recorder'
 import { buildAtis } from './sim/atc/atis'
@@ -31,7 +33,7 @@ import { TowerController, pilotPhrase, type PilotRequestKind, type TrafficView }
 import { GroundController } from './sim/atc/ground'
 import { trim } from './sim/trim'
 import { FT, KT, isa, kcasFromKias, indicatedAltitudeFt } from './sim/atmosphere'
-import { C172S } from './sim/aircraft/c172s'
+import { C172S, flapInterp } from './sim/aircraft/c172s'
 import { bearingDeg, distanceM, windDirFromNed, type LatLon } from './math/geo'
 import { createScene } from './render/scene'
 import { SkyDome } from './render/sky'
@@ -41,7 +43,13 @@ import { ChaseCamera } from './render/chase-camera'
 import { OrbitCamera } from './render/orbit-camera'
 import { CockpitCamera, EYE_BY_LAYOUT } from './render/cockpit-camera'
 import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from './render/aircraft-mesh'
-import { PlaneMenu } from './render/plane-menu'
+import { planeMenuEntries } from './render/plane-menu'
+import { Shell } from './ui/shell/shell'
+import type { ChecklistState } from './sim/checklists'
+import { applyApFeedback, apEnvelopeFault, disconnectAp, makeApPanel, pressAlt, pressAp, pressApr, pressFlc, pressHdg, pressLand, pressNav, pressVs, toApTargets, turnKnob, type ApAvailability, type ApPanel, type ApSnapshot, type Knob } from './sim/ap-panel'
+import type { ApAction, ApReadout, IlsChoice } from './ui/shell/ap-window'
+import { KNOWN_ILS_FREQUENCIES } from './sim/nav/tuning'
+import { Launcher, launchCommand, parsePendingLaunch, PENDING_LAUNCH_KEY, type LaunchChoice, type LauncherAirport } from './ui/shell/launcher'
 import { loadIls, ilsLoaded, ilsCount } from './world/ils'
 import { osmIdentSegs } from './world/osm-layout'
 import { routeIdents } from './sim/atc/ground'
@@ -74,7 +82,9 @@ import { kgToGal, TANK_CAPACITY_GAL } from './sim/systems/fuel'
 import { Input } from './input/input'
 import { EngineSound } from './audio/engine-sound'
 import { Hud } from './ui/hud'
-import { GraphicsPanel } from './ui/graphics-panel'
+import { PostFx, sunScreenPosition } from './render/post-fx'
+import { InstrumentOverlay, type OverlayState } from './ui/instrument-overlay'
+import { GraphicsPanel, type GraphicsActions } from './ui/graphics-panel'
 import { LoadingPanel } from './ui/loading-panel'
 import { sunPosition } from './math/solar'
 import { WorldFrame, TileManager } from './world/tiles'
@@ -96,11 +106,11 @@ import { FlightPlan, gpsCdiDeflection, determinePhase, activeLegProgress } from 
 import { airspacesContaining, AirspaceKind, type AirspacePolygon } from './sim/nav/airspace'
 import { makeAutopilotState, stepAutopilot, disconnect as disconnectAutopilot, type LateralMode, type VerticalMode } from './sim/autopilot'
 import {
-  findTunedVor, vorCdiFraction, ilsRefFromRunwayThreshold, localizerFraction, glideslopeFraction, findKnownIls,
+  findTunedVor, vorCdiFraction, ilsRefFromRunwayThreshold, runwayOffsets, glidepathHeightFt, localizerFraction, glideslopeFraction, findKnownIls,
   ilsOnFinal, NO_NAV_RESULT, type TunedNavResult,
 } from './sim/nav/tuning'
 import { finiteOr } from './sim/guards'
-import { copilotCallouts, copilotSpeedsFor, makeCopilotLatches, type CopilotObs } from './sim/copilot'
+import { COPILOT_CALLOUTS, copilotCallouts, copilotSpeedsFor, makeCopilotLatches, type CopilotObs } from './sim/copilot'
 
 const KHAF = { lat: 37.5134, lon: -122.5011 }
 
@@ -108,6 +118,11 @@ const app = document.getElementById('app')
 if (!app) throw new Error('missing #app element')
 
 const { renderer, scene, camera } = createScene(app)
+const postFx = new PostFx(renderer)
+let postStrength = { bloom: 0.22, rays: 0.2, vignette: 0.34, ao: 0.8 }
+/** Sun direction + elevation of the last frame (post-processing). */
+let lastSunDir = new THREE.Vector3(0, 1, 0)
+let lastSunElevationDeg = 45
 const input = new Input(renderer.domElement)
 const engineSound = new EngineSound()
 // Browsers gate audio behind a user gesture; unlock() is idempotent so the
@@ -126,9 +141,24 @@ let negGCutAnnounced = false
  *  button edges from the MCP / thrust levers / A/T P/RST light. */
 const autothrottle = makeAutothrottle()
 let atArmSwitch = false
+let atWasEngaged = false
 let atSpeedPressed = false
 let atDisconnectPressed = false
 let atResetPressed = false
+/** Autoland (sim/autoland.ts): state machine + the pieces of its output that
+ *  persist between frames (brake demand, last lever it commanded). */
+const autoland = makeAutolandState()
+let autolandBrake = 0
+/** Stopped on the runway after an autoland: brakes keep holding until the pilot takes over. */
+let autolandHoldBrake = false
+let autolandLastThrottle: number | null = null
+let autolandCfgFor: unknown = null
+let autolandCfgCache: AutolandConfig | null = null
+/** Autoland config for the airplane in use (null = not available on this type). */
+function autolandConfig(): AutolandConfig | null {
+  if (autolandCfgFor !== aircraft.P) { autolandCfgFor = aircraft.P; autolandCfgCache = autolandConfigFor(aircraft.P) }
+  return autolandCfgCache
+}
 /** Hardware-lever position frozen while the A/T drives the levers: the
  *  physical lever only overrides (and disconnects) once the pilot moves it. */
 let atHwRef = NaN
@@ -148,6 +178,11 @@ const sky = new SkyDome(scene)
 const ocean = new Ocean(scene, sky.radianceTexture)
 const clouds = new Clouds(scene)
 const hud = new Hud()
+const instruments = new InstrumentOverlay()
+let instrumentsOn = true
+try { instrumentsOn = localStorage.getItem('oh-instruments') !== 'off' } catch { /* storage unavailable */ }
+/** Selected course of the tuned nav source, for the compass course pointer. */
+let lastCourseDeg: number | undefined
 const loop = new FixedTimestepLoop(120)
 
 const frame = new WorldFrame(KHAF)
@@ -242,18 +277,14 @@ aircraft.groundElevAt = (n, e) => {
 }
 const mesh = FLEET_ACTIVE.build()
 void upgradePlayerAircraft(mesh, fleetKey)
-// N1: aircraft menu (M or N) — selection respawns via the FLY path.
-const planeMenu = new PlaneMenu((key) => {
-  try { localStorage.setItem('oh-aircraft', key) } catch { /* private mode */ }
-  location.reload()
-}, fleetKey) // fleetKey is the validated, private-mode-safe read of 'oh-aircraft'
+// Aircraft selection lives in the free-flight start screen (M or N opens
+// it); a new aircraft reloads, carrying the launch across (launcher.ts).
+let launcher: Launcher | null = null
+let shell: Shell | null = null
 window.addEventListener('keydown', (e) => {
-  if (planeMenu.isOpen) {
-    if (planeMenu.handleKey(e.code)) { e.preventDefault(); e.stopImmediatePropagation() }
-    return
-  }
+  if (launcher?.isOpen) return
   if ((e.code === 'KeyM' || e.code === 'KeyN') && document.activeElement?.tagName !== 'INPUT') {
-    planeMenu.open()
+    launcher?.open()
     e.preventDefault()
     e.stopImmediatePropagation()
   }
@@ -270,13 +301,19 @@ const replayView = new ReplayView()
 /** This airplane's cockpit, tailored per type (render/cockpit-profile.ts):
  *  the transport deck dressed for its family, or the G1000 panel fitted
  *  with its own controls and hardware. */
+const POWERPLANT = ROSTER.find((r) => r.spec.designator === fleetKey)?.spec.powerplant
+  ?? (fleetKey === '737' ? { kind: 'jet', count: 2 } : { kind: 'piston', count: 1 })
 const COCKPIT_PROFILE = cockpitProfile(fleetKey, FLEET_ACTIVE.params, {
   label: FLEET_ACTIVE.label,
-  powerplant: ROSTER.find((r) => r.spec.designator === fleetKey)?.spec.powerplant
-    ?? (fleetKey === '737' ? { kind: 'jet', count: 2 } : { kind: 'piston', count: 1 }),
+  powerplant: POWERPLANT,
 })
 const cockpitLayout = COCKPIT_PROFILE.layout
 const DECK_PROFILE = COCKPIT_PROFILE.deck
+/** Autothrottle: real on the airliner decks, a labelled speed-hold assist on
+ *  every other powered airplane, none on gliders (sim/autothrottle.ts). */
+const AT_FIT = atFitment(POWERPLANT.kind, !!DECK_PROFILE?.autothrottle, FLEET_ACTIVE.params.fuelCapacityKg)
+const AT_GAINS = atGainsFor(POWERPLANT.kind)
+autothrottle.gains = AT_GAINS
 const engineCount = DECK_PROFILE?.engines ?? COCKPIT_PROFILE.ga?.engines ?? 1
 const cockpit = buildCockpit(mesh.group, COCKPIT_PROFILE, FLEET_ACTIVE.params.flapDetentsDeg, { speedbrake: !!FLEET_ACTIVE.params.spoilers })
 // Exteriors previously cast onto runways but never received their own
@@ -312,7 +349,11 @@ if (DECK_PROFILE) {
   const e = EYE_BY_LAYOUT.boeing737, k = DECK_PROFILE.scale
   cockpitCam.setEyePoint({ x: e.x * k, y: e.y * k, up: e.up * k })
 } else cockpitCam.setEye('ga')
-let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' = 'chase'
+let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' | 'showcase' = 'chase'
+/** Showcase camera clock, s. */
+let showcaseClock = 0
+/** Field of view, degrees — the camera window's slider (remembered). */
+let viewFovDeg = (() => { try { const v = Number(localStorage.getItem('oh-fov')); return Number.isFinite(v) && v >= 40 && v <= 100 ? v : 70 } catch { return 70 } })()
 const DEFAULT_NEAR = camera.near // 0.5 m (scene.ts) — correct for exterior views
 /** Rudder as drawn: pedal demand through a slew-limited actuator (±1 = full
  *  deflection, ≈2.6 full-throws/s) so it sweeps instead of snapping. */
@@ -447,6 +488,16 @@ const apTargets = {
   bankCommandDeg: 0,
   pitchCommandDeg: 0,
 }
+/** Armed-capture underlying mode fed to the control laws (ap-panel.ts). */
+let apUnderlying: 'PIT' | 'VS' | 'FLC' = 'VS'
+/** The flight-guidance panel: the pilot's side of the autopilot. */
+let apPanel: ApPanel = makeApPanel()
+let apMessage = ''
+let knobHoldAt = 0
+let knobHoldStart = 0
+let apMessageUntil = 0
+let lastTunedNavResult: TunedNavResult | undefined
+let lastGpsLegCourse: number | undefined
 
 /** Scenario/failure flags — the debug-hook side of the failures the phase
  *  plan calls out (`__ohFail`); no in-sim UI to trigger these yet (that's
@@ -462,8 +513,13 @@ const failures = { alternatorFailed: false, icingConditions: false, staticBlocke
  *  exactly (reuses the same defaults/constants) rather than inventing a
  *  second "normal" state. */
 function resetSystemsState(): void {
-  Object.assign(autothrottle, makeAutothrottle())
+  Object.assign(autothrottle, makeAutothrottle(AT_GAINS))
   atArmSwitch = false
+  atWasEngaged = false
+  Object.assign(autoland, makeAutolandState())
+  autolandBrake = 0
+  autolandHoldBrake = false
+  autolandLastThrottle = null
   // A respawn uses this aircraft's saved loading selection. Snapshot loading
   // is restored after respawn and therefore has explicit higher priority.
   Object.assign(fuelState, makeFuelState(selectedLoading.leftKg, selectedLoading.rightKg))
@@ -545,6 +601,7 @@ function resetFlightSafety(): void {
   // Copilot latches reset with the flight (Slice 4) — a respawn is a new
   // leg; without this the callouts stay spent from the previous one.
   copilotLatches = makeCopilotLatches()
+  copilotPending = null
   copilotPrev = null
   // 9A: pending controller replies die with the flight they answered.
   cancelAtcTimers()
@@ -663,11 +720,11 @@ interface Snapshot {
   simMs: number; onGround: boolean; spawn: string
 }
 
-let toastLine = ''
-let toastUntil = 0
+/** Messages raised before the shell exists (boot) wait for it. */
+const earlyToasts: string[] = []
 function toast(msg: string): void {
-  toastLine = msg
-  toastUntil = performance.now() + 6000
+  if (shell) shell.notifier.push(msg)
+  else earlyToasts.push(msg)
 }
 
 function saveSnapshot(): void {
@@ -890,6 +947,7 @@ searchBox.style.cssText =
   'position:fixed;top:45%;left:50%;transform:translateX(-50%);width:340px;padding:10px 14px;' +
   'font:14px ui-monospace,monospace;background:rgba(0,10,20,.9);color:#aef;border:1px solid #4a7;' +
   'border-radius:8px;display:none;z-index:20;outline:none'
+searchBox.className = 'oh-search oh-ui'
 document.body.appendChild(searchBox)
 searchBox.addEventListener('keydown', (e) => {
   e.stopPropagation()
@@ -953,7 +1011,7 @@ try {
   const storedJoy = localStorage.getItem('oh-gamepad-map')
   if (storedJoy) gamepadMap = parseGamepadMap(storedJoy) ?? {}
 } catch { /* private mode */ }
-const controllerPanel = new ControllerPanel(()=>gamepadMap, map=>{gamepadMap=map;saveJoyMap();controllerRuntime.reset()},()=>{clearControllerTransient();voicePtt?.reset()})
+const controllerPanel = new ControllerPanel(()=>gamepadMap, map=>{gamepadMap=map;saveJoyMap();controllerRuntime.reset()},()=>{clearControllerTransient();voicePtt?.reset();shell?.open('controls')})
 let lastPadIdentity = ''
 function startBtnCapture(queue: BindableButton[]): void { controllerPanel.start('button',queue) }
 function startJoyCapture(queue: BindableAxis[]): void { controllerPanel.start('axis',queue) }
@@ -1049,7 +1107,8 @@ function handleDiscreteKeys(): void {
       if (input.wasPressed(key)) loop.setRate(rate as SimRate)
     }
   }
-  if (input.wasPressed('KeyJ')) controllerPanel.toggle()
+  if (input.wasPressed('KeyY')) apPress('ap')
+  if (input.wasPressed('KeyJ')) { if (shell) shell.windows.get('controls')?.toggle(); else controllerPanel.toggle() }
   if (input.wasPressed('KeyX')) {
     assistMode = assistMode === 'sas' ? 'full' : assistMode === 'full' ? 'off' : 'sas'
     toast(assistMode === 'sas' ? 'STABILITY ASSIST: SAS (yaw damper + wing leveler)' : assistMode === 'full' ? 'STABILITY ASSIST: FULL (adds pitch hold)' : 'STABILITY ASSIST: OFF')
@@ -1078,8 +1137,9 @@ function handleDiscreteKeys(): void {
   }
   if (input.wasPressed('KeyC')) {
     cameraMode =
-      cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'free' : cameraMode === 'free' ? 'cockpit' : 'chase'
+      cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'showcase' : cameraMode === 'showcase' ? 'free' : cameraMode === 'free' ? 'cockpit' : 'chase'
   }
+  if (input.wasPressed('KeyB') && (input.isHeld('ShiftLeft') || input.isHeld('ShiftRight'))) parkingBrake = !parkingBrake
   if (input.wasPressed('KeyF')) aircraft.selectFlaps(c.flapsIndex + 1)
   if (input.wasPressed('KeyG')) aircraft.selectFlaps(c.flapsIndex - 1)
   if (input.wasPressed('KeyR')) {
@@ -1568,7 +1628,10 @@ let copilotLatches = makeCopilotLatches()
 let copilotPrev: CopilotObs | null = null
 let copilotLine = ''
 let copilotUntil = 0
-function speakCopilot(text: string): void { safetySpeech.copilot(text) }
+/** A callout the speech channel could not take yet (something else was talking):
+ *  kept for a few seconds and retried, so a latched call is never silently lost. */
+let copilotPending: { text: string; until: number } | null = null
+function speakCopilot(text: string): void { copilotPending = { text: copilotPending ? `${copilotPending.text}, ${text}` : text, until: performance.now() + 4000 } }
 
 function stepCopilot(): void {
   const d = aircraft.data
@@ -1592,6 +1655,10 @@ function stepCopilot(): void {
     }
   }
   copilotPrev = o
+  if (copilotPending) {
+    if (performance.now() > copilotPending.until) copilotPending = null
+    else if (safetySpeech.copilot(copilotPending.text)) copilotPending = null
+  }
 }
 
 function updateSafety(now: number): void {
@@ -1742,14 +1809,14 @@ function taxiRouteIdents(): string[] | undefined {
 }
 
 const transcriptDiv = document.createElement('div')
+transcriptDiv.id = 'atc-transcript'
 transcriptDiv.style.cssText =
   'position:fixed;left:8px;bottom:140px;max-width:520px;z-index:12;font:12px/1.5 ui-monospace,monospace;' +
-  'color:#cfe;background:rgba(0,10,18,.72);padding:8px 10px;border-radius:6px;white-space:pre-wrap;display:none'
+  'color:#cfe;padding:8px 10px;border-radius:3px;white-space:pre-wrap;display:none;background:rgba(255,255,255,.04)'
 document.body.appendChild(transcriptDiv)
 const atcMenuDiv = document.createElement('div')
-atcMenuDiv.style.cssText =
-  'position:fixed;right:8px;bottom:140px;z-index:12;font:13px/1.7 ui-monospace,monospace;' +
-  'color:#ffd;background:rgba(10,14,4,.85);padding:8px 12px;border-radius:6px;white-space:pre;display:none'
+atcMenuDiv.id = 'atc-menu'
+atcMenuDiv.style.cssText = 'position:fixed;right:8px;bottom:140px;z-index:12;display:none'
 document.body.appendChild(atcMenuDiv)
 const transcript: string[] = []
 // Free-text ATC (goal: type anything, they respond — emergencies included).
@@ -1766,7 +1833,7 @@ atcTypeBox.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && atcTypeBox.value.trim()) {
     const said = atcTypeBox.value.trim()
     atcTypeBox.value = ''
-    sendFreeTextAtc(said)
+    sendFreeTextAtc(normalizeAviation(said)) // typed "heading two seven zero" works like spoken
   } else if (e.key === 'Escape') {
     atcTypeBox.style.display = 'none'
     input.enabled = true
@@ -1791,16 +1858,29 @@ const talkButton=document.createElement('button');talkButton.textContent='Hold t
 const menuButton=document.createElement('button');menuButton.textContent='ATC menu · `';menuButton.onclick=()=>{if(!activeAtc){toast('NO ATC IN RANGE');return}atcMenuOpen=!atcMenuOpen;renderAtcMenu()}
 const cancelVoice=document.createElement('button');cancelVoice.textContent='Cancel';cancelVoice.onclick=()=>voicePtt?.cancel()
 const retryVoice=document.createElement('button');retryVoice.textContent='Check local voice';retryVoice.onclick=()=>{void refreshVoice()}
-const voiceStatus=document.createElement('div');voiceStatus.id='atc-voice-status';voiceStatus.setAttribute('role','status');voiceStatus.textContent='Checking local speech…'
+const voiceStatus=document.createElement('div');voiceStatus.id='atc-voice-status';voiceStatus.setAttribute('role','status');voiceStatus.textContent='Checking speech…'
 const voiceHelp=document.createElement('div');voiceHelp.textContent='Microphone only while held · local Whisper · max 20 seconds · typed ATC in menu'
 voicePanel.append(talkButton,menuButton,cancelVoice,retryVoice,voiceStatus,voiceHelp);document.body.append(voicePanel)
-voicePtt=new PushToTalk({capture:captureMicrophone,transcribe:(audio,signal)=>localVoice.transcribe(audio,signal),send:sendFreeTextAtc,suspend:setRadioListening,context:()=>`${flightVoiceEpoch}:${activeAtc?.ident}:${radios.com1.activeMhz}`,allowed:()=>document.hasFocus()&&!document.hidden&&localVoice.status.transcription&&!!activeAtc&&!loop.paused&&input.enabled&&!safetySpeech.captureBlocked,onState:state=>{voiceStatus.textContent=state.message;talkButton.setAttribute('aria-pressed',String(state.phase==='listening'));voicePanel.dataset.phase=state.phase}})
+/** Local Whisper when it is set up (audio never leaves this computer); otherwise the
+ *  browser's own speech recognition, so talking to ATC works with nothing installed. */
+const useBrowserSpeech=()=>!localVoice.status.transcription&&webSpeechAvailable()
+voicePtt=new PushToTalk({capture:signal=>useBrowserSpeech()?captureWebSpeech(signal,text=>{if(voicePtt?.state.phase==='listening')voiceStatus.textContent=text?`Hearing: “${text}”`:'Listening — speak now'},()=>voicePtt?.hold('toggle',false)):captureMicrophone(signal,()=>voicePtt?.hold('toggle',false)),transcribe:(audio,signal)=>localVoice.transcribe(audio,signal),send:sendFreeTextAtc,suspend:setRadioListening,context:()=>`${flightVoiceEpoch}:${activeAtc?.ident}:${radios.com1.activeMhz}`,allowed:()=>document.hasFocus()&&!document.hidden&&(localVoice.status.transcription||webSpeechAvailable())&&!!activeAtc&&!loop.paused&&input.enabled&&!safetySpeech.captureBlocked,onState:state=>{voiceStatus.textContent=useBrowserSpeech()&&state.phase==='processing'?'Understanding…':useBrowserSpeech()&&state.phase==='listening'?'Listening — speak, then release to transmit':state.message;talkButton.setAttribute('aria-pressed',String(state.phase==='listening'));voicePanel.dataset.phase=state.phase}})
 const unbindVoice=bindPushToTalk(voicePtt,talkButton,window,()=>input.enabled&&!loop.paused)
 window.addEventListener('pagehide',()=>{unbindVoice();browserSpeech.cancel()},{once:true})
 async function refreshVoice():Promise<void>{
   retryVoice.disabled=true
-  try{const status=await localVoice.refresh();voiceStatus.textContent=status.transcription?'Local Whisper ready — hold T to talk':'Local Whisper unavailable — use typed ATC; see docs/voice-atc.md';voiceHelp.textContent=`Mic only while held · local processing · max 20s · ${status.synthesis?'local spoken replies':'browser spoken replies (may be unsupported)'}`}
-  catch{voiceStatus.textContent='Local speech service unavailable — use typed ATC; see docs/voice-atc.md'}
+  try{
+    const status=await localVoice.refresh()
+    // Render the first officer's standard callouts now, so each plays the instant it is due.
+    if(status.synthesis)void localVoice.prewarm(COPILOT_CALLOUTS.map(text=>({text,priority:1,speaker:'first-officer'})),new AbortController().signal)
+    if(status.transcription){voiceStatus.textContent='Local Whisper ready — hold T to talk';voiceHelp.textContent=`Mic only while held · local processing · max 20s · ${status.synthesis?'local spoken replies':'browser spoken replies (may be unsupported)'}`}
+    else if(webSpeechAvailable()){voiceStatus.textContent='Voice ready — hold T and talk to ATC';voiceHelp.textContent='Mic only while held · uses your browser’s speech recognition (its speech service processes the audio) · local Whisper is the offline option, see docs/voice-atc.md'}
+    else{voiceStatus.textContent='No speech recognition in this browser — use Chrome, Edge or Safari, or typed ATC; see docs/voice-atc.md'}
+  }
+  catch{
+    if(webSpeechAvailable()){voiceStatus.textContent='Voice ready — hold T and talk to ATC';voiceHelp.textContent='Mic only while held · uses your browser’s speech recognition (its speech service processes the audio) · local Whisper is the offline option, see docs/voice-atc.md'}
+    else voiceStatus.textContent='Speech unavailable — use typed ATC; see docs/voice-atc.md'
+  }
   finally{retryVoice.disabled=false}
 }
 void refreshVoice()
@@ -1817,6 +1897,7 @@ function sendFreeTextAtc(said: string): void {
     windKt: wxBlended?.windKt ?? 0,
     altimeterInHg: wxBlended?.qnhInHg,
     taxiVia: taxiRouteIdents(),
+    altitudeFt: aircraft.data.altitudeFt,
   })
   const facility = `${a.ident.startsWith('K') ? a.ident.slice(1) : a.ident} Tower`
   const keyUp = (freq: number): void => {
@@ -1902,7 +1983,7 @@ comms.subscribe((t) => {
   if (transcript.length > 7) transcript.shift()
   transcriptDiv.style.display = 'block'
   transcriptDiv.textContent = transcript.join('\n')
-  if (t.from !== CALLSIGN) speak(t)
+  if (t.from !== CALLSIGN) { speak(t); shell?.notifier.push(`${t.from}: ${t.text}`, 7000) }
 })
 
 /** Going around (9B): a captured glideslope had no un-capture path — the
@@ -2109,10 +2190,22 @@ function renderAtcMenu(): void {
   atcMenuDiv.style.display = 'block'
   // Free-text transmit box rides with the ATC panel (click to type).
   atcTypeBox.style.display = 'block'
-  atcMenuDiv.textContent =
-    `ATC — ${activeAtc.ident} (ATIS ${activeAtc.atisF.toFixed(2)})\n` +
-    items.map((it, i) => ` ${i + 1}. ${it.label}`).join('\n') +
-    `\n Backquote (\`) close · Hold T to talk`
+  atcMenuDiv.textContent = ''
+  const head = document.createElement('div')
+  head.className = 'oh-label'
+  head.style.marginTop = '0'
+  head.textContent = `${activeAtc.ident} · ATIS ${activeAtc.atisF.toFixed(2)}`
+  atcMenuDiv.appendChild(head)
+  items.forEach((it, i) => {
+    const row = document.createElement('button')
+    row.className = 'oh-row'
+    const n = document.createElement('span'); n.className = 'oh-num'; n.textContent = String(i + 1)
+    const t = document.createElement('span'); t.textContent = it.label
+    row.append(n, t)
+    row.onclick = () => { it.run(); atcMenuOpen = false; renderAtcMenu() }
+    atcMenuDiv.appendChild(row)
+  })
+  shell?.open('atc')
 }
 
 // ---- FIS-B NEXRAD + in-world precip/lightning (Phase 5 step 5) ----
@@ -2261,8 +2354,10 @@ function computeTunedNav(aircraftLL: { lat: number; lon: number }, altitudeFt: n
     return {
       source: 'LOC', identifier: `${ap.i} ${known.runway}`,
       deflectionFraction: loc.deflectionFraction, hasGlideslope: true, glideslopeFraction: gs,
-      stationRangeM: distanceM(aircraftLL, { lat: threshold.lat, lon: threshold.lon }),
+      stationRangeM: distanceM(aircraftLL, ils.locAntenna ?? { lat: threshold.lat, lon: threshold.lon }),
+      glideslopeRangeM: distanceM(aircraftLL, ils.gsAntenna),
       courseDeg: ils.courseDeg,
+      runway: (() => { const o = runwayOffsets(ils, aircraftLL); return { ...o, lengthM: distanceM({ lat: threshold.lat, lon: threshold.lon }, opposite), glidepathHeightFt: glidepathHeightFt(ils, o.alongM), glidepathAngleDeg: ils.gsAngleDeg ?? 3 } })(),
     }
   }
   const nearbyNavaids = navaidsIndex.near(aircraftLL.lat, aircraftLL.lon, 200 * 1852)
@@ -2341,7 +2436,7 @@ function makeBoeingPfdInput(d: typeof aircraft.data, nav: ReturnType<typeof comp
     ...(arcs ? { vArcs: { whiteLow: arcs.whiteLowKt, whiteHigh: arcs.whiteHighKt, greenLow: arcs.greenLowKt, greenHigh: arcs.greenHighKt, yellowLow: arcs.yellowLowKt, yellowHigh: arcs.yellowHighKt } } : {}),
     ...(nav.source === 'LOC' ? { loc: nav.deflectionFraction * 2 } : {}),
     ...(nav.hasGlideslope && nav.glideslopeFraction !== undefined ? { gs: nav.glideslopeFraction * 2 } : {}),
-    fma: boeingFma({ master: apState.masterEnabled, fdOn, lateral: apState.lateralMode, lateralArmed: apState.lateralArmed, vertical: apState.verticalMode, verticalArmed: apState.verticalArmed, speedMode: atMode === 'MCP SPD', atMode, onGround: d.onGround }),
+    fma: boeingFma({ master: apState.masterEnabled, fdOn, lateral: apState.lateralMode, lateralArmed: apState.lateralArmed, vertical: apState.verticalMode, verticalArmed: apState.verticalArmed, speedMode: atMode === 'MCP SPD', atMode, onGround: d.onGround, autoland: apPanel.autoland ? autoland.phase : undefined }),
   }
 }
 
@@ -2518,9 +2613,22 @@ function advanceFrame(elapsed: number, now: number): void {
   const preStepLL = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
   const tunedNav = computeTunedNav(preStepLL, aircraft.data.altitudeFt)
   const gpsCdi = computeGpsCdi(preStepLL)
+  lastCourseDeg = tunedNav.source ? tunedNav.courseDeg : undefined
+  lastTunedNavResult = tunedNav
+  {
+    const legsNow = flightPlan.legs()
+    const prog = legsNow.length ? activeLegProgress(legsNow, preStepLL) : undefined
+    lastGpsLegCourse = prog ? legsNow[prog.legIndex]!.courseDeg : undefined
+    // Route complete: reaching the last waypoint drops NAV to heading hold.
+    if (prog && prog.legIndex === legsNow.length - 1 && prog.distanceRemainingM < 926 && apPanel.lateral === 'NAV' && apPanel.master) {
+      apPanel = { ...apPanel, sel: { ...apPanel.sel, headingDeg: Math.round(aircraft.data.headingDeg) || 360 }, touched: { ...apPanel.touched, heading: true }, lateral: 'HDG' }
+      toast('ROUTE COMPLETE — HDG HOLD')
+    }
+  }
   let navDeviationForAp = 0
   let glideslopeDeviationForAp = 0
   let navRangeForAp: number | undefined
+  let glideslopeRangeForAp: number | undefined
   if (apTargets.lateralMode === 'APR' || apTargets.lateralMode === 'BC') {
     // SIGN CONTRACT (found by round-4's independent review — the un-negated
     // feed made app-side APR diverge even after the control law was fixed):
@@ -2529,6 +2637,7 @@ function advanceFrame(elapsed: number, now: number): void {
     navDeviationForAp = tunedNav.source === 'LOC' ? -tunedNav.deflectionFraction : 0
     glideslopeDeviationForAp = tunedNav.hasGlideslope ? tunedNav.glideslopeFraction ?? 0 : 0
     navRangeForAp = tunedNav.source === 'LOC' ? tunedNav.stationRangeM : undefined
+    glideslopeRangeForAp = tunedNav.source === 'LOC' && tunedNav.hasGlideslope ? tunedNav.glideslopeRangeM : undefined
   } else if (apTargets.lateralMode === 'NAV') {
     // GPS CDI is already in the AP's aircraft-offset convention (positive =
     // right of course, fixed-width scale). VOR is a NEEDLE deflection like
@@ -2552,7 +2661,71 @@ function advanceFrame(elapsed: number, now: number): void {
     loop.advance(chunk, (dt) => {
       wind.step(dt, aircraft.windNed)
 
+      // Flight-guidance panel → control-law targets.
+      if (systemsControls.apMaster && !apPanel.master) apPanel = pressAp(apPanel, apSnapshot()).panel
+      else if (!systemsControls.apMaster && apPanel.master) apPanel = disconnectAp(apPanel)
+      if (!apPanel.direct) {
+        apPanel = applyApFeedback(apPanel, { altsCaptured: apState.altsCaptured })
+        const t = toApTargets(apPanel, apSnapshot())
+        apTargets.lateralMode = t.lateralMode
+        apTargets.verticalMode = t.verticalMode
+        apUnderlying = t.underlyingVerticalMode
+        apTargets.altitudeBugFt = t.altitudeBugFt
+        apTargets.vsTargetFpm = t.vsTargetFpm
+        apTargets.iasTargetKt = t.iasTargetKt
+        // The course datum for tracking modes: the localizer course once
+        // APR is tracking (pinned below), the flight-plan leg for NAV, the
+        // OBS course for a VOR; otherwise the pilot's heading bug.
+        const pinned = !apState.lateralArmed && (t.lateralMode === 'APR') && lastTunedNavResult?.courseDeg !== undefined
+        if (!pinned) {
+          apTargets.headingBugDeg = t.lateralMode === 'NAV'
+            ? (lastGpsLegCourse ?? (lastTunedNavResult?.source === 'VOR' ? radios.obs1Deg : t.headingBugDeg))
+            : t.headingBugDeg
+        }
+      }
+
+      // ---- Autoland: owns speed/config on the approach and the flare +
+      // rollout; its overrides ride on the autopilot's own control laws. ----
+      let al: AutolandOutput | null = null
+      const alCfg = autolandConfig()
+      if (alCfg) {
+        const d = aircraft.data
+        const courseRad = ((tunedNav.courseDeg ?? 0) * Math.PI) / 180
+        const windAlongKt = (aircraft.windNed.x * Math.cos(courseRad) + aircraft.windNed.y * Math.sin(courseRad)) / 0.514444
+        // Pilot grabs the throttle against autoland: it lets go (like a real A/T override).
+        if (autolandLastThrottle !== null && (autoland.phase === 'LAND' || autoland.phase === 'FLARE') && Math.abs(aircraft.controls.throttle - autolandLastThrottle) > 0.12) {
+          apPanel = { ...apPanel, autoland: false }
+          apSay('AUTOLAND OFF — THROTTLE OVERRIDE')
+        }
+        al = stepAutoland(autoland, dt, {
+          armed: apPanel.autoland && systemsControls.apMaster,
+          locCaptured: apState.lateralMode === 'APR' && !apState.lateralArmed,
+          gsCaptured: apState.verticalMode === 'GS' && !apState.verticalArmed,
+          radioAltFt: radioAltitudeFt(d.aglFt, d.pitchDeg, aircraft.P),
+          iasKt: d.kias, tasKt: d.ktas, alphaDeg: d.alphaDeg, groundSpeedKt: d.groundSpeedKt, verticalSpeedFpm: d.verticalSpeedFpm,
+          pitchDeg: d.pitchDeg, rollDeg: d.rollDeg, headingDeg: d.headingDeg, trackDeg: d.trackDeg,
+          yawRateDegS: (aircraft.rates.z * 180) / Math.PI, onGround: d.onGround,
+          courseDeg: tunedNav.courseDeg, crossTrackM: tunedNav.runway?.crossM, headwindKt: -windAlongKt,
+          glidepathHeightFt: tunedNav.runway?.glidepathHeightFt, glidepathAngleDeg: tunedNav.runway?.glidepathAngleDeg,
+          throttle: aircraft.controls.throttle, flapIndex: aircraft.controls.flapsIndex, gearDown: aircraft.gearPos > 0.99,
+        }, alCfg)
+        if (al.message) apSay(al.message)
+        if (al.phase === 'LAND' || al.phase === 'FLARE') apTargets.iasTargetKt = Math.round(al.speedTargetKt)
+        if (al.disconnect) {
+          autolandHoldBrake = true
+          systemsControls.apMaster = false
+          apPanel = disconnectAp(apPanel)
+          disconnectAutopilot(apState)
+          apDisconnectPressedFlag = false
+          Object.assign(autoland, makeAutolandState())
+        }
+      }
       stepAutopilot(apState, dt, {
+        pitchTargetOverrideDeg: al?.pitchTargetDeg,
+        maxBankDeg: al?.maxBankDeg,
+        bankTargetOverrideDeg: al?.bankTargetDeg,
+        yawOverride: al?.yawCmd,
+        underlyingVerticalMode: apUnderlying,
         iasKt: aircraft.data.kias,
         altitudeFt: aircraft.data.altitudeFt,
         verticalSpeedFpm: aircraft.data.verticalSpeedFpm,
@@ -2571,11 +2744,23 @@ function advanceFrame(elapsed: number, now: number): void {
         navDeviation: navDeviationForAp,
         glideslopeDeviation: glideslopeDeviationForAp,
         navRangeM: navRangeForAp,
+        glideslopeRangeM: glideslopeRangeForAp,
         trackDeg: aircraft.data.trackDeg,
       })
-      if (DECK_PROFILE?.autothrottle) {
+      if (systemsControls.apMaster) {
+        const fault = apEnvelopeFault({ rollDeg: aircraft.data.rollDeg, pitchDeg: aircraft.data.pitchDeg, kias: aircraft.data.kias, vneKt: aircraft.P.vSpeeds.vne, stallFraction: aircraft.data.stallFraction, onGround: aircraft.data.onGround, autolandRollout: autoland.phase === 'ROLLOUT' })
+        if (fault) {
+          systemsControls.apMaster = false
+          apPanel = disconnectAp(apPanel)
+          disconnectAutopilot(apState)
+          apDisconnectPressedFlag = false
+          toast(fault === 'ON THE GROUND' ? 'AUTOPILOT OFF — TOUCHDOWN' : `AUTOPILOT DISCONNECT — ${fault}`)
+        }
+      }
+      const alThrottle = al?.throttle ?? null
+      if (AT_FIT !== 'none' && alThrottle === null) {
         const atCmd = stepAutothrottle(autothrottle, dt, {
-          armSwitch: atArmSwitch, speedPressed: atSpeedPressed, disconnectPressed: atDisconnectPressed, resetLight: atResetPressed,
+          armSwitch: atArmSwitch, engageAirborne: AT_FIT === 'assist', speedPressed: atSpeedPressed, disconnectPressed: atDisconnectPressed, resetLight: atResetPressed,
           iasKt: aircraft.data.kias, targetKt: apTargets.iasTargetKt, verticalMode: apTargets.verticalMode,
           pitchModeActive: apState.masterEnabled && apTargets.verticalMode !== 'PIT',
           altitudeFt: aircraft.data.altitudeFt, selectedAltFt: apTargets.altitudeBugFt, onGround: aircraft.data.onGround,
@@ -2583,6 +2768,31 @@ function advanceFrame(elapsed: number, now: number): void {
         })
         atSpeedPressed = atDisconnectPressed = atResetPressed = false
         if (atCmd !== null && !aircraft.reverseCmd) aircraft.controls.throttle = atCmd
+        // Engaging with no speed ever dialled in holds the speed it engaged at;
+        // losing the servo while still armed (pilot moved the lever) is announced.
+        if (autothrottle.engaged && !atWasEngaged && !apPanel.touched.ias) {
+          apPanel = { ...apPanel, sel: { ...apPanel.sel, iasKt: Math.max(40, Math.round(aircraft.data.kias)) } }
+        }
+        if (atWasEngaged && !autothrottle.engaged && atArmSwitch) toast('AUTOTHROTTLE DISCONNECT')
+        atWasEngaged = autothrottle.engaged
+      }
+      // Autoland outputs: lever, configuration, spoilers, reversers, brakes.
+      if (al) {
+        if (alThrottle !== null) {
+          aircraft.controls.throttle = alThrottle
+          autolandLastThrottle = alThrottle
+          if (AT_FIT === 'full') { autothrottle.engaged = true; autothrottle.mode = al.phase === 'LAND' ? 'MCP SPD' : 'RETARD' }
+        } else autolandLastThrottle = null
+        if (al.flapIndex !== null) aircraft.selectFlaps(al.flapIndex, false)
+        if (al.gearDown && aircraft.P.gearRetractable) aircraft.gearDownCommanded = true
+        if (al.spoilerArm && aircraft.P.spoilers && !aircraft.data.onGround && aircraft.spoilerCmd < 0.02) aircraft.spoilerArmed = true
+        if (al.phase === 'ROLLOUT' || al.disconnect) aircraft.reverseCmd = al.reverse || (al.disconnect ? keyboardReverse : false)
+        autolandBrake = al.brake
+      } else autolandBrake = 0
+      if (autolandHoldBrake) {
+        const pilotTakesOver = pilotBrake > 0.05 || aircraft.controls.throttle > 0.15 || !aircraft.data.onGround || aircraft.data.groundSpeedKt > 12 || parkingBrake
+        if (pilotTakesOver) autolandHoldBrake = false
+        else autolandBrake = Math.max(autolandBrake, 0.4)
       }
       // While localizer TRACKING is active, the heading bug is this AP's
       // course datum — pin it to the front course continuously (a real
@@ -2615,8 +2825,8 @@ function advanceFrame(elapsed: number, now: number): void {
 
       const untrimmedYaw=aircraft.controls.yaw
       aircraft.controls.yaw=Math.min(1,Math.max(-1,untrimmedYaw+captainSystems.rudderTrim))
-      aircraft.controls.brakeLeft=Math.max(pilotBrake,captainSystems.autobrakeDemand)
-      aircraft.controls.brakeRight=Math.max(pilotBrake,captainSystems.autobrakeDemand)
+      aircraft.controls.brakeLeft=Math.max(pilotBrake,captainSystems.autobrakeDemand,autolandBrake)
+      aircraft.controls.brakeRight=Math.max(pilotBrake,captainSystems.autobrakeDemand,autolandBrake)
       aircraft.step(dt)
       aircraft.controls.yaw=untrimmedYaw
 
@@ -2826,6 +3036,7 @@ function advanceFrame(elapsed: number, now: number): void {
   for (const o of exteriorCabin) o.visible = cameraMode !== 'cockpit'
   if (cameraMode === 'chase') chase.update(elapsed, mesh.group.position, (d.headingDeg * Math.PI) / 180)
   else if (cameraMode === 'orbit') orbit.update(input, mesh.group.position)
+  else if (cameraMode === 'showcase') { showcaseClock += elapsed; orbit.showcase(showcaseClock, mesh.group.position) }
   else if (cameraMode === 'cockpit') {
     // The shared camera's default near plane (0.5 m, `scene.ts`) is tuned
     // for exterior views of a ~2 m aircraft — every cockpit control sits
@@ -2838,14 +3049,23 @@ function advanceFrame(elapsed: number, now: number): void {
     }
     cockpitInteraction.update(input, cockpit, systemsControls, aircraft.controls, radios)
     const deckClick = cockpitInteraction.consumeDeckClick()
+    // Held guidance-panel knob halves auto-repeat (faster the longer held).
+    const held = cockpitInteraction.heldDeckControl
+    if (held?.startsWith('apKnob:') && !deckClick && performance.now() > knobHoldAt) {
+      const [, k, d] = held.split(':')
+      const sinceFirst = performance.now() - knobHoldStart
+      apTurn(k as Knob, Number(d) * (sinceFirst > 1500 ? 10 : 1))
+      knobHoldAt = performance.now() + (sinceFirst > 1500 ? 160 : 110)
+    }
+    if (!held) knobHoldStart = performance.now()
     // Turboprop decks have no G1000 starter button: holding an overhead
     // ENGINE START selector cranks the engine.
     if (DECK_PROFILE?.turboprop) systemsControls.starterEngaged = cockpitInteraction.heldDeckControl === 'engStart'
     if (deckClick === 'hornCutout') auralHornCutout = true
     else if (deckClick === 'mcpDisengage') { systemsControls.apMaster = false; apDisconnectPressedFlag = true }
-    else if (deckClick === 'mcpCmdA') systemsControls.apMaster = !systemsControls.apMaster
-    else if (deckClick === 'mcpAtArm') atArmSwitch = !atArmSwitch
-    else if (deckClick === 'mcpSpeed') atSpeedPressed = true
+    else if (deckClick === 'apBtn:speedBtn') atSpeedPressed = true
+    else if (deckClick?.startsWith('apBtn:')) apPress(deckClick.slice(6) as ApAction)
+    else if (deckClick?.startsWith('apKnob:')) { const [, k, d] = deckClick.split(':'); apTurn(k as Knob, Number(d)); knobHoldAt = performance.now() + 450 }
     else if (deckClick === 'atDisconnect') atDisconnectPressed = true
     else if (deckClick === 'atReset') atResetPressed = true
     else if (deckClick === 'apReset') apDisconnectPressedFlag = true
@@ -3016,7 +3236,8 @@ function advanceFrame(elapsed: number, now: number): void {
 
   if (cockpit.deck737 && cameraMode === 'cockpit') update737Deck(d, tunedNav, ll, pitotReadings.iasKt, indicatedAltitudeFt(pitotReadings.altFt, baroSetInHg, qnhInHg), pitotReadings.vsiFpm)
   const simDate = new Date(baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000)
-  sky.setShadowTarget(mesh.group.position)
+  sky.setCockpitShadows(cameraMode === 'cockpit')
+  sky.setShadowTarget(cameraMode === 'cockpit' ? camera.position : mesh.group.position)
   shadowCatcher.update(
     mesh.group.position.x,
     (aircraft.groundElevAt?.(pos.x, pos.y) ?? 0),
@@ -3026,6 +3247,8 @@ function advanceFrame(elapsed: number, now: number): void {
   sky.setCloudCover(wxSlabs.reduce((cover, slab) => camera.position.y < slab.topMslFt*FT
     ? Math.max(cover, cloudCoverage[slab.cover] ?? 0) : cover, 0))
   const sunDir = sky.update(simDate, ll.lat, ll.lon)
+  lastSunDir = sunDir
+  lastSunElevationDeg = sky.elevationDeg
   sky.updateEnvironment(renderer, scene, camera.position)
   const dayness = Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1)
   // 13e: METAR surface wind drives the sea state; sun-position dusk factor
@@ -3081,7 +3304,7 @@ function advanceFrame(elapsed: number, now: number): void {
       // Safety strict priority (9A): a live TCAS/TAWS line must never be
       // blanked by a gear/spoiler toast; the debrief line expires instead
       // of squatting the slot forever.
-      safety: safetyLine || (performance.now() < toastUntil ? toastLine : '') || (performance.now() < debriefUntil ? debriefLine : '') || undefined,
+      safety: safetyLine || (performance.now() < debriefUntil ? debriefLine : '') || undefined,
       copilot: performance.now() < copilotUntil ? copilotLine : undefined,
       assist: assistMode === 'off' ? undefined : assistMode === 'sas' ? 'SAS' : 'ASSIST FULL',
       // Slice 6: honest live-traffic status — silent emptiness used to be
@@ -3098,9 +3321,61 @@ function advanceFrame(elapsed: number, now: number): void {
     },
     loop.ticks,
   )
+  // On-screen flight instruments (external views; the cockpit has its own).
+  instruments.visible = instrumentsOn && cameraMode !== 'cockpit'
+  if (instruments.visible) {
+    const f = aircraft.data, P = aircraft.P
+    const arcs = vSpeedArcs(P.vSpeeds)
+    const jetN = P.jet?.engines
+    const nEng = jetN ?? Math.max(1, COCKPIT_PROFILE.ga?.engines ?? engineCount)
+    const redline = P.jet ? P.jet.n1MaxPct : 100
+    const power = P.jet ? f.n1Pct : Math.min(120, Math.max(0, (f.shaftPowerW / Math.max(1, P.ratedPowerW)) * 100))
+    const lever = aircraft.controls.throttle * 100
+    const hasEngine = P.fuelCapacityKg >= 1
+    // Stall-onset angle of attack for the current flap setting — the same
+    // lift-curve arithmetic the aero model uses (clMax − cl0 over the slope).
+    const stallDeg = (((P.clMaxClean + flapInterp(P.flapDClMax, aircraft.flapsDeg, P.flapDetentsDeg)) - (P.cl0 + flapInterp(P.flapDCl0, aircraft.flapsDeg, P.flapDetentsDeg))) / P.clAlpha) * (180 / Math.PI)
+    const olState: OverlayState = {
+      headingDeg: f.headingDeg,
+      headingBugDeg: apTargets.headingBugDeg,
+      ...(lastCourseDeg !== undefined ? { courseDeg: lastCourseDeg } : {}),
+      iasKt: f.kias,
+      ...(apState.masterEnabled && (apTargets.verticalMode === 'FLC' || autothrottle.engaged) ? { selSpeedKt: apTargets.iasTargetKt } : {}),
+      tasKt: f.ktas,
+      groundSpeedKt: f.groundSpeedKt,
+      altitudeFt: f.altitudeFt,
+      ...(apState.masterEnabled && apTargets.altitudeBugFt > 0 ? { selAltFt: apTargets.altitudeBugFt } : {}),
+      baroInHg: baroSetInHg,
+      verticalSpeedFpm: f.verticalSpeedFpm,
+      engines: hasEngine ? Array.from({ length: nEng }, () => ({ lever, value: power, redline })) : [],
+      ...(hasEngine ? { fuelPct: Math.min(100, Math.max(0, (aircraft.fuelKg / Math.max(1, P.fuelCapacityKg)) * 100)) } : {}),
+      aoaDeg: f.alphaDeg,
+      aoaStallDeg: stallDeg,
+      ...(P.flapDetentsDeg.length > 1 ? { flapsFrac: Math.min(1, aircraft.flapsDeg / Math.max(1, P.flapDetentsDeg[P.flapDetentsDeg.length - 1]!)), flapsDeg: aircraft.flapsDeg } : {}),
+      ...(P.trimMaxRad > 0 ? { trim: aircraft.controls.trim } : {}),
+      greenLowKt: arcs.greenLowKt, greenHighKt: arcs.greenHighKt, yellowHighKt: arcs.yellowHighKt,
+      ...((safetyLine || f.stallFraction > 0.35) ? { alert: safetyLine || 'STALL', alertRed: !!safetyLine ? /PULL UP|TERRAIN|CRASH/i.test(safetyLine) : true } : {}),
+      ...(performance.now() < copilotUntil ? { callout: copilotLine } : {}),
+    }
+    instruments.update(olState)
+  }
 
-  renderer.render(scene, camera)
+  if (camera.fov !== viewFovDeg) { camera.fov = viewFovDeg; camera.updateProjectionMatrix() }
+  {
+    const sun = sunScreenPosition(camera, lastSunDir, lastSunElevationDeg)
+    postFx.render(scene, camera, {
+      sunScreen: sun.screen, sunVisibility: sun.visibility, sunElevationDeg: lastSunElevationDeg,
+      bloomStrength: postStrength.bloom, rayStrength: postStrength.rays, vignette: postStrength.vignette,
+      // Occlusion reaches ~0.5 m in the cockpit (panel crevices, frames) and ~1.6 m outside (airframe, buildings).
+      aoStrength: postStrength.ao, aoRadiusM: cameraMode === 'cockpit' ? 0.45 : 1.6, timeS: performance.now() / 1000,
+    })
+  }
+  if (parkingBrake !== lastParkingBrake) {
+    lastParkingBrake = parkingBrake
+    toast(parkingBrake ? 'PARKING BRAKE ENGAGED\nTO RELEASE, ADVANCE THE THROTTLE OR PRESS SHIFT + B' : 'PARKING BRAKE RELEASED')
+  }
   graphicsPanel.update(now, cameraMode, performance.now()-perfT0, renderer)
+  shell?.refresh()
   input.endFrame()
   perfRing[perfIdx] = performance.now() - perfT0
   perfIdx = (perfIdx + 1) % perfRing.length
@@ -3151,8 +3426,15 @@ metronome.onmessage = () => {
 airports
   .load()
   .then(() => {
+    // A free-flight launch that needed a new aircraft arrives here after
+    // the reload; otherwise start at KHAF 30 behind the start screen
+    // (skip it with ?launcher=0 for automation).
+    let pending: LaunchChoice | null = null
+    try { pending = parsePendingLaunch(sessionStorage.getItem(PENDING_LAUNCH_KEY)); sessionStorage.removeItem(PENDING_LAUNCH_KEY) } catch { /* storage unavailable */ }
+    if (pending && pending.aircraft === fleetKey) { applyLaunch(pending); return }
     const khaf = airports.find('KHAF')
     if (khaf) spawnAtAirport(khaf, '30')
+    if (new URLSearchParams(location.search).get('launcher') !== '0') launcher?.open()
   })
   .catch((err) => console.error('airport data failed to load:', err))
 
@@ -3250,7 +3532,12 @@ Object.assign(window as unknown as Record<string, unknown>, {
         if (v !== null) (apTargets as unknown as Record<string, number>)[k] = v
       }
     }
+    // The hook owns the targets until the next panel press (automation).
+    apPanel = { ...apPanel, direct: true }
   },
+  __ohApPanel: () => ({ ...apPanel, sel: { ...apPanel.sel } }),
+  __ohApPress: (a: ApAction) => { if (typeof a === 'string') { apPanel = { ...apPanel, direct: false }; apPress(a) } },
+  __ohApTurn: (k: Knob, steps: number) => { const n = finiteOr(steps); if (n !== null && (k === 'heading' || k === 'altitude' || k === 'vs' || k === 'ias')) { apPanel = { ...apPanel, direct: false }; apTurn(k, n) } },
   __ohApState: () => ({ ...apState }),
   __ohSetRadioListening: setRadioListening,
   __ohSafety: () => ({ safetyLine, dots: trafficDots, tcas: lastTcasDebug }),
@@ -3261,6 +3548,16 @@ Object.assign(window as unknown as Record<string, unknown>, {
     if (o?.disconnect) atDisconnectPressed = true
     return { arm: atArmSwitch, ...autothrottle }
   },
+  /** Post-processing controls (verification): enable, strengths. */
+  /** Cockpit interior flat-fill scale (verification A/B): 1 = original uniform glow. */
+  __ohFill: (scale: number) => { const v = finiteOr(scale); if (v !== null) setInteriorFillScale(v) },
+  __ohPost: (o?: { enabled?: boolean; bloom?: number; rays?: number; vignette?: number; ao?: number }) => {
+    if (o?.enabled !== undefined) postFx.enabled = !!o.enabled
+    for (const k of ['bloom', 'rays', 'vignette', 'ao'] as const) { const v = finiteOr(o?.[k]); if (v !== null) postStrength[k] = v }
+    return { enabled: postFx.enabled, ...postStrength }
+  },
+  /** Open / close the free-flight start screen (verification). */
+  __ohLauncher: (open: boolean) => { if (open) launcher?.open(); else launcher?.close() },
   /** Cockpit look direction (radians) for verification screenshots. */
   __ohLook: (yaw: number, pitch: number) => cockpitCam.setLook(yaw, pitch),
   /** 737NG aurals: inspect, or drive the FIRE WARN test / HORN CUTOUT. */
@@ -3417,10 +3714,17 @@ Object.assign(window as unknown as Record<string, unknown>, {
   /** Verification-only camera-mode switch (mirrors pressing 'C' repeatedly)
    *  — useful for headless/automated cockpit-camera checks where dispatching
    *  a real keyboard event isn't reliable. */
-  __ohCam: (mode: 'chase' | 'orbit' | 'free' | 'cockpit') => {
-    if (mode === 'chase' || mode === 'orbit' || mode === 'free' || mode === 'cockpit') cameraMode = mode
+  __ohCam: (mode: 'chase' | 'orbit' | 'free' | 'cockpit' | 'showcase') => {
+    if (mode === 'chase' || mode === 'orbit' || mode === 'free' || mode === 'cockpit' || mode === 'showcase') cameraMode = mode
   },
   __ohSpawn: (q: string) => { if (typeof q === 'string') handleSearch(q) },
+  /** Park the free camera at a world offset from the aircraft (east, up, south metres) looking along yaw/pitch degrees (0 = north). */
+  __ohFreeCam: (o: { e?: number; u?: number; s?: number; yaw?: number; pitch?: number }) => {
+    const g = mesh.group.position
+    const d = (v: unknown): number => finiteOr(v as number) ?? 0
+    freeCam.setPose(g.x + d(o?.e), g.y + d(o?.u), g.z + d(o?.s), (d(o?.yaw) * Math.PI) / 180, (d(o?.pitch) * Math.PI) / 180)
+    cameraMode = 'free'
+  },
   __ohAtc: (kindOrIndex?: string | number) => {
     if (typeof kindOrIndex === 'number') {
       const it = atcMenuItems()[kindOrIndex]
@@ -3542,9 +3846,9 @@ Object.assign(window as unknown as Record<string, unknown>, {
 void distanceM
 
 
-const graphicsPanel = new GraphicsPanel(renderer, {
+const graphicsActions: GraphicsActions = {
   clearInput: () => input.clearHeld(),
-  quality: mode => { clouds.setQuality(mode); tiles.setDetailEnabled(mode !== 'performance') },
+  quality: mode => { clouds.setQuality(mode); tiles.setDetailEnabled(mode !== 'performance'); postFx.setQuality(mode) },
   camera: mode => { cameraMode = mode },
   lighting: mode => {
     const ll = frame.fromLocal(aircraft.posNed.x,aircraft.posNed.y)
@@ -3557,7 +3861,7 @@ const graphicsPanel = new GraphicsPanel(renderer, {
       let bestError = Infinity
       for (let minutes=0; minutes<=720; minutes+=2) {
         const candidate = noon.getTime()+minutes*60_000
-        const error = Math.abs(sunPosition(new Date(candidate),ll.lat,ll.lon).elevationDeg-3)
+        const error = Math.abs(sunPosition(new Date(candidate),ll.lat,ll.lon).elevationDeg-1.2)
         if (error<bestError) { bestError=error; target=candidate }
       }
     }
@@ -3575,7 +3879,8 @@ const graphicsPanel = new GraphicsPanel(renderer, {
     applyBlendedWeather(blendWeather(wxStations,ll.lat,ll.lon))
     wxDesc = `MANUAL ${mode.toUpperCase()} · 300@8 10SM`
   },
-})
+}
+const graphicsPanel = new GraphicsPanel(renderer, graphicsActions)
 
 new LoadingPanel(FLEET_ACTIVE.params, {
   current: currentLoading,
@@ -3584,3 +3889,207 @@ new LoadingPanel(FLEET_ACTIVE.params, {
   disableInput: disableSimInput,
   enableInput: restoreSimInputIfNoEditorFocused,
 }, loadingUnit)
+
+
+// ---- autopilot operation (flight-guidance panel: sim/ap-panel.ts) ----
+/** Real airplane state for the checklists (sim/checklists.ts). */
+function checklistState(): ChecklistState {
+  const d = aircraft.data, P = aircraft.P
+  const landingFlapsDeg = P.flapDetentsDeg.filter((x) => x <= (P.jet ? 30 : 40)).reduce((a, b) => Math.max(a, b), 0)
+  return {
+    onGround: d.onGround, parkingBrake, engineRunning: aircraft.engineRunning, throttle: aircraft.controls.throttle,
+    masterBattery: systemsControls.masterBattery, alternator: systemsControls.masterAlternator, avionics: systemsControls.avionicsSwitch,
+    magneto: systemsControls.magneto, mixtureRich: aircraft.controls.mixture > 0.9, fuelSelector: systemsControls.fuelSelector,
+    fuelOk: aircraft.fuelKg > Math.max(P.fuelCapacityKg * 0.075, 8) || P.fuelCapacityKg < 1,
+    pitotHeat: systemsControls.pitotHeat, landingLight: aircraftLights.landingOn,
+    flapsDeg: aircraft.flapsDeg, landingFlapsDeg, trim: aircraft.controls.trim,
+    gearRetractable: !!P.gearRetractable, gearDown: aircraft.gearPos > 0.99,
+    kias: d.kias, aglFt: d.aglFt, groundSpeedKt: d.groundSpeedKt, apMaster: systemsControls.apMaster,
+    isJet: !!P.jet, hasMixture: !P.jet && P.fuelCapacityKg >= 1, hasSpoilers: !!P.spoilers,
+    spoilersArmed: aircraft.spoilerArmed, spoilersStowed: aircraft.spoilerCmd < 0.02,
+    vrefKt: 1.3 * P.vSpeeds.vs0,
+  }
+}
+let lastParkingBrake = false
+function apSnapshot(): ApSnapshot {
+  const d = aircraft.data
+  return { headingDeg: d.headingDeg, altitudeFt: d.altitudeFt, verticalSpeedFpm: d.verticalSpeedFpm, iasKt: d.kias, rollDeg: d.rollDeg }
+}
+function apAvailability(): ApAvailability {
+  const n = lastTunedNavResult
+  return { gps: lastGpsLegCourse !== undefined, nav: !!n?.source, loc: n?.source === 'LOC', gs: !!n?.hasGlideslope, land: autolandConfig() !== null }
+}
+function apSay(msg: string | undefined): void {
+  if (!msg) return
+  apMessage = msg
+  apMessageUntil = performance.now() + 6000
+  toast(msg)
+}
+/** One press on the guidance panel (window, deck MCP, or key). */
+function apPress(a: ApAction): void {
+  apPanel = { ...apPanel, direct: false }
+  const snap = apSnapshot()
+  if (a === 'at') {
+    if (AT_FIT === 'none') { apSay('NO ENGINE — NO AUTOTHROTTLE'); return }
+    atArmSwitch = !atArmSwitch
+    if (atArmSwitch && !aircraft.data.onGround) {
+      // Armed in the air: hold the speed flown now (unless a speed was dialled in) and take the lever.
+      if (!apPanel.touched.ias) apPanel = { ...apPanel, sel: { ...apPanel.sel, iasKt: Math.max(40, Math.round(aircraft.data.kias)) } }
+      atSpeedPressed = true
+    }
+    apSay(!atArmSwitch ? 'AUTOTHROTTLE OFF' : AT_FIT === 'assist' ? 'AUTOTHROTTLE ASSIST — HOLDING SPEED' : 'AUTOTHROTTLE ARMED')
+    return
+  }
+  if (a === 'ap') {
+    if (!apPanel.master && aircraft.data.onGround) { apSay('AUTOPILOT NOT AVAILABLE ON THE GROUND'); return }
+    const r = pressAp(apPanel, snap)
+    apPanel = r.panel
+    systemsControls.apMaster = r.panel.master
+    if (!r.panel.master) disconnectAutopilot(apState)
+    apSay(r.message)
+    return
+  }
+  if (a === 'land' && !apPanel.master && aircraft.data.onGround) { apSay('AUTOLAND NOT AVAILABLE ON THE GROUND'); return }
+  const r = a === 'land' ? pressLand(apPanel, snap, apAvailability())
+    : a === 'hdg' ? pressHdg(apPanel, snap)
+    : a === 'nav' ? pressNav(apPanel, apAvailability())
+      : a === 'apr' ? pressApr(apPanel, snap, apAvailability())
+        : a === 'alt' ? pressAlt(apPanel, snap)
+          : a === 'vs' ? pressVs(apPanel, snap)
+            : pressFlc(apPanel, snap)
+  apPanel = r.panel
+  if (a === 'land' && r.panel.master) systemsControls.apMaster = true
+  apSay(r.message)
+}
+function apTurn(k: Knob, steps: number): void {
+  apPanel = turnKnob(apPanel, k, steps, apSnapshot())
+}
+const AP_LAT_TEXT: Record<string, string> = { ROL: 'ROL', HDG: 'HDG', NAV: 'NAV', APR: 'LOC', BC: 'B/C' }
+function apReadout(): ApReadout {
+  const lat = apState.lateralMode, ver = apState.verticalMode
+  const vText = ver === 'ALTS' ? (apPanel.vertical === 'FLC' ? 'FLC' : 'VS') : ver === 'PIT' ? 'PIT' : ver
+  return {
+    master: systemsControls.apMaster,
+    lateral: systemsControls.apMaster ? (apState.lateralArmed && lat !== 'ROL' ? 'ROL' : AP_LAT_TEXT[lat] ?? lat) : '—',
+    lateralArmed: systemsControls.apMaster && apState.lateralArmed ? `${AP_LAT_TEXT[lat] ?? lat} ARM` : '',
+    vertical: systemsControls.apMaster ? (apState.verticalArmed && ver === 'GS' ? 'PIT' : vText) : '—',
+    verticalArmed: systemsControls.apMaster && apState.verticalArmed ? (ver === 'GS' ? 'GS ARM' : 'ALT ARM') : '',
+    lit: {
+      ap: apPanel.master, hdg: apPanel.lateral === 'HDG', nav: apPanel.lateral === 'NAV', apr: apPanel.lateral === 'APR',
+      alt: apPanel.vertical === 'ALT', vs: apPanel.vertical === 'VS', flc: apPanel.vertical === 'FLC', at: atArmSwitch, land: apPanel.autoland,
+    },
+    hasAutoland: autolandConfig() !== null,
+    landText: apPanel.autoland ? (autoland.phase === 'OFF' || autoland.phase === 'ARMED' ? 'LAND ARM' : autoland.phase === 'DONE' ? 'DONE' : autoland.phase === 'FLARE' ? 'LAND' : autoland.phase) : '',
+    hasAutothrottle: AT_FIT !== 'none',
+    atText: autothrottle.mode,
+    atAssist: AT_FIT === 'assist',
+    sel: { heading: apPanel.sel.headingDeg, altitude: apPanel.sel.altitudeFt, vs: apPanel.sel.vsFpm, ias: apPanel.sel.iasKt },
+    nav1: radios.nav1.activeMhz,
+    ...(performance.now() < apMessageUntil ? { message: apMessage } : {}),
+  }
+}
+function ilsChoices(): IlsChoice[] {
+  const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+  const out: IlsChoice[] = []
+  for (const ap of airports.near(ll.lat, ll.lon, 30 * 1852)) {
+    for (const e of KNOWN_ILS_FREQUENCIES) if (e.icao === ap.i) out.push({ ident: ap.i, runway: e.runway, freqMhz: e.freqMhz })
+  }
+  return out.sort((a, b) => a.ident.localeCompare(b.ident) || a.runway.localeCompare(b.runway)).slice(0, 24)
+}
+function directTo(ident: string): string | null {
+  if (!ident) return 'Enter an airport identifier.'
+  if (!airports.loaded) return 'Airport data still loading.'
+  const ap = airports.find(ident)
+  if (!ap) return `No airport "${ident}".`
+  const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+  flightPlan.setWaypoints([{ ident: 'PPOS', lat: ll.lat, lon: ll.lon }, { ident: ap.i, lat: ap.la, lon: ap.lo }])
+  toast(`DIRECT TO ${ap.i}`)
+  return null
+}
+
+// ---- shell: free-flight start screen, toolbar, windows, notifications ----
+const toLauncherAirport = (a: AirportData): LauncherAirport => ({
+  ident: a.i, name: a.n, size: a.t,
+  runways: a.r.flatMap((r) => [r.li, r.hi]).filter((id) => /^[0-9]{1,2}[LCR]?$/.test(id)),
+})
+/** Apply a free-flight choice to the airplane already loaded. */
+function applyLaunch(c: LaunchChoice): void {
+  handleSearch(launchCommand(c))
+  if (c.time !== 'keep') graphicsActions.lighting(c.time === 'day' ? 'day' : c.time)
+  graphicsActions.weather(c.weather)
+  try { localStorage.setItem('oh-last-departure', c.airport) } catch { /* storage unavailable */ }
+}
+let rateBeforeLauncher: SimRate = 1
+launcher = new Launcher({
+  aircraft: planeMenuEntries().map((e) => ({ key: e.key, label: e.label, group: e.group })),
+  currentAircraft: fleetKey,
+  defaultAirport: (() => { try { return localStorage.getItem('oh-last-departure') ?? 'KHAF' } catch { return 'KHAF' } })(),
+  search: (q) => (airports.loaded ? airports.search(q).map(toLauncherAirport) : []),
+  airport: (ident) => {
+    if (!airports.loaded) return undefined
+    const hit = airports.search(ident, 1)[0]
+    return hit && hit.i === ident.toUpperCase() ? toLauncherAirport(hit) : undefined
+  },
+  fly: (c) => {
+    if (c.aircraft !== fleetKey) {
+      // The airframe is built at boot: carry the launch across a reload.
+      try { sessionStorage.setItem(PENDING_LAUNCH_KEY, JSON.stringify(c)); localStorage.setItem('oh-aircraft', c.aircraft) } catch { /* storage unavailable */ }
+      location.reload()
+      return
+    }
+    applyLaunch(c)
+  },
+  onVisible: (open) => {
+    if (open) { rateBeforeLauncher = loop.paused ? 1 : loop.getRate(); loop.setRate(0); disableSimInput() }
+    else { loop.setRate(rateBeforeLauncher); input.enabled = true }
+  },
+})
+shell = new Shell({
+  launcher,
+  flightInfo: hud,
+  ap: { read: apReadout, press: apPress, turn: apTurn, ils: ilsChoices, tune: (f) => { radios.nav1.activeMhz = f; radios.nav1.standbyMhz = f; toast(`NAV1 ${f.toFixed(2)}`) } },
+  directTo,
+  clearPlan: () => { flightPlan.setWaypoints([]); toast('FLIGHT PLAN CLEARED') },
+  instruments: { get visible() { return instruments.visible }, get on() { return instrumentsOn }, set: (v) => { instrumentsOn = v; try { localStorage.setItem('oh-instruments', v ? 'on' : 'off') } catch { /* storage unavailable */ } } },
+  camera: {
+    get: () => cameraMode, set: (m) => { cameraMode = m },
+    fov: { get: () => viewFovDeg, set: (v) => { viewFovDeg = Math.min(100, Math.max(40, v)); try { localStorage.setItem('oh-fov', String(viewFovDeg)) } catch { /* storage unavailable */ } }, min: 40, max: 100 },
+  },
+  checklist: { state: checklistState },
+  voice: {
+    // Click once, talk, and it sends itself when you stop (or click again to send now).
+    toggle: () => {
+      const p = voicePtt?.state.phase
+      if (p === 'listening' || p === 'requesting') { voicePtt?.hold('toggle', false); return }
+      if (!activeAtc) { toast('NO ATC IN RANGE\nTUNE A TOWER OR GROUND FREQUENCY, THEN CLICK TALK'); return }
+      shell?.open('atc')
+      voicePtt?.hold('toggle', true)
+    },
+    listening: () => voicePtt?.state.phase === 'listening' || voicePtt?.state.phase === 'requesting',
+  },
+  assist: { get: () => assistMode, set: (m) => { assistMode = m } },
+  pause: { paused: () => loop.paused, toggle: () => loop.setRate(loop.paused ? 1 : 0) },
+  navLog: () => {
+    const wps = flightPlan.all
+    const legs = flightPlan.legs()
+    const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+    const prog = legs.length ? activeLegProgress(legs, ll) : undefined
+    const active = prog ? prog.legIndex + 1 : -1
+    return wps.map((w, i) => ({ ident: w.ident, active: i === active, ...(i === active && prog ? { distNm: prog.distanceRemainingM / 1852 } : {}) }))
+  },
+  panels: {
+    conditions: document.getElementById('graphics-panel'),
+    fuel: document.getElementById('loading-panel'),
+    controls: controllerPanel.root,
+  },
+  atc: [transcriptDiv, atcMenuDiv, atcTypeBox, voicePanel],
+  keys: [
+    ['↑ ↓ ← →', 'Pitch and roll'], ['A / D', 'Rudder'], ['W / S', 'Throttle'], ['F / G', 'Flaps down / up'],
+    [', / .', 'Trim'], ['B', 'Brakes'], ['U', 'Gear'], ['V', 'Spoilers / speedbrake'], ['Z', 'Reverse thrust'],
+    ['C', 'Change camera'], ['Shift + B', 'Parking brake'], ['X', 'Stability assistance'], ['T (hold)', 'Talk to ATC'], ['`', 'ATC menu'],
+    ['/', 'Quick airport search'], ['M', 'Free flight (aircraft & departure)'], ['Space', 'Pause'], ['1 / 2 / 3', 'Sim rate'],
+    ['[ / ]', 'Time of day'], ['R', 'Reset to runway'], ['O / P', 'Save / load flight'], ['L', 'Landing lights'],
+    ['Q', 'Mute'], ['J', 'Controller setup'],
+  ],
+})
+for (const m of earlyToasts.splice(0)) shell.notifier.push(m)

@@ -51,7 +51,8 @@ async function body(req,max,signal) {
  *  automated cockpit warnings keep the classic female GPWS voice. Real
  *  controllers talk fast; real crews are clipped — rates reflect that. */
 const VOICES = {
-  atc: {names:['Reed (English (US))','Eddy (English (US))','Rocko (English (US))','Daniel'],rate:195},
+  // Rocko is the first officer's voice, so no controller may share it.
+  atc: {names:['Reed (English (US))','Eddy (English (US))','Daniel'],rate:195},
   copilot: {names:['Rocko (English (US))'],rate:178},
   warning: {names:['Samantha'],rate:165},
 }

@@ -40,7 +40,7 @@ export interface BoeingPfdInput {
   /** ILS raw data in dots (±2.5 = full scale), absent when not tuned/received. */
   loc?: number
   gs?: number
-  fma: { at: string; roll: string; rollArmed: string; pitch: string; pitchArmed: string; ap: string }
+  fma: { at: string; roll: string; rollArmed: string; pitch: string; pitchArmed: string; ap: string; /** Autoland status line (LAND ARM / LAND), '' when none. */ land?: string }
 }
 
 const C = {
@@ -76,7 +76,7 @@ export function vsiFraction(vsFpm: number): number {
 }
 
 /** Map autopilot/autothrottle state to 737NG FMA annunciations. Pure. */
-export function boeingFma(s: { master: boolean; fdOn: boolean; lateral: string; lateralArmed: boolean; vertical: string; verticalArmed: boolean; speedMode: boolean; atMode?: string; onGround: boolean }): BoeingPfdInput['fma'] {
+export function boeingFma(s: { master: boolean; fdOn: boolean; lateral: string; lateralArmed: boolean; vertical: string; verticalArmed: boolean; speedMode: boolean; atMode?: string; onGround: boolean; autoland?: string }): BoeingPfdInput['fma'] {
   const rollMap: Record<string, string> = { HDG: 'HDG SEL', NAV: 'VOR/LOC', GPS: 'LNAV', LNAV: 'LNAV', APR: 'VOR/LOC', ROL: '' }
   const pitchMap: Record<string, string> = { ALT: 'ALT HOLD', ALTS: 'ALT ACQ', VS: 'V/S', GS: 'G/S', IAS: 'MCP SPD', FLC: 'MCP SPD', PIT: '' }
   const engaged = s.master || s.fdOn
@@ -84,10 +84,14 @@ export function boeingFma(s: { master: boolean; fdOn: boolean; lateral: string; 
   const rollArmed = engaged && s.lateralArmed ? rollMap[s.lateral] ?? s.lateral : s.lateral === 'APR' && s.lateralArmed ? 'VOR/LOC' : ''
   const pitch = engaged && !s.verticalArmed ? pitchMap[s.vertical] ?? s.vertical : ''
   const pitchArmed = engaged && s.verticalArmed ? (s.vertical === 'GS' ? 'G/S' : pitchMap[s.vertical] ?? '') : ''
+  // Autoland: ROLLOUT in the roll box once on the runway. The flare itself is
+  // not annunciated on screen (the pitch box just keeps showing G/S).
+  const phase = s.master ? s.autoland : undefined
   return {
-    at: s.atMode && s.atMode !== 'OFF' ? s.atMode : s.speedMode ? 'MCP SPD' : '',
-    roll, rollArmed, pitch, pitchArmed,
+    at: phase === 'FLARE' || phase === 'ROLLOUT' ? 'RETARD' : s.atMode && s.atMode !== 'OFF' ? s.atMode : s.speedMode ? 'MCP SPD' : '',
+    roll: phase === 'ROLLOUT' ? 'ROLLOUT' : roll, rollArmed, pitch: phase === 'FLARE' ? 'G/S' : phase === 'ROLLOUT' ? '' : pitch, pitchArmed,
     ap: s.master ? 'CMD' : s.fdOn ? 'FD' : '',
+    land: phase === 'ARMED' ? 'LAND ARM' : phase === 'LAND' || phase === 'FLARE' || phase === 'ROLLOUT' ? 'LAND' : '',
   }
 }
 
@@ -109,6 +113,7 @@ export function drawBoeingPfd(c: Ctx, S: number, d: BoeingPfdInput): void {
   box(d.fma.roll, 265); box(d.fma.rollArmed, 265, true)
   box(d.fma.pitch, 415); box(d.fma.pitchArmed, 415, true)
   if (d.fma.ap) txt(c, d.fma.ap, cx, 104 * k, 30 * k, C.green)
+  if (d.fma.land) txt(c, d.fma.land, cx, 132 * k, 24 * k, d.fma.land === 'LAND ARM' ? C.white : C.green)
 
   // ---------- Attitude ----------
   const aw = 300 * k, ah = 330 * k

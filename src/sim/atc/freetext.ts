@@ -21,6 +21,8 @@ export interface FreeTextCtx {
   altimeterInHg?: number
   /** Optional real taxi route idents for taxi clearances. */
   taxiVia?: string[]
+  /** The airplane's current altitude, ft MSL, for "request higher / lower". */
+  altitudeFt?: number
 }
 
 export interface AtcReply {
@@ -41,6 +43,18 @@ const rx = (p: string): RegExp => new RegExp(p, 'i')
 function wind(ctx: FreeTextCtx): string {
   return `wind ${String(Math.round(ctx.windDirDeg / 10) * 10).padStart(3, '0')} at ${Math.max(1, Math.round(ctx.windKt))}`
 }
+
+/** A plausible discrete transponder code for a callsign (digits 0–7, never a
+ *  reserved code), stable so the same airplane is always given the same one. Pure. */
+export function squawkFor(callsign: string): string {
+  let h = 7
+  for (const c of callsign) h = (h * 31 + c.charCodeAt(0)) >>> 0
+  const d = (n: number): number => Math.floor(h / n) % 8
+  const code = `${1 + (d(1) % 6)}${d(8)}${d(64)}${d(512)}`
+  return code === '7500' || code === '7600' || code === '7700' || code === '1200' ? '4321' : code
+}
+
+const ATIS_LETTER = 'alpha|bravo|charlie|delta|echo|foxtrot|golf|hotel|india|juliett?|kilo|lima|mike|november|oscar|papa|quebec|romeo|sierra|tango|uniform|victor|whiskey|x-?ray|yankee|zulu'
 
 /** Classify one pilot transmission and produce the controller's answer. */
 export function interpretTransmission(text: string, ctx: FreeTextCtx): AtcReply {
@@ -99,6 +113,12 @@ export function interpretTransmission(text: string, ctx: FreeTextCtx): AtcReply 
     }
   }
 
+  // A bare acknowledgment ("roger", "wilco", "unable", "negative") — a short
+  // utterance, nothing else in it: answered, never mistaken for a request.
+  if (!negatedEmergency && t.split(/\s+/).length <= 3 && rx('^(roger|wilco|affirm(ative)?|negative|unable|copy|stand(ing)? by|ok(ay)?)\\b').test(t)) {
+    return { intent: 'ack', response: 'roger' }
+  }
+
   // ---- Normal requests ----
   // Readback echo FIRST ("cleared to land 28R, N123AB" is the pilot
   // reading a clearance BACK — matching the landing pattern first
@@ -106,18 +126,34 @@ export function interpretTransmission(text: string, ctx: FreeTextCtx): AtcReply 
   if (rx('\\bcleared\\b').test(t) && t.includes(rwy.toLowerCase())) {
     return { intent: 'readback', response: 'readback correct' }
   }
-  if (rx('ready (for )?(takeoff|departure)|request (takeoff|departure)').test(t)) {
+  if (rx('ready (for )?(immediate )?(takeoff|departure)|request (takeoff|departure)|ready to go\\b|holding short.*\\bready\\b').test(t)) {
     return { intent: 'takeoff', bridge: true, response: `runway ${rwy}, ${wind(ctx)}, cleared for takeoff` }
   }
   if (rx('go[- ]?around|going around').test(t)) {
     return { intent: 'goAround', bridge: true, response: `roger, fly runway heading, climb and maintain 2,000, report downwind runway ${rwy}` }
   }
-  if (rx('touch and go|the option').test(t)) {
+  if (rx('touch and go|the option|low approach|low pass|stop and go').test(t)) {
     return { intent: 'option', response: `runway ${rwy}, cleared for the option, ${wind(ctx)}` }
+  }
+  // Ground services: pushback before startup ("pushback and start").
+  if (rx('push ?back').test(t)) {
+    return { intent: 'pushback', response: `pushback approved, expect runway ${rwy}, advise ready to taxi` }
+  }
+  if (rx('\\b(request|ready (for|to))\\b[^.]*\\bstart[- ]?up\\b|\\bengine start\\b|\\bstart[- ]?up\\b').test(t)) {
+    return { intent: 'startup', response: 'startup approved, advise ready to taxi' }
+  }
+  // Traffic pattern work.
+  if (rx('closed traffic|pattern work|\\b(left|right)?\\s*(traffic|pattern)\\b').test(t) && rx('\\b(request|remain|staying|stay|closed|pattern work)\\b').test(t)) {
+    const side = rx('\\bright\\b').test(t) ? 'right' : 'left'
+    return { intent: 'pattern', response: `${side} traffic approved, report downwind runway ${rwy}` }
+  }
+  // Established on an approach / final.
+  if (rx('\\bestablished\\b').test(t)) {
+    return { intent: 'position', bridge: true, response: `roger, number one, runway ${rwy}, cleared to land, ${wind(ctx)}` }
   }
   // Landing needs INTENT, not the substring "land" ("oakland center" and
   // "check landing gear" both got "cleared to land").
-  if (rx('\\b(request|inbound|ready)\\b[^.]*\\bland(ing)?\\b|\\bfull stop\\b|\\bwant to land\\b|^land(ing)?\\b').test(t)) {
+  if (rx('\\b(request|inbound|ready)\\b[^.]*\\bland(ing)?\\b|\\bfull stop\\b|\\bwant to land\\b|^land(ing)?\\b|\\bstraight[- ]in\\b').test(t)) {
     return { intent: 'landing', bridge: true, response: `runway ${rwy}, cleared to land, ${wind(ctx)}` }
   }
   if (rx('\\btaxi\\b').test(t)) {
@@ -139,6 +175,31 @@ export function interpretTransmission(text: string, ctx: FreeTextCtx): AtcReply 
   if (direct) {
     return { intent: 'direct', response: `cleared direct ${direct[1]!.toUpperCase()}` }
   }
+  if (rx(`\\batis\\b|\\binformation (${ATIS_LETTER})\\b`).test(t)) {
+    const alti = ctx.altimeterInHg ? `, altimeter ${ctx.altimeterInHg.toFixed(2)}` : ''
+    return { intent: 'atis', response: `roger, ${wind(ctx)}${alti}, landing and departing runway ${rwy}` }
+  }
+  if (rx('flight following|vfr advisories|radar services|traffic advisories|request advisories').test(t)) {
+    return { intent: 'flightFollowing', response: `squawk ${squawkFor(ctx.callsign)}, radar contact, report ready for frequency change` }
+  }
+  if (rx('clearance|flight plan|ifr release').test(t)) {
+    const dest = t.match(/\bto\s+([a-z]{3,5})\b/)
+    return { intent: 'clearance', response: `cleared${dest ? ` to ${dest[1]!.toUpperCase()}` : ''} as filed, maintain 3,000, expect higher 10 minutes after departure, squawk ${squawkFor(ctx.callsign)}` }
+  }
+  if (rx('request (higher|lower|\\d{3,5}|flight level \\d+)').test(t)) {
+    const asked = t.match(/request (\d{3,5})/)
+    const fl = t.match(/request flight level (\d+)/)
+    const here = ctx.altitudeFt
+    if (asked || fl) {
+      const target = fl ? `flight level ${fl[1]}` : Number(asked![1]).toLocaleString('en-US')
+      const lower = !fl && here !== undefined && Number(asked![1]) < here
+      return { intent: 'altitudeRequest', response: `${lower ? 'descend' : 'climb'} and maintain ${target}` }
+    }
+    const up = rx('higher').test(t)
+    const base = here !== undefined ? Math.round(here / 1000) * 1000 : 3000
+    const target = Math.max(1000, up ? base + 1000 : base - 1000)
+    return { intent: 'altitudeRequest', response: `${up ? 'climb' : 'descend'} and maintain ${target.toLocaleString('en-US')}` }
+  }
   if (rx('(say|request).*(wind|weather|altimeter)|altimeter').test(t)) {
     const alti = ctx.altimeterInHg ? `, altimeter ${ctx.altimeterInHg.toFixed(2)}` : ''
     return { intent: 'weather', response: `${wind(ctx)}${alti}` }
@@ -155,7 +216,7 @@ export function interpretTransmission(text: string, ctx: FreeTextCtx): AtcReply 
   if (rx('cancel|never ?mind|disregard').test(t)) {
     return { intent: 'cancel', response: 'roger, disregard' }
   }
-  if (rx('thank|good day|so long').test(t)) {
+  if (rx('thank|good day|so long|good (morning|afternoon|evening)').test(t)) {
     return { intent: 'courtesy', response: 'good day' }
   }
   if (negatedEmergency) {
