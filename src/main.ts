@@ -110,7 +110,7 @@ import {
   ilsOnFinal, NO_NAV_RESULT, type TunedNavResult,
 } from './sim/nav/tuning'
 import { finiteOr } from './sim/guards'
-import { copilotCallouts, copilotSpeedsFor, makeCopilotLatches, type CopilotObs } from './sim/copilot'
+import { COPILOT_CALLOUTS, copilotCallouts, copilotSpeedsFor, makeCopilotLatches, type CopilotObs } from './sim/copilot'
 
 const KHAF = { lat: 37.5134, lon: -122.5011 }
 
@@ -601,6 +601,7 @@ function resetFlightSafety(): void {
   // Copilot latches reset with the flight (Slice 4) — a respawn is a new
   // leg; without this the callouts stay spent from the previous one.
   copilotLatches = makeCopilotLatches()
+  copilotPending = null
   copilotPrev = null
   // 9A: pending controller replies die with the flight they answered.
   cancelAtcTimers()
@@ -1627,7 +1628,10 @@ let copilotLatches = makeCopilotLatches()
 let copilotPrev: CopilotObs | null = null
 let copilotLine = ''
 let copilotUntil = 0
-function speakCopilot(text: string): void { safetySpeech.copilot(text) }
+/** A callout the speech channel could not take yet (something else was talking):
+ *  kept for a few seconds and retried, so a latched call is never silently lost. */
+let copilotPending: { text: string; until: number } | null = null
+function speakCopilot(text: string): void { copilotPending = { text: copilotPending ? `${copilotPending.text}, ${text}` : text, until: performance.now() + 4000 } }
 
 function stepCopilot(): void {
   const d = aircraft.data
@@ -1651,6 +1655,10 @@ function stepCopilot(): void {
     }
   }
   copilotPrev = o
+  if (copilotPending) {
+    if (performance.now() > copilotPending.until) copilotPending = null
+    else if (safetySpeech.copilot(copilotPending.text)) copilotPending = null
+  }
 }
 
 function updateSafety(now: number): void {
@@ -1863,6 +1871,8 @@ async function refreshVoice():Promise<void>{
   retryVoice.disabled=true
   try{
     const status=await localVoice.refresh()
+    // Render the first officer's standard callouts now, so each plays the instant it is due.
+    if(status.synthesis)void localVoice.prewarm(COPILOT_CALLOUTS.map(text=>({text,priority:1,speaker:'first-officer'})),new AbortController().signal)
     if(status.transcription){voiceStatus.textContent='Local Whisper ready — hold T to talk';voiceHelp.textContent=`Mic only while held · local processing · max 20s · ${status.synthesis?'local spoken replies':'browser spoken replies (may be unsupported)'}`}
     else if(webSpeechAvailable()){voiceStatus.textContent='Voice ready — hold T and talk to ATC';voiceHelp.textContent='Mic only while held · uses your browser’s speech recognition (its speech service processes the audio) · local Whisper is the offline option, see docs/voice-atc.md'}
     else{voiceStatus.textContent='No speech recognition in this browser — use Chrome, Edge or Safari, or typed ATC; see docs/voice-atc.md'}

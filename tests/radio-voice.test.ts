@@ -35,5 +35,7 @@ describe('radio voice', () => {
     expect(pickVoice('nonsense').voice).toBe('Samantha')
     const atcVoices = new Set(['KSFO Tower','KSFO Ground','NorCal Approach','KOAK Tower','Clearance'].map(s => pickVoice('atc',s).voice))
     expect(atcVoices.size).toBeGreaterThan(1)
+    // a controller must never sound like the first officer
+    for (const f of ['KSFO Tower','KSFO Ground','NorCal Approach','KOAK Tower','Clearance','Oakland Center','A','B','C','D','E','F']) expect(pickVoice('atc',f).voice).not.toBe(pickVoice('copilot').voice)
   })
 })

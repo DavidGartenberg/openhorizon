@@ -1,4 +1,5 @@
 import {englishVoice, type SpeechDriver, type SpeechMessage} from './safety-speech'
+import {toSpokenAviation} from './spoken-aviation'
 
 export const STATIC_SAFETY_PHRASES = [
   'TRAFFIC, TRAFFIC', 'CLIMB, CLIMB', 'DESCEND, DESCEND', 'LEVEL OFF, LEVEL OFF', 'CLEAR OF CONFLICT',
@@ -168,7 +169,7 @@ export class BrowserSpeechDriver implements SpeechDriver {
   private speakNative(token:number,message:SpeechMessage,done:()=>void):void {
     if (!this.synth || !this.createUtterance) { this.finishFailure(token,message,'native synthesis unavailable',done); return }
     try {
-    const utterance=this.createUtterance(message.text)
+    const utterance=this.createUtterance(toSpokenAviation(message.text))
     utterance.lang='en-US';utterance.rate=message.priority>=2?1.15:1.05
     let seed=0;for(const c of message.speaker??'safety')seed=(seed*31+c.charCodeAt(0))|0
     const voice=englishVoice(this.synth.getVoices(),seed);if(voice)utterance.voice=voice
