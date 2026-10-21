@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import type { FrameMode } from '../render/frame-pacer'
 
 export interface GraphicsActions {
   clearInput(): void
@@ -6,15 +7,22 @@ export interface GraphicsActions {
   camera(mode: 'chase' | 'orbit' | 'cockpit' | 'free'): void
   lighting(mode: 'day' | 'sunset' | 'night'): void
   weather(mode: 'live' | 'clear' | 'scattered' | 'overcast'): void
+  /** Frame pacing: 'uncapped' renders as fast as the machine allows (vsync off). */
+  frameMode(mode: FrameMode): void
+  /** Post effects: ambient occlusion and the lens set (ghosts, fringing, grain). */
+  effects(fx: { ao: boolean; lens: boolean }): void
 }
+
+export interface GraphicsInitial { frameMode: FrameMode; ao: boolean; lens: boolean }
 
 /** Small flight-view controls; labels describe visible choices, not GPU internals. */
 export class GraphicsPanel {
   private readonly stats: HTMLOutputElement
   private readonly view: HTMLSelectElement
   private lastStats = 0
+  private frames = 0
 
-  constructor(renderer: THREE.WebGLRenderer, actions: GraphicsActions) {
+  constructor(renderer: THREE.WebGLRenderer, actions: GraphicsActions, initial: GraphicsInitial = { frameMode: 'uncapped', ao: true, lens: true }) {
     const style = document.createElement('style')
     style.textContent = `
       #graphics-panel{position:fixed;bottom:18px;right:18px;z-index:30;width:244px;
@@ -40,6 +48,9 @@ export class GraphicsPanel {
     panel.innerHTML = `<summary>View & graphics</summary><div class="controls">
       <label>Camera<select aria-label="Camera view"><option value="chase">Chase</option><option value="cockpit">Cockpit</option><option value="orbit">Orbit</option><option value="free">Free camera</option></select></label>
       <label>Quality<select aria-label="Graphics quality"><option value="1">Performance</option><option value="1.5" selected>High</option><option value="2">Ultra</option></select></label>
+      <label>Frame rate<select aria-label="Frame rate"><option value="uncapped">Uncapped (vsync off)</option><option value="vsync">Display synced</option></select></label>
+      <label>Ambient occlusion<input aria-label="Ambient occlusion" type="checkbox"></label>
+      <label>Lens effects<input aria-label="Lens effects" type="checkbox"></label>
       <label>Exposure<input aria-label="Exposure" type="range" min="0.4" max="1.2" step="0.05" value="0.8"></label>
       <label>Weather<select aria-label="Weather"><option value="live">Live weather</option><option value="clear">Clear</option><option value="scattered">Scattered</option><option value="overcast">Overcast</option></select></label>
       <div class="time"><button type="button" data-light="day">Daylight</button><button type="button" data-light="sunset">Sunset</button><button type="button" data-light="night">Night</button></div>
@@ -60,6 +71,13 @@ export class GraphicsPanel {
     panel.querySelector<HTMLInputElement>('[aria-label="Exposure"]')!.oninput = e => {
       renderer.toneMappingExposure = Number((e.target as HTMLInputElement).value)
     }
+    const rate = panel.querySelector<HTMLSelectElement>('[aria-label="Frame rate"]')!
+    rate.value = initial.frameMode
+    rate.onchange = () => actions.frameMode(rate.value === 'vsync' ? 'vsync' : 'uncapped')
+    const ao = panel.querySelector<HTMLInputElement>('[aria-label="Ambient occlusion"]')!
+    const lens = panel.querySelector<HTMLInputElement>('[aria-label="Lens effects"]')!
+    ao.checked = initial.ao; lens.checked = initial.lens
+    ao.onchange = lens.onchange = () => actions.effects({ ao: ao.checked, lens: lens.checked })
     const weather = panel.querySelector<HTMLSelectElement>('[aria-label="Weather"]')!
     weather.onchange = () => actions.weather(weather.value as Parameters<GraphicsActions['weather']>[0])
     panel.querySelectorAll<HTMLButtonElement>('[data-light]').forEach(b => {
@@ -76,8 +94,11 @@ export class GraphicsPanel {
 
   update(now: number, camera: string, frameMs: number, renderer: THREE.WebGLRenderer): void {
     this.view.value = camera
+    this.frames++
     if (now-this.lastStats < 1000) return
+    const fps = this.lastStats > 0 ? (this.frames * 1000) / (now - this.lastStats) : 0
+    this.frames = 0
     this.lastStats = now
-    this.stats.value = `${frameMs.toFixed(1)} ms CPU · ${renderer.info.render.calls} draws · ${renderer.getPixelRatio().toFixed(1)}× resolution`
+    this.stats.value = `${fps > 0 ? fps.toFixed(0) + ' fps · ' : ''}${frameMs.toFixed(1)} ms CPU · ${renderer.info.render.calls} draws · ${renderer.getPixelRatio().toFixed(1)}× resolution`
   }
 }

@@ -36,6 +36,8 @@ export interface PostParams {
   aoRadiusM?: number
   /** Seconds, drives the film grain. */
   timeS?: number
+  /** Lens effects (sun ghosts, corner chromatic aberration, film grain) 0..1; default 1. */
+  lensStrength?: number
 }
 
 const FULLSCREEN_VERT = /* glsl */ `
@@ -209,6 +211,7 @@ const COMPOSITE_FRAG = /* glsl */ `
   uniform sampler2D tRays;
   uniform sampler2D tAo;
   uniform float uAo;
+  uniform float uLens;
   uniform float uTime;
   uniform vec2 uSun;
   uniform float uSunVisible;
@@ -221,7 +224,7 @@ const COMPOSITE_FRAG = /* glsl */ `
   void main() {
     // A hint of lateral chromatic aberration, growing toward the corners only.
     vec2 fromC = vUv - 0.5;
-    vec2 ca = fromC * (0.0016 * dot(fromC, fromC) * 4.0);
+    vec2 ca = fromC * (0.0016 * uLens * dot(fromC, fromC) * 4.0);
     vec3 c = vec3(texture2D(tScene, vUv + ca).r, texture2D(tScene, vUv).g, texture2D(tScene, vUv - ca).b);
     // Ambient occlusion grounds contact shadows; bright sunlit surfaces keep it lighter.
     float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -255,7 +258,7 @@ const COMPOSITE_FRAG = /* glsl */ `
       float ring = smoothstep(rad, rad * 0.78, gd) * (0.25 + 0.75 * smoothstep(rad * 0.25, rad, gd));
       ghosts += tint * ring;
     }
-    c += ghosts * 0.035 * uSunVisible * sunSeen * offAxis * (0.5 + 0.8 * low);
+    c += ghosts * 0.035 * uLens * uSunVisible * sunSeen * offAxis * (0.5 + 0.8 * low);
     // Warm grade near the horizon: lift reds, ease blues a touch.
     c *= mix(vec3(1.0), vec3(1.05, 0.99, 0.90), low * 0.6);
     // Vignette (after the grade, before tone mapping so highlights keep detail).
@@ -263,7 +266,7 @@ const COMPOSITE_FRAG = /* glsl */ `
     c *= 1.0 - uVignette * smoothstep(0.35, 1.05, length(q));
     // Fine film grain (multiplicative, so deep shadows stay clean).
     float grain = fract(sin(dot(gl_FragCoord.xy + fract(uTime) * 61.0, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
-    c *= 1.0 + grain * 0.028;
+    c *= 1.0 + grain * 0.028 * uLens;
     gl_FragColor = vec4(c, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -321,7 +324,7 @@ export class PostFx {
       tAo: { value: null }, tDepth: { value: null }, uProjInv: { value: new THREE.Matrix4() }, uZeroToOne: { value: 0 }, uTexel: { value: new THREE.Vector2() },
     })
     this.composite = fullscreenMaterial(COMPOSITE_FRAG, {
-      tScene: { value: null }, tBloom: { value: null }, tRays: { value: null }, tAo: { value: null }, uAo: { value: 0 }, uTime: { value: 0 },
+      tScene: { value: null }, tBloom: { value: null }, tRays: { value: null }, tAo: { value: null }, uAo: { value: 0 }, uLens: { value: 1 }, uTime: { value: 0 },
       uSun: { value: new THREE.Vector2(0.5, 0.5) },
       uSunVisible: { value: 0 }, uSunElevation: { value: 30 }, uBloom: { value: 0.5 }, uRays: { value: 0.5 }, uVignette: { value: 0.3 }, uAspect: { value: 1.6 },
     }, true)
@@ -414,6 +417,7 @@ export class PostFx {
     u.tAo!.value = this.aoBlurRt.texture
     u.uAo!.value = ao > 0 && depth ? Math.min(1, ao) : 0
     u.uTime!.value = p.timeS ?? 0
+    u.uLens!.value = Math.max(0, Math.min(1, p.lensStrength ?? 1))
     u.uSun!.value.copy(p.sunScreen)
     u.uSunVisible!.value = p.sunVisibility
     u.uSunElevation!.value = p.sunElevationDeg

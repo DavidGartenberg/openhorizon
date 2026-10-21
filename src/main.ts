@@ -85,6 +85,7 @@ import { Hud } from './ui/hud'
 import { PostFx, sunScreenPosition } from './render/post-fx'
 import { InstrumentOverlay, type OverlayState } from './ui/instrument-overlay'
 import { GraphicsPanel, type GraphicsActions } from './ui/graphics-panel'
+import { FramePacer, browserPacerDeps, isFrameMode, type FrameMode } from './render/frame-pacer'
 import { LoadingPanel } from './ui/loading-panel'
 import { sunPosition } from './math/solar'
 import { WorldFrame, TileManager } from './world/tiles'
@@ -119,7 +120,22 @@ if (!app) throw new Error('missing #app element')
 
 const { renderer, scene, camera } = createScene(app)
 const postFx = new PostFx(renderer)
-let postStrength = { bloom: 0.22, rays: 0.2, vignette: 0.34, ao: 0.8 }
+/** Saved graphics preferences: frame pacing (vsync off by default) and the two
+ *  post-effect switches. Storage may be unavailable; defaults then apply. */
+const FRAME_MODE_KEY = 'oh-frame-mode'
+const FX_KEY = 'oh-fx'
+function loadFrameMode(): FrameMode {
+  try { const v = localStorage.getItem(FRAME_MODE_KEY); return isFrameMode(v) ? v : 'uncapped' } catch { return 'uncapped' }
+}
+function loadFx(): { ao: boolean; lens: boolean } {
+  try {
+    const j = JSON.parse(localStorage.getItem(FX_KEY) ?? 'null') as { ao?: unknown; lens?: unknown } | null
+    return { ao: j?.ao !== false, lens: j?.lens !== false }
+  } catch { return { ao: true, lens: true } }
+}
+const initialFx = loadFx()
+let lensStrength = initialFx.lens ? 1 : 0
+let postStrength = { bloom: 0.22, rays: 0.2, vignette: 0.34, ao: initialFx.ao ? 0.8 : 0 }
 /** Sun direction + elevation of the last frame (post-processing). */
 let lastSunDir = new THREE.Vector3(0, 1, 0)
 let lastSunElevationDeg = 45
@@ -3367,7 +3383,7 @@ function advanceFrame(elapsed: number, now: number): void {
       sunScreen: sun.screen, sunVisibility: sun.visibility, sunElevationDeg: lastSunElevationDeg,
       bloomStrength: postStrength.bloom, rayStrength: postStrength.rays, vignette: postStrength.vignette,
       // Occlusion reaches ~0.5 m in the cockpit (panel crevices, frames) and ~1.6 m outside (airframe, buildings).
-      aoStrength: postStrength.ao, aoRadiusM: cameraMode === 'cockpit' ? 0.45 : 1.6, timeS: performance.now() / 1000,
+      aoStrength: postStrength.ao, aoRadiusM: cameraMode === 'cockpit' ? 0.45 : 1.6, timeS: performance.now() / 1000, lensStrength,
     })
   }
   if (parkingBrake !== lastParkingBrake) {
@@ -3403,8 +3419,11 @@ function frame_(now: number): void {
   const elapsed = (now - lastFrame) / 1000
   lastFrame = now
   safeAdvance(elapsed, now)
-  requestAnimationFrame(frame_)
 }
+/** The render loop. Vsync-locked (rAF) or uncapped (vsync off) — see
+ *  render/frame-pacer.ts for what that can and cannot do in a browser. */
+const framePacer = new FramePacer(browserPacerDeps(), loadFrameMode(), frame_)
+document.addEventListener('visibilitychange', () => framePacer.visibilityChanged())
 
 // Background continuation (15e): the old setInterval fallback froze in
 // hidden tabs — page timers get intensively throttled to ~1 wake/min
@@ -3438,7 +3457,7 @@ airports
   })
   .catch((err) => console.error('airport data failed to load:', err))
 
-requestAnimationFrame(frame_)
+framePacer.start()
 
 // Deterministic verification hooks (see PROGRESS.md). Every numeric
 // argument passes through finiteOr(): garbage from the console (NaN,
@@ -3549,6 +3568,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
     return { arm: atArmSwitch, ...autothrottle }
   },
   /** Post-processing controls (verification): enable, strengths. */
+  /** Frame pacing (verification): read the mode, or switch it. */
+  __ohFrame: (mode?: FrameMode) => { if (isFrameMode(mode)) graphicsActions.frameMode(mode); return { mode: framePacer.currentMode, lens: lensStrength, ao: postStrength.ao } },
   /** Cockpit interior flat-fill scale (verification A/B): 1 = original uniform glow. */
   __ohFill: (scale: number) => { const v = finiteOr(scale); if (v !== null) setInteriorFillScale(v) },
   __ohPost: (o?: { enabled?: boolean; bloom?: number; rays?: number; vignette?: number; ao?: number }) => {
@@ -3847,6 +3868,15 @@ void distanceM
 
 
 const graphicsActions: GraphicsActions = {
+  frameMode: mode => {
+    framePacer.setMode(mode)
+    try { localStorage.setItem(FRAME_MODE_KEY, mode) } catch { /* storage unavailable */ }
+  },
+  effects: fx => {
+    postStrength.ao = fx.ao ? 0.8 : 0
+    lensStrength = fx.lens ? 1 : 0
+    try { localStorage.setItem(FX_KEY, JSON.stringify(fx)) } catch { /* storage unavailable */ }
+  },
   clearInput: () => input.clearHeld(),
   quality: mode => { clouds.setQuality(mode); tiles.setDetailEnabled(mode !== 'performance'); postFx.setQuality(mode) },
   camera: mode => { cameraMode = mode },
@@ -3880,7 +3910,7 @@ const graphicsActions: GraphicsActions = {
     wxDesc = `MANUAL ${mode.toUpperCase()} · 300@8 10SM`
   },
 }
-const graphicsPanel = new GraphicsPanel(renderer, graphicsActions)
+const graphicsPanel = new GraphicsPanel(renderer, graphicsActions, { frameMode: framePacer.currentMode, ao: postStrength.ao > 0, lens: lensStrength > 0 })
 
 new LoadingPanel(FLEET_ACTIVE.params, {
   current: currentLoading,
