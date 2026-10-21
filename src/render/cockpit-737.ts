@@ -160,9 +160,19 @@ const M = {
  *  the windows, which a directional sun alone cannot provide inside a
  *  closed cabin — a scaled emissive fill on the interior materials. */
 const FILLED: Array<[THREE.MeshStandardMaterial, number]> = [[M.lining, 0.5], [M.ceiling, 0.55], [M.frame, 0.3], [M.glare, 0.25], [M.panelBack, 0.35], [M.stand, 0.38], [M.carpet, 0.3], [M.seat, 0.32], [M.sheepskin, 0.35], [M.wheel, 0.25], [M.knobGray, 0.3], [M.white, 0.3], [M.leverWhite, 0.32], [M.metal, 0.25]]
+let lastAmbient = 1
+/** How much of the flat fill remains (default 0.35) once the deck is also lit by the real
+ *  sky/sun/ambient-occlusion: 1 = the original uniform glow (flat, toy-like),
+ *  lower = surfaces keep their shading. */
+let fillScale = 0.35
+export function setInteriorFillScale(scale: number): void {
+  fillScale = Math.max(0, Math.min(1.5, scale))
+  setInteriorFill(lastAmbient)
+}
 export function setInteriorFill(ambient: number): void {
+  lastAmbient = ambient
   const k = 0.12 + 0.88 * Math.max(0, Math.min(1, ambient))
-  for (const [m, f] of FILLED) m.emissive.copy(m.color).multiplyScalar(f * k)
+  for (const [m, f] of FILLED) m.emissive.copy(m.color).multiplyScalar(f * k * fillScale)
 }
 setInteriorFill(1)
 

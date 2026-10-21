@@ -19,7 +19,7 @@ import { boeingAurals, makeAuralLatches } from './sim/boeing-aurals'
 import { atFitment, atGainsFor, makeAutothrottle, stepAutothrottle } from './sim/autothrottle'
 import { autolandConfigFor, makeAutolandState, stepAutoland, radioAltitudeFt, type AutolandConfig, type AutolandOutput } from './sim/autoland'
 import { drawBoeingNd, drawBoeingEicas, drawIsfd, boeingFma, egtFromN1, drawSquareFitted, drawMfdWithEngines, type BoeingEicasInput, type BoeingNdInput, type BoeingPfdInput } from './cockpit/boeing-displays'
-import { animate737, update737Live } from './render/cockpit-737'
+import { animate737, setInteriorFillScale, update737Live } from './render/cockpit-737'
 import { BoeingAuralsAudio } from './audio/boeing-aurals-audio'
 import { loadCustomPack } from './audio/custom-audio-pack'
 import { LocalVoiceClient } from './voice/client'
@@ -119,7 +119,7 @@ if (!app) throw new Error('missing #app element')
 
 const { renderer, scene, camera } = createScene(app)
 const postFx = new PostFx(renderer)
-let postStrength = { bloom: 0.22, rays: 0.2, vignette: 0.34 }
+let postStrength = { bloom: 0.22, rays: 0.2, vignette: 0.34, ao: 0.8 }
 /** Sun direction + elevation of the last frame (post-processing). */
 let lastSunDir = new THREE.Vector3(0, 1, 0)
 let lastSunElevationDeg = 45
@@ -3236,7 +3236,8 @@ function advanceFrame(elapsed: number, now: number): void {
 
   if (cockpit.deck737 && cameraMode === 'cockpit') update737Deck(d, tunedNav, ll, pitotReadings.iasKt, indicatedAltitudeFt(pitotReadings.altFt, baroSetInHg, qnhInHg), pitotReadings.vsiFpm)
   const simDate = new Date(baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000)
-  sky.setShadowTarget(mesh.group.position)
+  sky.setCockpitShadows(cameraMode === 'cockpit')
+  sky.setShadowTarget(cameraMode === 'cockpit' ? camera.position : mesh.group.position)
   shadowCatcher.update(
     mesh.group.position.x,
     (aircraft.groundElevAt?.(pos.x, pos.y) ?? 0),
@@ -3365,6 +3366,8 @@ function advanceFrame(elapsed: number, now: number): void {
     postFx.render(scene, camera, {
       sunScreen: sun.screen, sunVisibility: sun.visibility, sunElevationDeg: lastSunElevationDeg,
       bloomStrength: postStrength.bloom, rayStrength: postStrength.rays, vignette: postStrength.vignette,
+      // Occlusion reaches ~0.5 m in the cockpit (panel crevices, frames) and ~1.6 m outside (airframe, buildings).
+      aoStrength: postStrength.ao, aoRadiusM: cameraMode === 'cockpit' ? 0.45 : 1.6, timeS: performance.now() / 1000,
     })
   }
   if (parkingBrake !== lastParkingBrake) {
@@ -3546,9 +3549,11 @@ Object.assign(window as unknown as Record<string, unknown>, {
     return { arm: atArmSwitch, ...autothrottle }
   },
   /** Post-processing controls (verification): enable, strengths. */
-  __ohPost: (o?: { enabled?: boolean; bloom?: number; rays?: number; vignette?: number }) => {
+  /** Cockpit interior flat-fill scale (verification A/B): 1 = original uniform glow. */
+  __ohFill: (scale: number) => { const v = finiteOr(scale); if (v !== null) setInteriorFillScale(v) },
+  __ohPost: (o?: { enabled?: boolean; bloom?: number; rays?: number; vignette?: number; ao?: number }) => {
     if (o?.enabled !== undefined) postFx.enabled = !!o.enabled
-    for (const k of ['bloom', 'rays', 'vignette'] as const) { const v = finiteOr(o?.[k]); if (v !== null) postStrength[k] = v }
+    for (const k of ['bloom', 'rays', 'vignette', 'ao'] as const) { const v = finiteOr(o?.[k]); if (v !== null) postStrength[k] = v }
     return { enabled: postFx.enabled, ...postStrength }
   },
   /** Open / close the free-flight start screen (verification). */
