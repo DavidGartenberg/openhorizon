@@ -19,6 +19,8 @@ export interface ApReadout {
   lit: Partial<Record<ApAction, boolean>>
   hasAutothrottle: boolean
   atText: string
+  /** True when this airplane has no real autothrottle and the A/T is a speed-hold assist. */
+  atAssist?: boolean
   /** Autoland fitted, and its phase annunciation (LAND ARM / LAND / ROLLOUT), or ''. */
   hasAutoland: boolean
   landText: string
@@ -129,7 +131,16 @@ export function buildApWindow(body: HTMLElement, d: ApWindowDeps): () => void {
     aVer.el.className = r.master ? 'on' : ''
     for (const [a, b] of buttons) {
       b.classList.toggle('lit', !!r.lit[a])
-      if (a === 'at') { b.hidden = !r.hasAutothrottle; if (r.hasAutothrottle) b.title = r.atText }
+      if (a === 'at') {
+        b.hidden = !r.hasAutothrottle
+        if (r.hasAutothrottle) {
+          const label = r.lit.at && r.atText && r.atText !== 'OFF' ? `A/T · ${r.atText}` : 'A/T'
+          if (b.textContent !== label) b.textContent = label
+          b.title = r.atAssist
+            ? `Autothrottle assist: holds the Speed value with the power lever. (${r.atText})`
+            : `Autothrottle: ${r.atText}`
+        }
+      }
       if (a === 'land') {
         b.hidden = !r.hasAutoland
         const label = r.landText ? `AUTOLAND · ${r.landText}` : 'AUTOLAND'

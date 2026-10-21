@@ -28,7 +28,7 @@ describe('main loading lifecycle', () => {
       failures: {}, disconnectAutopilot: () => {}, apState: {}, carbIceState: {}, makeCarbIceState: () => ({}),
       aircraftLights: { landingOn: false },
     }
-    const declarations = 'let carbHeatOn=false,baroSetInHg=0,ctlOverride={},holdWingsLevel=true,captainSystems={},captainCommands={},keyboardReverse=false,hardwareReverseOwned=false,autothrottle={},atArmSwitch=false,makeAutothrottle=()=>({}),autoland={},makeAutolandState=()=>({}),autolandBrake=0,autolandHoldBrake=false,autolandLastThrottle=null;'
+    const declarations = 'let carbHeatOn=false,baroSetInHg=0,ctlOverride={},holdWingsLevel=true,captainSystems={},captainCommands={},keyboardReverse=false,hardwareReverseOwned=false,autothrottle={},atArmSwitch=false,atWasEngaged=false,AT_GAINS={},makeAutothrottle=()=>({}),autoland={},makeAutolandState=()=>({}),autolandBrake=0,autolandHoldBrake=false,autolandLastThrottle=null;'
     const code = ts.transpileModule(`${declarations}${functionText('resetSystemsState')};resetSystemsState();`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
     new Function(...Object.keys(ctx), code)(...Object.values(ctx))
     expect(fuelState._lastSelector).toBeNull()

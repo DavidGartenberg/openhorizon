@@ -16,7 +16,7 @@ import { SafetySpeechController } from './audio/safety-speech'
 import { BrowserSpeechDriver } from './audio/browser-speech'
 import { makeSurfaceSmoother } from './render/surface-smoother'
 import { boeingAurals, makeAuralLatches } from './sim/boeing-aurals'
-import { makeAutothrottle, stepAutothrottle } from './sim/autothrottle'
+import { atFitment, atGainsFor, makeAutothrottle, stepAutothrottle } from './sim/autothrottle'
 import { autolandConfigFor, makeAutolandState, stepAutoland, radioAltitudeFt, type AutolandConfig, type AutolandOutput } from './sim/autoland'
 import { drawBoeingNd, drawBoeingEicas, drawIsfd, boeingFma, egtFromN1, drawSquareFitted, drawMfdWithEngines, type BoeingEicasInput, type BoeingNdInput, type BoeingPfdInput } from './cockpit/boeing-displays'
 import { animate737, update737Live } from './render/cockpit-737'
@@ -141,6 +141,7 @@ let negGCutAnnounced = false
  *  button edges from the MCP / thrust levers / A/T P/RST light. */
 const autothrottle = makeAutothrottle()
 let atArmSwitch = false
+let atWasEngaged = false
 let atSpeedPressed = false
 let atDisconnectPressed = false
 let atResetPressed = false
@@ -300,13 +301,19 @@ const replayView = new ReplayView()
 /** This airplane's cockpit, tailored per type (render/cockpit-profile.ts):
  *  the transport deck dressed for its family, or the G1000 panel fitted
  *  with its own controls and hardware. */
+const POWERPLANT = ROSTER.find((r) => r.spec.designator === fleetKey)?.spec.powerplant
+  ?? (fleetKey === '737' ? { kind: 'jet', count: 2 } : { kind: 'piston', count: 1 })
 const COCKPIT_PROFILE = cockpitProfile(fleetKey, FLEET_ACTIVE.params, {
   label: FLEET_ACTIVE.label,
-  powerplant: ROSTER.find((r) => r.spec.designator === fleetKey)?.spec.powerplant
-    ?? (fleetKey === '737' ? { kind: 'jet', count: 2 } : { kind: 'piston', count: 1 }),
+  powerplant: POWERPLANT,
 })
 const cockpitLayout = COCKPIT_PROFILE.layout
 const DECK_PROFILE = COCKPIT_PROFILE.deck
+/** Autothrottle: real on the airliner decks, a labelled speed-hold assist on
+ *  every other powered airplane, none on gliders (sim/autothrottle.ts). */
+const AT_FIT = atFitment(POWERPLANT.kind, !!DECK_PROFILE?.autothrottle, FLEET_ACTIVE.params.fuelCapacityKg)
+const AT_GAINS = atGainsFor(POWERPLANT.kind)
+autothrottle.gains = AT_GAINS
 const engineCount = DECK_PROFILE?.engines ?? COCKPIT_PROFILE.ga?.engines ?? 1
 const cockpit = buildCockpit(mesh.group, COCKPIT_PROFILE, FLEET_ACTIVE.params.flapDetentsDeg, { speedbrake: !!FLEET_ACTIVE.params.spoilers })
 // Exteriors previously cast onto runways but never received their own
@@ -506,8 +513,9 @@ const failures = { alternatorFailed: false, icingConditions: false, staticBlocke
  *  exactly (reuses the same defaults/constants) rather than inventing a
  *  second "normal" state. */
 function resetSystemsState(): void {
-  Object.assign(autothrottle, makeAutothrottle())
+  Object.assign(autothrottle, makeAutothrottle(AT_GAINS))
   atArmSwitch = false
+  atWasEngaged = false
   Object.assign(autoland, makeAutolandState())
   autolandBrake = 0
   autolandHoldBrake = false
@@ -2740,9 +2748,9 @@ function advanceFrame(elapsed: number, now: number): void {
         }
       }
       const alThrottle = al?.throttle ?? null
-      if (DECK_PROFILE?.autothrottle && alThrottle === null) {
+      if (AT_FIT !== 'none' && alThrottle === null) {
         const atCmd = stepAutothrottle(autothrottle, dt, {
-          armSwitch: atArmSwitch, speedPressed: atSpeedPressed, disconnectPressed: atDisconnectPressed, resetLight: atResetPressed,
+          armSwitch: atArmSwitch, engageAirborne: AT_FIT === 'assist', speedPressed: atSpeedPressed, disconnectPressed: atDisconnectPressed, resetLight: atResetPressed,
           iasKt: aircraft.data.kias, targetKt: apTargets.iasTargetKt, verticalMode: apTargets.verticalMode,
           pitchModeActive: apState.masterEnabled && apTargets.verticalMode !== 'PIT',
           altitudeFt: aircraft.data.altitudeFt, selectedAltFt: apTargets.altitudeBugFt, onGround: aircraft.data.onGround,
@@ -2750,13 +2758,20 @@ function advanceFrame(elapsed: number, now: number): void {
         })
         atSpeedPressed = atDisconnectPressed = atResetPressed = false
         if (atCmd !== null && !aircraft.reverseCmd) aircraft.controls.throttle = atCmd
+        // Engaging with no speed ever dialled in holds the speed it engaged at;
+        // losing the servo while still armed (pilot moved the lever) is announced.
+        if (autothrottle.engaged && !atWasEngaged && !apPanel.touched.ias) {
+          apPanel = { ...apPanel, sel: { ...apPanel.sel, iasKt: Math.max(40, Math.round(aircraft.data.kias)) } }
+        }
+        if (atWasEngaged && !autothrottle.engaged && atArmSwitch) toast('AUTOTHROTTLE DISCONNECT')
+        atWasEngaged = autothrottle.engaged
       }
       // Autoland outputs: lever, configuration, spoilers, reversers, brakes.
       if (al) {
         if (alThrottle !== null) {
           aircraft.controls.throttle = alThrottle
           autolandLastThrottle = alThrottle
-          if (DECK_PROFILE?.autothrottle) { autothrottle.engaged = true; autothrottle.mode = al.phase === 'LAND' ? 'MCP SPD' : 'RETARD' }
+          if (AT_FIT === 'full') { autothrottle.engaged = true; autothrottle.mode = al.phase === 'LAND' ? 'MCP SPD' : 'RETARD' }
         } else autolandLastThrottle = null
         if (al.flapIndex !== null) aircraft.selectFlaps(al.flapIndex, false)
         if (al.gearDown && aircraft.P.gearRetractable) aircraft.gearDownCommanded = true
@@ -3900,9 +3915,14 @@ function apPress(a: ApAction): void {
   apPanel = { ...apPanel, direct: false }
   const snap = apSnapshot()
   if (a === 'at') {
-    if (!DECK_PROFILE?.autothrottle) { apSay('NO AUTOTHROTTLE ON THIS AIRPLANE'); return }
+    if (AT_FIT === 'none') { apSay('NO ENGINE — NO AUTOTHROTTLE'); return }
     atArmSwitch = !atArmSwitch
-    apSay(atArmSwitch ? 'AUTOTHROTTLE ARMED' : 'AUTOTHROTTLE OFF')
+    if (atArmSwitch && !aircraft.data.onGround) {
+      // Armed in the air: hold the speed flown now (unless a speed was dialled in) and take the lever.
+      if (!apPanel.touched.ias) apPanel = { ...apPanel, sel: { ...apPanel.sel, iasKt: Math.max(40, Math.round(aircraft.data.kias)) } }
+      atSpeedPressed = true
+    }
+    apSay(!atArmSwitch ? 'AUTOTHROTTLE OFF' : AT_FIT === 'assist' ? 'AUTOTHROTTLE ASSIST — HOLDING SPEED' : 'AUTOTHROTTLE ARMED')
     return
   }
   if (a === 'ap') {
@@ -3945,8 +3965,9 @@ function apReadout(): ApReadout {
     },
     hasAutoland: autolandConfig() !== null,
     landText: apPanel.autoland ? (autoland.phase === 'OFF' || autoland.phase === 'ARMED' ? 'LAND ARM' : autoland.phase === 'DONE' ? 'DONE' : autoland.phase === 'FLARE' ? 'LAND' : autoland.phase) : '',
-    hasAutothrottle: !!DECK_PROFILE?.autothrottle,
+    hasAutothrottle: AT_FIT !== 'none',
     atText: autothrottle.mode,
+    atAssist: AT_FIT === 'assist',
     sel: { heading: apPanel.sel.headingDeg, altitude: apPanel.sel.altitudeFt, vs: apPanel.sel.vsFpm, ias: apPanel.sel.iasKt },
     nav1: radios.nav1.activeMhz,
     ...(performance.now() < apMessageUntil ? { message: apMessage } : {}),
