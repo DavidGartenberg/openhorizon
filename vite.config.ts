@@ -32,5 +32,8 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts'],
     environment: 'node',
+    // The mesh-building suites are CPU-heavy: a cold cache on a small CI runner
+    // pushed single tests past the 5 s default (found in a fresh-clone run).
+    testTimeout: 30_000,
   },
 })
