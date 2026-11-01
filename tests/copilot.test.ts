@@ -129,3 +129,59 @@ describe('copilot callout inventory (used to render the voice ahead of time)', (
     for (const t of ['airspeed alive', 'rotate', 'positive rate', 'vee one', 'gear up', 'one thousand']) expect(COPILOT_CALLOUTS).toContain(t)
   })
 })
+
+describe('ILS minimums callouts', () => {
+  const fly = (path: Array<Partial<CopilotObs>>, ils: boolean): string[] => {
+    const L = makeCopilotLatches(); L.wasAirborne = true
+    const calls: string[] = []
+    let prev = obs({ kias: 140, onGround: false, aglFt: 1200, vsFpm: -700, ils })
+    for (const p of path) {
+      const o = obs({ kias: 135, onGround: false, vsFpm: -700, ils, ...p })
+      calls.push(...copilotCallouts(o, prev, JET, L, true)); prev = o
+    }
+    return calls.filter((c) => /minimums/.test(c))
+  }
+  it('calls approaching minimums at 300 ft and minimums at 200 ft AGL while flying an ILS', () => {
+    expect(fly([{ aglFt: 700 }, { aglFt: 310 }, { aglFt: 290 }, { aglFt: 205 }, { aglFt: 195 }, { aglFt: 120 }], true))
+      .toEqual(['approaching minimums', 'minimums'])
+  })
+  it('both fire in order on a coarse step that crosses both altitudes', () => {
+    expect(fly([{ aglFt: 350 }, { aglFt: 150 }], true)).toEqual(['approaching minimums', 'minimums'])
+  })
+  it('stays silent when no ILS is being flown (visual or non-precision approach)', () => {
+    expect(fly([{ aglFt: 310 }, { aglFt: 290 }, { aglFt: 195 }], false)).toEqual([])
+  })
+  it('stays silent when not descending (a go-around climb through 300 ft)', () => {
+    expect(fly([{ aglFt: 250, vsFpm: 900 }, { aglFt: 320, vsFpm: 900 }], true)).toEqual([])
+  })
+  it('never repeats on the same approach, and re-arms after the next liftoff', () => {
+    const L = makeCopilotLatches(); L.wasAirborne = true
+    const step = (prev: CopilotObs, o: CopilotObs): string[] => copilotCallouts(o, prev, JET, L, true).filter((c) => /minimums/.test(c))
+    let prev = obs({ kias: 135, onGround: false, aglFt: 400, vsFpm: -700, ils: true })
+    const a = obs({ kias: 135, onGround: false, aglFt: 190, vsFpm: -700, ils: true })
+    expect(step(prev, a)).toEqual(['approaching minimums', 'minimums'])
+    expect(step(a, a)).toEqual([])
+    // touch down, take off again, fly the approach again
+    const down = obs({ kias: 120, onGround: true, aglFt: 0 })
+    step(a, down)
+    const up = obs({ kias: 150, onGround: false, aglFt: 50, vsFpm: 900, ils: false })
+    step(down, up)
+    prev = obs({ kias: 135, onGround: false, aglFt: 400, vsFpm: -700, ils: true })
+    expect(step(up, prev)).toEqual([])
+    expect(step(prev, a)).toEqual(['approaching minimums', 'minimums'])
+  })
+  it('a go-around re-arms the approach calls: the second approach gets them again', () => {
+    const L = makeCopilotLatches(); L.wasAirborne = true
+    const calls: string[] = []
+    let prev = obs({ kias: 135, onGround: false, aglFt: 400, vsFpm: -700, ils: true })
+    const go = (o: CopilotObs): void => { calls.push(...copilotCallouts(o, prev, JET, L, true).filter((c) => /minimums|one thousand/.test(c))); prev = o }
+    go(obs({ kias: 135, onGround: false, aglFt: 190, vsFpm: -700, ils: true }))        // first approach: both calls
+    go(obs({ kias: 150, onGround: false, aglFt: 600, vsFpm: 1500, ils: true }))         // go-around climb
+    go(obs({ kias: 160, onGround: false, aglFt: 1600, vsFpm: 1500, ils: true }))        // above 1200 ft climbing: re-armed
+    go(obs({ kias: 140, onGround: false, aglFt: 1200, vsFpm: -700, ils: true }))        // downwind/final again
+    go(obs({ kias: 135, onGround: false, aglFt: 950, vsFpm: -700, ils: true }))         // one thousand again
+    go(obs({ kias: 135, onGround: false, aglFt: 290, vsFpm: -700, ils: true }))
+    go(obs({ kias: 135, onGround: false, aglFt: 190, vsFpm: -700, ils: true }))
+    expect(calls).toEqual(['approaching minimums', 'minimums', 'one thousand', 'approaching minimums', 'minimums'])
+  })
+})

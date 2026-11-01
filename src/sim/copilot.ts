@@ -25,6 +25,9 @@ export interface CopilotObs {
   flapsDeg?: number
   glider?: boolean
   throttle: number
+  /** An ILS (localizer + glideslope) is tuned, received and being flown: the
+   *  minimums calls only make sense on a precision approach. */
+  ils?: boolean
 }
 
 export interface CopilotSpeeds {
@@ -58,12 +61,14 @@ export const COPILOT_CALLOUT_TEXT = {
   gearUp: 'gear up',
   flapsUp: 'flaps up speed',
   oneThousand: 'one thousand',
+  approachingMins: 'approaching minimums',
+  minimums: 'minimums',
   sixty: 'sixty knots',
 } as const
 export const COPILOT_CALLOUTS: readonly string[] = Object.values(COPILOT_CALLOUT_TEXT)
 
 const TAKEOFF_KEYS = ['alive', 'eighty', 'hundred', 'v1', 'rotate', 'posRate', 'gearUp', 'flapsUp'] as const
-const LANDING_KEYS = ['oneThousand', 'sixty'] as const
+const LANDING_KEYS = ['oneThousand', 'approachingMins', 'minimums', 'sixty'] as const
 
 /**
  * V-speeds from the type's real parameters. Vr = 1.15 × the TAKEOFF-detent
@@ -117,6 +122,11 @@ export function copilotCallouts(
   if (!prev.onGround && s.onGround) {
     for (const k of TAKEOFF_KEYS) L.fired.delete(k)
   }
+  // A go-around (climbing away from the field, well above the approach's
+  // 1000 ft point) re-arms the approach calls so the next approach gets them.
+  if (!s.onGround && s.vsFpm > 500 && s.aglFt > 1200) {
+    for (const k of ['oneThousand', 'approachingMins', 'minimums'] as const) L.fired.delete(k)
+  }
 
   if (s.onGround) {
     // Takeoff roll: power up AND accelerating — a landing rollout under
@@ -141,6 +151,12 @@ export function copilotCallouts(
     }
     // Descending through 1000 AGL ("five hundred" belongs to TAWS).
     if (s.vsFpm < -200 && prev.aglFt > 1000 && s.aglFt <= 1000) fire('oneThousand', COPILOT_CALLOUT_TEXT.oneThousand)
+    // Precision approach only: 300 ft "approaching minimums", 200 ft "minimums"
+    // (the standard Cat I decision height; this sim has no approach-plate DH).
+    if (s.ils && s.vsFpm < -200) {
+      if (prev.aglFt > 300 && s.aglFt <= 300) fire('approachingMins', COPILOT_CALLOUT_TEXT.approachingMins)
+      if (prev.aglFt > 200 && s.aglFt <= 200) fire('minimums', COPILOT_CALLOUT_TEXT.minimums)
+    }
   }
 
   return out

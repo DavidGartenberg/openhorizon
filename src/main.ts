@@ -1647,6 +1647,7 @@ let copilotUntil = 0
 /** A callout the speech channel could not take yet (something else was talking):
  *  kept for a few seconds and retried, so a latched call is never silently lost. */
 let copilotPending: { text: string; until: number } | null = null
+let copilotIls = false
 function speakCopilot(text: string): void { copilotPending = { text: copilotPending ? `${copilotPending.text}, ${text}` : text, until: performance.now() + 4000 } }
 
 function stepCopilot(): void {
@@ -1661,6 +1662,7 @@ function stepCopilot(): void {
     flapsDeg: aircraft.flapsDeg,
     glider: aircraft.P.spoilers?.groundAutoDeploy === false,
     throttle: aircraft.controls.throttle,
+    ils: copilotIls,
   }
   if (copilotPrev) {
     const calls = copilotCallouts(o, copilotPrev, copilotSpeeds, copilotLatches, !!aircraft.P.gearRetractable)
@@ -2628,6 +2630,8 @@ function advanceFrame(elapsed: number, now: number): void {
   // the *start* of this frame, one frame stale at most.
   const preStepLL = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
   const tunedNav = computeTunedNav(preStepLL, aircraft.data.altitudeFt)
+  // The first officer's minimums calls: both ILS needles received and within full scale.
+  copilotIls = tunedNav.source === 'LOC' && tunedNav.hasGlideslope && Math.abs(tunedNav.deflectionFraction) <= 1 && Math.abs(tunedNav.glideslopeFraction ?? Infinity) <= 1
   const gpsCdi = computeGpsCdi(preStepLL)
   lastCourseDeg = tunedNav.source ? tunedNav.courseDeg : undefined
   lastTunedNavResult = tunedNav
@@ -3568,6 +3572,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
     return { arm: atArmSwitch, ...autothrottle }
   },
   /** Post-processing controls (verification): enable, strengths. */
+  /** First officer state (verification): the ILS flag the minimums calls depend on, what has fired, the line on screen. */
+  __ohCopilot: () => ({ ils: copilotIls, fired: [...copilotLatches.fired], line: performance.now() < copilotUntil ? copilotLine : '', pending: copilotPending?.text ?? null }),
   /** Frame pacing (verification): read the mode, or switch it. */
   __ohFrame: (mode?: FrameMode) => { if (isFrameMode(mode)) graphicsActions.frameMode(mode); return { mode: framePacer.currentMode, lens: lensStrength, ao: postStrength.ao } },
   /** Cockpit interior flat-fill scale (verification A/B): 1 = original uniform glow. */
