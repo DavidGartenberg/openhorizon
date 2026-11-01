@@ -46,7 +46,8 @@ import { buildC172, buildCub, buildB738, updateProp, type AircraftMesh } from '.
 import { planeMenuEntries } from './render/plane-menu'
 import { Shell } from './ui/shell/shell'
 import type { ChecklistState } from './sim/checklists'
-import { applyApFeedback, apEnvelopeFault, disconnectAp, makeApPanel, pressAlt, pressAp, pressApr, pressFlc, pressHdg, pressLand, pressNav, pressVs, toApTargets, turnKnob, type ApAvailability, type ApPanel, type ApSnapshot, type Knob } from './sim/ap-panel'
+import { applyApFeedback, apEnvelopeFault, defaultSelectedAltitude, disconnectAp, engageThen, goToAltitudeLabel, makeApPanel, parseKnobText, pressAlt, pressAp, pressApr, pressFlc, pressGoToAltitude, pressHdg, pressLand, pressNav, pressVs, setKnobValue, syncBugs, toApTargets, turnKnob, unavailableReasons, type ApAvailability, type ApPanel, type ApResult, type ApSnapshot, type Knob, type RateLimits } from './sim/ap-panel'
+import { describeAutopilot } from './sim/ap-describe'
 import type { ApAction, ApReadout, IlsChoice } from './ui/shell/ap-window'
 import { KNOWN_ILS_FREQUENCIES } from './sim/nav/tuning'
 import { Launcher, launchCommand, parsePendingLaunch, PENDING_LAUNCH_KEY, type LaunchChoice, type LauncherAirport } from './ui/shell/launcher'
@@ -4013,16 +4014,46 @@ function apPress(a: ApAction): void {
     return
   }
   if (a === 'land' && !apPanel.master && aircraft.data.onGround) { apSay('AUTOLAND NOT AVAILABLE ON THE GROUND'); return }
-  const r = a === 'land' ? pressLand(apPanel, snap, apAvailability())
-    : a === 'hdg' ? pressHdg(apPanel, snap)
-    : a === 'nav' ? pressNav(apPanel, apAvailability())
-      : a === 'apr' ? pressApr(apPanel, snap, apAvailability())
-        : a === 'alt' ? pressAlt(apPanel, snap)
-          : a === 'vs' ? pressVs(apPanel, snap)
-            : pressFlc(apPanel, snap)
+  const press = (p: ApPanel): ApResult => a === 'hdg' ? pressHdg(p, snap)
+    : a === 'nav' ? pressNav(p, apAvailability())
+      : a === 'apr' ? pressApr(p, snap, apAvailability())
+        : a === 'alt' ? pressAlt(p, snap)
+          : a === 'vs' ? pressVs(p, snap)
+            : pressFlc(p, snap)
+  // Pressing a mode with the autopilot off engages it for you (airborne), unless that mode cannot work.
+  const auto = a !== 'land' && !apPanel.master && !aircraft.data.onGround
+  const r = a === 'land' ? pressLand(apPanel, snap, apAvailability()) : auto ? engageThen(apPanel, snap, press) : press(apPanel)
   apPanel = r.panel
-  if (a === 'land' && r.panel.master) systemsControls.apMaster = true
+  if ((a === 'land' || auto) && r.panel.master) systemsControls.apMaster = true
   apSay(r.message)
+}
+/** How fast this airplane can sensibly climb/descend on a one-touch altitude change. */
+function apRateLimits(): RateLimits {
+  return POWERPLANT.kind === 'jet' ? { climbFpm: 2000, descendFpm: 2000 }
+    : POWERPLANT.kind === 'turboprop' ? { climbFpm: 1500, descendFpm: 1500 }
+      : { climbFpm: 500, descendFpm: 700 }
+}
+/** CLIMB / DESCEND / HOLD: go to the selected altitude (engages the autopilot if needed). */
+function apGo(): void {
+  apPanel = { ...apPanel, direct: false }
+  if (!apPanel.master && aircraft.data.onGround) { apSay('AUTOPILOT NOT AVAILABLE ON THE GROUND'); return }
+  const snap = apSnapshot()
+  const r = engageThen(apPanel, snap, (p) => pressGoToAltitude(p, snap, apRateLimits()))
+  apPanel = r.panel
+  if (r.panel.master) systemsControls.apMaster = true
+  apSay(r.message)
+}
+function apSync(): void {
+  const r = syncBugs({ ...apPanel, direct: false }, apSnapshot())
+  apPanel = r.panel
+  apSay(r.message)
+}
+/** A value typed into a selector ("8000", "FL350", "270"). */
+function apSet(k: Knob, text: string): void {
+  const v = parseKnobText(k, text)
+  if (v === null) { if (text.trim()) apSay(`NOT A VALID ${k === 'ias' ? 'SPEED' : k === 'vs' ? 'V/S' : k.toUpperCase()} VALUE`); return }
+  apPanel = setKnobValue({ ...apPanel, direct: false }, k, v, apSnapshot())
+  apSay(`${k === 'ias' ? 'SPEED' : k === 'vs' ? 'V/S' : k.toUpperCase()} SET`)
 }
 function apTurn(k: Knob, steps: number): void {
   apPanel = turnKnob(apPanel, k, steps, apSnapshot())
@@ -4041,6 +4072,18 @@ function apReadout(): ApReadout {
       ap: apPanel.master, hdg: apPanel.lateral === 'HDG', nav: apPanel.lateral === 'NAV', apr: apPanel.lateral === 'APR',
       alt: apPanel.vertical === 'ALT', vs: apPanel.vertical === 'VS', flc: apPanel.vertical === 'FLC', at: atArmSwitch, land: apPanel.autoland,
     },
+    summary: describeAutopilot({
+      master: systemsControls.apMaster, onGround: aircraft.data.onGround,
+      lateral: apState.lateralMode, lateralArmed: apState.lateralArmed,
+      vertical: apPanel.vertical, verticalActual: apState.verticalMode,
+      sel: apPanel.sel, altHoldFt: apPanel.altHoldFt,
+      current: { altitudeFt: aircraft.data.altitudeFt, headingDeg: aircraft.data.headingDeg, iasKt: aircraft.data.kias, vsFpm: aircraft.data.verticalSpeedFpm },
+      autothrottle: AT_FIT !== 'none' ? { engaged: autothrottle.engaged, mode: autothrottle.mode } : null,
+      autoland: apPanel.autoland ? { phase: autoland.phase === 'OFF' ? 'ARMED' : autoland.phase } : null,
+      navSource: apAvailability().gps ? 'flight plan' : apAvailability().nav ? 'VOR' : null,
+    }),
+    goLabel: goToAltitudeLabel(apPanel, apSnapshot(), apRateLimits()),
+    reasons: unavailableReasons(apAvailability(), { hasAutoland: autolandConfig() !== null }),
     hasAutoland: autolandConfig() !== null,
     landText: apPanel.autoland ? (autoland.phase === 'OFF' || autoland.phase === 'ARMED' ? 'LAND ARM' : autoland.phase === 'DONE' ? 'DONE' : autoland.phase === 'FLARE' ? 'LAND' : autoland.phase) : '',
     autobrake: AT_FIT === 'full'
@@ -4049,7 +4092,15 @@ function apReadout(): ApReadout {
     hasAutothrottle: AT_FIT !== 'none',
     atText: autothrottle.mode,
     atAssist: AT_FIT === 'assist',
-    sel: { heading: apPanel.sel.headingDeg, altitude: apPanel.sel.altitudeFt, vs: apPanel.sel.vsFpm, ias: apPanel.sel.iasKt },
+    // With the autopilot off, untouched selectors show what engaging would use (the airplane as it is now).
+    sel: apPanel.master
+      ? { heading: apPanel.sel.headingDeg, altitude: apPanel.sel.altitudeFt, vs: apPanel.sel.vsFpm, ias: apPanel.sel.iasKt }
+      : {
+        heading: apPanel.touched.heading ? apPanel.sel.headingDeg : (Math.round(aircraft.data.headingDeg) % 360) || 360,
+        altitude: apPanel.touched.altitude ? apPanel.sel.altitudeFt : defaultSelectedAltitude(aircraft.data.altitudeFt),
+        vs: apPanel.sel.vsFpm,
+        ias: apPanel.touched.ias ? apPanel.sel.iasKt : Math.max(40, Math.round(aircraft.data.kias)),
+      },
     nav1: radios.nav1.activeMhz,
     ...(performance.now() < apMessageUntil ? { message: apMessage } : {}),
   }
@@ -4113,7 +4164,7 @@ launcher = new Launcher({
 shell = new Shell({
   launcher,
   flightInfo: hud,
-  ap: { read: apReadout, press: apPress, turn: apTurn, autobrake: setAutobrake, ils: ilsChoices, tune: (f) => { radios.nav1.activeMhz = f; radios.nav1.standbyMhz = f; toast(`NAV1 ${f.toFixed(2)}`) } },
+  ap: { read: apReadout, press: apPress, turn: apTurn, autobrake: setAutobrake, set: apSet, go: apGo, sync: apSync, ils: ilsChoices, tune: (f) => { radios.nav1.activeMhz = f; radios.nav1.standbyMhz = f; toast(`NAV1 ${f.toFixed(2)}`) } },
   directTo,
   clearPlan: () => { flightPlan.setWaypoints([]); toast('FLIGHT PLAN CLEARED') },
   instruments: { get visible() { return instruments.visible }, get on() { return instrumentsOn }, set: (v) => { instrumentsOn = v; try { localStorage.setItem('oh-instruments', v ? 'on' : 'off') } catch { /* storage unavailable */ } } },

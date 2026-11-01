@@ -258,6 +258,109 @@ export function turnKnob(p0: ApPanel, knob: Knob, steps: number, snap?: ApSnapsh
   return p
 }
 
+// ---------------------------------------------------------------------------
+// Intuitive helpers: the things a pilot expects the panel to just do.
+// ---------------------------------------------------------------------------
+
+const fmtFt = (n: number): string => Math.round(n).toLocaleString('en-US')
+
+/** Press a mode button with the autopilot off and it engages for you, then
+ *  selects the mode — unless the mode itself cannot work (no nav source, no
+ *  ILS), in which case nothing is engaged and you are told why. */
+export function engageThen(p0: ApPanel, s: ApSnapshot, press: (p: ApPanel) => ApResult): ApResult {
+  if (p0.master) return press(p0)
+  const eng = pressAp(p0, s)
+  const r = press(eng.panel)
+  const changed = r.panel.lateral !== eng.panel.lateral || r.panel.vertical !== eng.panel.vertical || r.panel.autoland !== eng.panel.autoland
+  if (!changed) return { panel: p0, message: r.message ?? eng.message }
+  return { panel: r.panel, message: r.message ? `AUTOPILOT ENGAGED · ${r.message}` : eng.message }
+}
+
+/** What a pilot types into a selector: "8,000", "FL350", "270°", "210 kt",
+ *  "-1500", "down 1000". null = not a number for that knob. */
+export function parseKnobText(knob: Knob, text: string): number | null {
+  let t = String(text).trim().toLowerCase().replace(/[,\s]+/g, ' ').trim()
+  if (!t) return null
+  let sign = 1
+  if (/^(down|dn|descend)\b/.test(t)) { sign = -1; t = t.replace(/^(down|dn|descend)\s*/, '') }
+  else if (/^(up|climb)\b/.test(t)) t = t.replace(/^(up|climb)\s*/, '')
+  const fl = /^fl\s*(\d{2,3})$/.exec(t)
+  if (fl) return knob === 'altitude' ? Number(fl[1]) * 100 : null
+  t = t.replace(/\s*(°|deg|degrees|ft|feet|kts?|knots|fpm|hdg|heading)\s*$/g, '').replace(/^(hdg|heading|alt|altitude)\s*/, '').replace(/\s+/g, '')
+  if (!/^[+-]?\d+(\.\d+)?$/.test(t)) return null
+  return sign * Number(t)
+}
+
+/** Set a selector to an exact value (typed in): clamped, rounded to the knob's
+ *  own step, and from then on the pilot's selection. */
+export function setKnobValue(p0: ApPanel, knob: Knob, value: number, _snap?: ApSnapshot): ApPanel {
+  const p = clone(p0)
+  if (!Number.isFinite(value)) return p
+  switch (knob) {
+    case 'heading': p.sel.headingDeg = wrap360(value) || 360; p.touched.heading = true; break
+    case 'altitude': p.sel.altitudeFt = Math.max(ALT_MIN_FT, Math.min(ALT_MAX_FT, Math.round(value / 100) * 100)); p.touched.altitude = true; break
+    case 'vs': p.sel.vsFpm = Math.max(-VS_MAX_FPM, Math.min(VS_MAX_FPM, Math.round(value / 100) * 100)); break
+    case 'ias': p.sel.iasKt = Math.max(40, Math.min(600, Math.round(value))); p.touched.ias = true; break
+  }
+  return p
+}
+
+export interface RateLimits { climbFpm: number; descendFpm: number }
+const GENTLE_FPM = 1500
+
+function goToPlan(p: ApPanel, s: ApSnapshot, limits: RateLimits): { kind: 'hold' | 'climb' | 'descend'; target: number; vsFpm: number; dialled: boolean } {
+  const target = p.sel.altitudeFt
+  const delta = target - s.altitudeFt
+  if (!p.touched.altitude) return { kind: 'hold', target: Math.round(s.altitudeFt / 10) * 10, vsFpm: 0, dialled: false }
+  if (Math.abs(delta) <= 100) return { kind: 'hold', target, vsFpm: 0, dialled: true }
+  const dist = Math.abs(delta)
+  const want = dist < 500 ? 500 : dist < 1500 ? 1000 : GENTLE_FPM
+  const cap = delta > 0 ? limits.climbFpm : limits.descendFpm
+  const rate = Math.max(100, Math.min(want, Math.round(cap / 100) * 100))
+  return { kind: delta > 0 ? 'climb' : 'descend', target, vsFpm: delta > 0 ? rate : -rate, dialled: true }
+}
+
+/** The label of the one-touch altitude button: what pressing it will do. */
+export function goToAltitudeLabel(p: ApPanel, s: ApSnapshot, limits: RateLimits = { climbFpm: GENTLE_FPM, descendFpm: GENTLE_FPM }): string {
+  const g = goToPlan(p, s, limits)
+  return g.kind === 'hold' ? `HOLD ${fmtFt(g.target)}` : `${g.kind === 'climb' ? 'CLIMB' : 'DESCEND'} TO ${fmtFt(g.target)}`
+}
+
+/** One touch to "go to the altitude I dialled": climb or descend at a gentle
+ *  rate (capped to what the airplane can do) and level off there, or hold the
+ *  present altitude when nothing is dialled / it is already there. */
+export function pressGoToAltitude(p0: ApPanel, s: ApSnapshot, limits: RateLimits = { climbFpm: GENTLE_FPM, descendFpm: GENTLE_FPM }): ApResult {
+  const p = clone(p0)
+  const g = goToPlan(p, s, limits)
+  if (g.kind === 'hold') {
+    p.vertical = 'ALT'; p.altHoldFt = g.target
+    return { panel: p, message: g.dialled ? `HOLDING ${fmtFt(g.target)} FT` : `HOLDING ${fmtFt(g.target)} FT — DIAL AN ALTITUDE TO CLIMB OR DESCEND` }
+  }
+  p.vertical = 'VS'; p.sel.vsFpm = g.vsFpm
+  return { panel: p, message: `${g.kind === 'climb' ? 'CLIMB' : 'DESCEND'} TO ${fmtFt(g.target)} FT AT ${fmtFt(Math.abs(g.vsFpm))} FPM` }
+}
+
+/** Set the heading, altitude and speed selectors to where the airplane is now
+ *  and let them follow it again. */
+export function syncBugs(p0: ApPanel, s: ApSnapshot): ApResult {
+  const p = clone(p0)
+  p.touched = { heading: false, altitude: false, ias: false }
+  sync(p, s)
+  return { panel: p, message: `BUGS SET TO PRESENT — HDG ${String(p.sel.headingDeg).padStart(3, '0')} · ALT ${fmtFt(p.sel.altitudeFt)} · SPD ${p.sel.iasKt}` }
+}
+
+/** Plain-language reasons why a mode button would be refused right now. Only
+ *  the unavailable ones are present. */
+export function unavailableReasons(a: ApAvailability, ctx: { hasAutoland: boolean }): { nav?: string; apr?: string; land?: string } {
+  const out: { nav?: string; apr?: string; land?: string } = {}
+  if (!a.gps && !a.nav) out.nav = 'Needs a flight plan (load one in the Nav log) or a tuned VOR'
+  if (!a.loc) out.apr = 'Needs an ILS: choose one in the ILS list below'
+  if (!ctx.hasAutoland || a.land === false) out.land = 'Autoland is not available on this airplane'
+  else if (!a.loc) out.land = 'Needs an ILS: choose one in the ILS list below'
+  else if (!a.gs) out.land = 'This ILS has no glideslope, so it cannot autoland'
+  return out
+}
+
 /** Direction (+1 up, −1 down, 0 none) in which the current vertical mode
  *  moves the airplane, for deciding whether the selected altitude is ahead. */
 function motionDirection(p: ApPanel, s: ApSnapshot): number {

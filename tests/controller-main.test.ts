@@ -68,7 +68,7 @@ it('first real systems tick reads fresh fuel metadata before Captain engine stat
  const start=Math.min(source.indexOf('      captainSystems=stepCaptainSystems'),source.indexOf('      stepFuel(fuelState, dt,'))
  const end=source.indexOf('      stepEngineStart(engineStartState, dt,',start)
  const ctx={aircraft,fuelState,stepFuel,negativeGToleranceS,toast:()=>{},stepCaptainSystems,createCaptainSystems,systemsControls:{masterBattery:true,fuelSelector:'BOTH',boostPumpOn:false}}
- const code=ts.transpileModule(`let captainSystems=createCaptainSystems(),captainCommands={},pilotBrake=0,dt=.02,negGCutAnnounced=false;${source.slice(start,end)};return captainSystems`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
+ const code=ts.transpileModule(`let captainSystems=createCaptainSystems(),captainCommands={},pilotBrake=0,dt=.02,negGCutAnnounced=false,autobrakeRequest=null,lastAutobrakePhase='off';${source.slice(start,end)};return captainSystems`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
  const state=new Function(...Object.keys(ctx),code)(...Object.values(ctx))
  expect(fuelState.fuelFlowing).toBe(true)
  expect(state.enginePowerFraction).toBe(1)
