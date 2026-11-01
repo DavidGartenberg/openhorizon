@@ -96,7 +96,8 @@ import { applyDeadzone, leverWithReverse, parseGamepadMap, serializeGamepadMap, 
 import { ControllerPanel } from './ui/controller-panel'
 import { ControllerRuntime } from './input/controller-runtime'
 import { armSpeedbrake, cycleSpeedbrake } from './input/speedbrake-control'
-import { createCaptainSystems, stepCaptainSystems, type CaptainSystemsInput } from './sim/captain-systems'
+import { createCaptainSystems, stepCaptainSystems, type AutobrakeMode, type CaptainSystemsInput } from './sim/captain-systems'
+import { AUTOBRAKE_SETTINGS, type AutobrakeSetting } from './sim/autobrake'
 import { makeFuelState, stepFuel, type FuelSelector, negativeGToleranceS } from './sim/systems/fuel'
 import { applyLoading, defaultLoading, loadingFromSnapshot, preferenceFor, setPreference, type LoadingSelection, type MassUnit } from './sim/loading'
 import { PitotStaticSystem } from './sim/systems/pitot'
@@ -461,6 +462,21 @@ const SYSTEMS_CONTROLS_DEFAULT: SystemsControls = {
 const systemsControls: SystemsControls = { ...SYSTEMS_CONTROLS_DEFAULT }
 let captainSystems = createCaptainSystems()
 let captainCommands: Partial<CaptainSystemsInput> = {}
+/** Autobrake (sim/autobrake.ts) is fitted to the airliner decks. Every UI — the AP
+ *  window, the E key, the cockpit knob, a hardware preset — reaches it through
+ *  setAutobrake(); the request is applied on the next sim step. */
+let autobrakeRequest: AutobrakeMode | null = null
+let lastAutobrakePhase = 'off'
+function setAutobrake(mode: AutobrakeSetting): void {
+  if (AT_FIT !== 'full') { toast('NO AUTOBRAKE ON THIS AIRPLANE'); return }
+  autobrakeRequest = mode
+  toast(mode === 'off' ? 'AUTOBRAKE OFF' : mode === 'rto' ? 'AUTOBRAKE RTO' : `AUTOBRAKE ${mode.toUpperCase()}`)
+}
+/** One notch along the 737 selector (RTO · OFF · 1 · 2 · 3 · MAX). */
+function cycleAutobrake(dir: 1 | -1): void {
+  const i = AUTOBRAKE_SETTINGS.indexOf(captainSystems.autobrake.setting)
+  setAutobrake(AUTOBRAKE_SETTINGS[Math.max(0, Math.min(AUTOBRAKE_SETTINGS.length - 1, i + dir))]!)
+}
 const controllerRuntime = new ControllerRuntime()
 let keyboardReverse = false
 let hardwareReverseOwned = false
@@ -1124,6 +1140,7 @@ function handleDiscreteKeys(): void {
     }
   }
   if (input.wasPressed('KeyY')) apPress('ap')
+  if (input.wasPressed('KeyE')) cycleAutobrake(input.isHeld('ShiftLeft') || input.isHeld('ShiftRight') ? -1 : 1)
   if (input.wasPressed('KeyJ')) { if (shell) shell.windows.get('controls')?.toggle(); else controllerPanel.toggle() }
   if (input.wasPressed('KeyX')) {
     assistMode = assistMode === 'sas' ? 'full' : assistMode === 'full' ? 'off' : 'sas'
@@ -2886,8 +2903,17 @@ function advanceFrame(elapsed: number, now: number): void {
       captainSystems=stepCaptainSystems(captainSystems,{
         fuelAvailable:fuelState.fuelFlowing,electricalPower:systemsControls.masterBattery,
         onGround:aircraft.data.onGround,groundSpeedKt:aircraft.data.groundSpeedKt,
-        throttle:aircraft.controls.throttle,manualBrake:pilotBrake,...captainCommands,
+        throttle:aircraft.controls.throttle,manualBrake:pilotBrake,
+        spoilerPos:aircraft.spoilerPos,reverse:aircraft.reverseCmd,maxBrakeDecelMs2:aircraft.P.brakeMu*9.81*0.9,
+        ...captainCommands,...(autobrakeRequest?{autobrakeMode:autobrakeRequest}:{}),
       },dt)
+      autobrakeRequest=null
+      {const ab=captainSystems.autobrake
+        if(ab.phase!==lastAutobrakePhase){
+          if(ab.phase==='disarmed'&&ab.disarmLight)toast(`AUTO BRAKE DISARM — ${ab.reason}`)
+          else if(ab.phase==='active'&&lastAutobrakePhase==='armed')toast(ab.setting==='rto'?'AUTOBRAKE RTO — MAXIMUM BRAKING':`AUTOBRAKE ${ab.setting.toUpperCase()} — BRAKING`)
+          lastAutobrakePhase=ab.phase
+        }}
       if(aircraft.P.jet){aircraft.jetPowerFactor=captainSystems.enginePowerFraction;aircraft.engineRunning=captainSystems.enginePowerFraction>0}
       stepEngineStart(engineStartState, dt, {
         masterBattery: systemsControls.masterBattery,
@@ -3944,6 +3970,7 @@ function checklistState(): ChecklistState {
     isJet: !!P.jet, hasMixture: !P.jet && P.fuelCapacityKg >= 1, hasSpoilers: !!P.spoilers,
     spoilersArmed: aircraft.spoilerArmed, spoilersStowed: aircraft.spoilerCmd < 0.02,
     vrefKt: 1.3 * P.vSpeeds.vs0,
+    hasAutobrake: AT_FIT === 'full', autobrake: captainSystems.autobrake.setting,
   }
 }
 let lastParkingBrake = false
@@ -4016,6 +4043,9 @@ function apReadout(): ApReadout {
     },
     hasAutoland: autolandConfig() !== null,
     landText: apPanel.autoland ? (autoland.phase === 'OFF' || autoland.phase === 'ARMED' ? 'LAND ARM' : autoland.phase === 'DONE' ? 'DONE' : autoland.phase === 'FLARE' ? 'LAND' : autoland.phase) : '',
+    autobrake: AT_FIT === 'full'
+      ? { setting: captainSystems.autobrake.setting, phase: captainSystems.autobrake.phase, disarmLight: captainSystems.autobrake.disarmLight, reason: captainSystems.autobrake.reason, demand: captainSystems.autobrake.demand }
+      : undefined,
     hasAutothrottle: AT_FIT !== 'none',
     atText: autothrottle.mode,
     atAssist: AT_FIT === 'assist',
@@ -4083,7 +4113,7 @@ launcher = new Launcher({
 shell = new Shell({
   launcher,
   flightInfo: hud,
-  ap: { read: apReadout, press: apPress, turn: apTurn, ils: ilsChoices, tune: (f) => { radios.nav1.activeMhz = f; radios.nav1.standbyMhz = f; toast(`NAV1 ${f.toFixed(2)}`) } },
+  ap: { read: apReadout, press: apPress, turn: apTurn, autobrake: setAutobrake, ils: ilsChoices, tune: (f) => { radios.nav1.activeMhz = f; radios.nav1.standbyMhz = f; toast(`NAV1 ${f.toFixed(2)}`) } },
   directTo,
   clearPlan: () => { flightPlan.setWaypoints([]); toast('FLIGHT PLAN CLEARED') },
   instruments: { get visible() { return instruments.visible }, get on() { return instrumentsOn }, set: (v) => { instrumentsOn = v; try { localStorage.setItem('oh-instruments', v ? 'on' : 'off') } catch { /* storage unavailable */ } } },
@@ -4122,7 +4152,7 @@ shell = new Shell({
   keys: [
     ['↑ ↓ ← →', 'Pitch and roll'], ['A / D', 'Rudder'], ['W / S', 'Throttle'], ['F / G', 'Flaps down / up'],
     [', / .', 'Trim'], ['B', 'Brakes'], ['U', 'Gear'], ['V', 'Spoilers / speedbrake'], ['Z', 'Reverse thrust'],
-    ['C', 'Change camera'], ['Shift + B', 'Parking brake'], ['X', 'Stability assistance'], ['T (hold)', 'Talk to ATC'], ['`', 'ATC menu'],
+    ['C', 'Change camera'], ['Shift + B', 'Parking brake'], ['E / Shift + E', 'Autobrake up / down (airliners)'], ['X', 'Stability assistance'], ['T (hold)', 'Talk to ATC'], ['`', 'ATC menu'],
     ['/', 'Quick airport search'], ['M', 'Free flight (aircraft & departure)'], ['Space', 'Pause'], ['1 / 2 / 3', 'Sim rate'],
     ['[ / ]', 'Time of day'], ['R', 'Reset to runway'], ['O / P', 'Save / load flight'], ['L', 'Landing lights'],
     ['Q', 'Mute'], ['J', 'Controller setup'],

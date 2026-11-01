@@ -6,6 +6,7 @@
  * `sim/ap-panel.ts`; this is only the face.
  */
 import type { Knob } from '../../sim/ap-panel'
+import { AUTOBRAKE_SETTINGS, type AutobrakeSetting } from '../../sim/autobrake'
 
 export type ApAction = 'ap' | 'hdg' | 'nav' | 'apr' | 'alt' | 'vs' | 'flc' | 'at' | 'land'
 
@@ -17,6 +18,8 @@ export interface ApReadout {
   verticalArmed: string
   /** Buttons lit: the user-selected modes (lateral / vertical / A/T). */
   lit: Partial<Record<ApAction, boolean>>
+  /** Autobrake panel (airliner decks only; absent = not fitted). */
+  autobrake?: { setting: string; phase: string; disarmLight: boolean; reason: string; demand: number }
   hasAutothrottle: boolean
   atText: string
   /** True when this airplane has no real autothrottle and the A/T is a speed-hold assist. */
@@ -37,6 +40,8 @@ export interface ApWindowDeps {
   read(): ApReadout
   press(a: ApAction): void
   turn(k: Knob, steps: number): void
+  /** Move the autobrake selector. */
+  autobrake?(setting: AutobrakeSetting): void
   ils(): IlsChoice[]
   tune(freqMhz: number): void
 }
@@ -62,6 +67,13 @@ const CSS = `
 .oh-ap .oh-step button{width:34px;padding:5px 0 !important;font-weight:700 !important}
 .oh-ap .oh-msg{min-height:18px;margin-top:10px;color:#ffd98a;font-size:12px}
 .oh-ap select{width:100%;margin-top:6px}
+.oh-ap .oh-ab{margin-top:14px;padding-top:10px;border-top:1px solid var(--oh-line)}
+.oh-ap .oh-ab[hidden]{display:none}
+.oh-ap .oh-ab-row{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin-top:6px}
+.oh-ap .oh-ab-row button{padding:7px 0 !important;font-weight:700 !important;letter-spacing:.06em;font-size:12px}
+.oh-ap .oh-ab-row button.lit{background:var(--oh-accent) !important;border-color:var(--oh-accent) !important;color:#04121f !important}
+.oh-ap .oh-ab-status{margin-top:6px;font:600 11px ui-monospace,monospace;letter-spacing:.08em;color:var(--oh-dim);min-height:15px}
+.oh-ap .oh-ab-status.armed{color:#e9f4ff}.oh-ap .oh-ab-status.active{color:#7dff95}.oh-ap .oh-ab-status.warn{color:#ffb35c}
 `
 
 /** Build the window body; returns an updater to call each frame. */
@@ -118,7 +130,22 @@ export function buildApWindow(body: HTMLElement, d: ApWindowDeps): () => void {
   ils.setAttribute('aria-label', 'ILS approach')
   ils.onchange = () => { const f = Number(ils.value); if (Number.isFinite(f) && f > 0) d.tune(f) }
   const msg = document.createElement('div'); msg.className = 'oh-msg'; msg.setAttribute('role', 'status')
-  body.append(ann, btns, sel, hint, ilsLabel, ils, msg)
+  // Autobrake: the 737 selector (RTO · OFF · 1 · 2 · 3 · MAX) and what it is doing.
+  const ab = document.createElement('div'); ab.className = 'oh-ab'; ab.hidden = true
+  const abLabel = document.createElement('div'); abLabel.className = 'oh-label'; abLabel.textContent = 'Autobrake'
+  const abRow = document.createElement('div'); abRow.className = 'oh-ab-row'
+  const abButtons = new Map<AutobrakeSetting, HTMLButtonElement>()
+  for (const setting of AUTOBRAKE_SETTINGS) {
+    const b = document.createElement('button'); b.textContent = setting === 'off' ? 'OFF' : setting.toUpperCase()
+    b.title = setting === 'rto' ? 'Rejected takeoff: full braking if you reject above 85 kt (select before takeoff)'
+      : setting === 'off' ? 'Autobrake off'
+      : `Landing autobrake ${setting.toUpperCase()}: holds a steady deceleration after touchdown (select before landing)`
+    b.onclick = () => d.autobrake?.(setting)
+    abRow.appendChild(b); abButtons.set(setting, b)
+  }
+  const abStatus = document.createElement('div'); abStatus.className = 'oh-ab-status'; abStatus.setAttribute('role', 'status')
+  ab.append(abLabel, abRow, abStatus)
+  body.append(ann, btns, sel, hint, ilsLabel, ils, msg, ab)
 
   let lastIlsKey = ''
   let lastRefresh = 0
@@ -147,6 +174,18 @@ export function buildApWindow(body: HTMLElement, d: ApWindowDeps): () => void {
         if (b.textContent !== label) b.textContent = label
         b.title = 'Arms the localizer, glideslope and rollout: tune an ILS, press once, and the airplane lands itself.'
       }
+    }
+    // Autobrake section
+    ab.hidden = !r.autobrake
+    if (r.autobrake) {
+      for (const [setting, b] of abButtons) b.classList.toggle('lit', setting === r.autobrake.setting)
+      const a = r.autobrake
+      const text = a.phase === 'off' ? 'OFF'
+        : a.phase === 'armed' ? (a.setting === 'rto' ? 'RTO ARMED — brakes hard if you reject above 85 kt' : `ARMED — applies after touchdown with the thrust levers at idle`)
+        : a.phase === 'active' ? `BRAKING ${Math.round(a.demand * 100)}%`
+        : a.disarmLight ? `AUTO BRAKE DISARM — ${a.reason}` : 'RELEASED'
+      abStatus.textContent = text
+      abStatus.className = `oh-ab-status ${a.phase === 'active' ? 'active' : a.phase === 'armed' ? 'armed' : a.disarmLight ? 'warn' : ''}`
     }
     const set = (k: Knob, text: string): void => { const v = values.get(k); if (v && v.textContent !== text) v.textContent = text }
     set('heading', `${String(r.sel.heading).padStart(3, '0')}°`)

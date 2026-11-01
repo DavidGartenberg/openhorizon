@@ -77,3 +77,25 @@ describe('definitions', () => {
     for (const c of CHECKLISTS) for (const i of c.items) { expect(i.challenge.length).toBeGreaterThan(2); expect(i.response.length).toBeGreaterThan(1) }
   })
 })
+
+describe('autobrake checklist items', () => {
+  const find = (id: string, list: string, s: ChecklistState) =>
+    evaluateChecklist(CHECKLISTS.find((c) => c.id === list)!, s, new Set()).find((i) => i.id === id)
+  it('are hidden on airplanes without an autobrake', () => {
+    const s = { ...jet, hasAutobrake: false }
+    expect(find('bt-ab', 'before-takeoff', s)).toBeUndefined()
+    expect(find('ld-ab', 'before-landing', s)).toBeUndefined()
+    expect(find('al-ab', 'after-landing', s)).toBeUndefined()
+  })
+  it('check the real selector: RTO for takeoff, a landing setting for landing, OFF after', () => {
+    const on = (autobrake: string): ChecklistState => ({ ...jet, hasAutobrake: true, autobrake })
+    expect(find('bt-ab', 'before-takeoff', on('rto'))!.status).toBe('done')
+    expect(find('bt-ab', 'before-takeoff', on('3'))!.status).toBe('todo')
+    expect(find('ld-ab', 'before-landing', on('3'))!.status).toBe('done')
+    expect(find('ld-ab', 'before-landing', on('max'))!.status).toBe('done')
+    expect(find('ld-ab', 'before-landing', on('off'))!.status).toBe('todo')
+    expect(find('ld-ab', 'before-landing', on('rto'))!.status).toBe('todo')
+    expect(find('al-ab', 'after-landing', on('off'))!.status).toBe('done')
+    expect(find('al-ab', 'after-landing', on('2'))!.status).toBe('todo')
+  })
+})

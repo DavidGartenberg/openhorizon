@@ -44,6 +44,9 @@ export interface ChecklistState {
   spoilersStowed: boolean
   /** Reference landing speed, kt (1.3 × Vs0), for the approach-speed check. */
   vrefKt: number
+  /** This airplane has an autobrake and where its selector is (rto/off/1/2/3/max). */
+  hasAutobrake?: boolean
+  autobrake?: string
 }
 
 export interface ChecklistItem {
@@ -99,6 +102,7 @@ export const CHECKLISTS: Checklist[] = [
       { id: 'bt-trim', challenge: 'Trim', response: 'TAKEOFF RANGE', auto: (s) => Math.abs(s.trim) < 0.5 },
       { id: 'bt-pitot', challenge: 'Pitot heat', response: 'AS REQUIRED' },
       { id: 'bt-light', challenge: 'Landing light', response: 'ON', auto: (s) => s.landingLight },
+      { id: 'bt-ab', challenge: 'Autobrake', response: 'RTO', auto: (s) => s.autobrake === 'rto', applies: (s) => !!s.hasAutobrake },
       { id: 'bt-ap', challenge: 'Autopilot', response: 'OFF', auto: (s) => !s.apMaster },
       { id: 'bt-ctl', challenge: 'Flight controls', response: 'FREE AND CORRECT' },
       { id: 'bt-brief', challenge: 'Takeoff briefing', response: 'COMPLETE' },
@@ -111,6 +115,7 @@ export const CHECKLISTS: Checklist[] = [
       { id: 'ld-mix', challenge: 'Mixture', response: 'RICH', auto: (s) => s.mixtureRich, applies: (s) => s.hasMixture },
       { id: 'ld-gear', challenge: 'Landing gear', response: 'DOWN AND LOCKED', auto: (s) => s.gearDown, applies: (s) => s.gearRetractable },
       { id: 'ld-flaps', challenge: 'Flaps', response: 'LANDING', auto: (s) => s.flapsDeg >= s.landingFlapsDeg - 1 },
+      { id: 'ld-ab', challenge: 'Autobrake', response: 'SET', auto: (s) => s.autobrake !== undefined && s.autobrake !== 'off' && s.autobrake !== 'rto', applies: (s) => !!s.hasAutobrake },
       { id: 'ld-spoil', challenge: 'Speedbrake', response: 'ARMED', auto: (s) => s.spoilersArmed, applies: (s) => s.hasSpoilers },
       { id: 'ld-speed', challenge: 'Approach speed', response: 'VREF + 5', auto: (s) => s.kias > 0 && Math.abs(s.kias - (s.vrefKt + 5)) <= 12 },
       { id: 'ld-ap', challenge: 'Autopilot', response: 'AS REQUIRED' },
@@ -120,6 +125,7 @@ export const CHECKLISTS: Checklist[] = [
     id: 'after-landing', title: 'After landing',
     items: [
       { id: 'al-flaps', challenge: 'Flaps', response: 'UP', auto: (s) => s.flapsDeg < 1.5 },
+      { id: 'al-ab', challenge: 'Autobrake', response: 'OFF', auto: (s) => s.autobrake === 'off', applies: (s) => !!s.hasAutobrake },
       { id: 'al-spoil', challenge: 'Speedbrake', response: 'STOWED', auto: (s) => s.spoilersStowed, applies: (s) => s.hasSpoilers },
       { id: 'al-light', challenge: 'Landing light', response: 'OFF', auto: (s) => !s.landingLight },
       { id: 'al-pitot', challenge: 'Pitot heat', response: 'OFF', auto: (s) => !s.pitotHeat },

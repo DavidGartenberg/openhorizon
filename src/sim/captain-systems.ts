@@ -1,9 +1,13 @@
-/** Captain controls, independent of DOM/hardware. Engine starts and brake
- * demands are deliberately simplified, not aircraft-specific certified logic.
+/** Captain controls, independent of DOM/hardware. Engine starts are
+ * deliberately simplified, not aircraft-specific certified logic; the autobrake
+ * is the 737-style deceleration controller in sim/autobrake.ts.
  * The two masters control equal engine groups; physics retains shared N1 and
  * aggregate thrust, with no asymmetric engine-out yaw or separate fuel tanks. */
 export type IgnitionMode = 'crank' | 'norm' | 'start'
-export type AutobrakeMode = 'off' | 'low' | 'medium' | 'max' | 'rto'
+import { makeAutobrake, normalizeAutobrakeSetting, selectAutobrake, stepAutobrake, type AutobrakeSetting, type AutobrakeState } from './autobrake'
+
+/** Selector positions; 'low' and 'medium' are the older controller-preset names for 1 and 2. */
+export type AutobrakeMode = AutobrakeSetting | 'low' | 'medium'
 
 export interface CaptainSystemsState {
   engineMaster1: boolean
@@ -16,7 +20,10 @@ export interface CaptainSystemsState {
   enginePowerFraction: number
   /** Add to pedal yaw then clamp [-1,1], for physics AND rendered rudder. */
   rudderTrim: number
-  autobrakeMode: AutobrakeMode
+  /** Normalised selector position (never 'low'/'medium'). */
+  autobrakeMode: AutobrakeSetting
+  /** The controller itself (sim/autobrake.ts); the fields below mirror it. */
+  autobrake: AutobrakeState
   autobrakeDemand: number
   autobrakeActive: boolean
   autobrakeDisarmed: boolean
@@ -40,6 +47,11 @@ export interface CaptainSystemsInput {
   throttle: number
   /** Maximum of the pilot's left/right brake, before adding autobrake. */
   manualBrake: number
+  /** Speedbrake position 0…1, reverse selected, and the deceleration full brakes
+   *  give (m/s²) — what the autobrake needs to hold a deceleration. */
+  spoilerPos?: number
+  reverse?: boolean
+  maxBrakeDecelMs2?: number
 }
 
 export function createCaptainSystems(running = true): CaptainSystemsState {
@@ -47,7 +59,7 @@ export function createCaptainSystems(running = true): CaptainSystemsState {
     engineMaster1: running, engineMaster2: running, ignitionMode: 'norm',
     engine1Running: running, engine2Running: running, engine1StartS: 0, engine2StartS: 0,
     enginePowerFraction: running ? 1 : 0, rudderTrim: 0,
-    autobrakeMode: 'off', autobrakeDemand: 0, autobrakeActive: false,
+    autobrakeMode: 'off', autobrake: makeAutobrake(), autobrakeDemand: 0, autobrakeActive: false,
     autobrakeDisarmed: false, landingArmed: false, rtoArmed: false,
   }
 }
@@ -74,45 +86,21 @@ export function stepCaptainSystems(previous: CaptainSystemsState, input: Captain
   s.rudderTrim = input.trimReset ? 0 : Math.min(0.3, Math.max(-0.3,
     s.rudderTrim + (Number(!!input.trimRight) - Number(!!input.trimLeft)) * elapsed * 0.04))
 
-  s.autobrakeMode = input.autobrakeMode ?? s.autobrakeMode
-  if (s.autobrakeMode !== previous.autobrakeMode) {
-    s.autobrakeDisarmed = false
-    s.autobrakeActive = false
-    s.rtoArmed = false
-    s.landingArmed = false
-  }
-  s.autobrakeDemand = 0
-  const speed = Number.isFinite(input.groundSpeedKt) ? Math.max(0, input.groundSpeedKt) : 0
-  if (s.autobrakeMode === 'off') {
-    s.autobrakeActive = s.landingArmed = s.rtoArmed = false
-    return s
-  }
-  // Pilot intervention inhibits the latched selector until deliberately cycled.
-  if (input.manualBrake > 0.05 || (s.autobrakeActive && input.throttle > 0.15)) {
-    s.autobrakeDisarmed = true
-    s.autobrakeActive = s.landingArmed = s.rtoArmed = false
-  }
-  if (s.autobrakeDisarmed) return s
-  if (s.autobrakeMode === 'rto') {
-    if (!input.onGround) s.rtoArmed = s.autobrakeActive = false
-    else {
-      if (input.throttle >= 0.8 && speed >= 40) s.rtoArmed = true
-      if (s.rtoArmed && input.throttle <= 0.1 && speed >= 40) s.autobrakeActive = true
-    }
-  } else {
-    if (!input.onGround) {
-      s.landingArmed = true
-      s.autobrakeActive = false
-    } else if (s.landingArmed && speed >= 30 && input.throttle <= 0.1) {
-      s.autobrakeActive = true
-    }
-  }
-  if (input.onGround && speed < 5 && s.autobrakeActive) {
-    s.autobrakeActive = s.landingArmed = s.rtoArmed = false
-    s.autobrakeDisarmed = true
-  }
-  if (s.autobrakeActive && input.onGround && speed >= 5 && input.throttle <= 0.1) {
-    s.autobrakeDemand = s.autobrakeMode === 'low' ? 0.25 : s.autobrakeMode === 'medium' ? 0.5 : 1
-  }
+  let ab = previous.autobrake
+  const requested = input.autobrakeMode === undefined ? null : normalizeAutobrakeSetting(input.autobrakeMode)
+  if (requested && requested !== ab.setting) ab = selectAutobrake(ab, requested)
+  ab = stepAutobrake(ab, {
+    dt: elapsed, onGround: input.onGround,
+    groundSpeedMs: (Number.isFinite(input.groundSpeedKt) ? Math.max(0, input.groundSpeedKt) : 0) * 0.514444,
+    throttle: input.throttle, reverse: !!input.reverse, pilotBrake: input.manualBrake,
+    spoilerPos: input.spoilerPos ?? 0, maxBrakeDecelMs2: input.maxBrakeDecelMs2 ?? 4,
+  })
+  s.autobrake = ab
+  s.autobrakeMode = ab.setting
+  s.autobrakeDemand = ab.demand
+  s.autobrakeActive = ab.phase === 'active'
+  s.autobrakeDisarmed = ab.phase === 'disarmed'
+  s.landingArmed = ab.phase === 'armed' && ab.airborneSeen && ab.setting !== 'rto'
+  s.rtoArmed = ab.setting === 'rto' && ab.powerSeen && ab.phase !== 'disarmed'
   return s
 }
