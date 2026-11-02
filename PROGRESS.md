@@ -3183,3 +3183,7 @@ What changed, and what is real versus a recorded stand-in:
 
 - A database runway with no X-Plane runway of the same designators or within 1.5 km, at an airport X-Plane has mapped, is dropped (rows `[end, end, -1, -1]` in `/api/apt-runways.json`; an airport's last runway is never dropped). On the current data that is 10 runways: EPRZ 09ES/27ES, UNOO 15/33, LFPG 08H/26H, ZWWW 08L/26R and 08R/26L, ZSQD 16/34, HEAR 16R/34L, VIJP 15/33, ZGGG 03/21, FALM 10L/28R. The earlier count of 40 included airports left with one runway and runways within 1.5 km that the designator rule already handles.
 - Risk accepted: a real runway X-Plane lacks would vanish; the list is short enough to audit.
+
+### Gate at 396e232 (2026-11-02)
+
+- Fresh clone: `tsc` clean, 167 files / 2221 tests pass, `vite build` ok.
