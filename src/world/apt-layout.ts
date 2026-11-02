@@ -101,7 +101,7 @@ export function normalizeApt(raw: unknown): AptLayout | null {
 
 // ------------------------------------------------------------- surfaces --
 
-/** Pavement follows the ground in triangles no longer than this (m), and sits this far above it on top of the surface's own lift. */
+/** Pavement follows the ground in triangles no longer than this (m), and sits this far above it on top of the surface's own lift (the terrain mesh interpolates the levelling between its vertices, so it can stand a few centimetres above the sampled ground). */
 const PAVEMENT_MAX_EDGE_M = 30
 const DRAPE_BIAS_M = 0.05
 /** Painted lines follow the ground in segments no longer than this (m). */
@@ -113,15 +113,15 @@ const GROUND_GRID_M = 20
 export function surfaceStyle(surf: number): { color: number; lift: number; roughness: number } | null {
   switch (surf) {
     case 1: return { color: 0x8c9094, lift: 0.030, roughness: 0.95 }  // asphalt
-    case 2: return { color: 0xd0d1cc, lift: 0.034, roughness: 0.9 }   // concrete
-    case 3: return { color: 0x3c5233, lift: 0.010, roughness: 1 }     // turf
-    case 4: return { color: 0x6a5a46, lift: 0.014, roughness: 1 }     // dirt
-    case 5: return { color: 0x7a7367, lift: 0.018, roughness: 1 }     // gravel
-    case 12: return { color: 0x8a7e66, lift: 0.014, roughness: 1 }    // dry lakebed
+    case 2: return { color: 0xd0d1cc, lift: 0.045, roughness: 0.9 }   // concrete
+    case 3: return { color: 0x3c5233, lift: 0.004, roughness: 1 }     // turf
+    case 4: return { color: 0x6a5a46, lift: 0.012, roughness: 1 }     // dirt
+    case 5: return { color: 0x7a7367, lift: 0.020, roughness: 1 }     // gravel
+    case 12: return { color: 0x8a7e66, lift: 0.012, roughness: 1 }    // dry lakebed
     case 13: case 14: case 15: return null
     default:
       // X-Plane 12's weathered variants: 20–29 are asphalt, 30–38 concrete.
-      if (surf >= 30 && surf <= 38) return { color: 0xd0d1cc, lift: 0.036, roughness: 0.9 }
+      if (surf >= 30 && surf <= 38) return { color: 0xd0d1cc, lift: 0.047, roughness: 0.9 }
       return { color: 0x8c9094, lift: 0.031, roughness: 0.95 }
   }
 }
@@ -348,6 +348,9 @@ function pavementMaterial(surf: number): THREE.MeshStandardMaterial | null {
     const paved = surf === 1 || surf === 2 || (surf >= 20 && surf <= 38)
     m = paved ? proceduralPavement(s.color, 'xz', isConcreteSurface(surf) ? 'concrete' : 'asphalt') : new THREE.MeshStandardMaterial({ color: s.color, roughness: s.roughness, envMapIntensity: 0.25 })
     m.side = THREE.DoubleSide
+    // Overlapping polygons (concrete aprons on asphalt, paving on turf) resolve by rank, not by a few millimetres of height.
+    const rank = surf === 3 ? 0 : surf === 4 || surf === 12 ? 1 : surf === 5 ? 2 : isConcreteSurface(surf) ? 4 : 3
+    m.polygonOffset = true; m.polygonOffsetFactor = -rank; m.polygonOffsetUnits = -rank * 4
     m.userData.airportOwned = true
     pavementMaterials.set(surf, m)
   }
@@ -415,8 +418,8 @@ export function buildAptPaint(layout: AptLayout, toLocal: (lat: number, lon: num
   const out: THREE.Mesh[] = []
   const paint = new Map<PaintColor, Ribbons>()
   const borders = ribbon()
-  const yPaint: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.13 : elevM + 0.09
-  const yBorder: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.11 : elevM + 0.075
+  const yPaint: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.15 : elevM + 0.09
+  const yBorder: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.13 : elevM + 0.075
   const fine = (pts: XZ[]): XZ[] => (ground ? densify(pts, PAINT_MAX_SEG_M) : pts)
   for (const l of layout.lines) {
     const style = lineStyle(l.t)

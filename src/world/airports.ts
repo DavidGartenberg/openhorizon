@@ -10,7 +10,7 @@ import { lightGlowTexture } from '../render/light-glow'
 import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
 import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
 import { enhanceAirportWithXplane } from './apt-layout'
-import { airportFlatDisk, airportFieldElevationM, flattenEnds, applyRunwayExtras, type RunwayExtras } from './airport-flatten'
+import { airportFlatDisk, airportFieldElevationM, flattenEnds, applyRunwayExtras, applyAirportExtents, type RunwayExtras, type AirportExtents } from './airport-flatten'
 import { primaryRunway, planAirportFacilities, buildAirportFacilities, updateAirportServices, disposeAirportObject, mappedApronPlan, footprintObstacle, type SurfaceObstacle, type GroundPoint } from './airport-scenery'
 
 export interface RunwayData {
@@ -39,6 +39,8 @@ export interface AirportData {
   e: number
   t: number // 0 small, 1 medium, 2 large
   r: RunwayData[]
+  /** The box [minLat, minLon, maxLat, maxLon] of the airport's pavement in X-Plane's layout (airports over ~1.5 km across). */
+  x?: [number, number, number, number]
 }
 
 const ASPHALT = pavementMaterial(0x484b4d, 'xy', 'runway')
@@ -105,8 +107,9 @@ export class Airports {
     this.all = (await res.json()) as AirportData[]
     // X-Plane's blast pads / overruns (best effort: without an X-Plane install there are none).
     try {
-      const extras = await fetch('/api/apt-runways.json')
+      const [extras, extents] = await Promise.all([fetch('/api/apt-runways.json'), fetch('/api/apt-extent.json')])
       if (extras.ok) applyRunwayExtras(this.all, (await extras.json()) as RunwayExtras)
+      if (extents.ok) applyAirportExtents(this.all, (await extents.json()) as AirportExtents)
     } catch { /* keep the database as it is */ }
     for (const ap of this.all) {
       const key = `${Math.floor(ap.la * 2)},${Math.floor(ap.lo * 2)}`

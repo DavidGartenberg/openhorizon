@@ -10,6 +10,7 @@
 import type { AirportData } from './airports'
 
 const FT = 0.3048
+const M_PER_DEG_LAT = 111_319.5
 /** Inner flat radius = halfWidth + 40 m in flattenForRunway, so a disk of radius R uses halfWidth R − 40. */
 export const FLAT_INNER_MARGIN_M = 40
 
@@ -20,24 +21,32 @@ export function airportFieldElevationM(ap: Pick<AirportData, 'r' | 'e'>): number
   return (ends.reduce((a, b) => a + b, 0) / ends.length) * FT
 }
 
-/** Radius (m) of the level area around the airport reference, from its size. */
-export function airportFlatRadiusM(ap: Pick<AirportData, 'r' | 't'>): number {
+/** The level area never grows past this radius (m), however far an airport's pavement reaches. */
+export const MAX_FLAT_RADIUS_M = 4500
+const EXTENT_MARGIN_M = 150
+
+/** Radius (m) of the level area around the airport reference: from its runways, and from the reach of its pavement when X-Plane's layout is known. */
+export function airportFlatRadiusM(ap: Pick<AirportData, 'r' | 't'> & Partial<Pick<AirportData, 'la' | 'lo' | 'x'>>): number {
   const longest = Math.max(0, ...ap.r.map((r) => (Number.isFinite(r.l) ? r.l : 0))) * FT
   if (longest < 400) return 0                                   // a strip or heli pad: runway corridor only
   const commercial = ap.t >= 1 && longest >= 2100
-  return commercial ? Math.min(2600, Math.max(900, 0.4 * longest + 600)) : Math.min(700, Math.max(250, 0.2 * longest + 250))
+  const base = commercial ? Math.min(2600, Math.max(900, 0.4 * longest + 600)) : Math.min(700, Math.max(250, 0.2 * longest + 250))
+  if (!ap.x || !Number.isFinite(ap.la) || !Number.isFinite(ap.lo)) return base
+  // The farthest corner of the pavement's box from the airport reference.
+  const mLon = M_PER_DEG_LAT * Math.cos((ap.la! * Math.PI) / 180)
+  let far = 0
+  for (const la of [ap.x[0], ap.x[2]]) for (const lo of [ap.x[1], ap.x[3]]) far = Math.max(far, Math.hypot((lo - ap.lo!) * mLon, (la - ap.la!) * M_PER_DEG_LAT))
+  return Math.max(base, Math.min(MAX_FLAT_RADIUS_M, far + EXTENT_MARGIN_M))
 }
 
 export interface FlatDisk { lat: number; lon: number; elevM: number; halfWidthM: number }
 
 /** The airport's level disk as a zero-length "runway" (null when it needs none). */
-export function airportFlatDisk(ap: Pick<AirportData, 'r' | 't' | 'e' | 'la' | 'lo'>): FlatDisk | null {
+export function airportFlatDisk(ap: Pick<AirportData, 'r' | 't' | 'e' | 'la' | 'lo'> & Partial<Pick<AirportData, 'x'>>): FlatDisk | null {
   const radius = airportFlatRadiusM(ap)
   if (radius <= 0) return null
   return { lat: ap.la, lon: ap.lo, elevM: airportFieldElevationM(ap), halfWidthM: Math.max(1, radius - FLAT_INNER_MARGIN_M) }
 }
-
-const M_PER_DEG_LAT = 111_319.5
 
 export interface FlattenEnds { la1: number; lo1: number; la2: number; lo2: number; e1M?: number; e2M?: number }
 
@@ -94,5 +103,17 @@ export function applyRunwayExtras(airports: ReadonlyArray<Pick<AirportData, 'i' 
         break
       }
     }
+  }
+}
+
+/** X-Plane's pavement boxes by airport: [minLat, minLon, maxLat, maxLon], only for airports more than ~1.5 km across. */
+export type AirportExtents = Record<string, [number, number, number, number]>
+
+/** Put each airport's pavement box on it (in place); malformed boxes are ignored. */
+export function applyAirportExtents(airports: ReadonlyArray<Pick<AirportData, 'i'> & { x?: [number, number, number, number] }>, extents: AirportExtents): void {
+  if (!extents || typeof extents !== 'object') return
+  for (const ap of airports) {
+    const b = extents[ap.i]
+    if (Array.isArray(b) && b.length === 4 && b.every((v) => Number.isFinite(v)) && b[0] <= b[2] && b[1] <= b[3]) ap.x = [b[0], b[1], b[2], b[3]]
   }
 }

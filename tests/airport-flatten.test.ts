@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { airportFieldElevationM, airportFlatRadiusM, airportFlatDisk, FLAT_INNER_MARGIN_M, flattenEnds, applyRunwayExtras } from '../src/world/airport-flatten'
+import { airportFieldElevationM, airportFlatRadiusM, airportFlatDisk, FLAT_INNER_MARGIN_M, flattenEnds, applyRunwayExtras, applyAirportExtents, MAX_FLAT_RADIUS_M } from '../src/world/airport-flatten'
 import { flattenForRunway } from '../src/math/geo'
 
 const rwy = (l: number, e1: number, e2: number) => ({ li: '1', hi: '19', la1: 0, lo1: 0, la2: 0, lo2: 0, e1, e2, l, w: 150, s: 0, lt: 1 })
@@ -82,5 +82,34 @@ describe('the level ground reaches the end of a blast pad / overrun', () => {
     expect(() => applyRunwayExtras([ap], null as never)).not.toThrow()
     applyRunwayExtras([ap], { KSFO: [['10L', '28R', 1e9, NaN]] })
     expect(r0!.o1).toBe(600)
+  })
+})
+
+describe('the level area covers the whole airport X-Plane lays out', () => {
+  const mLat = 111_319.5
+  const box = (n: number, e: number, s: number, w: number) => [37.62 - s / mLat, -122.38 - w / (mLat * Math.cos((37.62 * Math.PI) / 180)), 37.62 + n / mLat, -122.38 + e / (mLat * Math.cos((37.62 * Math.PI) / 180))] as [number, number, number, number]
+  it('without a box the size rule stands; with one the disk reaches the farthest corner plus a margin', () => {
+    const base = airportFlatRadiusM(sfo)
+    expect(airportFlatRadiusM({ ...sfo, x: undefined })).toBe(base)
+    const wide = { ...sfo, x: box(1000, 3500, 1000, 1000) }                 // the pavement reaches 3.5 km east
+    const r = airportFlatRadiusM(wide)
+    expect(r).toBeGreaterThan(base); expect(r).toBeCloseTo(Math.hypot(3500, 1000) + 150, -1)
+  })
+  it('a box inside the size rule changes nothing, and the radius is capped', () => {
+    expect(airportFlatRadiusM({ ...sfo, x: box(200, 200, 200, 200) })).toBe(airportFlatRadiusM(sfo))
+    expect(airportFlatRadiusM({ ...sfo, x: box(20_000, 20_000, 20_000, 20_000) })).toBe(MAX_FLAT_RADIUS_M)
+  })
+  it('a strip too short for pavement stays on the runway corridor only', () => {
+    expect(airportFlatRadiusM({ t: 0, r: [rwy(300, 0, 0)], la: 37.62, lo: -122.38, x: box(2000, 2000, 2000, 2000) })).toBe(0)
+  })
+  it('the disk follows the radius', () => {
+    const d = airportFlatDisk({ ...sfo, x: box(1000, 3500, 1000, 1000) })!
+    expect(d.halfWidthM + FLAT_INNER_MARGIN_M).toBeCloseTo(airportFlatRadiusM({ ...sfo, x: box(1000, 3500, 1000, 1000) }), 6)
+  })
+  it('merges boxes onto airports, ignoring malformed ones', () => {
+    const a = [{ i: 'KSFO' } as { i: string; x?: [number, number, number, number] }, { i: 'KBAD' } as { i: string; x?: [number, number, number, number] }, { i: 'KNONE' } as { i: string; x?: [number, number, number, number] }]
+    applyAirportExtents(a, { KSFO: [37.6, -122.4, 37.64, -122.35], KBAD: [37.7, -122.4, 37.6, -122.35] })
+    expect(a[0]!.x).toEqual([37.6, -122.4, 37.64, -122.35]); expect(a[1]!.x).toBeUndefined(); expect(a[2]!.x).toBeUndefined()
+    expect(() => applyAirportExtents(a, null as never)).not.toThrow()
   })
 })

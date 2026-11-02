@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process'
 import { buildAirports, buildNavaids, buildCifpProcedures, buildUsAirspace, buildFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb , buildIls } from './parse.mjs'
 import { voiceRoute } from './voice.mjs'
 import { xpRoute } from './xp-static.mjs'
-import { aptAirport, aptRunwayExtras } from './apt.mjs'
+import { aptAirport, aptRunwayExtras, aptExtents } from './apt.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 /** Vendored offline fallbacks committed with the repo (Phase 12a). */
@@ -633,6 +633,12 @@ export async function route(url, res, method = 'GET', req) {
     if (bare === '/api/apt-runways.json') {
       // X-Plane's blast pads / overruns (server/apt.mjs); an empty object when there is no X-Plane install.
       const json = aptRunwayExtras(cacheDir) ?? '{}'
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' })
+      res.end(json)
+      return true
+    }
+    if (bare === '/api/apt-extent.json') {
+      const json = aptExtents(cacheDir) ?? '{}'
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' })
       res.end(json)
       return true

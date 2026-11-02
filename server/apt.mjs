@@ -117,6 +117,9 @@ export function aptAirport(icao, cacheDir) {
  */
 export function scanAptRunways(file) {
   const out = new Map()
+  /** Per airport: the reference (first runway end) and the box of its pavement / line nodes within 0.1° of it. */
+  const ext = new Map()
+  out.extents = ext
   const fd = fs.openSync(file, 'r')
   try {
     const size = fs.fstatSync(fd).size
@@ -133,12 +136,24 @@ export function scanAptRunways(file) {
         const c0 = buf[i], c1 = buf[i + 1], c2 = buf[i + 2]
         if (c0 === 0x31 && (c1 === 0x20 || ((c1 === 0x36 || c1 === 0x37) && c2 === 0x20))) {
           const m = /^(1|16|17)\s+-?\d+\s+\d+\s+\d+\s+(\S+)/.exec(buf.toString('latin1', i, nl))
-          if (m) { icao = m[2]; out.set(icao, []) }
+          if (m) { icao = m[2]; out.set(icao, []); ext.delete(icao) }
+        } else if (icao && c0 === 0x31 && c1 === 0x31 && c2 >= 0x31 && c2 <= 0x36 && buf[i + 3] === 0x20) {
+          // A pavement / line / boundary node (111…116): lat lon are the next two fields.
+          const e = ext.get(icao)
+          if (e) {
+            const f = buf.toString('latin1', i, Math.min(nl, i + 48)).split(/\s+/)
+            const la = Number(f[1]), lo = Number(f[2])
+            if (Math.abs(la - e.ref[0]) < 0.1 && Math.abs(lo - e.ref[1]) < 0.1 / Math.max(Math.cos((e.ref[0] * Math.PI) / 180), 0.2)) {
+              if (la < e.box[0]) e.box[0] = la; if (lo < e.box[1]) e.box[1] = lo
+              if (la > e.box[2]) e.box[2] = la; if (lo > e.box[3]) e.box[3] = lo
+            }
+          }
         } else if (icao && c0 === 0x31 && c1 === 0x30 && c2 === 0x30 && buf[i + 3] === 0x20) {
           const f = buf.toString('latin1', i, nl).trim().split(/\s+/)
           if (f.length >= 26) {
             const a = Math.round(Number(f[12])), b = Math.round(Number(f[21]))
             out.get(icao).push([f[8], f[17], Number.isFinite(a) ? Math.max(0, a) : 0, Number.isFinite(b) ? Math.max(0, b) : 0])
+            if (!ext.has(icao)) { const la = Number(f[9]), lo = Number(f[10]); if (Number.isFinite(la) && Number.isFinite(lo)) ext.set(icao, { ref: [la, lo], box: [la, lo, la, lo] }) }
           }
         }
         i = nl + 1
@@ -150,31 +165,57 @@ export function scanAptRunways(file) {
 }
 
 let extrasJson = null
+let extentsJson = null
+
+function loadRunwayTables(cacheDir, files) {
+  const key = stamp(files)
+  const cacheFile = cacheDir ? path.join(cacheDir, 'apt-runways.json') : null
+  if (cacheFile && fs.existsSync(cacheFile)) {
+    try {
+      const j = JSON.parse(fs.readFileSync(cacheFile, 'utf8'))
+      if (j.key === key && j.extents) { extrasJson = JSON.stringify(j.extras); extentsJson = JSON.stringify(j.extents); return }
+    } catch { /* rescan */ }
+  }
+  const merged = new Map(), boxes = new Map()
+  for (const file of files) {
+    const scanned = scanAptRunways(file)
+    for (const [icao, rows] of scanned) { merged.set(icao, rows); boxes.delete(icao); const e = scanned.extents.get(icao); if (e) boxes.set(icao, e.box) }
+  }
+  const extras = {}
+  for (const [icao, rows] of merged) {
+    const withOverrun = rows.filter((r) => r[2] > 0 || r[3] > 0)
+    if (withOverrun.length) extras[icao] = withOverrun
+  }
+  // Only airports bigger than ~1.5 km across need an extent: the client's own size rule covers the rest.
+  const extents = {}
+  for (const [icao, b] of boxes) {
+    const dLat = (b[2] - b[0]) * 111_319.5, dLon = (b[3] - b[1]) * 111_319.5 * Math.cos((((b[0] + b[2]) / 2) * Math.PI) / 180)
+    if (Math.hypot(dLat, dLon) > 1500) extents[icao] = b.map((v) => Math.round(v * 1e5) / 1e5)
+  }
+  if (cacheFile) { try { fs.writeFileSync(cacheFile, JSON.stringify({ key, extras, extents })) } catch { /* cache is optional */ } }
+  extrasJson = JSON.stringify(extras); extentsJson = JSON.stringify(extents)
+}
 
 /**
  * GET /api/apt-runways.json — X-Plane's blast pads / overruns for the whole world, only airports that have one:
- * { "KSFO": [["10L","28R",250,100], …] }. Scanned once (about a second) and cached on disk against the
+ * { "KSFO": [["10L","28R",250,100], …] }. Scanned once (a few seconds) and cached on disk against the
  * apt.dat files' size and mtime; Custom Scenery packs replace an airport's runways as in X-Plane.
  * @returns the JSON text, or null when X-Plane is not installed
  */
 export function aptRunwayExtras(cacheDir, files = aptFiles()) {
   if (extrasJson) return extrasJson
   if (!files.length) return null
-  const key = stamp(files)
-  const cacheFile = cacheDir ? path.join(cacheDir, 'apt-runways.json') : null
-  if (cacheFile && fs.existsSync(cacheFile)) {
-    try {
-      const j = JSON.parse(fs.readFileSync(cacheFile, 'utf8'))
-      if (j.key === key) return (extrasJson = JSON.stringify(j.extras))
-    } catch { /* rescan */ }
-  }
-  const merged = new Map()
-  for (const file of files) for (const [icao, rows] of scanAptRunways(file)) merged.set(icao, rows)
-  const extras = {}
-  for (const [icao, rows] of merged) {
-    const withOverrun = rows.filter((r) => r[2] > 0 || r[3] > 0)
-    if (withOverrun.length) extras[icao] = withOverrun
-  }
-  if (cacheFile) { try { fs.writeFileSync(cacheFile, JSON.stringify({ key, extras })) } catch { /* cache is optional */ } }
-  return (extrasJson = JSON.stringify(extras))
+  loadRunwayTables(cacheDir, files)
+  return extrasJson
+}
+
+/**
+ * GET /api/apt-extent.json — the box [minLat, minLon, maxLat, maxLon] that holds an airport's pavement, for
+ * airports more than about 1.5 km across: { "KSFO": [37.59, -122.41, 37.64, -122.35], … }. Same scan and cache.
+ */
+export function aptExtents(cacheDir, files = aptFiles()) {
+  if (extentsJson) return extentsJson
+  if (!files.length) return null
+  loadRunwayTables(cacheDir, files)
+  return extentsJson
 }

@@ -4006,6 +4006,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
   },
   /** Physics ground height (m) at a latitude/longitude, i.e. terrain + runway flattening (verification). */
   __ohGround: (lat: number, lon: number) => { const la = finiteOr(lat), lo = finiteOr(lon); if (la === null || lo === null) return null; const l = frame.toLocal(la, lo); return Math.round((aircraft.groundElevAt?.(l.n, l.e) ?? 0) * 100) / 100 },
+  /** Rendered terrain tile height (m) at a latitude/longitude, 0 when its tile is not loaded (verification; compare with __ohGround). */
+  __ohTerrain: (lat: number, lon: number) => { const la = finiteOr(lat), lo = finiteOr(lon); return la === null || lo === null ? null : Math.round(tiles.elevationAt(la, lo) * 100) / 100 },
   /** The player's position in render space (verification): lets a test aim the free camera at something else. */
   __ohPlayerPos: () => mesh.group.position.toArray().map((v) => Math.round(v * 10) / 10),
   __ohFreeCam: (o: { e?: number; u?: number; s?: number; yaw?: number; pitch?: number }) => {
