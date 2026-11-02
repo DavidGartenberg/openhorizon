@@ -204,6 +204,30 @@ export class Airports {
     return out
   }
 
+  /**
+   * The airfield nearest a position within `radiusM`: the one whose runway (an end or the middle) is closest, never a
+   * heliport. `near()[0]` is only the first in cell order, which was good enough while the database held only the
+   * larger fields.
+   */
+  nearestField(lat: number, lon: number, radiusM: number): AirportData | undefined {
+    let best: AirportData | undefined
+    let bestD = Infinity
+    for (const ap of this.near(lat, lon, radiusM + 3000)) {
+      let d = Infinity
+      for (const r of ap.r) {
+        if (r.pad) continue
+        for (const [la, lo] of [[r.la1, r.lo1], [r.la2, r.lo2], [(r.la1 + r.la2) / 2, (r.lo1 + r.lo2) / 2]] as const) d = Math.min(d, distanceM({ lat, lon }, { lat: la, lon: lo }))
+      }
+      if (d <= radiusM && d < bestD) { best = ap; bestD = d }
+    }
+    return best
+  }
+
+  /** The runways (never helipads) of the airfields within `radiusM` of a position. */
+  runwaysNear(lat: number, lon: number, radiusM: number): RunwayData[] {
+    return this.near(lat, lon, radiusM).flatMap((ap) => ap.r.filter((r) => !r.pad))
+  }
+
   /** Ranked matches for a departure search box (see searchAirports). */
   search(query: string, limit = 8): AirportData[] {
     return searchAirportsPure(this.all, query, limit)

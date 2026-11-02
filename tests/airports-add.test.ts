@@ -90,4 +90,15 @@ describe('adding X-Plane-only airports to the database', () => {
     expect(a.flattenElevation(0, 22.4, 113.905)).toBe(0)                                              // sea far from it stays sea
     expect(a.belowSeaFields(52.3, 4.76, 20_000)).toEqual([{ lat: 52.3, lon: 4.76, radiusM: 12_000 + 11 * 0.3048 * 400 }]); expect(a.belowSeaFields(22.3, 113.9, 20_000)).toEqual([])
   })
+  it('finds the field whose runway is nearest, never a helipad, and lists runways without pads', () => {
+    const a = make()
+    // A long runway centred 3 km north of the query point, a small strip 1.5 km east, and a heliport 200 m south.
+    const big = ap('BIGF', 40.027, -100); big.r[0]!.lo1 = -100.02; big.r[0]!.lo2 = -99.98
+    const strip = ap('STRP', 40, -99.9825); strip.r[0]!.lo1 = -99.9835; strip.r[0]!.lo2 = -99.9815; strip.r[0]!.la1 = 40; strip.r[0]!.la2 = 40
+    const heli = ap('HELI', 39.9982, -100); heli.r = [{ ...heli.r[0]!, li: 'H1', hi: 'H1', la1: 39.9982, la2: 39.9982, lo1: -100.0001, lo2: -99.9999, l: 40, w: 40, pad: true }]
+    a.addAirports([heli, big, strip])
+    expect(a.nearestField(40, -100, 5000)?.i).toBe('STRP')                                      // 1.5 km beats 3 km; the nearer heliport is not a field
+    expect(a.nearestField(40, -100, 1000)).toBeUndefined()
+    expect(a.runwaysNear(40, -100, 5000).map((r) => r.li).sort()).toEqual(['9', '9'])           // the two airfields' runways, not H1
+  })
 })

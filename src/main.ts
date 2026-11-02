@@ -911,7 +911,7 @@ function saveSnapshot(): void {
     simMs: baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000,
     // 9A: a ground save restores to where you ARE — spawnDesc is the
     // last spawn point, wrong after landing somewhere else.
-    onGround: d.onGround, spawn: d.onGround ? (airports.near(ll.lat, ll.lon, 5000)[0]?.i ?? spawnDesc) : spawnDesc,
+    onGround: d.onGround, spawn: d.onGround ? (airports.nearestField(ll.lat, ll.lon, 5000)?.i ?? spawnDesc) : spawnDesc,
   }
   try {
     localStorage.setItem('oh-save', JSON.stringify(snap))
@@ -1667,7 +1667,7 @@ try {
 }
 
 function nearestRunwayRef(lat: number, lon: number, touchdownHdgDeg: number): { ref: RunwayRef; icao: string } | null {
-  const ap = airports.near(lat, lon, 6000)[0]
+  const ap = airports.nearestField(lat, lon, 6000)
   if (!ap || ap.r.length === 0) return null
   let best: RunwayRef | null = null
   let bestD = Infinity
@@ -1705,7 +1705,7 @@ function updateRecorder(ll: { lat: number; lon: number }): void {
     flightStartSimS = loop.simTime
     // The field actually departed — NOT the ATC facility (which is the
     // nearest TOWERED airport and logged 'KSFO' for a KHAF departure).
-    flightFrom = airports.near(ll.lat, ll.lon, 5000)[0]?.i ?? spawnDesc.split(' ')[0] ?? '?'
+    flightFrom = airports.nearestField(ll.lat, ll.lon, 5000)?.i ?? spawnDesc.split(' ')[0] ?? '?'
     debriefLine = ''
   }
   if (!lastOnGround && d.onGround && flightStartSimS !== null && !aircraft.crashed) {
@@ -1898,7 +1898,7 @@ function updateSafety(now: number): void {
       const elevM = aircraft.groundElevAt?.(pos.x + Math.cos(trackRad) * gsMs * la, pos.y + Math.sin(trackRad) * gsMs * la) ?? 0
       return elevM / 0.3048
     },
-    nearRunwayFinal: inRunwayApproach(ll0, d.trackDeg, d.altitudeFt, airports.near(ll0.lat, ll0.lon, 6 * 1852).flatMap(ap => ap.r)),
+    nearRunwayFinal: inRunwayApproach(ll0, d.trackDeg, d.altitudeFt, airports.runwaysNear(ll0.lat, ll0.lon, 6 * 1852)),
     // 15a Mode-5 gate: only a receivable ILS we're actually established on
     // — a stale tuned ILS from another field fired spurious GLIDESLOPE.
     gsDeviation:
