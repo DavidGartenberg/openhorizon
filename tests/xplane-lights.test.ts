@@ -114,3 +114,30 @@ describe('lamp datarefs from the airplane', () => {
     expect(read({})('laminar/no_ref')).toBe(0)
   })
 })
+
+describe('resting switches and the lights circuit', () => {
+  const read = (o = {}) => makeXpDatarefReader({ ...defaultXpInputs(), ...o })
+  it('the four landing light switches follow the real landing light', () => {
+    for (const i of [0, 1, 2, 3]) {
+      expect(read({ landingLights: true })(`sim/cockpit2/switches/landing_lights_switch[${i}]`)).toBe(1)
+      expect(read({ landingLights: false })(`sim/cockpit2/switches/landing_lights_switch[${i}]`)).toBe(0)
+    }
+  })
+  it('the overhead rests in normal flight (powered, pumps and packs on), as a recorded stand-in', () => {
+    const r = read()
+    for (const k of ['sim/cockpit2/electrical/battery_on[0]', 'laminar/B738/electrical/gen1_pos', 'sim/cockpit2/fuel/fuel_tank_pump_on[0]', 'sim/cockpit2/switches/yaw_damper_on', 'laminar/B738/pressurization/l_pack_pos']) expect(r(k), k).toBe(1)
+    expect(r('sim/cockpit2/fuel/fuel_tank_pump_on[1]')).toBe(0)           // centre tank is empty
+    expect(r('laminar/B738/electrical/apu_genL_pos')).toBe(0)             // APU off
+    expect(r('laminar/B738/electrical/gpu_pos')).toBe(0)
+  })
+  it('the rheostats follow the light outside; every resting value is a finite number', async () => {
+    expect(read({ panelLight: 0.7 })('laminar/B738/rheos/panel_lighting1')).toBeCloseTo(0.7)
+    expect(read({ panelLight: 0 })('laminar/B738/rheos/generic_lighting7')).toBe(0)
+    const { XP_B738_RESTING } = await import('../src/render/xplane-datarefs')
+    for (const [k, v] of Object.entries(XP_B738_RESTING)) expect(Number.isFinite(v), k).toBe(true)
+  })
+  it('live state wins over a resting value', () => {
+    expect(read({ parkingBrake: true })('laminar/B738/park_brake_valve_anim')).toBe(1)
+    expect(makeXpDatarefReader({ ...defaultXpInputs() }, { 'sim/cockpit2/electrical/battery_on[0]': 0 })('sim/cockpit2/electrical/battery_on[0]')).toBe(0)
+  })
+})

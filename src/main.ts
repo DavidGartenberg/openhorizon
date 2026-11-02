@@ -387,6 +387,7 @@ function xpDatarefs(): (ref: string) => number {
     apDisconnect: auralLatches.wailerUntilS > performance.now() / 1000 && Math.floor(performance.now() / 250) % 2 === 0,
     atDisconnect: autothrottle.disconnectLight && Math.floor(performance.now() / 250) % 2 === 0,
     panelLight: xpNightLevel(),
+    landingLights: aircraftLights.landingOn,
   }, xpOverrides)
 }
 /** Mouse operation of the X-Plane deck: every manipulator in the airplane's own panel mesh is a hit box. */

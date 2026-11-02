@@ -44,7 +44,26 @@ export const XP_COCKPIT_B738: XpCockpitModel = {
   eyeObj: [-0.536, 0.71, 2.59],
 }
 
+/** Share of its own colour a surface glows with in full daylight. */
+const CABIN_DAYLIGHT_FILL = 0.3
 const FT = 0.3048
+
+/**
+ * Daylight reaching the cabin from the windows: the sun-lit surfaces get the real shadow-casting sun, but a flight
+ * deck's shaded parts (the overhead, the pedestal's sides) are still lit by light bouncing in through the glass.
+ * Three has no per-room lighting, so the opaque cockpit materials add a share of their own albedo, scaled by one
+ * shared uniform (0 at night, when the panel lights take over).
+ */
+function addCabinFill(m: THREE.MeshStandardMaterial, fill: { value: number }): void {
+  const prevCompile = m.onBeforeCompile
+  const prevKey = m.customProgramCacheKey
+  m.onBeforeCompile = (shader, renderer) => {
+    prevCompile.call(m, shader, renderer)
+    shader.uniforms.uCabinFill = fill
+    shader.fragmentShader = 'uniform float uCabinFill;\n' + shader.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n  totalEmissiveRadiance += diffuseColor.rgb * uCabinFill;')
+  }
+  m.customProgramCacheKey = () => `${prevKey.call(m)}|cabin-fill`
+}
 
 export interface XpCockpit {
   group: THREE.Group
@@ -57,7 +76,7 @@ export interface XpCockpit {
   pose(read: DatarefReader): void
   /** The captain's eye as the cockpit camera wants it: forward / lateral / up from the airplane origin, metres. */
   eyePoint(): { x: number; y: number; up: number }
-  /** 0 = day, 1 = full night: how strongly the LIT maps glow. */
+  /** 0 = day, 1 = full night: how strongly the LIT maps glow (and, inversely, how much daylight fills the cabin). */
   setLit(level: number): void
   dispose(): void
   evidence: { objects: number; triangles: number; datarefs: string[]; warnings: string[] }
@@ -138,6 +157,12 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
   const animated = parts.flatMap((p) => p.animated)
   const hits = parts.flatMap((p) => p.hits)
   const lamps: LightLevelGroup[] = parts.flatMap((p) => p.lights)
+  const cabinFill = { value: 0 }
+  for (const p of parts) {
+    if (/glass|fuzz|panel/i.test(p.group.name)) continue
+    addCabinFill(p.material, cabinFill)
+    for (const l of p.lights) addCabinFill(l.material, cabinFill)
+  }
   const datarefs = [...new Set(parts.filter((p) => p.group.name !== 'panel').flatMap((p) => p.parsed.anims.flatMap((n) => n.specs.map((s) => s.dataref))))]
   const eye = eyeFromObj(model)
   return {
@@ -152,6 +177,7 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
     setLit(level) {
       const v = THREE.MathUtils.clamp(level, 0, 1)
       for (const p of parts) p.material.emissiveIntensity = v
+      cabinFill.value = CABIN_DAYLIGHT_FILL * (1 - v)
     },
   }
 }

@@ -46,6 +46,8 @@ export interface XpCockpitInputs {
   atDisconnect: boolean
   /** Panel backlighting, 0 (off, daylight) … 1 (full): how bright the lit panel textures glow. */
   panelLight: number
+  /** The landing light switches (all four go together). */
+  landingLights: boolean
 }
 
 /** The mode control panel as the autopilot has it right now. */
@@ -87,7 +89,7 @@ export function defaultXpInputs(): XpCockpitInputs {
     pitch: 0, roll: 0, yaw: 0, brakeLeft: 0, brakeRight: 0, parkingBrake: false, trim: 0, rudderTrim: 0,
     throttle: [0, 0], reverse: [0, 0], flapsHandleDeg: 0, flapsDeg: 0, gearHandleDown: true,
     speedbrake: 0, speedbrakeArmed: false, onGround: true, engineRunning: [true, true], autobrake: 'off', mcp: defaultXpMcp(),
-    gearLocked: [true, true, true], masterCaution: false, apDisconnect: false, atDisconnect: false, panelLight: 0,
+    gearLocked: [true, true, true], masterCaution: false, apDisconnect: false, atDisconnect: false, panelLight: 0, landingLights: false,
   }
 }
 
@@ -174,9 +176,56 @@ export function makeXpDatarefReader(s: XpCockpitInputs, overrides: Record<string
       case 'sim/cockpit2/electrical/panel_brightness_ratio[3]': return clamp(s.panelLight, 0, 1)
       case 'laminar/B738/brightness_level2': return 1                                           // instrument lights BRT, bus powered
       case 'laminar/B738/audio/indicators/audio_selection_com1': return 1                      // COM 1 is the selected receiver
+      case 'sim/cockpit2/switches/landing_lights_switch[0]':
+      case 'sim/cockpit2/switches/landing_lights_switch[1]':
+      case 'sim/cockpit2/switches/landing_lights_switch[2]':
+      case 'sim/cockpit2/switches/landing_lights_switch[3]': return bit(s.landingLights)
+      // The instrument and flood-light dials sit at the level the pilots would set for the light outside.
+      case 'laminar/B738/rheos/panel_lighting1': case 'laminar/B738/rheos/panel_lighting2':
+      case 'laminar/B738/rheos/panel_lighting3': case 'laminar/B738/rheos/panel_lighting4':
+      case 'laminar/B738/rheos/generic_lighting6': case 'laminar/B738/rheos/generic_lighting7':
+      case 'laminar/B738/rheos/generic_lighting8': case 'laminar/B738/rheos/generic_lighting12': return clamp(s.panelLight, 0, 1)
     }
+    if (Object.prototype.hasOwnProperty.call(XP_B738_RESTING, ref)) return XP_B738_RESTING[ref]!
     return mcpRef(s.mcp, ref)
   }
+}
+
+/**
+ * Switches and dials the simulator has no system behind (electrics, hydraulics, bleed air, pressurisation,
+ * anti-ice, lighting circuits …) rest where a crew has them in normal flight, so the overhead reads as a
+ * powered airplane rather than a cold one. NOT live state: none of these moves the airplane's behaviour, and
+ * a click on one answers "not simulated". Recorded in PROGRESS.md.
+ */
+export const XP_B738_RESTING: Readonly<Record<string, number>> = {
+  // electrics: batteries on, both engine generators on, APU generators off
+  'sim/cockpit2/electrical/battery_on[0]': 1, 'sim/cockpit2/electrical/battery_on[1]': 1,
+  'laminar/B738/electrical/gen1_pos': 1, 'laminar/B738/electrical/gen2_pos': 1,
+  'laminar/B738/electrical/cab_util_pos': 1, 'laminar/B738/electrical/ife_switch_pos': 1,
+  // engines: EEC on, fuel pumps on (the centre tank holds none)
+  'sim/cockpit2/engine/actuators/fadec_on[0]': 1, 'sim/cockpit2/engine/actuators/fadec_on[1]': 1,
+  'sim/cockpit2/fuel/fuel_tank_pump_on[0]': 1, 'sim/cockpit2/fuel/fuel_tank_pump_on[2]': 1,
+  // hydraulics: all four pumps on
+  'sim/cockpit2/hydraulics/actuators/electric_hydraulic_pump_on': 1, 'sim/cockpit2/hydraulics/actuators/electric_hydraulic_pump2_on': 1,
+  'sim/cockpit2/hydraulics/actuators/engine_pumpA[0]': 1, 'sim/cockpit2/hydraulics/actuators/engine_pumpB[1]': 1,
+  // air: engine bleeds open, both packs and recirculation fans on automatic
+  'sim/cockpit2/bleedair/actuators/engine_bleed_sov[0]': 1, 'sim/cockpit2/bleedair/actuators/engine_bleed_sov[1]': 1,
+  'laminar/B738/pressurization/l_pack_pos': 1, 'laminar/B738/pressurization/r_pack_pos': 1,
+  'laminar/B738/pressurization/l_recirc_pos': 1, 'laminar/B738/pressurization/r_recirc_pos': 1,
+  // probes, windows and yaw damper
+  'sim/cockpit2/ice/ice_window_heat_on_window[0]': 1, 'sim/cockpit2/ice/ice_window_heat_on_window[1]': 1,
+  'sim/cockpit2/ice/ice_window_heat_on_window[2]': 1, 'sim/cockpit2/ice/ice_window_heat_on_window[3]': 1,
+  'laminar/B738/toggle_switch/capt_probes_pos': 1, 'laminar/B738/toggle_switch/fo_probes_pos': 1,
+  'sim/cockpit2/switches/yaw_damper_on': 1,
+  // exterior lights circuit: beacon and navigation lights on
+  'sim/cockpit2/switches/beacon_on': 1, 'laminar/B738/toggle_switch/position_light_pos': 1,
+  // the cabin: belts on automatic, emergency exit lights armed, cabin temperature dials at AUTO
+  'laminar/B738/toggle_switch/seatbelt_sign_pos': 1, 'laminar/B738/toggle_switch/emer_exit_lights': 1,
+  'laminar/B738/air/fwd_cab_temp/rheostat': 0.5, 'laminar/B738/air/aft_cab_temp/rheostat': 0.5, 'laminar/B738/air/cont_cab_temp/rheostat': 0.5,
+  // display brightness dials
+  'sim/cockpit2/switches/instrument_brightness_ratio[0]': 0.85, 'sim/cockpit2/switches/instrument_brightness_ratio[1]': 0.85,
+  'sim/cockpit2/switches/instrument_brightness_ratio[2]': 0.85, 'sim/cockpit2/switches/instrument_brightness_ratio[3]': 0.85,
+  'sim/cockpit2/switches/instrument_brightness_ratio[4]': 0.85, 'sim/cockpit2/switches/instrument_brightness_ratio[5]': 0.85,
 }
 
 const bit = (v: boolean): number => (v ? 1 : 0)
