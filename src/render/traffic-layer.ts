@@ -15,6 +15,7 @@ import { archetypeFor } from '../world/fleet-map'
 import { typeInfo, aircraftTypesLoaded } from '../world/aircraft-types'
 import { buildArchetype } from './fleet-mesh'
 import { beaconOn, strobeOn } from '../sim/lights'
+import { sharedTrafficModels, chooseTrafficModel, trafficConfiguration, type TrafficModelInstance } from './traffic-model'
 import { lightGlowTexture } from './light-glow'
 
 const FT = 0.3048
@@ -47,6 +48,11 @@ interface PoolEntry {
   prevTrkDeg: number
   trkRateDps: number
   phase: number // per-target light phase so strobes don't sync
+  /** The cheap archetype silhouette (always built; hidden while the X-Plane model is shown). */
+  body: THREE.Mesh
+  /** The X-Plane exterior standing in for it, when this target is near enough to be worth it. */
+  xp: TrafficModelInstance | null
+  xpKey: string
 }
 
 interface ProtoEntry {
@@ -55,7 +61,15 @@ interface ProtoEntry {
   anchors: { wingtipL: THREE.Vector3; wingtipR: THREE.Vector3; tail: THREE.Vector3 }
 }
 
+/** Targets this close (m) are drawn with the X-Plane exterior (up to the budget); a drawn one keeps it out to XP_KEEP_M. */
+const XP_NEAR_M = 6500
+const XP_KEEP_M = 8000
+/** At most this many X-Plane exteriors at once, and at most this many of the very large A330. */
+const XP_MAX = 8
+const XP_MAX_HEAVY = 2
+
 export class TrafficLayer {
+  private readonly models = sharedTrafficModels
   private readonly pool = new Map<string, PoolEntry>()
   private readonly protos = new Map<string, ProtoEntry>()
   private readonly canvas: HTMLCanvasElement
@@ -119,7 +133,7 @@ export class TrafficLayer {
     group.add(lights)
     this.scene.add(group)
     const entry: PoolEntry = {
-      group, lights: colors, typeKey: t.t || '?',
+      group, body, xp: null, xpKey: '', lights: colors, typeKey: t.t || '?',
       prevTrkDeg: t.trkDeg, trkRateDps: 0,
       phase: (parseInt(t.id, 16) % 997) / 997 * 3,
     }
@@ -139,7 +153,9 @@ export class TrafficLayer {
     if (!aircraftTypesLoaded()) return
     const seen = new Set<string>()
     const labels: Array<{ x: number; y: number; z: number; text: string }> = []
-    for (const t of targets) {
+    const list = [...targets]
+    const nearIds = this.pickXpTargets(list, toLocal, camera.position)
+    for (const t of list) {
       // Ops vehicles: on the ground with a type the registry doesn't
       // know — skip rather than draw a fake airplane (recorded).
       // N6: unknown-type GROUND targets used to be skipped entirely —
@@ -155,7 +171,9 @@ export class TrafficLayer {
       let e = this.pool.get(t.id)
       if (!e) e = this.spawn(t, unknownGnd)
       const terrainY = elevAtM(t.lat, t.lon)
-      const y = t.gnd ? terrainY + 0.8 : Math.max(t.altFt * FT, terrainY + 2)
+      this.syncXp(e, t, unknownGnd, nearIds.has(t.id), nearIds.get(t.id) ?? false)
+      const y = t.gnd ? terrainY + (e.xp ? e.xp.groundOffsetM : 0.8) : Math.max(t.altFt * FT, terrainY + 2)
+      if (e.xp) e.xp.pose(trafficConfiguration({ gnd: t.gnd, gsKt: t.gsKt, aglFt: (y - terrainY) / FT, vsFpm: t.vsFpm }))
       e.group.position.set(local.e, y, -local.n)
       // Track rate (smoothed) → cosmetic roll; heading from track.
       if (dtS > 0) {
@@ -203,6 +221,41 @@ export class TrafficLayer {
       }
     }
     this.drawLabels(labels, camera)
+  }
+
+  /** The nearest targets (within budget) that should be drawn with an X-Plane model; value = may use the very large A330. */
+  private pickXpTargets(list: readonly LiveTarget[], toLocal: (lat: number, lon: number) => { n: number; e: number }, eye: THREE.Vector3): Map<string, boolean> {
+    // Nearest to where the viewer is looking from (any camera), not to the origin.
+    const ranked = list
+      .map((t) => { const l = toLocal(t.lat, t.lon); return { t, d: Math.hypot(l.e - eye.x, -l.n - eye.z) } })
+      .filter(({ t, d }) => d <= (this.pool.get(t.id)?.xp ? XP_KEEP_M : XP_NEAR_M))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, XP_MAX)
+    const out = new Map<string, boolean>()
+    let heavy = 0
+    for (const { t } of ranked) { out.set(t.id, heavy < XP_MAX_HEAVY); if (heavy < XP_MAX_HEAVY) heavy++ }
+    return out
+  }
+
+  /** Show the X-Plane exterior for a near target (once its model has loaded), the silhouette otherwise. */
+  private syncXp(e: PoolEntry, t: LiveTarget, unknownGnd: boolean, wantXp: boolean, allowHeavy: boolean): void {
+    if (!wantXp) {
+      if (e.xp) { e.group.remove(e.xp.group); e.xp = null; e.xpKey = '' }
+      e.body.visible = true
+      return
+    }
+    const des = unknownGnd ? 'A320' : t.t
+    const info = typeInfo(des)
+    const choice = chooseTrafficModel(archetypeFor(des, info.desc, info.wtc), des, { allowHeavy })
+    if (!choice) { e.body.visible = true; return }
+    if (e.xp && e.xpKey === choice.key) return
+    if (!this.models.ensure(choice.key)) { e.body.visible = !e.xp; return }
+    const inst = this.models.create(choice)
+    if (!inst) return
+    if (e.xp) e.group.remove(e.xp.group)
+    e.group.add(inst.group)
+    e.xp = inst; e.xpKey = choice.key
+    e.body.visible = false
   }
 
   private drawLabels(labels: Array<{ x: number; y: number; z: number; text: string }>, camera: THREE.Camera): void {

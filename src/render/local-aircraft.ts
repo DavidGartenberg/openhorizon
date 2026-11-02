@@ -3,11 +3,20 @@ import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
 import { XP_MODELS, XP_PLACEMENT, XP_CONTROL_LIMITS, XP_SURFACE_CALIBRATION } from './xplane-manifest'
 import { applyObj8Anim, applyObj8Visibility, loadObj8, type LoadedObj8 } from './xplane-obj8'
 
+/** A cheap copy of a loaded exterior that shares its geometry, materials and textures (traffic). */
+export interface LocalAircraftInstance {
+  group: THREE.Group
+  /** Pose gear, flaps and the prop/fan disc; repeats of the same state cost nothing. */
+  pose: (s: SurfaceState, rpm?: number) => void
+}
+
 export interface LocalAircraftVisual {
   group: THREE.Group
   propDisc: THREE.Mesh
   surfaces: (s: SurfaceState) => void
   updateProp: (rpm: number, dt: number) => void
+  /** Present on real loads: stamp out another airplane of this model without loading it again. */
+  instantiate?: () => LocalAircraftInstance
   dispose: () => void
 }
 const modelKey = (key: string): string => key === '172' ? 'C172' : key === '737' ? 'B738' : key
@@ -157,7 +166,23 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promi
     let propDisc: THREE.Mesh | undefined
     ;(propNode ?? group.getObjectByName('engineNacelle') ?? group).traverse(o => { if (!propDisc && o instanceof THREE.Mesh) propDisc = o })
     if (!propDisc) throw new Error('Invalid OBJ8 exterior: no focus geometry')
-    return {group, propDisc, dispose, surfaces: s => { state = {...s}; pose() }, updateProp: (nextRpm, dt) => {
+    const instantiate = (): LocalAircraftInstance => {
+      const root = group.clone(true)
+      const nodes: THREE.Object3D[] = []
+      root.traverse(o => {
+        if ((o.userData as {anim?: unknown}).anim) nodes.push(o)
+        if (o instanceof THREE.Mesh) { o.castShadow = false; o.receiveShadow = false }
+      })
+      let last = ''
+      return {group: root, pose: (s, rpmIn = 0) => {
+        const stamp = `${s.gearPos.toFixed(2)}|${(s.flapFrac ?? 0).toFixed(2)}|${(s.spoilerFrac ?? 0).toFixed(2)}|${rpmIn > 900}`
+        if (stamp === last) return
+        last = stamp
+        const read = localDatarefReader({...s}, 0, rpmIn, ranges, key)
+        for (const node of nodes) { applyObj8Anim(node, read); applyObj8Visibility(node, read) }
+      }}
+    }
+    return {group, propDisc, dispose, instantiate, surfaces: s => { state = {...s}; pose() }, updateProp: (nextRpm, dt) => {
       rpm = Number.isFinite(nextRpm) ? Math.max(0, nextRpm) : 0; angle = (angle + rpm * 6 * (Number.isFinite(dt) ? Math.max(0, dt) : 0)) % 360; pose()
     }}
   } catch (error) { dispose(); throw error }

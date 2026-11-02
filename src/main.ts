@@ -75,6 +75,7 @@ import { AircraftLights } from './render/aircraft-lights'
 import { ReplayView } from './render/replay-view'
 import { buildReplayPlots } from './sim/replay'
 import { TrafficLayer } from './render/traffic-layer'
+import { XpShipGraphics, chooseTrafficModel } from './render/traffic-model'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
 import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
 import { vSpeedArcs, type PfdInput } from './cockpit/pfd'
@@ -1557,7 +1558,7 @@ let atisPlayedFor = ''
 /** AI pattern traffic at the active ATC field (Phase 6d/6e wiring; 14e:
  *  ONE record list — the parallel pilot/mesh arrays drifted by index —
  *  with density OFF/LIGHT/REAL = 0/2/5 and Tier-C type variety). */
-let aiShips: Array<{ pilot: AiPatternPilot; mesh: AircraftMesh }> = []
+let aiShips: Array<{ pilot: AiPatternPilot; mesh: AircraftMesh; xp: XpShipGraphics; elevFt: number }> = []
 let aiDensity = 2
 try {
   const d = localStorage.getItem('oh-ai-density')
@@ -1875,6 +1876,7 @@ function cancelAtcTimers(): void {
  *  leaked every ship's merged geometry on facility change). */
 function disposeAiShips(): void {
   for (const s of aiShips) {
+    s.xp.release() // the X-Plane exterior is shared by every airplane of its model: never dispose it here
     scene.remove(s.mesh.group)
     s.mesh.group.traverse((o) => {
       if (o instanceof THREE.Mesh || o instanceof THREE.Points) o.geometry.dispose()
@@ -2176,9 +2178,11 @@ function scanAtc(lat: number, lon: number, now: number): void {
             tower: activeAtc.tower, bus: comms, freqMhz: twrF, startDelayS: loop.simTime + delay,
           })
           const info = typeInfo(des)
-          const m = buildArchetypeShip(archetypeFor(des, info.desc, info.wtc))
+          const aiSpec = archetypeFor(des, info.desc, info.wtc)
+          const m = buildArchetypeShip(aiSpec)
           scene.add(m.group)
-          aiShips.push({ pilot, mesh: m })
+          // The good X-Plane exterior stands in for the silhouette once its model has loaded.
+          aiShips.push({ pilot, mesh: m, elevFt: patternRwy.elevFt, xp: new XpShipGraphics(chooseTrafficModel(aiSpec, des, { allowHeavy: false }), m.group, m.group.children.slice(0, 1)) })
         }
       }
     } else if (!nearest) {
@@ -3056,7 +3060,7 @@ function advanceFrame(elapsed: number, now: number): void {
   updateSafety(now)
   updateRecorder(ll)
   if (atcMenuOpen) renderAtcMenu()
-  for (const { pilot: p, mesh: m } of aiShips) {
+  for (const { pilot: p, mesh: m, xp, elevFt } of aiShips) {
     // 15c: AI steps with SIM dt — wall-dt made time-accel leave the
     // pattern ships behind. Slice 7: step the SAME total sim time the
     // physics consumed, in bounded chunks — the old single clamped
@@ -3072,6 +3076,7 @@ function advanceFrame(elapsed: number, now: number): void {
     m.group.rotation.order = 'YXZ'
     m.group.rotation.y = (-p.plane.headingDeg * Math.PI) / 180
     updateProp(m, p.phase === 'pattern' ? 2400 : 800, elapsed)
+    xp.update({ gnd: p.onGround, gsKt: p.plane.gsKt, aglFt: p.plane.altFt - elevFt, altFt: p.plane.altFt }, elapsed)
   }
 
   // Phase 4 Task 5 wiring: in-airspace detection, once per rendered frame
@@ -3816,7 +3821,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     parkingBrake,
     capturing: controllerPanel.capturing,
   }),
-  __ohAi: () => aiShips.map((s) => ({ cs: s.pilot.callsign, phase: s.pilot.phase, gsKt: Math.round(s.pilot.plane.gsKt), altFt: Math.round(s.pilot.plane.altFt) })),
+  __ohAi: () => aiShips.map((s) => ({ cs: s.pilot.callsign, phase: s.pilot.phase, gsKt: Math.round(s.pilot.plane.gsKt), altFt: Math.round(s.pilot.plane.altFt), xp: s.xp.active, pos: s.mesh.group.position.toArray().map((v) => Math.round(v)) })),
   __ohTraffic: () => ({
     on: liveTrafficOn,
     count: liveTraffic.targets.size,
@@ -3884,6 +3889,10 @@ Object.assign(window as unknown as Record<string, unknown>, {
   },
   __ohSpawn: (q: string) => { if (typeof q === 'string') handleSearch(q) },
   /** Park the free camera at a world offset from the aircraft (east, up, south metres) looking along yaw/pitch degrees (0 = north). */
+  /** Render-space x (east), z (south) of a latitude/longitude (verification). */
+  __ohLocal: (lat: number, lon: number) => { const l = frame.toLocal(finiteOr(lat) ?? 0, finiteOr(lon) ?? 0); return [Math.round(l.e * 10) / 10, Math.round(-l.n * 10) / 10] },
+  /** The player's position in render space (verification): lets a test aim the free camera at something else. */
+  __ohPlayerPos: () => mesh.group.position.toArray().map((v) => Math.round(v * 10) / 10),
   __ohFreeCam: (o: { e?: number; u?: number; s?: number; yaw?: number; pitch?: number }) => {
     const g = mesh.group.position
     const d = (v: unknown): number => finiteOr(v as number) ?? 0
