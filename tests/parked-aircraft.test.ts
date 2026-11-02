@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parkedKindFor, parkedAircraftFor, parkedSpec, nearestParked, spotHash, GATE_OCCUPANCY } from '../src/world/parked-aircraft'
+import { standOffset, NOSE_GEAR_AHEAD_OF_CG, parkedKindFor, parkedAircraftFor, parkedSpec, nearestParked, spotHash, GATE_OCCUPANCY } from '../src/world/parked-aircraft'
 import { chooseTrafficModel } from '../src/render/xplane-proxy'
 
 const ramp = (i: number, cats: string[], kind = 'gate') => ({ x: i * 61.3, z: i * 17.9 + 5, hdg: 90 + i, kind, cats, name: `G${i}` })
@@ -48,5 +48,14 @@ describe('how they are drawn', () => {
     expect(nearestParked(spots, { x: 0, z: 0 }, 300, 3).map((s) => s.x)).toEqual([0, 50, 100])
     expect(nearestParked(spots, { x: 0, z: 0 }, 300, 3, (s) => s.x === 50).map((s) => s.x)).toEqual([0, 100, 150])
     expect(nearestParked(spots, { x: 5000, z: 0 }, 300, 3)).toEqual([])
+  })
+})
+
+describe('the nose wheel is on the ramp start', () => {
+  it('stands the airplane back along its heading by the nose gear\'s distance ahead of its centre', () => {
+    const north = standOffset({ x: 10, z: 20, hdg: 0 }, 40)                  // facing north (−z): the centre is south (+z) of the start
+    expect(north.x).toBeCloseTo(10); expect(north.z).toBeCloseTo(20 + NOSE_GEAR_AHEAD_OF_CG * 40)
+    const east = standOffset({ x: 10, z: 20, hdg: 90 }, 40)                  // facing east (+x): the centre is west of the start
+    expect(east.x).toBeCloseTo(10 - NOSE_GEAR_AHEAD_OF_CG * 40); expect(east.z).toBeCloseTo(20)
   })
 })

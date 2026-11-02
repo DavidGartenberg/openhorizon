@@ -73,3 +73,12 @@ export function nearestParked<T extends { x: number; z: number }>(spots: readonl
     .slice(0, max)
     .map(({ s }) => s)
 }
+
+/** How far the nose wheel is ahead of the centre of gravity, as a share of the airplane's length. X-Plane's ramp start is where the nose wheel goes. */
+export const NOSE_GEAR_AHEAD_OF_CG = 0.33
+
+/** Where an airplane's centre of gravity stands so that its nose wheel is on the ramp start: back along its heading. */
+export function standOffset(spot: { x: number; z: number; hdg: number }, lengthM: number): { x: number; z: number } {
+  const H = (spot.hdg * Math.PI) / 180, back = NOSE_GEAR_AHEAD_OF_CG * lengthM
+  return { x: spot.x - Math.sin(H) * back, z: spot.z + Math.cos(H) * back }
+}

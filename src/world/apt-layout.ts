@@ -406,6 +406,7 @@ const pavementMaterials = new Map<number, THREE.MeshStandardMaterial>()
 export const NIGHT_GLOW = 0.08
 /** Give every X-Plane pavement its faint night glow (0 = day, 1 = full night). */
 export function setAptNight(night: number): void {
+  for (const m of gateLabelMaterials) m.color.setScalar(1 - 0.7 * Math.min(Math.max(night, 0), 1))
   for (const m of pavementMaterials.values()) m.emissive.set(m.color).multiplyScalar(NIGHT_GLOW * Math.min(Math.max(night, 0), 1))
 }
 function pavementMaterial(surf: number): THREE.MeshStandardMaterial | null {
@@ -521,6 +522,69 @@ export function buildAptPaint(layout: AptLayout, toLocal: (lat: number, lon: num
     if (m) { m.renderOrder = 22; out.push(m) }
   }
   return out
+}
+
+// ------------------------------------------------------------ gate numbers --
+
+/** The number painted on a stand from its ramp start's name ("Gate 54A", "A12", "G3 Heavy"), or null when there is none to read. */
+export function gateLabel(name: string, kind: string): string | null {
+  if (!/gate/i.test(kind)) return null
+  const m = /^(?:gate\s*)?([A-Z]{0,2}\d{1,3}[A-Z]?)(?:\s|$)/i.exec(name.trim())
+  return m ? m[1]!.toUpperCase() : null
+}
+
+const GATE_ATLAS = { cols: 8, rows: 50, cellW: 128, cellH: 64 }
+/** How far ahead of a stand's nose point the number is painted, and its size (m). */
+const GATE_LABEL_AHEAD_M = 9
+const GATE_LABEL_H_M = 1.5
+const gateLabelMaterials = new Set<THREE.MeshBasicMaterial>()
+
+/** The gate numbers, painted yellow on the apron ahead of each stand (the nearest 400, one draw call). */
+export function buildAptGateLabels(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number, ground?: GroundFn): THREE.Mesh | null {
+  const stands = layout.ramps
+    .map((r) => ({ r, label: gateLabel(r.name, r.kind), p: toLocal(r.lat, r.lon) }))
+    .filter((x): x is { r: AptRamp; label: string; p: XZ } => x.label !== null)
+    .sort((a, b) => Math.hypot(a.p.x, a.p.z) - Math.hypot(b.p.x, b.p.z))
+  const cells = layoutSignAtlas(stands.length, GATE_ATLAS)
+  if (!cells.length) return null
+  const canvas = document.createElement('canvas')
+  canvas.width = GATE_ATLAS.cols * GATE_ATLAS.cellW
+  canvas.height = GATE_ATLAS.rows * GATE_ATLAS.cellH
+  const c = canvas.getContext('2d')!
+  c.fillStyle = '#e8c316'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.font = `bold ${Math.round(GATE_ATLAS.cellH * 0.8)}px Arial, sans-serif`
+  const pos: number[] = [], uv: number[] = [], idx: number[] = []
+  cells.forEach((cell, i) => {
+    const { r, label, p } = stands[i]!
+    c.fillText(label, cell.x + GATE_ATLAS.cellW / 2, cell.y + GATE_ATLAS.cellH / 2 + 3, GATE_ATLAS.cellW - 8)
+    // The number reads from the lead-in: its up direction is the way the airplane faces.
+    const H = (r.hdg * Math.PI) / 180
+    const ux = Math.sin(H), uz = -Math.cos(H), rx = Math.cos(H), rz = Math.sin(H)
+    const cx = p.x + ux * GATE_LABEL_AHEAD_M, cz = p.z + uz * GATE_LABEL_AHEAD_M
+    const h = GATE_LABEL_H_M, w = h * (GATE_ATLAS.cellW / GATE_ATLAS.cellH)
+    const y = (ground ? ground(cx, cz) : elevM) + 0.14
+    const u0 = cell.x / canvas.width, u1 = (cell.x + GATE_ATLAS.cellW) / canvas.width
+    const v0 = 1 - (cell.y + GATE_ATLAS.cellH) / canvas.height, v1 = 1 - cell.y / canvas.height
+    const base = pos.length / 3
+    // Corners: bottom-left, bottom-right, top-right, top-left, in the stand's own frame.
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) pos.push(cx + rx * sx * w / 2 + ux * sy * h / 2, y, cz + rz * sx * w / 2 + uz * sy * h / 2)
+    uv.push(u0, v0, u1, v0, u1, v1, u0, v1)
+    idx.push(base, base + 2, base + 1, base, base + 3, base + 2)
+  })
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.anisotropy = 8
+  tex.userData.airportOwned = true
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2))
+  geo.setIndex(idx)
+  const mat = ownMaterial(new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide }))
+  gateLabelMaterials.add(mat)
+  const mesh = new THREE.Mesh(geo, mat)
+  mesh.name = 'aptGateNumbers'
+  mesh.renderOrder = 23
+  mesh.frustumCulled = false
+  return mesh
 }
 
 // ------------------------------------------------------------------ signs --
@@ -839,6 +903,7 @@ export async function enhanceAirportWithXplane(group: THREE.Group, icao: string,
   built.add(...buildAptPavement(layout, toLocal, elevM, ground, runwayRects(layout.rwy, toLocal)))
   await idle(); if (!alive()) return false
   built.add(...buildAptPaint(layout, toLocal, elevM, ground))
+  { const numbers = buildAptGateLabels(layout, toLocal, elevM, ground); if (numbers) built.add(numbers) }
   await idle(); if (!alive()) return false
   group.userData.aptDisplaced = applyDisplacedThresholds(group, layout.rwy)
   // Decorative airplanes at the gates and tie-downs (scenery: no datablock, no radar entry).

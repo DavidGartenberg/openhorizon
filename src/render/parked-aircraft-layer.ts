@@ -1,13 +1,13 @@
 import * as THREE from 'three'
 import { chooseTrafficModel, trafficConfiguration } from './xplane-proxy'
 import { sharedTrafficModels, type TrafficModelInstance } from './traffic-model'
-import { nearestParked, parkedSpec, type ParkedSource, type ParkedSpot } from '../world/parked-aircraft'
+import { nearestParked, parkedSpec, standOffset, type ParkedSource, type ParkedSpot } from '../world/parked-aircraft'
 
 /** At most this many parked airplanes are drawn at once (the nearest to the camera), each within this distance (m). */
 export const MAX_PARKED = 6
 export const PARKED_RADIUS_M = 1400
 
-interface Entry { key: string; source: ParkedSource; spot: ParkedSpot & { y: number }; inst: TrafficModelInstance }
+interface Entry { key: string; source: ParkedSource; spot: ParkedSpot & { y: number }; at: { x: number; z: number }; inst: TrafficModelInstance }
 
 /**
  * Scenery airplanes at the nearest gates and tie-downs, drawn with the installed X-Plane exteriors (shared
@@ -38,7 +38,7 @@ export class ParkedAircraftLayer {
       inst.pose(trafficConfiguration({ gnd: true, gsKt: 0, aglFt: 0, vsFpm: 0 }))
       inst.group.rotation.y = -(w.spot.hdg * Math.PI) / 180
       this.root.add(inst.group)
-      this.entries.set(key, { key, source: w.source, spot: w.spot, inst })
+      this.entries.set(key, { key, source: w.source, spot: w.spot, at: standOffset(w.spot, parkedSpec(w.spot.kind).lengthM), inst })
     }
     this.follow()
   }
@@ -47,7 +47,7 @@ export class ParkedAircraftLayer {
   follow(): void {
     for (const e of this.entries.values()) {
       const g = e.source.group.position
-      e.inst.group.position.set(g.x + e.spot.x, g.y + e.spot.y + e.inst.groundOffsetM, g.z + e.spot.z)
+      e.inst.group.position.set(g.x + e.at.x, g.y + e.spot.y + e.inst.groundOffsetM, g.z + e.at.z)
     }
   }
 

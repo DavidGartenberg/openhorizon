@@ -6,7 +6,7 @@ vi.mock('../src/render/light-glow', () => ({ lightGlowTexture: () => ({ isTextur
 vi.mock('../src/world/airport-detail', async (importActual) => { const T = await import('three'); return { ...(await importActual<typeof import('../src/world/airport-detail')>()), buildRunwayMarkings: () => new T.Group() } })
 import * as THREE from 'three'
 import {
-  runwayRects, insideRunway, groundGrid, densify, subdivideTriangles, normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, buildAptPavement, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
+  gateLabel, runwayRects, insideRunway, groundGrid, densify, subdivideTriangles, normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, buildAptPavement, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
 } from '../src/world/apt-layout'
 
 const toLocal = (lat: number, lon: number): XZ => ({ x: lon * 100_000, z: -lat * 111_320 })
@@ -390,5 +390,13 @@ describe('pavement is cut out of runway footprints', () => {
       const cx = (pos.getX(i) + pos.getX(i + 1) + pos.getX(i + 2)) / 3, cz = (pos.getZ(i) + pos.getZ(i + 1) + pos.getZ(i + 2)) / 3
       expect(Math.abs(cz - z) < 28.4 && cx > 900 && cx < 1100).toBe(false)
     }
+  })
+})
+
+describe('gate numbers', () => {
+  it('reads the number off a gate ramp start and nothing from the rest', () => {
+    expect(gateLabel('Gate 54A', 'gate')).toBe('54A'); expect(gateLabel('A12', 'gate')).toBe('A12'); expect(gateLabel('gate g3', 'gate')).toBe('G3')
+    expect(gateLabel('B7 Heavy', 'gate')).toBe('B7'); expect(gateLabel('Ramp', 'gate')).toBeNull()
+    expect(gateLabel('Gate 54A', 'tie-down')).toBeNull(); expect(gateLabel('', 'gate')).toBeNull(); expect(gateLabel('Terminal Building 4 North', 'gate')).toBeNull()
   })
 })
