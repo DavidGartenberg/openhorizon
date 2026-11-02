@@ -81,7 +81,7 @@ describe('the overrun table for the client', () => {
 })
 
 // @ts-expect-error plain ES module without types (server code)
-import { runwayExtras, MAX_RUNWAY_FIX_M, aptOnlyAirports, aptAirportsNear } from '../server/apt.mjs'
+import { runwayExtras, MAX_RUNWAY_FIX_M, aptOnlyAirports, aptAirportsNear, landMaskRuns, aptLandMasks } from '../server/apt.mjs'
 describe('correcting the old database with X-Plane\'s runways', () => {
   const rows = { KAAA: [['10L', '28R', 250, 100, 37.5, -122.26, 37.5, -122.24, 45.7], ['10R', '28L', 0, 0, 37.51, -122.26, 37.51, -122.24, 45.7]] }
   const dbRwy = (li: string, hi: string, la1: number, lo1: number, la2: number, lo2: number, wFt: number) => ({ li, hi, la1, lo1, la2, lo2, w: wFt, s: 0, lt: 0 })
@@ -155,5 +155,26 @@ describe("runways X-Plane has that a database airport lacks", () => {
     expect(out.KDB).toEqual([['15', '33', -1, -1]])                                       // 111 km from X-Plane's runway
     const one = runwayExtras({ KDB: [['16', '34', 0, 0, 45, -100.02, 45, -99.98, 30, 1, 3]] }, db as never) as Record<string, unknown[][]>
     expect((one.KDB ?? []).filter((r) => r[2] === -1)).toEqual([])                              // the only database runway stays
+  })
+})
+
+describe('the land mask of a low airport', () => {
+  // A 1 km x 400 m apron east of the reference, and a 2 km runway along its north edge.
+  const layout = {
+    pav: [{ surf: 2, name: '', rings: [[[0, 0], [0, 0.009], [0.0036, 0.009], [0.0036, 0]]] }],
+    rwy: [{ w: 45, surf: 1, ends: [{ id: '9', lat: 0.004, lon: 0 }, { id: '27', lat: 0.004, lon: 0.018 }] }],
+  }
+  it('covers the pavement and the runway, grown by a cell, as runs along rows', () => {
+    const runs = landMaskRuns(layout, 0, 0) as number[][]
+    expect(runs.length).toBeGreaterThan(4)
+    const lons = runs.flatMap((r) => [r[1]!, r[3]!]), lats = runs.flatMap((r) => [r[0]!, r[2]!])
+    expect(Math.min(...lons)).toBeLessThan(0.0005); expect(Math.max(...lons)).toBeGreaterThan(0.0165)    // the runway's far end, 2 km east
+    expect(Math.min(...lats)).toBeLessThan(0.0005); expect(Math.max(...lats)).toBeGreaterThan(0.0035)
+    for (const r of runs) { expect(r[0]).toBe(r[2]); expect(r[3]).toBeGreaterThanOrEqual(r[1]!) }         // a run lies along one row
+  })
+  it('is empty without a layout or a position, and for an airport that is too tall', () => {
+    expect(landMaskRuns(null, 0, 0)).toEqual([])
+    expect(landMaskRuns(layout, NaN, 0)).toEqual([])
+    expect(aptLandMasks([{ i: 'HIGH', la: 0, lo: 0, e: 5000 }], undefined)).toEqual({})
   })
 })

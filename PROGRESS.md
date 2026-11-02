@@ -3200,3 +3200,9 @@ What changed, and what is real versus a recorded stand-in:
 ### All-airport sweep at 652de01 (2026-11-02)
 
 - With helipads drawn, 27,711 of the 38,890 airports now build a layout (21,424 before; the rest are heliports and the like with nothing else to draw), 0 issues, only KDEN slow (4.5 s, 1.68 M triangles); 634 s on a loaded machine.
+
+### Polders and reclaimed land (2026-11-02, after the 3pm deadline, at the user's request)
+
+- **Below-sea land keeps its true heights.** Within 12 km of a field that lies below sea level (28 of them: Schiphol, Rotterdam, Death Valley, Salton Sea, Caspian coast …) the terrain worker no longer clamps the elevation data's negative cells to sea (`lowland` entries in `runwaysInBounds`); the physics ground reads the same tile heights, and the ocean is hidden within the lowland plus 1.5 km. Checked at KL06: the valley floor around Furnace Creek now renders at its real −23 m and −75 m with imagery, mountains behind, no sea.
+- **Reclaimed land is land.** Fields that lie low (up to 20 m) get a land mask from X-Plane's own pavement and runways (`/api/apt-land.json`, `landMaskRuns`: 100 m cells, grown by one, as runs along rows; 8–140 runs per airport). The client fetches the masks within 60 km, puts them on the airports, tells the terrain to rebuild there (`Tiles.reloadAround`) and levels them as `land` entries that change only what the data calls sea (worker) with the same rule in the physics ground. Checked at VHHH: ground under the taxiways and runways is 7.4 m land, the pavement sits on it, sea beyond the island edge.
+- **Still open:** the sea around the Dutch polders at the coast and the shoreline's 51 m stepping; heliports and seaplane bases as airports of their own; land masks exist only for fields up to 20 m (so a reclaimed field above that keeps its old behaviour).

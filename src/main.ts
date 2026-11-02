@@ -217,6 +217,7 @@ const airports = new Airports(scene, frame)
 const tiles = new TileManager(scene, frame, (s, n, w, e) => airports.runwaysInBounds(s, n, w, e))
 airports.terrainAt = (lat, lon) => tiles.elevationAt(lat, lon)
 airports.terrainReady = (lat, lon) => tiles.fineReady(lat, lon)
+airports.onLandMask = (lat, lon, radiusM) => tiles.reloadAround(lat, lon, radiusM)
 tiles.setSky(sky.radianceTexture)
 // Satellite imagery (13b) defaults ON; `IMAGERY OFF` persists across loads.
 try { if (localStorage.getItem('oh-imagery') === 'OFF') tiles.setImagery(false) } catch { /* private mode */ }

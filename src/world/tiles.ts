@@ -49,6 +49,10 @@ export interface RunwayFlatten {
   halfWidthM: number
   /** An airport's level disk (a zero-length runway): never lifts open water. */
   disk?: boolean
+  /** Not a runway: a circle (centre la1, lo1; radius halfWidthM) of land below sea level, where the elevation data's negative heights are kept instead of being clamped to sea. */
+  lowland?: boolean
+  /** A run of land (a stretch of a reclaimed field's pavement): levelled only where the elevation data says sea. */
+  land?: boolean
 }
 
 interface Tile {
@@ -366,6 +370,8 @@ export class TileManager {
           hb: rw.e2M,
           halfW: rw.halfWidthM,
           ...(rw.disk ? { disk: true } : {}),
+          ...(rw.lowland ? { lowland: true } : {}),
+          ...(rw.land ? { land: true } : {}),
         }))
       this.inFlight++
       const worker = this.workers[this.nextWorker++ % this.workers.length]!
@@ -661,6 +667,20 @@ export class TileManager {
   /** Reposition every tile after an anchor rebase. */
   onRebase(): void {
     for (const tile of this.tiles.values()) this.placeTile(tile)
+    this.lastUpdatePos = { n: Infinity, e: Infinity }
+  }
+
+  /** Drop every tile within `radiusM` of a point so it is built again with the airports' current runway list. */
+  reloadAround(lat: number, lon: number, radiusM: number): void {
+    const dLat = radiusM / 111_319.5, dLon = radiusM / (111_319.5 * Math.cos((lat * Math.PI) / 180))
+    for (const t of [...this.tiles.values()]) {
+      if (t.latS > lat + dLat || t.latN < lat - dLat || t.lonW > lon + dLon || t.lonE < lon - dLon) continue
+      if (t.mesh) { this.scene.remove(t.mesh); t.mesh.geometry.dispose() }
+      t.imTex?.dispose(); t.detailTex?.dispose(); t.imMat?.dispose(); t.baseMat?.dispose(); t.coverageTexture?.dispose()
+      this.tiles.delete(t.key)
+      this.detailRetry.delete(t.key)
+    }
+    this.refreshCoverage()
     this.lastUpdatePos = { n: Infinity, e: Infinity }
   }
 

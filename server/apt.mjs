@@ -351,3 +351,101 @@ export function aptAirportsNear(list, lat, lon, radiusM) {
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(radiusM)) return list
   return list.filter((a) => metres(lat, lon, a.la, a.lo) <= radiusM)
 }
+
+/** Cell size (m) of the land mask, and the half width (m) its runs are levelled to. */
+export const LAND_CELL_M = 100
+const LAND_MAX_RUNS = 800
+
+/**
+ * Where an airport is certainly land: the cells (LAND_CELL_M) its X-Plane pavement and runways cover, grown by one cell,
+ * as runs along rows: [[lat1, lon1, lat2, lon2], …] between the centres of a run's first and last cell. The client
+ * levels the terrain there only where the elevation data says sea (polders, reclaimed land).
+ * @param layout the parsed airport (`pav` polygons as rings of [lat, lon], `rwy` runways with end positions)
+ */
+export function landMaskRuns(layout, refLat, refLon) {
+  if (!layout || !Number.isFinite(refLat) || !Number.isFinite(refLon)) return []
+  const mLat = 111_319.5, mLon = mLat * Math.cos((refLat * Math.PI) / 180)
+  if (!(mLon > 1)) return []
+  const toXY = (la, lo) => [(lo - refLon) * mLon, (la - refLat) * mLat]
+  const rows = new Map()
+  const mark = (x, y) => {
+    const i = Math.floor(x / LAND_CELL_M), j = Math.floor(y / LAND_CELL_M)
+    let r = rows.get(j); if (!r) rows.set(j, (r = new Set()))
+    r.add(i)
+  }
+  const line = (x0, y0, x1, y1) => {
+    const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / (LAND_CELL_M / 2)))
+    for (let k = 0; k <= n; k++) mark(x0 + ((x1 - x0) * k) / n, y0 + ((y1 - y0) * k) / n)
+  }
+  for (const p of Array.isArray(layout.pav) ? layout.pav : []) {
+    const ring = Array.isArray(p?.rings) ? p.rings[0] : null
+    if (!Array.isArray(ring) || ring.length < 3) continue
+    const xy = ring.map((q) => (Array.isArray(q) && Number.isFinite(q[0]) && Number.isFinite(q[1]) ? toXY(q[0], q[1]) : null))
+    if (xy.some((q) => !q) || xy.some((q) => Math.abs(q[0]) > 30_000 || Math.abs(q[1]) > 30_000)) continue
+    for (let k = 0; k < xy.length; k++) { const a = xy[k], b = xy[(k + 1) % xy.length]; line(a[0], a[1], b[0], b[1]) }
+    const x0 = Math.min(...xy.map((q) => q[0])), x1 = Math.max(...xy.map((q) => q[0]))
+    const y0 = Math.min(...xy.map((q) => q[1])), y1 = Math.max(...xy.map((q) => q[1]))
+    if (((x1 - x0) / LAND_CELL_M) * ((y1 - y0) / LAND_CELL_M) > 40_000) continue
+    for (let y = y0 + LAND_CELL_M / 2; y < y1; y += LAND_CELL_M) {
+      for (let x = x0 + LAND_CELL_M / 2; x < x1; x += LAND_CELL_M) {
+        let inside = false
+        for (let a = 0, b = xy.length - 1; a < xy.length; b = a++) {
+          if ((xy[a][1] > y) !== (xy[b][1] > y) && x < ((xy[b][0] - xy[a][0]) * (y - xy[a][1])) / (xy[b][1] - xy[a][1]) + xy[a][0]) inside = !inside
+        }
+        if (inside) mark(x, y)
+      }
+    }
+  }
+  for (const r of Array.isArray(layout.rwy) ? layout.rwy : []) {
+    const e = Array.isArray(r?.ends) ? r.ends : []
+    if (e.length !== 2 || ![e[0]?.lat, e[0]?.lon, e[1]?.lat, e[1]?.lon].every(Number.isFinite)) continue
+    const [x0, y0] = toXY(e[0].lat, e[0].lon), [x1, y1] = toXY(e[1].lat, e[1].lon)
+    const len = Math.hypot(x1 - x0, y1 - y0)
+    if (!(len > 1) || len > 8000) continue
+    const nx = -(y1 - y0) / len, ny = (x1 - x0) / len, half = Math.max(Number(r.w) || 30, 10) / 2
+    for (let o = -half; o <= half + 0.01; o += Math.max(half, 5)) line(x0 + nx * o, y0 + ny * o, x1 + nx * o, y1 + ny * o)
+  }
+  // Grow by one cell, then read off the runs of each row.
+  const grown = new Map()
+  for (const [j, set] of rows) for (const i of set) for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+    let r = grown.get(j + dj); if (!r) grown.set(j + dj, (r = new Set()))
+    r.add(i + di)
+  }
+  const out = []
+  for (const [j, set] of [...grown].sort((a, b) => a[0] - b[0])) {
+    const is = [...set].sort((a, b) => a - b)
+    for (let k = 0; k < is.length;) {
+      let e = k
+      while (e + 1 < is.length && is[e + 1] === is[e] + 1) e++
+      const y = (j + 0.5) * LAND_CELL_M
+      out.push([+(refLat + y / mLat).toFixed(5), +(refLon + ((is[k] + 0.5) * LAND_CELL_M) / mLon).toFixed(5), +(refLat + y / mLat).toFixed(5), +(refLon + ((is[e] + 0.5) * LAND_CELL_M) / mLon).toFixed(5)])
+      k = e + 1
+    }
+  }
+  return out.length > LAND_MAX_RUNS ? [] : out
+}
+
+const landMemo = new Map()
+/** Airports lower than this (m) get a land mask: polders and reclaimed land lie low. */
+export const LAND_MASK_MAX_ELEV_M = 20
+
+/**
+ * The land masks of the airports in `list` (database-shaped: i, la, lo, e feet) low enough to need one:
+ * { ICAO: [[lat1, lon1, lat2, lon2], …] }. An airport X-Plane has no layout for gets none.
+ */
+export function aptLandMasks(list, cacheDir) {
+  const out = {}
+  for (const a of list) {
+    if (!(a.e * 0.3048 <= LAND_MASK_MAX_ELEV_M)) continue
+    let runs = landMemo.get(a.i)
+    if (!runs) {
+      let layout = null
+      try { const json = aptAirport(a.i, cacheDir); layout = json ? JSON.parse(json) : null } catch { layout = null }
+      runs = landMaskRuns(layout, a.la, a.lo)
+      if (landMemo.size > 400) landMemo.delete(landMemo.keys().next().value)
+      landMemo.set(a.i, runs)
+    }
+    if (runs.length) out[a.i] = runs
+  }
+  return out
+}

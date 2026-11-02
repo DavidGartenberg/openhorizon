@@ -65,4 +65,29 @@ describe('adding X-Plane-only airports to the database', () => {
     applyRunwayExtras(list, { KDB: [['15', '33', -1, -1], ['09', '27', -1, -1]] })
     expect(list[0]!.r.map((r) => r.li)).toEqual(['9'])
   })
+  it('takes land masks for the airports it has, once, and tells the terrain to rebuild there', () => {
+    const a = make()
+    a.addAirports([ap('LOW2', 22.3, 113.9)])
+    const calls: number[][] = []
+    ;(a as unknown as { onLandMask: (la: number, lo: number, r: number) => void }).onLandMask = (la, lo, r) => calls.push([la, lo, r])
+    expect(a.applyLandMasks({ LOW2: [[22.3, 113.89, 22.3, 113.91], [1, 2, 3]], NONE: [[1, 1, 1, 1]], BAD: 5 } as never)).toBe(1)
+    expect(a.applyLandMasks({ LOW2: [[22.3, 113.89, 22.3, 113.91]] })).toBe(0)                    // already has one
+    expect(calls).toEqual([[22.3, 113.9, 6000]])
+    expect(a.find('LOW2')!.land).toEqual([[22.3, 113.89, 22.3, 113.91]])                              // the malformed run is dropped
+  })
+  it('hands the terrain the land runs and the lowland circle of a field below sea level, and levels sea cells at a reclaimed field', () => {
+    const a = make()
+    const reclaimed = ap('RECL', 22.3, 113.9); reclaimed.r[0]!.e1 = 25; reclaimed.r[0]!.e2 = 25; reclaimed.e = 25
+    const polder = ap('POLD', 52.3, 4.76); polder.r[0]!.e1 = -11; polder.r[0]!.e2 = -11; polder.e = -11
+    a.addAirports([reclaimed, polder])
+    a.applyLandMasks({ RECL: [[22.3, 113.9, 22.3, 113.91]] })
+    const near = a.runwaysInBounds(22.2, 22.4, 113.8, 114.0)
+    expect(near.filter((r) => r.land)).toHaveLength(1)
+    expect(near.some((r) => r.lowland)).toBe(false)
+    const low = a.runwaysInBounds(52.2, 52.4, 4.7, 4.9)
+    expect(low.filter((r) => r.lowland)).toHaveLength(1); expect(low.find((r) => r.lowland)!.halfWidthM).toBe(12_000)
+    expect(a.flattenElevation(0, 22.3, 113.905)).toBeCloseTo(7.6, 0)                                  // sea at the run: 25 ft of land
+    expect(a.flattenElevation(0, 22.4, 113.905)).toBe(0)                                              // sea far from it stays sea
+    expect(a.belowSeaFieldNear(52.3, 4.76)).toBe(true); expect(a.belowSeaFieldNear(22.3, 113.9)).toBe(false)
+  })
 })

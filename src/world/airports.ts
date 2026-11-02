@@ -11,7 +11,7 @@ import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount, papiMaterial, type PapiA
 import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
 import type { ParkedSource } from './parked-aircraft'
 import { enhanceAirportWithXplane, setAptNight, NIGHT_GLOW, sockDirection, sockDroop } from './apt-layout'
-import { airportFlatDisk, airportFieldElevationM, FLAT_INNER_MARGIN_M, BELOW_SEA_FIELD_M, flattenEnds, applyRunwayExtras, applyAirportExtents, type RunwayExtras, type AirportExtents } from './airport-flatten'
+import { airportFlatDisk, airportFieldElevationM, BELOW_SEA_FIELD_M, flattenEnds, applyRunwayExtras, applyAirportExtents, type RunwayExtras, type AirportExtents } from './airport-flatten'
 import { primaryRunway, planAirportFacilities, buildAirportFacilities, updateAirportServices, disposeAirportObject, mappedApronPlan, footprintObstacle, type SurfaceObstacle, type GroundPoint } from './airport-scenery'
 
 export interface RunwayData {
@@ -44,6 +44,8 @@ export interface AirportData {
   x?: [number, number, number, number]
   /** An airport X-Plane has and the old database lacks (added from X-Plane's own list). */
   xo?: boolean
+  /** Runs [lat1, lon1, lat2, lon2] where X-Plane's pavement makes this field land (fields that lie low: polders, reclaimed land). */
+  land?: Array<[number, number, number, number]>
 }
 
 /** The runway strip stands this far above the ground plane. (0.1 m, above X-Plane's taxiway pavement, was tried: it blackened the runway markings in this renderer.) */
@@ -52,6 +54,10 @@ export const RUNWAY_STRIP_LIFT_M = 0.06
 const XPLANE_ONLY_RETRY_MS = 30_000
 /** How far past a below-sea-level field's level area the sea stays hidden (m). */
 const BELOW_SEA_MARGIN_M = 1500
+/** Radius (m) around a below-sea-level field within which the elevation data's negative heights are kept as land. */
+const LOWLAND_RADIUS_M = 12_000
+/** Half width (m) of a run of a low field's land mask (its cells are 100 m). */
+const LAND_RUN_HALF_WIDTH_M = 75
 const ASPHALT = pavementMaterial(0x484b4d, 'xy', 'runway')
 /** Concrete runways (X-Plane's surface codes 2 and 30–38) are paler than asphalt ones. */
 const CONCRETE_RUNWAY = pavementMaterial(0x8e908b, 'xy', 'runway')
@@ -85,6 +91,11 @@ export class Airports {
   private airportExtents: AirportExtents = {}
   private xplaneOnlyAt: { lat: number; lon: number } | null = null
   private xplaneOnlyBusy = false
+  private landAt: { lat: number; lon: number } | null = null
+  private landBusy = false
+  private landRetryAt = 0
+  /** Called with a position and radius (m) when land masks arrive, so the terrain there is built again. */
+  onLandMask: ((lat: number, lon: number, radiusM: number) => void) | null = null
   /** Not before this time (ms) after a failed fetch. */
   private xplaneOnlyRetryAt = 0
   /** Rendered terrain height (m) at a position, 0 when its tile is not loaded: lets the airport's pavement follow the ground. */
@@ -127,6 +138,34 @@ export class Airports {
       this.xplaneOnlyAt = { lat, lon }
       this.addAirports((await res.json()) as AirportData[])
     } catch { this.xplaneOnlyRetryAt = Date.now() + XPLANE_ONLY_RETRY_MS /* the database as it is; ask again later, not every frame */ } finally { this.xplaneOnlyBusy = false }
+  }
+
+  /** Fetch the land masks of the low fields within 60 km (again after 20 km of travel); terrain near a new one is rebuilt. */
+  async ensureLandNear(lat: number, lon: number): Promise<void> {
+    if (!this.loaded || this.landBusy || Date.now() < this.landRetryAt) return
+    if (this.landAt && distanceM({ lat, lon }, this.landAt) < 20_000) return
+    this.landBusy = true
+    try {
+      const res = await fetch(`/api/apt-land.json?lat=${lat.toFixed(3)}&lon=${lon.toFixed(3)}&r=60000`)
+      if (!res.ok) { this.landRetryAt = Date.now() + XPLANE_ONLY_RETRY_MS; return }
+      this.landAt = { lat, lon }
+      this.applyLandMasks((await res.json()) as Record<string, unknown>)
+    } catch { this.landRetryAt = Date.now() + XPLANE_ONLY_RETRY_MS } finally { this.landBusy = false }
+  }
+
+  /** Put land masks on their airports (those that have one already are left); returns how many were new. */
+  applyLandMasks(masks: Record<string, unknown>): number {
+    let added = 0
+    if (!masks || typeof masks !== 'object') return 0
+    for (const [icao, runs] of Object.entries(masks)) {
+      const ap = this.all.find((a) => a.i === icao)
+      if (!ap || ap.land || !Array.isArray(runs)) continue
+      const ok = runs.filter((r): r is [number, number, number, number] => Array.isArray(r) && r.length === 4 && r.every((v) => Number.isFinite(v) && Math.abs(v as number) <= 180)).slice(0, 1000)
+      if (!ok.length) continue
+      ap.land = ok; added++
+      this.onLandMask?.(ap.la, ap.lo, 6000)
+    }
+    return added
   }
 
   /** Add airports to the database (those already in it are skipped). */
@@ -183,10 +222,15 @@ export class Airports {
     const out: RunwayFlatten[] = []
     const cLat = (latS + latN) / 2
     const cLon = (lonW + lonE) / 2
+    // Land below sea level around a field that lies there keeps its true heights (the data's negative cells are land, not sea).
+    for (const ap of this.near(cLat, cLon, distanceM({ lat: latS, lon: lonW }, { lat: latN, lon: lonE }) / 2 + LOWLAND_RADIUS_M + 500)) {
+      if (airportFieldElevationM(ap) < BELOW_SEA_FIELD_M) out.push({ la1: ap.la, lo1: ap.lo, la2: ap.la, lo2: ap.lo, e1M: 0, e2M: 0, halfWidthM: LOWLAND_RADIUS_M, lowland: true })
+    }
     for (const ap of this.near(cLat, cLon, distanceM({ lat: latS, lon: lonW }, { lat: latN, lon: lonE }) / 2 + 4000)) {
       // The level disk first (a zero-length runway); the runway corridors then override it.
       const disk = airportFlatDisk(ap)
       if (disk) out.push({ la1: disk.lat, lo1: disk.lon, la2: disk.lat, lo2: disk.lon, e1M: disk.elevM, e2M: disk.elevM, halfWidthM: disk.halfWidthM, disk: true })
+      if (ap.land) for (const [a, b, c, d] of ap.land) out.push({ la1: a, lo1: b, la2: c, lo2: d, e1M: airportFieldElevationM(ap), e2M: airportFieldElevationM(ap), halfWidthM: LAND_RUN_HALF_WIDTH_M, land: true })
       for (const r of ap.r) {
         const f = flattenEnds({ ...r, e1M: r.e1 * FT, e2M: r.e2 * FT })
         out.push({
@@ -199,11 +243,10 @@ export class Airports {
     return out
   }
 
-  /** True within a field's level area (and a margin) when the field lies at or below sea level: the sea is not drawn there. */
+  /** True near a field that lies below sea level (its lowland and a margin): the sea is not drawn there. */
   belowSeaFieldNear(lat: number, lon: number): boolean {
-    for (const ap of this.near(lat, lon, 12_000)) {
-      const disk = airportFlatDisk(ap)
-      if (disk && disk.elevM < BELOW_SEA_FIELD_M && distanceM({ lat, lon }, { lat: disk.lat, lon: disk.lon }) < disk.halfWidthM + FLAT_INNER_MARGIN_M + BELOW_SEA_MARGIN_M) return true
+    for (const ap of this.near(lat, lon, LOWLAND_RADIUS_M + BELOW_SEA_MARGIN_M)) {
+      if (airportFieldElevationM(ap) < BELOW_SEA_FIELD_M && distanceM({ lat, lon }, { lat: ap.la, lon: ap.lo }) < LOWLAND_RADIUS_M + BELOW_SEA_MARGIN_M) return true
     }
     return false
   }
@@ -218,6 +261,11 @@ export class Airports {
         const mLon = mLat * Math.cos((lat * Math.PI) / 180)
         const x = (disk.lon - lon) * mLon, y = (disk.lat - lat) * mLat
         if (terrainM > 0 || disk.elevM < BELOW_SEA_FIELD_M) h = flattenForRunway(h, 0, 0, x, y, x, y, disk.elevM, disk.elevM, disk.halfWidthM) // open water stays water (as in the terrain worker), except around a field below sea level
+      }
+      if (ap.land && terrainM <= 0) {
+        // A reclaimed field's land: levelled where the data says sea, as in the terrain worker.
+        const mLat = 111_319.5, mLon = mLat * Math.cos((lat * Math.PI) / 180), e = airportFieldElevationM(ap)
+        for (const [a, b, c, d] of ap.land) h = flattenForRunway(h, 0, 0, (b - lon) * mLon, (a - lat) * mLat, (d - lon) * mLon, (c - lat) * mLat, e, e, LAND_RUN_HALF_WIDTH_M)
       }
       for (const r of ap.r) {
         // Work in a small local meter frame around the sample.
@@ -240,6 +288,7 @@ export class Airports {
   updateVisuals(lat: number, lon: number): void {
     if (!this.loaded) return
     void this.ensureXplaneOnlyNear(lat, lon)
+    void this.ensureLandNear(lat, lon)
     const nearby = this.near(lat, lon, 60_000)
     const wanted = new Set(nearby.map((a) => a.i))
     for (const [icao, group] of this.rendered) {
