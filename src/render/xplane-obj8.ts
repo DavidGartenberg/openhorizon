@@ -773,11 +773,23 @@ export function buildObj8(
  * top-down (verified against their authored UV islands), so reflect V in
  * each DDS texture matrix instead. PNGs retain Three's normal upload flip.
  */
-async function loadTexture(url: string, srgb: boolean): Promise<THREE.Texture> {
+/** Redraw a decoded image at no more than `maxSize` pixels on its long side (a 4096² RGBA texture is 89 MB with mipmaps; 2048² is 22 MB). */
+function shrinkTexture(tex: THREE.Texture, maxSize: number): void {
+  const im = tex.image as { width: number; height: number } | undefined
+  if (!im || !(im.width > maxSize || im.height > maxSize) || typeof document === 'undefined') return
+  const k = maxSize / Math.max(im.width, im.height)
+  const c = document.createElement('canvas')
+  c.width = Math.max(1, Math.round(im.width * k)); c.height = Math.max(1, Math.round(im.height * k))
+  c.getContext('2d')!.drawImage(im as unknown as CanvasImageSource, 0, 0, c.width, c.height)
+  tex.image = c
+}
+
+async function loadTexture(url: string, srgb: boolean, maxSize?: number): Promise<THREE.Texture> {
   const dds = /\.dds$/i.test(url)
   const tex: THREE.Texture = dds
     ? await new DDSLoader().loadAsync(url)
     : await new THREE.TextureLoader().loadAsync(url)
+  if (!dds && maxSize) shrinkTexture(tex, maxSize)
   tex.flipY = !dds
   if (dds) { tex.repeat.y = -1; tex.offset.y = 1 }
   tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace
@@ -800,9 +812,9 @@ export function textureCandidates(name: string, base: string, overrideBase?: str
   return [...(overrideBase ? names.map((n) => overrideBase + n) : []), ...names.map((n) => base + n)]
 }
 
-async function firstTexture(urls: string[], srgb: boolean): Promise<THREE.Texture | null> {
+async function firstTexture(urls: string[], srgb: boolean, maxSize?: number): Promise<THREE.Texture | null> {
   for (const url of urls) {
-    try { return await loadTexture(url, srgb) } catch { /* try the next candidate */ }
+    try { return await loadTexture(url, srgb, maxSize) } catch { /* try the next candidate */ }
   }
   return null
 }
@@ -814,25 +826,26 @@ async function loadTextureWithFallback(
   warnings: string[],
   cache?: Map<string, Promise<THREE.Texture | null>>,
   overrideBase?: string,
+  maxSize?: number,
 ): Promise<THREE.Texture | null> {
   if (!name) return null
   if (overrideBase) {
     // A livery paints only some textures; the others are the airplane's own, loaded once and shared through the cache.
-    const key = `${overrideBase}${name}:${srgb}`
-    const own = (): Promise<THREE.Texture | null> => firstTexture(textureCandidates(name, base, overrideBase).slice(0, alternateName(name) ? 2 : 1), srgb)
-      .then((t) => t ?? loadTextureWithFallback(name, base, srgb, warnings, cache))
+    const key = `${overrideBase}${name}:${srgb}:${maxSize ?? 0}`
+    const own = (): Promise<THREE.Texture | null> => firstTexture(textureCandidates(name, base, overrideBase).slice(0, alternateName(name) ? 2 : 1), srgb, maxSize)
+      .then((t) => t ?? loadTextureWithFallback(name, base, srgb, warnings, cache, undefined, maxSize))
     if (!cache) return own()
     let pending = cache.get(key)
     if (!pending) { pending = own(); cache.set(key, pending) }
     return pending
   }
   if (cache) {
-    const key = `${base}${name}:${srgb}`
+    const key = `${base}${name}:${srgb}:${maxSize ?? 0}`
     let pending = cache.get(key)
-    if (!pending) { pending = loadTextureWithFallback(name, base, srgb, warnings); cache.set(key, pending) }
+    if (!pending) { pending = loadTextureWithFallback(name, base, srgb, warnings, undefined, undefined, maxSize); cache.set(key, pending) }
     return pending
   }
-  const found = await firstTexture(textureCandidates(name, base), srgb)
+  const found = await firstTexture(textureCandidates(name, base), srgb, maxSize)
   if (!found) warnings.push(`texture not found: ${base}${name}`)
   return found
 }
@@ -899,6 +912,10 @@ export interface LoadObj8Options {
   lod?: number
   /** Per-aircraft texture ownership/cache; never shared across disposed aircraft. */
   textureCache?: Map<string, Promise<THREE.Texture | null>>
+  /** For airplanes seen from far away (traffic): no normal / gloss maps, and textures no larger than this on a side. */
+  distant?: { maxTextureSize: number }
+  /** Cap on the side of normal / gloss maps (a decoded 4096² one is 89 MB): the paint keeps its full size. */
+  normalMaxSize?: number
   /** A livery's texture folder (URL prefix): its files replace the airplane's of the same name, the rest fall back to `textureBase`. */
   textureOverrideBase?: string
   /** Material for ATTR_cockpit* draws (X-Plane's panel / device screens), e.g. a live display. */
@@ -936,13 +953,13 @@ export async function loadObj8(url: string, opts: LoadObj8Options): Promise<Load
   const want = opts.loadTextures ?? true
   const [map, emissiveMap, normalMap, materialGlossMap, glossMap] = want
     ? await Promise.all([
-        loadTextureWithFallback(parsed.albedo, base, true, warnings, opts.textureCache, overrideBase),
-        loadTextureWithFallback(parsed.lit, base, true, warnings, opts.textureCache),
+        loadTextureWithFallback(parsed.albedo, base, true, warnings, opts.textureCache, overrideBase, opts.distant?.maxTextureSize),
+        loadTextureWithFallback(parsed.lit, base, true, warnings, opts.textureCache, undefined, opts.distant?.maxTextureSize),
         // A livery changes the paint only: its normal and gloss maps are the airplane's own (and are not loaded again —
         // a second decoded 4096² normal map per livery is what exhausts the graphics memory).
-        loadTextureWithFallback(parsed.normal, base, false, warnings, opts.textureCache),
-        loadTextureWithFallback(parsed.materialGloss, base, false, warnings, opts.textureCache),
-        loadTextureWithFallback(parsed.gloss, base, false, warnings, opts.textureCache),
+        opts.distant ? Promise.resolve(null) : loadTextureWithFallback(parsed.normal, base, false, warnings, opts.textureCache, undefined, opts.normalMaxSize),
+        opts.distant ? Promise.resolve(null) : loadTextureWithFallback(parsed.materialGloss, base, false, warnings, opts.textureCache, undefined, opts.normalMaxSize),
+        opts.distant ? Promise.resolve(null) : loadTextureWithFallback(parsed.gloss, base, false, warnings, opts.textureCache, undefined, opts.normalMaxSize),
       ])
     : [null, null, null, null, null]
 

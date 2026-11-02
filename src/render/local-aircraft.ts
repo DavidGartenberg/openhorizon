@@ -94,7 +94,7 @@ export function disposeAircraftGeometry(root: THREE.Object3D): void {
 let activeLoads = 0
 const waitingLoads: Array<() => void> = []
 /** Options for a traffic copy: a livery folder name (…/liveries/<name>) and a texture cache shared with the model's other loads (never disposed). */
-export interface LocalAircraftOptions { livery?: string; textureCache?: Map<string, Promise<THREE.Texture | null>> }
+export interface LocalAircraftOptions { livery?: string; textureCache?: Map<string, Promise<THREE.Texture | null>>; /** Seen from far away: no normal maps, textures capped (see LoadObj8Options.distant). */ distant?: { maxTextureSize: number } }
 
 export async function loadLocalAircraft(key: string, signal?: AbortSignal, opts: LocalAircraftOptions = {}): Promise<LocalAircraftVisual | null> {
   if (!localModelFor(key)) return null
@@ -140,7 +140,7 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal, opts: 
     for (const path of entry.objs) {
       signal?.throwIfAborted()
       const url = '/xp/aircraft/' + path.split('/').map(encodeURIComponent).join('/')
-      const part = await loadObj8(url, {textureBase: url.slice(0, url.lastIndexOf('/') + 1), textureCache, ...(liveryBase ? {textureOverrideBase: liveryBase} : {})})
+      const part = await loadObj8(url, {textureBase: url.slice(0, url.lastIndexOf('/') + 1), textureCache, normalMaxSize: 2048, ...(liveryBase ? {textureOverrideBase: liveryBase} : {}), ...(opts.distant ? {distant: opts.distant} : {})})
       if (/\/[^/]*(?:cfm|trent|engine)[^/]*\.obj$/i.test(path)) part.group.name = 'engineNacelle'
       parts.push(part); group.add(part.group)
       signal?.throwIfAborted()

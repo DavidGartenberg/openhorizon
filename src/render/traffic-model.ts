@@ -26,6 +26,9 @@ export interface TrafficModelInstance {
 
 interface Proto { instantiate: () => LocalAircraftInstance; minY: number }
 
+/** Traffic is seen from afar: no normal maps, and textures no larger than 2048 px (a decoded 4096² map is 89 MB). */
+export const DISTANT_TEXTURES = { maxTextureSize: 2048 }
+
 /** At most this many airline liveries are held at once (each is tens of megabytes of textures); later ones keep the default paint. */
 export const MAX_LIVERIES = 2
 
@@ -40,7 +43,7 @@ export class TrafficModelLibrary {
     this.protos.set(slot, 'loading')
     let cache = this.textures.get(key)
     if (!cache) this.textures.set(key, (cache = new Map()))
-    void loadLocalAircraft(key, undefined, { textureCache: cache, ...(livery ? { livery } : {}) }).then((v) => {
+    void loadLocalAircraft(key, undefined, { textureCache: cache, distant: DISTANT_TEXTURES, ...(livery ? { livery } : {}) }).then((v) => {
       if (!v?.instantiate) { this.protos.set(slot, 'failed'); return }
       v.surfaces({ flapFrac: 0, spoilerFrac: 0, gearPos: 1 })
       // Lowest point with the gear down (the tyres), in the model's own frame.

@@ -28,3 +28,38 @@ describe('terminal heights through the client layout', () => {
     expect(l.tm).toHaveLength(1); expect(l.tmh.get(l.tm[0]!)).toBeUndefined()
   })
 })
+
+import fs from 'node:fs'
+import path from 'node:path'
+import { afterEach, vi } from 'vitest'
+// @ts-expect-error plain ES module without types (server code)
+import { osmAirport } from '../server/handlers.mjs'
+
+describe('the OSM airport route keeps terminal heights (Overpass mocked)', () => {
+  const cacheFile = path.join(process.cwd(), 'server', 'cache', 'osm-ZZT9.json')
+  afterEach(() => { vi.unstubAllGlobals(); fs.rmSync(cacheFile, { force: true }) })
+  const way = (tags: Record<string, string>) => ({ geometry: [{ lat: 1, lon: 1 }, { lat: 1, lon: 1.001 }, { lat: 1.001, lon: 1.001 }, { lat: 1.001, lon: 1 }], tags: { aeroway: 'terminal', ...tags } })
+  it('fetches an airport cached without heights once more and stores them next to its terminals', async () => {
+    fs.writeFileSync(cacheFile, JSON.stringify({ tw: [], ap: [], tm: [[[1, 1], [1, 1.001], [1.001, 1.001]]], st: [] }))     // an old cache: terminals, no `th`
+    const fetched = vi.fn(async () => ({ ok: true, json: async () => ({ elements: [way({ height: '24' }), way({ 'building:levels': '2' }), way({})] }) }))
+    vi.stubGlobal('fetch', fetched)
+    const out = JSON.parse(await osmAirport('ZZT9', 1, 1))
+    expect(fetched).toHaveBeenCalledTimes(1)
+    expect(out.tm).toHaveLength(3); expect(out.th).toEqual([24, 7.2, null])
+    expect(JSON.parse(fs.readFileSync(cacheFile, 'utf8')).th).toEqual([24, 7.2, null])
+  })
+  it('keeps the old cache when the network is down, and never refetches one that has heights', async () => {
+    fs.writeFileSync(cacheFile, JSON.stringify({ tw: [], ap: [], tm: [[[1, 1], [1, 1.001], [1.001, 1.001]]], st: [] }))
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    // The route memoises per process: use a fresh module for each case.
+    vi.resetModules()
+    const m1 = (await import(/* @vite-ignore */ '../server/' + 'handlers.mjs')) as { osmAirport: (i: string, a: number, b: number) => Promise<string> }
+    expect(JSON.parse(await m1.osmAirport('ZZT9', 1, 1)).tm).toHaveLength(1)
+    fs.writeFileSync(cacheFile, JSON.stringify({ tw: [], ap: [], tm: [[[1, 1], [1, 1.001], [1.001, 1.001]]], th: [12], st: [] }))
+    const fetched = vi.fn(async () => { throw new Error('should not be called') })
+    vi.stubGlobal('fetch', fetched)
+    vi.resetModules()
+    const m2 = (await import(/* @vite-ignore */ '../server/' + 'handlers.mjs')) as { osmAirport: (i: string, a: number, b: number) => Promise<string> }
+    expect(JSON.parse(await m2.osmAirport('ZZT9', 1, 1)).th).toEqual([12]); expect(fetched).not.toHaveBeenCalled()
+  })
+})

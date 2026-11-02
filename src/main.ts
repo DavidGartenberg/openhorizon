@@ -3892,6 +3892,39 @@ Object.assign(window as unknown as Record<string, unknown>, {
     width: renderer.domElement.width,
     height: renderer.domElement.height,
   }),
+  /** An estimate of the textures' and geometries' memory (MB) from everything the scene's materials use (verification; GPU truth may differ). */
+  __ohGpuMemory: () => {
+    const seen = new Set<THREE.Texture>(), geos = new Set<THREE.BufferGeometry>()
+    let geoCount = 0
+    const seenBuffers = new Set<object>()
+    let texBytes = 0, compressed = 0, geoBytes = 0
+    const big: Array<[string, number]> = [], bigGeo: Array<[string, number]> = [], bigTex: Array<[string, number]> = []
+    scene.traverse((o) => {
+      const mesh = o as THREE.Mesh
+      if (mesh.geometry && !geos.has(mesh.geometry)) {
+        geos.add(mesh.geometry); geoCount++
+        // Draws of one OBJ share their vertex attributes: count each attribute and index buffer once.
+        for (const a of Object.values(mesh.geometry.attributes)) if (!seenBuffers.has(a)) { seenBuffers.add(a); geoBytes += (a as THREE.BufferAttribute).array.byteLength }
+        const ix = mesh.geometry.index
+        if (ix && !seenBuffers.has(ix)) { seenBuffers.add(ix); geoBytes += ix.array.byteLength }
+        const gb = Object.values(mesh.geometry.attributes).reduce((n, a) => n + (a as THREE.BufferAttribute).array.byteLength, 0) + (mesh.geometry.index?.array.byteLength ?? 0)
+        if (gb > 4e6) bigGeo.push([`${mesh.name || mesh.type} < ${mesh.parent?.name || mesh.parent?.type} < ${mesh.parent?.parent?.name || ''}`, Math.round(gb / 1e6)])
+      }
+      const mats = Array.isArray(mesh.material) ? mesh.material : mesh.material ? [mesh.material] : []
+      for (const m of mats) for (const v of Object.values(m as unknown as Record<string, unknown>)) {
+        const t = v as THREE.Texture
+        if (t && (t as { isTexture?: boolean }).isTexture && !seen.has(t)) {
+          seen.add(t)
+          let bytes = 0
+          if ((t as THREE.CompressedTexture).isCompressedTexture) { bytes = (t as THREE.CompressedTexture).mipmaps?.reduce((n, mm) => n + ((mm as { data?: { byteLength?: number } }).data?.byteLength ?? 0), 0) ?? 0; compressed += bytes }
+          else { const im = t.image as { width?: number; height?: number } | null; bytes = (im?.width ?? 0) * (im?.height ?? 0) * 4 * (t.generateMipmaps ? 1.33 : 1) }
+          texBytes += bytes
+          if (bytes > 8e6) big.push([`${(t.image as { width?: number })?.width ?? '?'}px ${(t.image as { currentSrc?: string; src?: string } | undefined)?.currentSrc?.split('/').slice(-3).join('/') ?? (t.image as { src?: string } | undefined)?.src?.split('/').slice(-3).join('/') ?? t.name ?? t.uuid.slice(0, 6)}`, Math.round(bytes / 1e6)])
+        }
+      }
+    })
+    return { textures: seen.size, textureMB: Math.round(texBytes / 1e6), compressedMB: Math.round(compressed / 1e6), geometryMB: Math.round(geoBytes / 1e6), geoCount, jsHeapMB: Math.round(((performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0) / 1e6), big: big.sort((a, b) => b[1] - a[1]).slice(0, 14), bigGeo: bigGeo.sort((a, b) => b[1] - a[1]).slice(0, 8), bigTex }
+  },
   __ohPerf: () => {
     const n = perfCount
     const arr = Array.from(perfRing.slice(0, n)).sort((a, b) => a - b)
