@@ -139,3 +139,44 @@ describe('displaced thresholds', () => {
     for (const q of d) expect(Math.abs(q.y) - q.l / 2).toBeLessThanOrEqual(LEN / 2 + 0.5)
   })
 })
+
+import { overrunGeometry, MAX_OVERRUN_M } from '../src/world/runway-marks'
+describe('overrun / blast pad', () => {
+  const LEN = 3000, WID = 45
+  const corners = (q: { x: number; y: number; w: number; l: number; rotZ?: number }): Array<[number, number]> => {
+    const c = Math.cos(q.rotZ ?? 0), s = Math.sin(q.rotZ ?? 0)
+    return ([[-1, -1], [1, -1], [1, 1], [-1, 1]] as const).map(([a, b]) => [q.x + (a * q.w / 2) * c - (b * q.l / 2) * s, q.y + (a * q.w / 2) * s + (b * q.l / 2) * c])
+  }
+  it('is empty with no overrun, on either end, and ignores junk lengths', () => {
+    expect(overrunGeometry(LEN, WID, 0, 0)).toEqual({ pavement: [], chevrons: [] })
+    expect(overrunGeometry(LEN, WID, undefined, NaN)).toEqual({ pavement: [], chevrons: [] })
+    expect(overrunGeometry(LEN, WID, -5, 0.4).pavement).toHaveLength(0)
+    expect(overrunGeometry(LEN, WID, 1e9, 0).pavement[0]!.l).toBe(MAX_OVERRUN_M)
+  })
+  it('paves exactly the stretch beyond each runway end, as wide as the runway', () => {
+    const g = overrunGeometry(LEN, WID, 60, 100)
+    expect(g.pavement).toEqual([{ x: 0, y: -(LEN / 2 + 30), w: WID, l: 60 }, { x: 0, y: LEN / 2 + 50, w: WID, l: 100 }])
+  })
+  it('puts chevrons 30 m apart, apex toward the runway, every leg inside the pavement', () => {
+    const g = overrunGeometry(LEN, WID, 0, 100)
+    expect(g.chevrons.length).toBe(2 * 3)                                  // apexes at 8, 38, 68 m; the next would not fit
+    for (const q of g.chevrons) for (const [x, y] of corners(q)) {
+      expect(Math.abs(x)).toBeLessThanOrEqual(WID / 2)
+      expect(y).toBeGreaterThanOrEqual(LEN / 2 - 1); expect(y).toBeLessThanOrEqual(LEN / 2 + 100)
+    }
+    // A leg's centre lies farther from the runway than the apex it springs from (the apex points at the runway).
+    const apexY = (k: number): number => LEN / 2 + 8 + 30 * k
+    for (const [i, q] of g.chevrons.entries()) expect(q.y).toBeGreaterThan(apexY(Math.floor(i / 2)))
+    // The pair of legs are mirror images.
+    for (let i = 0; i < g.chevrons.length; i += 2) { expect(g.chevrons[i]!.x).toBeCloseTo(-g.chevrons[i + 1]!.x); expect(g.chevrons[i]!.rotZ).toBeCloseTo(-g.chevrons[i + 1]!.rotZ!) }
+  })
+  it('mirrors for the low end', () => {
+    const hi = overrunGeometry(LEN, WID, 0, 90), lo = overrunGeometry(LEN, WID, 90, 0)
+    expect(lo.chevrons.map((q) => q.y)).toEqual(hi.chevrons.map((q) => -q.y))
+    expect(lo.chevrons.every((q) => q.y < -LEN / 2)).toBe(true)
+  })
+  it('a pad too short for a chevron is paved but unmarked', () => {
+    const g = overrunGeometry(LEN, WID, 0, 15)
+    expect(g.pavement).toHaveLength(1); expect(g.chevrons).toHaveLength(0)
+  })
+})

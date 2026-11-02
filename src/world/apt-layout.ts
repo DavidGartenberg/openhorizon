@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { disposeAirportObject, ownMaterial, type GroundPoint, type SurfaceObstacle } from './airport-scenery'
-import { buildRunwayMarkings, type RunwayLocal } from './airport-detail'
+import { buildRunwayMarkings, buildRunwayOverruns, type RunwayLocal } from './airport-detail'
 import { osmIdentSegs } from './osm-layout'
 import { lightGlowTexture } from '../render/light-glow'
 
@@ -444,17 +444,49 @@ export const isConcreteSurface = (surf: number): boolean => surf === 2 || (surf 
 /** "09L" and "9L" are the same runway end. */
 const identKey = (id: string): string => id.trim().toUpperCase().replace(/^0+(?=\d)/, '')
 
+type RunwayDetail = { li: string; hi: string; rl: RunwayLocal; detail: THREE.Group; setConcrete?: (on: boolean) => void }
+
+/** apt.dat's runway that the old database's runway detail stands for (same two ends, either order). */
+function aptRunwayFor(d: RunwayDetail, rwy: readonly AptRunway[]): AptRunway | undefined {
+  const low = identKey(d.li), high = identKey(d.hi)
+  return rwy.find((r) => { const a = identKey(r.ends[0].id), b = identKey(r.ends[1].id); return (a === low && b === high) || (a === high && b === low) })
+}
+
+/**
+ * X-Plane's blast pads / overruns: the paved stretch beyond each runway end with its yellow chevrons.
+ * The old runway data has none. Returns how many runways gained one.
+ */
+export function applyRunwayOverruns(group: THREE.Group, rwy: readonly AptRunway[]): number {
+  const details = group.userData.runwayDetails as RunwayDetail[] | undefined
+  if (!details) return 0
+  let added = 0
+  for (const d of details) {
+    const m = aptRunwayFor(d, rwy)
+    if (!m) continue
+    const overOf = (k: string): number => m.ends.find((e) => identKey(e.id) === k)?.over ?? 0
+    const overrunLowM = overOf(identKey(d.li)), overrunHighM = overOf(identKey(d.hi))
+    const old = d.detail.getObjectByName('runwayOverruns')
+    if (old) { d.detail.remove(old); disposeAirportObject(old) }
+    if (!(overrunLowM >= 1 || overrunHighM >= 1)) continue
+    const fresh = buildRunwayOverruns({ ...d.rl, overrunLowM, overrunHighM }, isConcreteSurface(m.surf))
+    fresh.name = 'runwayOverruns'
+    d.detail.add(fresh)
+    added++
+  }
+  return added
+}
+
 /**
  * X-Plane's displaced thresholds: redraw each runway's markings with the landing threshold, arrows and bar
  * where the airport data puts them. Runways without a displacement keep their markings. Returns how many changed.
  */
 export function applyDisplacedThresholds(group: THREE.Group, rwy: readonly AptRunway[]): number {
-  const details = group.userData.runwayDetails as Array<{ li: string; hi: string; rl: RunwayLocal; detail: THREE.Group; setConcrete?: (on: boolean) => void }> | undefined
+  const details = group.userData.runwayDetails as RunwayDetail[] | undefined
   if (!details) return 0
   let changed = 0
   for (const d of details) {
     const low = identKey(d.li), high = identKey(d.hi)
-    const m = rwy.find((r) => { const a = identKey(r.ends[0].id), b = identKey(r.ends[1].id); return (a === low && b === high) || (a === high && b === low) })
+    const m = aptRunwayFor(d, rwy)
     if (!m) continue
     d.setConcrete?.(isConcreteSurface(m.surf))
     const endOf = (k: string): number => m.ends.find((e) => identKey(e.id) === k)?.dthr ?? 0
@@ -612,6 +644,7 @@ export async function enhanceAirportWithXplane(group: THREE.Group, icao: string,
   built.add(...buildAptPaint(layout, toLocal, elevM))
   await idle(); if (!alive()) return false
   group.userData.aptDisplaced = applyDisplacedThresholds(group, layout.rwy)
+  group.userData.aptOverruns = applyRunwayOverruns(group, layout.rwy)
   const lights = buildAptLights(layout, toLocal, elevM)
   if (lights) { group.add(lights); group.userData.aptLights = lights }
   const signs = buildAptSigns(layout, toLocal, elevM)

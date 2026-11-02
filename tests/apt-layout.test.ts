@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 // The glow sprite needs a canvas; geometry and styling are what these tests are about.
 vi.mock('../src/render/light-glow', () => ({ lightGlowTexture: () => ({ isTexture: true }) }))
 // Marking meshes paint a wear texture on a canvas; the redraw logic is what these tests are about.
-vi.mock('../src/world/airport-detail', async () => { const T = await import('three'); return { buildRunwayMarkings: () => new T.Group() } })
+vi.mock('../src/world/airport-detail', async (importActual) => { const T = await import('three'); return { ...(await importActual<typeof import('../src/world/airport-detail')>()), buildRunwayMarkings: () => new T.Group() } })
 import * as THREE from 'three'
 import {
   normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
@@ -208,7 +208,7 @@ describe('taxi signs', () => {
   })
 })
 
-import { applyDisplacedThresholds, isConcreteSurface } from '../src/world/apt-layout'
+import { applyDisplacedThresholds, applyRunwayOverruns, isConcreteSurface } from '../src/world/apt-layout'
 describe('displaced thresholds from the airport data', () => {
   const holder = (li: string, hi: string): { group: THREE.Group; detail: THREE.Group } => {
     const group = new THREE.Group(), detail = new THREE.Group()
@@ -237,6 +237,45 @@ describe('displaced thresholds from the airport data', () => {
   it('keeps the runway list from the airport data, dropping a malformed one', () => {
     const l = normalizeApt({ pav: [{ surf: 1, rings: [[[0, 0], [0, 1], [1, 1]]] }], rwy: [{ w: 45, surf: 1, ends: [{ id: '10L', dthr: 0, over: 0, mark: 3 }, { id: '28R', dthr: 90, over: 50, mark: 3 }] }, { ends: [{ id: 5 }] }] })!
     expect(l.rwy).toHaveLength(1); expect(l.rwy[0]!.ends[1]).toEqual({ id: '28R', dthr: 90, over: 50, mark: 3 })
+  })
+})
+
+describe('blast pads / overruns from the airport data', () => {
+  const holder = (li: string, hi: string): { group: THREE.Group; detail: THREE.Group } => {
+    const group = new THREE.Group(), detail = new THREE.Group()
+    group.userData.runwayDetails = [{ li, hi, rl: { lenM: 3000, widM: 45, liIdent: li, hiIdent: hi, elevAt: () => 0 }, detail }]
+    return { group, detail }
+  }
+  const rwy = (a: string, oa: number, b: string, ob: number, surf = 1) => [{ w: 45, surf, ends: [{ id: a, dthr: 0, over: oa, mark: 3 }, { id: b, dthr: 0, over: ob, mark: 3 }] as never }]
+  it('adds a paved, chevron-marked overrun group to a runway that has one, replacing it on a second pass', () => {
+    const { group, detail } = holder('10L', '28R')
+    expect(applyRunwayOverruns(group, rwy('10L', 0, '28R', 120))).toBe(1)
+    const first = detail.getObjectByName('runwayOverruns') as THREE.Group
+    expect(first).toBeTruthy(); expect(first.children).toHaveLength(2)             // pavement + chevron paint
+    expect(applyRunwayOverruns(group, rwy('10L', 0, '28R', 120))).toBe(1)
+    expect(detail.children.filter((c) => c.name === 'runwayOverruns')).toHaveLength(1)
+    expect(detail.getObjectByName('runwayOverruns')).not.toBe(first)
+  })
+  it('matches ends whichever way round, and takes each overrun from its own end', () => {
+    const { group, detail } = holder('9L', '27R')
+    expect(applyRunwayOverruns(group, rwy('27R', 100, '09L', 0))).toBe(1)
+    const mesh = (detail.getObjectByName('runwayOverruns') as THREE.Group).children[0] as THREE.Mesh
+    const pos = mesh.geometry.getAttribute('position')
+    const ys = Array.from({ length: pos.count }, (_, i) => -pos.getZ(i))              // runway-local y is −z
+    expect(Math.min(...ys)).toBeGreaterThanOrEqual(1500 - 1e-6)                        // only the high (27R) end is paved
+  })
+  it('does nothing for no overrun, an unlisted runway or a group without runway details', () => {
+    const a = holder('10L', '28R')
+    expect(applyRunwayOverruns(a.group, rwy('10L', 0, '28R', 0))).toBe(0)
+    expect(a.detail.getObjectByName('runwayOverruns')).toBeUndefined()
+    expect(applyRunwayOverruns(a.group, rwy('1L', 80, '19R', 0))).toBe(0)
+    expect(applyRunwayOverruns(new THREE.Group(), rwy('10L', 80, '28R', 0))).toBe(0)
+  })
+  it('removes a stale overrun when the airport data no longer has one', () => {
+    const { group, detail } = holder('10L', '28R')
+    applyRunwayOverruns(group, rwy('10L', 0, '28R', 120))
+    expect(applyRunwayOverruns(group, rwy('10L', 0, '28R', 0))).toBe(0)
+    expect(detail.getObjectByName('runwayOverruns')).toBeUndefined()
   })
 })
 

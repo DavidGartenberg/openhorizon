@@ -142,3 +142,43 @@ export function runwayMarkQuads(lenM: number, widM: number, opts: MarkOptions = 
   }
   return quads
 }
+
+/** Longest overrun / blast pad drawn (m); real ones are 15–300 m. */
+export const MAX_OVERRUN_M = 600
+const CHEVRON_PITCH_M = 30
+const CHEVRON_FIRST_M = 8
+const CHEVRON_LEG_W_M = 1.2
+
+export interface OverrunGeometry {
+  /** Paved rectangles beyond the runway ends (same surface as the runway). */
+  pavement: Quad[]
+  /** Yellow chevron legs: each chevron's apex points toward the runway, its legs open away from it. */
+  chevrons: Quad[]
+}
+
+/**
+ * The blast pad / overrun beyond each runway end (apt.dat's "length of blast pad/overrun", not part of the
+ * runway length) in the runway-local frame: the paved rectangle, and yellow chevrons every 30 m with their
+ * apex toward the runway, as on a stopway or blast pad.
+ */
+export function overrunGeometry(lenM: number, widM: number, lowM: number | undefined, highM: number | undefined): OverrunGeometry {
+  const pavement: Quad[] = [], chevrons: Quad[] = []
+  const clean = (v: number | undefined): number => Math.min(Math.max(Number.isFinite(v) ? v! : 0, 0), MAX_OVERRUN_M)
+  const halfSpan = Math.max(widM / 2 - 1.8, 1)
+  const depth = Math.min(Math.max(halfSpan * 0.6, 4), 14)
+  for (const [end, raw] of [[-1, lowM], [1, highM]] as const) {
+    const over = clean(raw)
+    if (over < 1) continue
+    pavement.push({ x: 0, y: end * (lenM / 2 + over / 2), w: widM, l: over })
+    for (let k = 0; ; k++) {
+      const apex = CHEVRON_FIRST_M + k * CHEVRON_PITCH_M          // metres from the runway end to the apex
+      if (apex + depth + CHEVRON_LEG_W_M > over) break
+      for (const side of [-1, 1] as const) {
+        const dx = side * halfSpan, dy = end * depth
+        const len = Math.hypot(dx, dy)
+        chevrons.push({ x: dx / 2, y: end * (lenM / 2 + apex) + dy / 2, w: CHEVRON_LEG_W_M, l: len + CHEVRON_LEG_W_M, rotZ: Math.atan2(-dx / len, dy / len) })
+      }
+    }
+  }
+  return { pavement, chevrons }
+}

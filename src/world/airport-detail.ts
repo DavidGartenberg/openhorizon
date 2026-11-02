@@ -18,7 +18,7 @@
 import * as THREE from 'three'
 import { ownMaterial } from './airport-scenery'
 import { pavementMaterial } from '../render/surface-materials'
-import { runwayMarkQuads, designatorLayout, clampDisplaced, FT, type Quad } from './runway-marks'
+import { runwayMarkQuads, overrunGeometry, designatorLayout, clampDisplaced, FT, type Quad } from './runway-marks'
 
 /** Painted markings: unlit, multiplied by a tiling wear map so fresh paint,
  *  scuffs and rubber-dulled patches read like the real thing. */
@@ -75,6 +75,9 @@ export interface RunwayLocal {
   /** Pavement before the landing threshold at each end (X-Plane's displaced thresholds), metres. */
   displacedLowM?: number
   displacedHighM?: number
+  /** Blast pad / overrun beyond each runway end (X-Plane's apt.dat), metres, not part of lenM. */
+  overrunLowM?: number
+  overrunHighM?: number
   elevAt: (t: number) => number // t ∈ [-0.5, 0.5] → elevation offset vs center
 }
 
@@ -202,6 +205,26 @@ export function buildRunwayMarkings(r: RunwayLocal): THREE.Group {
       quad.renderOrder = 22
       g.add(quad)
     }
+  }
+  return g
+}
+
+/** The paved overrun / blast pad beyond each runway end with its yellow chevrons (apex toward the runway). */
+const OVERRUN_ASPHALT = pavementMaterial(0x484b4d, 'xz')
+const OVERRUN_CONCRETE = pavementMaterial(0x8e908b, 'xz')
+export function buildRunwayOverruns(r: RunwayLocal, concrete: boolean): THREE.Group {
+  const g = new THREE.Group()
+  const geo = overrunGeometry(r.lenM, r.widM, r.overrunLowM, r.overrunHighM)
+  if (geo.pavement.length) {
+    const pave = new THREE.Mesh(mergedQuads(geo.pavement, r, 0.05), concrete ? OVERRUN_CONCRETE : OVERRUN_ASPHALT)
+    pave.receiveShadow = true
+    pave.renderOrder = 20
+    g.add(pave)
+  }
+  if (geo.chevrons.length) {
+    const paint = new THREE.Mesh(mergedQuads(geo.chevrons, r, 0.16), TAXI_LINE)
+    paint.renderOrder = 22
+    g.add(paint)
   }
   return g
 }
