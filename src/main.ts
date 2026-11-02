@@ -2634,7 +2634,7 @@ function makeBoeingNdInput(d: typeof aircraft.data, ll: { lat: number; lon: numb
   return {
     hdgDeg: d.headingDeg, trackDeg: d.trackDeg, selHdgDeg: apTargets.headingBugDeg,
     gsKt: d.groundSpeedKt, tasKt: d.ktas, windDirDeg: windDirFromNed(aircraft.windNed), windKt, rangeNm,
-    airports: airports.near(ll.lat, ll.lon, (rangeNm + 5) * 1852).map((a) => ({ id: a.i, ...nm(a.la, a.lo) })),
+    airports: airports.near(ll.lat, ll.lon, (rangeNm + 5) * 1852).filter((a) => !a.xo).map((a) => ({ id: a.i, ...nm(a.la, a.lo) })),
     route: wps.map((w, i) => ({ id: w.ident, ...nm(w.lat, w.lon), active: i === activeIdx })),
     ...(activeWp && prog ? { activeWpt: { id: activeWp.ident, distNm: prog.distanceRemainingM / 1852, etaZ: etaZ(prog.distanceRemainingM) } } : {}),
     traffic: trafficDots.map((t) => ({ nN: t.dNorthM / 1852, nE: t.dEastM / 1852, relAltFt: t.relAltFt, alerted: t.alerted })),
@@ -3462,7 +3462,7 @@ function advanceFrame(elapsed: number, now: number): void {
         headingDeg: d.headingDeg,
         rangeM: 20 * 1852,
         trackUp: false,
-        airports: airports.near(ll.lat, ll.lon, 60 * 1852).map((ap) => ({ id: ap.i, name: ap.n, lat: ap.la, lon: ap.lo })),
+        airports: airports.near(ll.lat, ll.lon, 60 * 1852).filter((ap) => !ap.xo).map((ap) => ({ id: ap.i, name: ap.n, lat: ap.la, lon: ap.lo })),
         airspace: currentAirspace,
         aircraftAglFt: d.aglFt,
         radarCells: nexradMfdCells,
