@@ -1,7 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+
+// The glow sprite needs a canvas; geometry and styling are what these tests are about.
+vi.mock('../src/render/light-glow', () => ({ lightGlowTexture: () => ({ isTexture: true }) }))
 import * as THREE from 'three'
 import {
-  normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, type AptLayout, type XZ,
+  normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
 } from '../src/world/apt-layout'
 
 const toLocal = (lat: number, lon: number): XZ => ({ x: lon * 100_000, z: -lat * 111_320 })
@@ -85,7 +88,7 @@ describe('dashes and offsets', () => {
 describe('the taxi network names real taxiways', () => {
   it('uses the midpoints of named taxiway edges only', () => {
     const l: AptLayout = {
-      icao: 'K', name: '', elevFt: 0, pav: [], lines: [], ramps: [],
+      icao: 'K', name: '', elevFt: 0, pav: [], lines: [], lights: [], ramps: [],
       taxi: {
         nodes: [{ id: 0, lat: 0, lon: 0, use: 'both', name: '' }, { id: 1, lat: 0, lon: 0.001, use: 'both', name: '' }],
         edges: [{ a: 0, b: 1, oneway: false, kind: 'taxiway_A', name: 'A' }, { a: 0, b: 1, oneway: false, kind: 'runway', name: '10L/28R' }, { a: 0, b: 1, oneway: false, kind: 'taxiway_B', name: '' }, { a: 0, b: 9, oneway: false, kind: 'taxiway_C', name: 'C' }],
@@ -111,7 +114,7 @@ describe('meshes', () => {
   it('pavement with a hole covers outer minus hole, merged per surface', () => {
     // toLocal: 1° lon = 100 km, 1° lat = 111.32 km  →  use tiny degrees
     const outer = square(0, 0, 0.001), hole = square(0.0003, 0.0003, 0.0002)
-    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [outer, hole] }, { surf: 1, name: '', rings: [square(0.002, 0, 0.0005)] }, { surf: 15, name: '', rings: [square(0.003, 0, 0.001)] }] }
+    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], lights: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [outer, hole] }, { surf: 1, name: '', rings: [square(0.002, 0, 0.0005)] }, { surf: 15, name: '', rings: [square(0.003, 0, 0.001)] }] }
     const g = buildAptMeshes(layout, toLocal, 10)
     const pav = g.children.filter((c) => c.name.startsWith('aptPavement')) as THREE.Mesh[]
     expect(pav).toHaveLength(1)                           // asphalt merged; the transparent surface draws nothing
@@ -121,7 +124,7 @@ describe('meshes', () => {
   })
   it('paints one mesh per colour and a border mesh only for bordered types', () => {
     const l = (t: number): AptLayout['lines'][number] => ({ t, p: [[0, 0], [0, 0.001]] })
-    const base: AptLayout = { icao: 'K', name: '', elevFt: 0, pav: [], ramps: [], taxi: { nodes: [], edges: [] }, lines: [l(1), l(2), l(3), l(20)] }
+    const base: AptLayout = { icao: 'K', name: '', elevFt: 0, pav: [], lights: [], ramps: [], taxi: { nodes: [], edges: [] }, lines: [l(1), l(2), l(3), l(20)] }
     const g = buildAptMeshes(base, toLocal, 0)
     expect(g.children.map((c) => c.name).sort()).toEqual(['aptPaint-white', 'aptPaint-yellow'])
     const g2 = buildAptMeshes({ ...base, lines: [l(51)] }, toLocal, 0)
@@ -131,8 +134,33 @@ describe('meshes', () => {
     expect(yellow.geometry.getAttribute('position').getY(0)).toBeGreaterThan(0.06)
   })
   it('a degenerate polygon is dropped without failing the airport', () => {
-    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [[[0, 0], [0, 0], [0, 0]]] }, { surf: 2, name: '', rings: [square(0, 0, 0.001)] }] }
+    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], lights: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [[[0, 0], [0, 0], [0, 0]]] }, { surf: 2, name: '', rings: [square(0, 0, 0.001)] }] }
     const g = buildAptMeshes(layout, toLocal, 0)
     expect(g.children.some((c) => c.name === 'aptPavement2')).toBe(true)
+  })
+})
+
+describe('taxiway lights', () => {
+  it('colours follow the light type: green centreline, blue edge, amber otherwise', () => {
+    expect(lightStyle(101).color[1]).toBeGreaterThan(lightStyle(101).color[0])
+    expect(lightStyle(102).color[2]).toBeGreaterThan(lightStyle(102).color[0])
+    expect(lightStyle(104).color[0]).toBeGreaterThan(lightStyle(104).color[2])
+    expect(lightStyle(101).spacingM).toBeLessThan(lightStyle(102).spacingM)
+  })
+  it('samples a polyline at an even spacing, continuing around corners', () => {
+    const pts = samplePolyline([{ x: 0, z: 0 }, { x: 10, z: 0 }], 4)
+    expect(pts.map((p) => p.x)).toEqual([0, 4, 8])
+    const bent = samplePolyline([{ x: 0, z: 0 }, { x: 5, z: 0 }, { x: 5, z: 5 }], 4)
+    expect(bent.map((p) => [p.x, p.z])).toEqual([[0, 0], [4, 0], [5, 3]])    // 4 m along, then 4 m of path later: 1 m to the corner + 3 m up the second leg
+    expect(samplePolyline([], 4)).toEqual([])
+  })
+  it('builds one Points cloud, dark until the airport fades it in, capped', () => {
+    const l: AptLayout = { icao: 'K', name: '', elevFt: 0, pav: [], lines: [], ramps: [], taxi: { nodes: [], edges: [] }, lights: [{ l: 101, p: [[0, 0], [0, 0.001]] }, { l: 102, p: [[0, 0], [0.001, 0]] }] }
+    const pts = buildAptLights(l, toLocal, 3)!
+    expect(pts.name).toBe('aptLights')
+    expect((pts.material as THREE.PointsMaterial).opacity).toBe(0)
+    expect(pts.geometry.getAttribute('position').count).toBeGreaterThan(5)
+    expect(pts.geometry.getAttribute('position').getY(0)).toBeGreaterThan(3)
+    expect(buildAptLights({ ...l, lights: [] }, toLocal, 0)).toBeNull()
   })
 })

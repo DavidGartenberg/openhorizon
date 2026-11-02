@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { disposeAirportObject, ownMaterial, type GroundPoint, type SurfaceObstacle } from './airport-scenery'
 import { osmIdentSegs } from './osm-layout'
+import { lightGlowTexture } from '../render/light-glow'
 
 /**
  * X-Plane's real airport layouts: the pavement polygons (taxiways, aprons,
@@ -18,6 +19,8 @@ import { osmIdentSegs } from './osm-layout'
  */
 
 export interface AptLine { t: number; p: [number, number][]; edge?: boolean }
+/** A run of taxiway lights: apt.dat light-type code (101 centreline, 102 edge …) along a polyline. */
+export interface AptLights { l: number; p: [number, number][] }
 export interface AptPavement { surf: number; name: string; rings: [number, number][][] }
 export interface AptTaxiNode { id: number; lat: number; lon: number; use: string; name: string }
 export interface AptTaxiEdge { a: number; b: number; oneway: boolean; kind: string; name: string }
@@ -28,6 +31,7 @@ export interface AptLayout {
   elevFt: number
   pav: AptPavement[]
   lines: AptLine[]
+  lights: AptLights[]
   ramps: AptRamp[]
   taxi: { nodes: AptTaxiNode[]; edges: AptTaxiEdge[] }
 }
@@ -53,6 +57,12 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     const p = pts(o?.p, 2)
     if (p && Number.isFinite(o.t)) lines.push({ t: Number(o.t), p, ...(o.edge ? { edge: true } : {}) })
   }
+  const lights: AptLights[] = []
+  for (const l of arr(d.lights).slice(0, 20_000)) {
+    const o = l as Record<string, unknown>
+    const p = pts(o?.p, 2)
+    if (p && Number.isFinite(o.l)) lights.push({ l: Number(o.l), p })
+  }
   const ramps: AptRamp[] = arr(d.ramps).slice(0, 2000).flatMap((r) => {
     const o = r as Record<string, unknown>
     return Number.isFinite(o?.lat) && Number.isFinite(o?.lon) ? [{ lat: Number(o.lat), lon: Number(o.lon), hdg: Number(o.hdg) || 0, kind: String(o.kind ?? ''), cats: Array.isArray(o.cats) ? o.cats.map(String) : [], name: String(o.name ?? '').slice(0, 40) }] : []
@@ -67,7 +77,7 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     return Number.isFinite(o?.a) && Number.isFinite(o?.b) ? [{ a: Number(o.a), b: Number(o.b), oneway: !!o.oneway, kind: String(o.kind ?? ''), name: String(o.name ?? '').slice(0, 12) }] : []
   })
   if (!pav.length && !lines.length) return null
-  return { icao: String(d.icao ?? ''), name: String(d.name ?? ''), elevFt: Number(d.elevFt) || 0, pav, lines, ramps, taxi: { nodes, edges } }
+  return { icao: String(d.icao ?? ''), name: String(d.name ?? ''), elevFt: Number(d.elevFt) || 0, pav, lines, lights, ramps, taxi: { nodes, edges } }
 }
 
 // ------------------------------------------------------------- surfaces --
@@ -306,6 +316,55 @@ export function buildAptMeshes(layout: AptLayout, toLocal: (lat: number, lon: nu
   return group
 }
 
+// ---------------------------------------------------------------- lights --
+
+/** Colour and spacing (m) of a light-type code: 101 green centreline, 102 blue edge, the rest amber. */
+export function lightStyle(code: number): { color: [number, number, number]; spacingM: number } {
+  if (code === 101) return { color: [0.2, 1, 0.35], spacingM: 15 }
+  if (code === 102) return { color: [0.25, 0.4, 1], spacingM: 40 }
+  return { color: [1, 0.72, 0.15], spacingM: 12 }
+}
+
+/** Points every `spacing` metres along a polyline. Pure. */
+export function samplePolyline(pts: readonly XZ[], spacing: number): XZ[] {
+  const out: XZ[] = []
+  let carry = 0
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1]!, b = pts[i]!
+    const len = Math.hypot(b.x - a.x, b.z - a.z)
+    for (let d = carry === 0 ? 0 : spacing - carry; d < len; d += spacing) out.push({ x: a.x + ((b.x - a.x) * d) / len, z: a.z + ((b.z - a.z) * d) / len })
+    carry = (carry + len) % spacing
+  }
+  return out
+}
+
+const MAX_LIGHTS = 12_000
+
+/** The taxiway lights as one additive Points cloud (faded in at night by Airports.updateNight). */
+export function buildAptLights(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number): THREE.Points | null {
+  const pos: number[] = [], col: number[] = []
+  for (const run of layout.lights) {
+    const style = lightStyle(run.l)
+    for (const p of samplePolyline(run.p.map(([lat, lon]) => toLocal(lat, lon)), style.spacingM)) {
+      if (pos.length / 3 >= MAX_LIGHTS) break
+      pos.push(p.x, elevM + 0.18, p.z)
+      col.push(...style.color)
+    }
+  }
+  if (!pos.length) return null
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3))
+  const pts = new THREE.Points(geo, new THREE.PointsMaterial({
+    map: lightGlowTexture(), size: 2.6, sizeAttenuation: false, vertexColors: true,
+    transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending,
+  }))
+  pts.name = 'aptLights'
+  pts.renderOrder = 30
+  pts.frustumCulled = false
+  return pts
+}
+
 /** Fetch and build X-Plane's layout for `icao`; true when it was applied. */
 export async function enhanceAirportWithXplane(group: THREE.Group, icao: string, refLat: number, refLon: number, elevM: number): Promise<boolean> {
   let layout: AptLayout | null
@@ -320,10 +379,12 @@ export async function enhanceAirportWithXplane(group: THREE.Group, icao: string,
   const toLocal = (lat: number, lon: number): XZ => ({ x: (lon - refLon) * mLon, z: -(lat - refLat) * mLat })
   // Reject remote/corrupt coordinates before allocating geometry.
   const near = (r: [number, number][]): boolean => r.every(([lat, lon]) => { const q = toLocal(lat, lon); return Math.hypot(q.x, q.z) < 25_000 })
-  layout = { ...layout, pav: layout.pav.map((p) => ({ ...p, rings: p.rings.filter(near) })).filter((p) => p.rings.length), lines: layout.lines.filter((l) => near(l.p)) }
+  layout = { ...layout, pav: layout.pav.map((p) => ({ ...p, rings: p.rings.filter(near) })).filter((p) => p.rings.length), lines: layout.lines.filter((l) => near(l.p)), lights: layout.lights.filter((l) => near(l.p)) }
   if (!layout.pav.length) return false
   const built = buildAptMeshes(layout, toLocal, elevM)
   group.add(built)
+  const lights = buildAptLights(layout, toLocal, elevM)
+  if (lights) { group.add(lights); group.userData.aptLights = lights }
 
   // The stand-in taxiway complex retires: X-Plane's pavement replaces it.
   const stale: THREE.Object3D[] = []

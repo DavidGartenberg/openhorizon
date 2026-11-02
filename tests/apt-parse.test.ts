@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error plain ES module without types (server code)
-import { parseAptAirport, flattenNodes, paintedRuns, airportHeader } from '../server/apt-parse.mjs'
+import { parseAptAirport, flattenNodes, paintedRuns, lightRuns, airportHeader } from '../server/apt-parse.mjs'
 
 const AIRPORT = `1     13 0 0 KXYZ Test Field
 1302 datum_lat 37.5
@@ -9,8 +9,8 @@ const AIRPORT = `1     13 0 0 KXYZ Test Field
 100 45.72 1 1 0.25 1 3 1 10 37.5000000 -122.2600000 100 0 3 0 0 0 28 37.5000000 -122.2400000 0 50 3 2 1 1
 102 H1 37.5010000 -122.2500000 90 20 20 2 1 0 0.25 0
 110 1 0.25 360.0000 Taxiway A
-111 37.4990000 -122.2500000 1
-111 37.4990000 -122.2490000 1
+111 37.4990000 -122.2500000 1 102
+111 37.4990000 -122.2490000 1 102
 111 37.4980000 -122.2490000
 113 37.4980000 -122.2500000 3
 111 37.49850 -122.24950
@@ -98,6 +98,19 @@ describe('Bézier edges', () => {
     const runs = paintedRuns([{ lat: 0, lon: 0, type: 1 }, { lat: 0, lon: 1, type: 1 }, { lat: 0, lon: 2 }, { lat: 0, lon: 3, type: 3 }, { lat: 0, lon: 4 }], false)
     expect(runs.map((r: { t: number }) => r.t)).toEqual([1, 3])
     expect(runs[0].p).toHaveLength(3)
+  })
+})
+
+describe('lights', () => {
+  it('node light codes become lit runs, split where the code changes', () => {
+    const runs = lightRuns([{ lat: 0, lon: 0, light: 101 }, { lat: 0, lon: 1, light: 101 }, { lat: 0, lon: 2, light: 102 }, { lat: 0, lon: 3 }, { lat: 0, lon: 4 }], false)
+    expect(runs.map((r: { l: number }) => r.l)).toEqual([101, 102])
+    expect(runs[0].p).toHaveLength(3)
+  })
+  it('a pavement outline with edge lights puts them in the airport', () => {
+    const a = parseAptAirport(AIRPORT)
+    expect(a.lights.length).toBeGreaterThan(0)
+    expect(a.lights.every((l: { l: number }) => l.l === 102)).toBe(true)
   })
 })
 

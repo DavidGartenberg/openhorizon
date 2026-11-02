@@ -598,6 +598,8 @@ export class Airports {
     STRIPE.color.setHex(STRIPE_BASE).multiplyScalar(paintF)
     EDGE_LIGHT.color.setHex(EDGE_SPHERE_BASE).multiplyScalar(1 - 0.55 * night)
     for (const group of this.rendered.values()) {
+      const apl = group.userData.aptLights as THREE.Points | undefined
+      if (apl) (apl.material as THREE.PointsMaterial).opacity = night
       const nl = group.userData.night as NightLights | undefined
       if (!nl) continue
       if (nl.pts) (nl.pts.material as THREE.PointsMaterial).opacity = night

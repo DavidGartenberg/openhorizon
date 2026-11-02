@@ -63,6 +63,24 @@ export function paintedRuns(nodes, closed) {
   return runs
 }
 
+/** Lit runs: consecutive segments with the same light-type code (101…116) become one polyline. */
+export function lightRuns(nodes, closed) {
+  const runs = []
+  const n = nodes.length
+  const segs = closed ? n : n - 1
+  let cur = null
+  for (let i = 0; i < segs; i++) {
+    const a = nodes[i], b = nodes[(i + 1) % n]
+    const light = a.light ?? 0
+    const pts = [[r7(a.lat), r7(a.lon)], ...segment(a, b), [r7(b.lat), r7(b.lon)]]
+    if (light >= 101 && light <= 116) {
+      if (cur && cur.l === light) cur.p.push(...pts.slice(1))
+      else { cur = { l: light, p: pts }; runs.push(cur) }
+    } else cur = null
+  }
+  return runs
+}
+
 function parseNode(code, f) {
   const bezier = code === 112 || code === 114 || code === 116
   const lat = num(f[1]), lon = num(f[2])
@@ -80,7 +98,7 @@ function parseNode(code, f) {
 export function parseAptAirport(text) {
   const out = {
     icao: '', name: '', elevFt: 0, datum: null,
-    rwy: [], heli: [], pav: [], lines: [], bound: [], ramps: [], signs: [], wind: [], papi: [], freqs: [],
+    rwy: [], heli: [], pav: [], lines: [], lights: [], bound: [], ramps: [], signs: [], wind: [], papi: [], freqs: [],
     taxi: { nodes: [], edges: [] },
   }
   /** the open feature collecting node rows */
@@ -95,9 +113,15 @@ export function parseAptAirport(text) {
     if (feat.kind === 'pav') {
       const rings = feat.rings.filter((r) => r.nodes.length >= 3).map((r) => flattenNodes(r.nodes, true))
       if (rings.length) out.pav.push({ surf: feat.surf, name: feat.name, rings })
-      for (const r of feat.rings) for (const run of paintedRuns(r.nodes, r.closed)) out.lines.push({ ...run, edge: true })
+      for (const r of feat.rings) {
+        for (const run of paintedRuns(r.nodes, r.closed)) out.lines.push({ ...run, edge: true })
+        out.lights.push(...lightRuns(r.nodes, r.closed))
+      }
     } else if (feat.kind === 'line') {
-      for (const r of feat.rings) for (const run of paintedRuns(r.nodes, r.closed)) out.lines.push(run)
+      for (const r of feat.rings) {
+        for (const run of paintedRuns(r.nodes, r.closed)) out.lines.push(run)
+        out.lights.push(...lightRuns(r.nodes, r.closed))
+      }
     } else if (feat.kind === 'bound') {
       for (const r of feat.rings) if (r.nodes.length >= 3) out.bound.push(flattenNodes(r.nodes, true))
     }
