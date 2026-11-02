@@ -27,7 +27,7 @@ export interface TrafficModelInstance {
 interface Proto { instantiate: () => LocalAircraftInstance; minY: number }
 
 /** At most this many airline liveries are held at once (each is tens of megabytes of textures); later ones keep the default paint. */
-export const MAX_LIVERIES = 3
+export const MAX_LIVERIES = 2
 
 /** Loads each X-Plane exterior once and stamps out shared-geometry copies. */
 export class TrafficModelLibrary {
@@ -65,6 +65,11 @@ export class TrafficModelLibrary {
       return false
     }
     return typeof p === 'object'
+  }
+
+  /** The airline liveries of a model that have finished loading. */
+  readyLiveries(key: string): string[] {
+    return [...this.protos].filter(([k, v]) => k.startsWith(`${key}@`) && typeof v === 'object').map(([k]) => k.slice(key.length + 1))
   }
 
   /** Every model / livery slot and whether it is ready (verification). */

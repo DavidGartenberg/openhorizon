@@ -937,10 +937,12 @@ export async function loadObj8(url: string, opts: LoadObj8Options): Promise<Load
   const [map, emissiveMap, normalMap, materialGlossMap, glossMap] = want
     ? await Promise.all([
         loadTextureWithFallback(parsed.albedo, base, true, warnings, opts.textureCache, overrideBase),
-        loadTextureWithFallback(parsed.lit, base, true, warnings, opts.textureCache, overrideBase),
-        loadTextureWithFallback(parsed.normal, base, false, warnings, opts.textureCache, overrideBase),
-        loadTextureWithFallback(parsed.materialGloss, base, false, warnings, opts.textureCache, overrideBase),
-        loadTextureWithFallback(parsed.gloss, base, false, warnings, opts.textureCache, overrideBase),
+        loadTextureWithFallback(parsed.lit, base, true, warnings, opts.textureCache),
+        // A livery changes the paint only: its normal and gloss maps are the airplane's own (and are not loaded again —
+        // a second decoded 4096² normal map per livery is what exhausts the graphics memory).
+        loadTextureWithFallback(parsed.normal, base, false, warnings, opts.textureCache),
+        loadTextureWithFallback(parsed.materialGloss, base, false, warnings, opts.textureCache),
+        loadTextureWithFallback(parsed.gloss, base, false, warnings, opts.textureCache),
       ])
     : [null, null, null, null, null]
 

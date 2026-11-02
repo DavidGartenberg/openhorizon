@@ -427,6 +427,15 @@ export async function frequenciesData() {
 
 const osmCache = new Map()
 
+/** A building's height in metres from its OSM tags (`height`, else `building:levels` × 3.6 m), or null. */
+export function osmHeightM(tags) {
+  const h = parseFloat(String(tags?.height ?? '').replace(',', '.'))
+  if (Number.isFinite(h) && h >= 3 && h <= 400) return Math.round(h * 10) / 10
+  const levels = parseFloat(String(tags?.['building:levels'] ?? ''))
+  if (Number.isFinite(levels) && levels >= 1 && levels <= 80) return Math.round(levels * 3.6 * 10) / 10
+  return null
+}
+
 /** GET /api/osm/{ICAO}.json — the airport's REAL ground layout from OSM
  *  aeroway data (taxiway centerlines with their real idents, apron
  *  polygons, terminal footprints). Cached forever on disk per airport —
@@ -436,27 +445,34 @@ export async function osmAirport(icao, lat, lon) {
   if (!/^[A-Z0-9]{3,4}$/.test(icao)) throw new Error('bad icao')
   if (osmCache.has(icao)) return osmCache.get(icao)
   const file = path.join(cacheDir, `osm-${icao}.json`)
+  let stale = null
   if (fs.existsSync(file)) {
     const j = fs.readFileSync(file, 'utf8')
-    osmCache.set(icao, j)
-    return j
+    // An airport cached before terminal heights were kept (it has terminals but no `th`) is fetched once more.
+    let old = null
+    try { old = JSON.parse(j) } catch { /* refetch */ }
+    if (!old || !Array.isArray(old.tm) || old.tm.length === 0 || Array.isArray(old.th)) { osmCache.set(icao, j); return j }
+    stale = j
   }
   const q = `[out:json][timeout:25];(way["aeroway"~"^(taxiway|apron|terminal)$"](around:4200,${lat},${lon});way["aeroway"="parking_position"](around:4200,${lat},${lon}););out geom;`
-  const res = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'OpenHorizon-flight-sim/1.0 (personal project; cached forever per airport)' },
-    body: 'data=' + encodeURIComponent(q),
-  })
-  if (!res.ok) throw new Error(`overpass ${icao}: ${res.status}`)
+  let res
+  try {
+    res = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'OpenHorizon-flight-sim/1.0 (personal project; cached forever per airport)' },
+      body: 'data=' + encodeURIComponent(q),
+    })
+  } catch (e) { if (stale) { osmCache.set(icao, stale); return stale } throw e }
+  if (!res.ok) { if (stale) { osmCache.set(icao, stale); return stale } throw new Error(`overpass ${icao}: ${res.status}`) }
   const raw = await res.json()
-  const out = { tw: [], ap: [], tm: [], st: [] }
+  const out = { tw: [], ap: [], tm: [], th: [], st: [] }
   for (const el of raw.elements ?? []) {
     if (!el.geometry || el.geometry.length < 2) continue
     const pts = el.geometry.map((g) => [+g.lat.toFixed(6), +g.lon.toFixed(6)])
     const t = el.tags ?? {}
     if (t.aeroway === 'taxiway') out.tw.push({ r: t.ref ?? '', p: pts })
     else if (t.aeroway === 'apron') out.ap.push(pts)
-    else if (t.aeroway === 'terminal') out.tm.push(pts)
+    else if (t.aeroway === 'terminal') { out.tm.push(pts); out.th.push(osmHeightM(t)) }
     else if (t.aeroway === 'parking_position') out.st.push({ r: t.ref ?? '', p: pts })
   }
   const json = JSON.stringify(out)

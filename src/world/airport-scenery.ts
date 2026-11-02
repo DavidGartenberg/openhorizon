@@ -214,7 +214,7 @@ export function mappedTerminalFacade(points: GroundPoint[],elevation: number,hei
       const geo=new THREE.BoxGeometry(w,h,d);geo.rotateY(angle);geo.translate(x+dx/len*along,y,z+dz/len*along);parts.add(mat,geo)
     }
     // Thin glazed ribbon straddles the facade, visible for either winding.
-    for(const y of [elevation+4,elevation+8]){
+    for(const y of [elevation+4,elevation+8].filter(v=>v<elevation+height-1)){
       add(GLASS,y,len,2.3,.22)
       for(let d=-len/2+1;d<len/2&&remaining>0;d+=4)add(FRAME,y,.14,2.5,.32,d)
       add(FRAME,y-1.2,len,.15,.32)

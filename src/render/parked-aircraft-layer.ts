@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { chooseTrafficModel, trafficConfiguration } from './xplane-proxy'
 import { sharedTrafficModels, type TrafficModelInstance } from './traffic-model'
-import { nearestParked, parkedSpec, standOffset, type ParkedSource, type ParkedSpot } from '../world/parked-aircraft'
+import { nearestParked, parkedSpec, spotHash, standOffset, type ParkedSource, type ParkedSpot } from '../world/parked-aircraft'
 
 /** At most this many parked airplanes are drawn at once (the nearest to the camera), each within this distance (m). */
 export const MAX_PARKED = 6
@@ -33,7 +33,10 @@ export class ParkedAircraftLayer {
       if (this.entries.has(key)) continue
       const choice = chooseTrafficModel(parkedSpec(w.spot.kind), '', { allowHeavy: false })
       if (!choice || !sharedTrafficModels.ensure(choice.key)) continue          // starts loading; drawn on a later pass
-      const inst = sharedTrafficModels.create(choice)
+      // The paint is one of the default and the airline liveries already loaded for traffic (no extra memory), by a hash of the stand.
+      const options = [undefined, ...sharedTrafficModels.readyLiveries(choice.key)]
+      const livery = options[Math.floor(spotHash(w.spot.z, w.spot.x) * options.length)]
+      const inst = sharedTrafficModels.create(choice, livery)
       if (!inst) continue
       inst.pose(trafficConfiguration({ gnd: true, gsKt: 0, aglFt: 0, vsFpm: 0 }))
       inst.group.rotation.y = -(w.spot.hdg * Math.PI) / 180
