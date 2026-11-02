@@ -9,6 +9,8 @@ import { airportBeacon, rabbitOn } from '../sim/lights'
 import { lightGlowTexture } from '../render/light-glow'
 import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
 import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
+import { enhanceAirportWithXplane } from './apt-layout'
+import { airportFlatDisk, airportFieldElevationM } from './airport-flatten'
 import { primaryRunway, planAirportFacilities, buildAirportFacilities, updateAirportServices, disposeAirportObject, mappedApronPlan, footprintObstacle, type SurfaceObstacle, type GroundPoint } from './airport-scenery'
 
 export interface RunwayData {
@@ -103,6 +105,9 @@ export class Airports {
     this.loaded = true
   }
 
+  /** The rendered group for an airport (verification hooks). */
+  groupFor(icao: string): THREE.Group | undefined { return this.rendered.get(icao) }
+
   near(lat: number, lon: number, radiusM: number): AirportData[] {
     const dCell = radiusM / 55_000 + 1
     // Longitude cells shrink with latitude (9C): the flat window missed
@@ -140,6 +145,9 @@ export class Airports {
     const cLat = (latS + latN) / 2
     const cLon = (lonW + lonE) / 2
     for (const ap of this.near(cLat, cLon, distanceM({ lat: latS, lon: lonW }, { lat: latN, lon: lonE }) / 2 + 4000)) {
+      // The level disk first (a zero-length runway); the runway corridors then override it.
+      const disk = airportFlatDisk(ap)
+      if (disk) out.push({ la1: disk.lat, lo1: disk.lon, la2: disk.lat, lo2: disk.lon, e1M: disk.elevM, e2M: disk.elevM, halfWidthM: disk.halfWidthM, disk: true })
       for (const r of ap.r) {
         out.push({
           la1: r.la1, lo1: r.lo1, la2: r.la2, lo2: r.lo2,
@@ -155,6 +163,13 @@ export class Airports {
   flattenElevation(terrainM: number, lat: number, lon: number): number {
     let h = terrainM
     for (const ap of this.near(lat, lon, 6000)) {
+      const disk = airportFlatDisk(ap)
+      if (disk) {
+        const mLat = 111_319.5
+        const mLon = mLat * Math.cos((lat * Math.PI) / 180)
+        const x = (disk.lon - lon) * mLon, y = (disk.lat - lat) * mLat
+        if (terrainM > 0) h = flattenForRunway(h, 0, 0, x, y, x, y, disk.elevM, disk.elevM, disk.halfWidthM) // open water stays water (as in the terrain worker)
+      }
       for (const r of ap.r) {
         // Work in a small local meter frame around the sample.
         const mLat = 111_319.5
@@ -189,8 +204,13 @@ export class Airports {
         this.rendered.set(ap.i, g)
         // N8: real ground layout (async; procedural stand-in retires when
         // real data lands, stays when the airport is unmapped).
-        const elevM = (ap.r[0]?.e1 ?? 0) * 0.3048
-        void enhanceAirportWithOsm(g, ap.i, ap.la, ap.lo, elevM, ap.r)
+        const elevM = airportFieldElevationM(ap)
+        // X-Plane's own layout (apt.dat) is the authority where it has the airport; OSM then only
+        // adds the terminal buildings. Unmapped there, the OSM / procedural layout stays as before.
+        void enhanceAirportWithXplane(g, ap.i, ap.la, ap.lo, elevM).then((applied) => {
+          const extra = applied ? g.userData.aptApplied as { aprons: GroundPoint[][]; obstacles: SurfaceObstacle[] } | undefined : undefined
+          return enhanceAirportWithOsm(g, ap.i, ap.la, ap.lo, elevM, ap.r, extra ? { terminalsOnly: true, extra } : undefined)
+        })
       }
     }
     this.positionAll()

@@ -47,6 +47,8 @@ export interface RunwayFlatten {
   e1M: number
   e2M: number
   halfWidthM: number
+  /** An airport's level disk (a zero-length runway): never lifts open water. */
+  disk?: boolean
 }
 
 interface Tile {
@@ -363,6 +365,7 @@ export class TileManager {
           ha: rw.e1M,
           hb: rw.e2M,
           halfW: rw.halfWidthM,
+          ...(rw.disk ? { disk: true } : {}),
         }))
       this.inFlight++
       const worker = this.workers[this.nextWorker++ % this.workers.length]!

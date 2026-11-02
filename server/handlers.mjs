@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process'
 import { buildAirports, buildNavaids, buildCifpProcedures, buildUsAirspace, buildFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb , buildIls } from './parse.mjs'
 import { voiceRoute } from './voice.mjs'
 import { xpRoute } from './xp-static.mjs'
+import { aptAirport } from './apt.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 /** Vendored offline fallbacks committed with the repo (Phase 12a). */
@@ -626,6 +627,19 @@ export async function route(url, res, method = 'GET', req) {
         'Cache-Control': 'public, max-age=86400',
         'Access-Control-Allow-Origin': '*',
       })
+      res.end(json)
+      return true
+    }
+    if (url.startsWith('/api/apt/')) {
+      // X-Plane's own airport layouts (server/apt.mjs): the real runways, pavements, painted lines, ramps.
+      const m = bare.match(/^\/api\/apt\/([A-Z0-9]{3,7})\.json$/)
+      const json = m ? aptAirport(m[1], cacheDir) : null
+      if (json === null) {
+        res.writeHead(404, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+        res.end('{"error":"apt-not-found"}')
+        return true
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=86400', 'Access-Control-Allow-Origin': '*' })
       res.end(json)
       return true
     }

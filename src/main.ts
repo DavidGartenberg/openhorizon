@@ -3891,6 +3891,18 @@ Object.assign(window as unknown as Record<string, unknown>, {
   /** Park the free camera at a world offset from the aircraft (east, up, south metres) looking along yaw/pitch degrees (0 = north). */
   /** Render-space x (east), z (south) of a latitude/longitude (verification). */
   __ohLocal: (lat: number, lon: number) => { const l = frame.toLocal(finiteOr(lat) ?? 0, finiteOr(lon) ?? 0); return [Math.round(l.e * 10) / 10, Math.round(-l.n * 10) / 10] },
+  /** Show or hide one named part of an airport (verification A/B): __ohAptShow('KSFO', 'aptLayout', false). */
+  __ohAptShow: (icao: string, name: string, visible: boolean) => { const o = airports.groupFor(icao)?.getObjectByName(name); if (o) o.visible = !!visible; return !!o },
+  /** What an airport's group holds right now (verification): child names, and X-Plane pavement vertex height / group position. */
+  __ohAptInfo: (icao: string) => {
+    const g = airports.groupFor(icao)
+    if (!g) return null
+    const apt = g.getObjectByName('aptLayout')
+    const first = apt?.children[0] as THREE.Mesh | undefined
+    return { children: g.children.map((c) => c.name || c.type), apt: apt ? apt.children.map((c) => c.name) : null, pos: g.position.toArray(), firstY: first ? (first.geometry.getAttribute('position').getY(0)) : null, applied: g.userData.aptApplied ? { aprons: g.userData.aptApplied.aprons.length, obstacles: g.userData.aptApplied.obstacles.length } : null }
+  },
+  /** Physics ground height (m) at a latitude/longitude, i.e. terrain + runway flattening (verification). */
+  __ohGround: (lat: number, lon: number) => { const la = finiteOr(lat), lo = finiteOr(lon); if (la === null || lo === null) return null; const l = frame.toLocal(la, lo); return Math.round((aircraft.groundElevAt?.(l.n, l.e) ?? 0) * 100) / 100 },
   /** The player's position in render space (verification): lets a test aim the free camera at something else. */
   __ohPlayerPos: () => mesh.group.position.toArray().map((v) => Math.round(v * 10) / 10),
   __ohFreeCam: (o: { e?: number; u?: number; s?: number; yaw?: number; pitch?: number }) => {

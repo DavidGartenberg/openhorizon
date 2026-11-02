@@ -101,6 +101,8 @@ export async function enhanceAirportWithOsm(
   refLon: number,
   elevM: number,
   runways?: { la1: number; lo1: number; la2: number; lo2: number }[],
+  /** When X-Plane's own layout supplies the pavement, only the OSM terminal buildings are added, and the facility replan keeps X-Plane's aprons and taxiways. */
+  opts?: { terminalsOnly?: boolean; extra?: { aprons: GroundPoint[][]; obstacles: SurfaceObstacle[] } },
 ): Promise<void> {
   let data: OsmLayout
   try {
@@ -125,6 +127,7 @@ export async function enhanceAirportWithOsm(
   data.st = data.st.filter(t => nearby(t.p))
   data.ap = data.ap.filter(nearby)
   data.tm = data.tm.filter(nearby)
+  if (opts?.terminalsOnly) { data.tw = []; data.ap = []; data.st = [] }
   if (!data.tw.length && !data.ap.length && !data.tm.length) return
   const osm = new THREE.Group()
   osm.name = 'osmLayout'
@@ -136,7 +139,7 @@ export async function enhanceAirportWithOsm(
     const p = toLocal(mid[0], mid[1])
     segRegistry.push({ ref: tw.r, x: p.x, z: p.z })
   }
-  osmIdentSegs.set(icao, segRegistry)
+  if (!opts?.terminalsOnly) osmIdentSegs.set(icao, segRegistry)
 
   // Aprons first (lowest).
   if (data.ap.length) {
@@ -355,8 +358,8 @@ export async function enhanceAirportWithOsm(
       colors.needsUpdate = true
     }
   }
-  const polygons = data.ap.map(poly => poly.map(([lat, lon]) => toLocal(lat, lon)))
-  const obstacles: SurfaceObstacle[] = data.tm.map(poly => footprintObstacle(poly.map(([lat, lon]) => toLocal(lat, lon))))
+  const polygons = [...data.ap.map(poly => poly.map(([lat, lon]) => toLocal(lat, lon))), ...(opts?.extra?.aprons ?? [])]
+  const obstacles: SurfaceObstacle[] = [...data.tm.map(poly => footprintObstacle(poly.map(([lat, lon]) => toLocal(lat, lon)))), ...(opts?.extra?.obstacles.slice(0, 600) ?? [])]
   for (const tw of data.tw) {
     const pts = tw.p.map(([lat, lon]) => toLocal(lat, lon))
     for (let i = 1; i < pts.length; i++) obstacles.push({ a: pts[i - 1]!, b: pts[i]!, radius: 18 })

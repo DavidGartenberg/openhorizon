@@ -18,7 +18,7 @@ export interface TileRequest {
   sizeEastM: number
   sizeNorthM: number
   /** Runways intersecting this tile, in tile-local meters (x east, y north). */
-  runways: Array<{ ax: number; ay: number; bx: number; by: number; ha: number; hb: number; halfW: number }>
+  runways: Array<{ ax: number; ay: number; bx: number; by: number; ha: number; hb: number; halfW: number; disk?: boolean }>
   skirtDepthM: number
   /** Render-only ring depth bias (coarse rings sit low; see tiles.ts). */
   depthBiasM: number
@@ -114,6 +114,8 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
         const lx = (i / (G - 1) - 0.5) * req.sizeEastM
         const ly = (0.5 - j / (G - 1)) * req.sizeNorthM
         for (const rw of req.runways) {
+          // An airport's level disk stops at the water's edge: it never raises the bay into land.
+          if (rw.disk && belowDatum) continue
           h = flattenForRunway(h, lx, ly, rw.ax, rw.ay, rw.bx, rw.by, rw.ha, rw.hb, rw.halfW)
         }
         heights[j * G + i] = h
