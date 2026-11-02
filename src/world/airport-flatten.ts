@@ -80,20 +80,24 @@ export function flattenEnds(r: FlattenEnds & { o1?: number; o2?: number }): Flat
 /**
  * X-Plane's runway table by airport. Each row is [one end's designator, the other end's, overrun beyond the first (m),
  * beyond the second (m)] and, where the old database has the runway in the wrong place or width, also
- * [first end's lat, lon, second end's lat, lon, width (m)] — X-Plane's own.
+ * [first end's lat, lon, second end's lat, lon, width (m)] — X-Plane's own; with two more (surface code, edge lights) the
+ * runway is one the database lacks altogether.
  */
-export type RunwayExtras = Record<string, Array<[string, string, number, number] | [string, string, number, number, number, number, number, number, number]>>
+export type RunwayExtras = Record<string, Array<[string, string, number, number] | [string, string, number, number, number, number, number, number, number] | [string, string, number, number, number, number, number, number, number, number, number]>>
 
 /** "09L" and "9L" are the same runway end. */
 const endKey = (id: string): string => String(id).trim().toUpperCase().replace(/^0+(?=\d)/, '')
 const FT_PER_M = 1 / 0.3048
+/** apt.dat surface codes that are not hard pavement: turf, dirt, gravel, dry lakebed, snow / ice. */
+const SOFT_SURFACES = new Set([3, 4, 5, 12, 14])
 
 /** Put X-Plane's overrun lengths — and where it differs, its runway ends and width — on the matching runways (in place). Unmatched or malformed entries are ignored. */
-export function applyRunwayExtras(airports: ReadonlyArray<Pick<AirportData, 'i' | 'r'>>, extras: RunwayExtras): void {
+export function applyRunwayExtras(airports: ReadonlyArray<Pick<AirportData, 'i' | 'r'> & { e?: number }>, extras: RunwayExtras): void {
   if (!extras || typeof extras !== 'object') return
   for (const ap of airports) {
     const rows = extras[ap.i]
     if (!Array.isArray(rows)) continue
+    addMissingRunways(ap, rows)
     for (const r of ap.r) {
       const li = endKey(r.li), hi = endKey(r.hi)
       for (const row of rows) {
@@ -117,6 +121,24 @@ export function applyRunwayExtras(airports: ReadonlyArray<Pick<AirportData, 'i' 
         break
       }
     }
+  }
+}
+
+/** Add the runways X-Plane lists that the database lacks: rows of 11 fields (…, width m, surface code, edge lights) that match none of the airport's runways. */
+function addMissingRunways(ap: Pick<AirportData, 'i' | 'r'> & { e?: number }, rows: RunwayExtras[string]): void {
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length < 11) continue
+    const a = endKey(row[0]), b = endKey(row[1])
+    if (ap.r.some((q) => { const li = endKey(q.li), hi = endKey(q.hi); return (a === li && b === hi) || (a === hi && b === li) })) continue
+    const [laA, loA, laB, loB, wM, surf, edge] = row.slice(4, 11).map(Number) as [number, number, number, number, number, number, number]
+    if (![laA, loA, laB, loB].every(Number.isFinite) || Math.abs(laA) > 90 || Math.abs(laB) > 90 || Math.abs(loA) > 180 || Math.abs(loB) > 180) continue
+    const lenFt = Math.hypot((loB - loA) * 111_319.5 * Math.cos((((laA + laB) / 2) * Math.PI) / 180), (laB - laA) * 111_319.5) * FT_PER_M
+    if (lenFt < 200 / 0.3048) continue
+    const elev = Number.isFinite(ap.e) ? (ap.e as number) : (ap.r[0]?.e1 ?? 0)
+    ap.r.push({
+      li: String(row[0]), hi: String(row[1]), la1: laA, lo1: loA, la2: laB, lo2: loB, e1: elev, e2: elev, l: lenFt,
+      w: Number.isFinite(wM) && wM > 0 ? wM * FT_PER_M : 60, s: SOFT_SURFACES.has(surf) ? 1 : 0, lt: edge > 0 ? 1 : 0,
+    })
   }
 }
 

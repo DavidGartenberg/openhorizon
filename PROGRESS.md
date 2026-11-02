@@ -3126,3 +3126,9 @@ What changed, and what is real versus a recorded stand-in:
 - The client (`Airports.ensureXplaneOnlyNear`) fetches the 120 km around the player, re-fetching after 40 km of travel, and adds them with `addAirports` (deduplicated; X-Plane's overruns and pavement box applied). They draw like any other airport and get the X-Plane layout when the player is near. OpenStreetMap terminal lookups are skipped for them.
 - Checked: 20 such fields within 30 km of Corvallis, OR; 4OR4 (Schrock), previously absent, now draws its runway and facilities.
 - Limits: heliports and runways under 200 m are skipped; turf and dirt strips use the database's single dark strip material; the 1,349 runways X-Plane lists at database airports that the database lacks, and 925 database runways with no X-Plane match, are still not reconciled.
+
+### Runways X-Plane lists that the old database lacks (2026-11-02)
+
+- At database airports, X-Plane lists 503 runways (at 423 airports) that sit on no database runway. `/api/apt-runways.json` now sends them as 11-field rows (… width m, surface code, edge lights) and the client adds them (`addMissingRunways`), so they get a strip, markings and levelled ground. A runway the database has under another number, or shifted within 250 m and 25° of one, is not a missing runway.
+- Checked at KACK (Nantucket): runways, taxiways and apron draw together. Strips under 200 m are skipped.
+- Flaky under load: `tests/render/prop-surfaces-repair.test.ts` failed one test in two of the fresh-clone gates that ran beside a type-check and passes alone (23/23).

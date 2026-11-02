@@ -128,3 +128,19 @@ describe("airports X-Plane has and the old database lacks", () => {
     expect(aptAirportsNear(list, NaN, 0, 1)).toHaveLength(2)
   })
 })
+
+describe("runways X-Plane has that a database airport lacks", () => {
+  const db = [{ i: 'KDB', r: [{ li: '9', hi: '27', la1: 40, lo1: -100.02, la2: 40, lo2: -99.98, e1: 0, e2: 0, l: 11000, w: 100, s: 0, lt: 1 }] }]
+  const row = (a: string, b: string, la1: number, lo1: number, la2: number, lo2: number): Array<string | number> => [a, b, 0, 0, la1, lo1, la2, lo2, 30, 3, 0]
+  it('adds a runway on no database runway, with its surface and lights, but not a renumbered or shifted copy of one', () => {
+    const out = runwayExtras({
+      KDB: [
+        row('10', '28', 40.0001, -100.02, 40.0001, -99.98),          // the same runway renumbered
+        row('4', '22', 39.99, -100.01, 40.01, -99.99),               // crosses it at a different heading: a new runway
+        row('1', '19', 40.2, -100, 40.2002, -100),                   // 22 m: too short
+      ],
+    }, db as never) as Record<string, unknown[][]>
+    expect(out.KDB).toHaveLength(1)
+    expect(out.KDB![0]!.slice(0, 2)).toEqual(['4', '22']); expect(out.KDB![0]).toHaveLength(11); expect(out.KDB![0]!.slice(9)).toEqual([3, 0])
+  })
+})

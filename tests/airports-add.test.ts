@@ -21,4 +21,13 @@ describe('adding X-Plane-only airports to the database', () => {
     const added = a.find('AAA1')!
     expect(added.r[0]!.o1).toBe(120); expect(added.x).toEqual([37.49, -122.27, 37.51, -122.23])
   })
+  it('adds the runways X-Plane lists that the airport lacks, and leaves matching ones alone', async () => {
+    const { applyRunwayExtras } = await import('../src/world/airport-flatten')
+    const base = ap('KDB', 40, -100); base.r[0]!.li = '9'; base.r[0]!.hi = '27'
+    const list = [base]
+    applyRunwayExtras(list, { KDB: [['09', '27', 0, 0], ['4', '22', 0, 0, 39.99, -100.01, 40.01, -99.99, 30, 3, 1], ['1', '19', 0, 0, 40.2, -100, 40.2002, -100, 30, 1, 0]] })
+    expect(list[0]!.r.map((r) => r.li)).toEqual(['9', '4'])           // the 22 m strip is not added
+    expect(list[0]!.r[1]).toMatchObject({ hi: '22', s: 1, lt: 1, e1: 100 })
+    expect(list[0]!.r[1]!.w).toBeCloseTo(98.4, 0); expect(list[0]!.r[1]!.l).toBeGreaterThan(7000)
+  })
 })

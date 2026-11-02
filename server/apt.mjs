@@ -207,6 +207,23 @@ export const MAX_RUNWAY_FIX_M = 5000
 /** A difference worth overriding the old database for: end position (m) or width (m). */
 export const RUNWAY_FIX_MIN_M = 3
 
+/** Shortest runway (m) X-Plane has to list, and how far (m) / how many degrees off a database runway may be before it is a different runway. */
+const MISSING_RUNWAY_MIN_M = 200, SAME_RUNWAY_CENTRE_M = 250, SAME_RUNWAY_HEADING_DEG = 25
+
+/** True when an X-Plane runway (scan row) at a database airport is on no database runway — not just numbered differently. */
+function isMissingRunway(ap, row) {
+  const [, , , , laA, loA, laB, loB] = row
+  if (![laA, loA, laB, loB].every(Number.isFinite) || metres(laA, loA, laB, loB) < MISSING_RUNWAY_MIN_M) return false
+  const cLa = (laA + laB) / 2, cLo = (loA + loB) / 2
+  const hdg = Math.atan2((loB - loA) * Math.cos((cLa * Math.PI) / 180), laB - laA)
+  return !ap.r.some((q) => {
+    if (metres(cLa, cLo, (q.la1 + q.la2) / 2, (q.lo1 + q.lo2) / 2) > SAME_RUNWAY_CENTRE_M) return false
+    const qh = Math.atan2((q.lo2 - q.lo1) * Math.cos((cLa * Math.PI) / 180), q.la2 - q.la1)
+    const d = Math.abs(((hdg - qh) * 180) / Math.PI) % 180
+    return Math.min(d, 180 - d) <= SAME_RUNWAY_HEADING_DEG
+  })
+}
+
 /**
  * The runway table the client needs: X-Plane's blast pads / overruns, and — where the old airport database
  * (`db`, [{ i, r: [{ li, hi, la1, lo1, la2, lo2, w (ft) }] }]) disagrees with X-Plane about where a runway is or how wide —
@@ -231,6 +248,7 @@ export function runwayExtras(runways, db) {
         fix = off <= MAX_RUNWAY_FIX_M && (off > RUNWAY_FIX_MIN_M || dw > RUNWAY_FIX_MIN_M)
       }
       if (fix) list.push([idA, idB, oA, oB, laA, loA, laB, loB, Math.round(w * 10) / 10])
+      else if (!m && ap && isMissingRunway(ap, r)) list.push([idA, idB, oA, oB, laA, loA, laB, loB, Math.round((Number(w) || 0) * 10) / 10, Number(r[9]) || 0, Number(r[10]) || 0])
       else if (oA > 0 || oB > 0) list.push([idA, idB, oA, oB])
     }
     if (list.length) out[icao] = list
