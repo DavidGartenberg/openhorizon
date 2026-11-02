@@ -9,7 +9,7 @@ import { airportBeacon, rabbitOn } from '../sim/lights'
 import { lightGlowTexture } from '../render/light-glow'
 import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
 import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
-import { enhanceAirportWithXplane } from './apt-layout'
+import { enhanceAirportWithXplane, setAptNight, NIGHT_GLOW } from './apt-layout'
 import { airportFlatDisk, airportFieldElevationM, flattenEnds, applyRunwayExtras, applyAirportExtents, type RunwayExtras, type AirportExtents } from './airport-flatten'
 import { primaryRunway, planAirportFacilities, buildAirportFacilities, updateAirportServices, disposeAirportObject, mappedApronPlan, footprintObstacle, type SurfaceObstacle, type GroundPoint } from './airport-scenery'
 
@@ -43,6 +43,8 @@ export interface AirportData {
   x?: [number, number, number, number]
 }
 
+/** The runway strip stands this far above the ground plane. (0.1 m, above X-Plane's taxiway pavement, was tried: it blackened the runway markings in this renderer.) */
+export const RUNWAY_STRIP_LIFT_M = 0.06
 const ASPHALT = pavementMaterial(0x484b4d, 'xy', 'runway')
 /** Concrete runways (X-Plane's surface codes 2 and 30–38) are paler than asphalt ones. */
 const CONCRETE_RUNWAY = pavementMaterial(0x8e908b, 'xy', 'runway')
@@ -320,7 +322,7 @@ export class Airports {
       strip.receiveShadow = true // 13a: pavement catches the sun shadow
       strip.rotation.x = -Math.PI / 2
       strip.rotation.z = -hdg
-      strip.position.set(cx, elevM + 0.06, -cy)
+      strip.position.set(cx, elevM + RUNWAY_STRIP_LIFT_M, -cy)
       strip.renderOrder = 20
       group.add(strip)
       if (r.s === 0 && lenM < 900) {
@@ -647,6 +649,9 @@ export class Airports {
     const paintF = 1 - 0.78 * night
     STRIPE.color.setHex(STRIPE_BASE).multiplyScalar(paintF)
     EDGE_LIGHT.color.setHex(EDGE_SPHERE_BASE).multiplyScalar(1 - 0.55 * night)
+    // Night is never pitch black over an airport: a faint glow of its own colour (apron floodlight and city light spill).
+    for (const m of [ASPHALT, CONCRETE_RUNWAY]) m.emissive.set(m.color).multiplyScalar(NIGHT_GLOW * night)
+    setAptNight(night)
     for (const group of this.rendered.values()) {
       const apl = group.userData.aptLights as THREE.Points | undefined
       if (apl) (apl.material as THREE.PointsMaterial).opacity = night

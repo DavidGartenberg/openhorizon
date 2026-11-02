@@ -356,6 +356,12 @@ function paintMaterial(key: string, color: number): THREE.MeshStandardMaterial {
   return m
 }
 const pavementMaterials = new Map<number, THREE.MeshStandardMaterial>()
+/** Fraction of its own colour a pavement glows at full night. */
+export const NIGHT_GLOW = 0.08
+/** Give every X-Plane pavement its faint night glow (0 = day, 1 = full night). */
+export function setAptNight(night: number): void {
+  for (const m of pavementMaterials.values()) m.emissive.set(m.color).multiplyScalar(NIGHT_GLOW * Math.min(Math.max(night, 0), 1))
+}
 function pavementMaterial(surf: number): THREE.MeshStandardMaterial | null {
   const s = surfaceStyle(surf)
   if (!s) return null
