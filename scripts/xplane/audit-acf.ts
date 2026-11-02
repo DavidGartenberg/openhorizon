@@ -1,6 +1,6 @@
 /**
  * Compares each installed X-Plane aircraft's authored numbers (.acf: empty / maximum / fuel mass in pounds,
- * Vne, Vno, flap detents) with this simulator's flight-model parameters for the same type.
+ * Vne, Vno, Vso, Vs, Vx, Vy) with this simulator's flight-model parameters for the same type.
  *
  *   npx vite-node scripts/xplane/audit-acf.ts
  *
@@ -27,7 +27,7 @@ const acf = (folder: string): Record<string, number> => {
   const f = fs.readdirSync(`${dir}/${folder}`).find((n) => n.endsWith('.acf'))!
   const out: Record<string, number> = {}
   for (const line of fs.readFileSync(`${dir}/${folder}/${f}`, 'utf8').split('\n')) {
-    const m = /^P acf\/_(m_empty|m_max|m_fuel_max_tot|Vne_kts|Vno_kts|flap_detents) (\S+)/.exec(line)
+    const m = /^P acf\/_(m_empty|m_max|m_fuel_max_tot|Vne_kts|Vno_kts|Vso_kts|Vs_kts|Vx_kts|Vy_kts|flap_detents) (\S+)/.exec(line)
     if (m) out[m[1]!] = Number(m[2])
   }
   return out
@@ -45,4 +45,7 @@ for (const [folder, key, params] of TYPES) {
     `${Math.round(p.vSpeeds.vne)}/${Math.round(a.Vne_kts!)} ${pct(p.vSpeeds.vne, a.Vne_kts!)}`,
   ]
   console.log(row.join(' | '))
+  // Stall and climb speeds: X-Plane's authored V-speeds (0 = not authored) against this simulator's.
+  const v = (name: string, sim: number, xp: number | undefined): string => (xp ? `${name} ${Math.round(sim)}/${Math.round(xp)} ${pct(sim, xp).trim()}` : `${name} ${Math.round(sim)}/–`)
+  console.log('      ' + [v('Vso', p.vSpeeds.vs0, a.Vso_kts), v('Vs', p.vSpeeds.vs1, a.Vs_kts), v('Vx', p.vSpeeds.vx, a.Vx_kts), v('Vy', p.vSpeeds.vy, a.Vy_kts), v('Vno', p.vSpeeds.vno, a.Vno_kts)].join(' | '))
 }
