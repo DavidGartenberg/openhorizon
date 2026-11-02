@@ -46,4 +46,4 @@ never copied into the repository.
 - [x] Levelled ground sized from X-Plane's real pavement extent and runway overruns (`/api/apt-extent.json`, `/api/apt-runways.json`)
 - [x] Blast pads / overruns with chevrons; asphalt and concrete finish; night glow; sign backs; pavement cut out of runway footprints; decorative parked airplanes at the gates; gate numbers painted on the apron
 - [x] Terminals: OpenStreetMap footprints (X-Plane has no terminal data) with a curtain-wall finish
-- Checked in the browser: KSFO, KJFK, KLAX, KASE, EGLL; 355 layouts build in node without errors
+- Checked in the browser: KSFO, KJFK, KLAX, KASE, EGLL, KORD, PHNL, KATL, EDDF, YSSY; 355 layouts build in node without errors
