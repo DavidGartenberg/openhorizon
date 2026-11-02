@@ -2735,6 +2735,9 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
     panel.radio('com2A', formatCom(radios.com2.activeMhz)); panel.radio('com2S', formatCom(radios.com2.standbyMhz))
     panel.radio('nav2A', formatNav(radios.nav2.activeMhz)); panel.radio('nav2S', formatNav(radios.nav2.standbyMhz))
     panel.xponder('1200')
+    // The clocks show UTC from the simulator's own clock (the same one the flight plan's ETAs use).
+    const zulu = new Date(baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000)
+    panel.clock('capt', zulu.getUTCHours(), zulu.getUTCMinutes()); panel.clock('fo', zulu.getUTCHours(), zulu.getUTCMinutes())
     panel.commit()
   }
   const gearPos = aircraft.P.gearRetractable ? aircraft.gearPos : 1
@@ -3782,6 +3785,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
     return { status: xpCockpitStatus, evidence: xpCockpit ? { ...xpCockpit.evidence, datarefs: xpCockpit.evidence.datarefs.length, warnings: xpCockpit.evidence.warnings.slice(0, 5) } : null }
   },
   /** Which X-Plane cockpit mesh is under a pixel (verification): part, mesh name, draw range, triangle vertices (object frame), UV. */
+  /** The X-Plane panel bitmap as it is drawn right now (verification): shows it in a corner overlay, or removes the overlay. */
+  __ohXpPanelShow: (on: boolean) => { document.getElementById('xp-panel-view')?.remove(); if (!on || !xpCockpit) return !!xpCockpit; const c = xpCockpit.panel.canvas; const img = new Image(); img.id = 'xp-panel-view'; img.src = c.toDataURL('image/png'); img.style.cssText = 'position:fixed;left:0;top:0;width:100%;z-index:99999;background:#000'; document.body.appendChild(img); return true },
   __ohXpPick: (px: number, py: number) => {
     if (!xpCockpit) return null
     const rect = renderer.domElement.getBoundingClientRect()

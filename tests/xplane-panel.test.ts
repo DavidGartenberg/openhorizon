@@ -129,3 +129,27 @@ describe('radio windows', () => {
     }
   })
 })
+
+import { clockField, clockRect } from '../src/render/xplane-panel'
+describe('clocks', () => {
+  it('fields are two digits, blank when there is no valid time', () => {
+    expect(clockField(7)).toBe('07'); expect(clockField(23)).toBe('23'); expect(clockField(0)).toBe('00')
+    expect(clockField(NaN)).toBe('  '); expect(clockField(-1)).toBe('  '); expect(clockField(100)).toBe('  ')
+  })
+  it('each clock face sits inside the bitmap and clear of every display, window and the other clock', () => {
+    const others = [...Object.values(XP_B738_PANEL.displays), ...Object.values(XP_B738_PANEL.mcp), ...Object.values(XP_B738_PANEL.radio), XP_B738_PANEL.xponder]
+    for (const side of ['capt', 'fo'] as const) {
+      const r = clockRect(side)
+      expect(inside(r), side).toBe(true)
+      for (const o of others) expect(overlap(r, o), side).toBe(false)
+    }
+    expect(overlap(clockRect('capt'), clockRect('fo'))).toBe(false)
+  })
+  it('the digits sit on the face, hours left of minutes', () => {
+    for (const side of ['capt', 'fo'] as const) {
+      const at = XP_B738_PANEL.clock[side], r = clockRect(side)
+      expect(at.hoursX).toBeLessThan(at.cx); expect(at.minutesX).toBeGreaterThan(at.cx)
+      expect(at.digitsY).toBeGreaterThan(r.y); expect(at.digitsY).toBeLessThan(r.y + r.h)
+    }
+  })
+})

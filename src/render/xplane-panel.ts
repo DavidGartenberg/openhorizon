@@ -28,6 +28,10 @@ export const XP_PANEL = {
   /** The orange radio / transponder fonts: 16 × 6 grids of 23 × 34 and 25 × 38 cells, same character order. */
   radioAtlas: 'cockpit_3d/generic/TYPE/RadioOrange-4.png',
   transponderAtlas: 'cockpit_3d/generic/TYPE/TransponderOrange-4.png',
+  /** The clocks' art (214 px face, 6 × 22 separator, 16 × 6 grid of 21 × 34 digit cells), relative to the airplane folder. */
+  clockFace: 'cockpit_3d/generic/Clocks/clock_face-1.png',
+  clockSeparator: 'cockpit_3d/generic/Clocks/separator-1.png',
+  clockDigits: 'cockpit_3d/generic/Clocks/Digital-4.png',
 } as const
 
 /** Pixels, top-left origin. */
@@ -36,6 +40,7 @@ const rect = (x0: number, y0: number, x1: number, y1: number): PanelRect => ({ x
 
 export type XpDisplayName = 'captPfd' | 'captNd' | 'eicas' | 'lowerDu' | 'foPfd' | 'foNd' | 'standby'
 export type XpMcpWindow = 'crsL' | 'spd' | 'hdg' | 'alt' | 'vs' | 'crsR'
+export type ClockSide = 'capt' | 'fo'
 export type RadioWindow = 'com1A' | 'com1S' | 'nav1A' | 'nav1S' | 'com2A' | 'com2S' | 'nav2A' | 'nav2S'
 
 export const XP_B738_PANEL = {
@@ -65,6 +70,14 @@ export const XP_B738_PANEL = {
     com2A: rect(1724, 351, 1878, 401), com2S: rect(1888, 351, 2042, 401),
     nav2A: rect(1724, 405, 1878, 455), nav2S: rect(1888, 405, 2042, 455),
   } satisfies Record<RadioWindow, PanelRect>,
+  /**
+   * The two clocks (UTC mode). POS of the ACF's clock face; the digits (hours, minutes) sit 25 px above the centre
+   * and the separator between them (y = 768 − POS y). The captain's POS is (1139, 367), the first officer's (1365, 367).
+   */
+  clock: {
+    capt: { cx: 1139, cy: 401, hoursX: 1114, minutesX: 1161, digitsY: 376 },
+    fo: { cx: 1365, cy: 401, hoursX: 1340, minutesX: 1388, digitsY: 376 },
+  } satisfies Record<ClockSide, { cx: number; cy: number; hoursX: number; minutesX: number; digitsY: number }>,
   /** The transponder code window. */
   xponder: rect(1432, 162, 1553, 238),
   /** Centre of each window's digit field (POS x, 768 − POS y of its gen_LED instrument). */
@@ -103,6 +116,13 @@ export const RADIO_CELL = { w: 23, h: 34 } as const
 /** Horizontal advance of a digit and of the decimal point in the radio windows (px). */
 export const RADIO_ADVANCE = { digit: 23, point: 12 } as const
 export const XPONDER_CELL = { w: 25, h: 38 } as const
+export const CLOCK_CELL = { w: 21, h: 34 } as const
+export const CLOCK_FACE_PX = 214
+/** The bitmap area a clock's face covers. */
+export const clockRect = (side: ClockSide): PanelRect => { const at = XP_B738_PANEL.clock[side]; return { x: at.cx - CLOCK_FACE_PX / 2, y: at.cy - CLOCK_FACE_PX / 2, w: CLOCK_FACE_PX, h: CLOCK_FACE_PX } }
+
+/** "07" for 7: the clock's two-digit fields. Out-of-range or non-finite input blanks the field. */
+export const clockField = (n: number): string => (Number.isFinite(n) && n >= 0 && n < 100 ? String(Math.floor(n)).padStart(2, '0') : '  ')
 
 export const formatCom = (mhz: number): string => (Number.isFinite(mhz) ? mhz.toFixed(3) : ' '.repeat(7))
 export const formatNav = (mhz: number): string => (Number.isFinite(mhz) ? mhz.toFixed(2) : ' '.repeat(6))
@@ -145,6 +165,7 @@ export class XpPanel {
   private atlas: HTMLImageElement | null = null
   private radioAtlas: HTMLImageElement | null = null
   private xponderAtlas: HTMLImageElement | null = null
+  private clockArt: { face: HTMLImageElement | null; separator: HTMLImageElement | null; digits: HTMLImageElement | null } = { face: null, separator: null, digits: null }
   private readonly litRadio = new Map<string, string>()
   private readonly lit = new Map<XpMcpWindow, string>()
   /** Any asset that did not load (the panel still works, without that art). */
@@ -171,8 +192,8 @@ export class XpPanel {
   }
 
   async load(): Promise<void> {
-    const [bg, atlas, radio, xpdr] = await Promise.all([this.image(XP_PANEL.background), this.image(XP_PANEL.ledAtlas), this.image(XP_PANEL.radioAtlas), this.image(XP_PANEL.transponderAtlas)])
-    this.atlas = atlas; this.radioAtlas = radio; this.xponderAtlas = xpdr
+    const [bg, atlas, radio, xpdr, face, separator, digits] = await Promise.all([this.image(XP_PANEL.background), this.image(XP_PANEL.ledAtlas), this.image(XP_PANEL.radioAtlas), this.image(XP_PANEL.transponderAtlas), this.image(XP_PANEL.clockFace), this.image(XP_PANEL.clockSeparator), this.image(XP_PANEL.clockDigits)])
+    this.atlas = atlas; this.radioAtlas = radio; this.xponderAtlas = xpdr; this.clockArt = { face, separator, digits }
     if (bg) {
       this.ctx.drawImage(bg, 0, 0, XP_PANEL.width, XP_PANEL.height)
       // A pristine copy: an MCP window is restored from it before its digits are relit.
@@ -249,6 +270,26 @@ export class XpPanel {
       const cx = 1505 + (i - (digits.length - 1) / 2) * XPONDER_CELL.w
       this.ctx.drawImage(this.xponderAtlas!, g * XPONDER_CELL.w, 0, XPONDER_CELL.w, XPONDER_CELL.h, Math.round(cx - XPONDER_CELL.w / 2), 213 - XPONDER_CELL.h / 2, XPONDER_CELL.w, XPONDER_CELL.h)
     })
+  }
+
+  /** One clock in UTC mode: the face, the separator and the hours / minutes digits. Only repaints when the minute changes. */
+  clock(side: ClockSide, hours: number, minutes: number): void {
+    const key = `clock:${side}`, text = `${clockField(hours)}:${clockField(minutes)}`
+    if (this.litRadio.get(key) === text) return
+    this.litRadio.set(key, text)
+    const at = XP_B738_PANEL.clock[side], half = CLOCK_FACE_PX / 2
+    this.restore(clockRect(side))
+    const { face, separator, digits } = this.clockArt
+    if (face) this.ctx.drawImage(face, Math.round(at.cx - half), Math.round(at.cy - half))
+    if (separator) this.ctx.drawImage(separator, Math.round(at.cx - 1 - separator.width / 2), Math.round(at.digitsY + 1 - separator.height / 2))
+    if (!digits) return
+    for (const [x, field] of [[at.hoursX, text.slice(0, 2)], [at.minutesX, text.slice(3)]] as const) {
+      Array.from(field).forEach((ch, i) => {
+        const g = ledGlyph(ch)
+        if (g === null) return
+        this.ctx.drawImage(digits, g * CLOCK_CELL.w, 0, CLOCK_CELL.w, CLOCK_CELL.h, Math.round(x + (i - 0.5) * CLOCK_CELL.w - CLOCK_CELL.w / 2), Math.round(at.digitsY - CLOCK_CELL.h / 2), CLOCK_CELL.w, CLOCK_CELL.h)
+      })
+    }
   }
 
   commit(): void { this.texture.needsUpdate = true }
