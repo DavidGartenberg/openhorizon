@@ -224,6 +224,26 @@ function isMissingRunway(ap, row) {
   })
 }
 
+/** How far (m) from every X-Plane runway a database runway with no matching designator may lie before X-Plane is taken to disprove it. */
+const UNCONFIRMED_RUNWAY_M = 1500
+
+/**
+ * Database runways X-Plane does not confirm: none of X-Plane's runways at the airport has the same designators or lies
+ * within `UNCONFIRMED_RUNWAY_M` of it (a wrong position, a duplicate or a renumbered copy of a runway X-Plane has right).
+ * At least one runway of the airport is always kept.
+ */
+function unconfirmedRunways(ap, rows) {
+  if (!rows.length || ap.r.length < 2) return []
+  const out = ap.r.filter((q) => {
+    if (![q.la1, q.lo1, q.la2, q.lo2].every(Number.isFinite)) return false
+    const a = endKey(q.li), b = endKey(q.hi)
+    if (rows.some((r) => (endKey(r[0]) === a && endKey(r[1]) === b) || (endKey(r[0]) === b && endKey(r[1]) === a))) return false
+    const cLa = (q.la1 + q.la2) / 2, cLo = (q.lo1 + q.lo2) / 2
+    return !rows.some((r) => [r[4], r[5], r[6], r[7]].every(Number.isFinite) && metres(cLa, cLo, (r[4] + r[6]) / 2, (r[5] + r[7]) / 2) < UNCONFIRMED_RUNWAY_M)
+  })
+  return out.length < ap.r.length ? out : []
+}
+
 /**
  * The runway table the client needs: X-Plane's blast pads / overruns, and — where the old airport database
  * (`db`, [{ i, r: [{ li, hi, la1, lo1, la2, lo2, w (ft) }] }]) disagrees with X-Plane about where a runway is or how wide —
@@ -256,6 +276,7 @@ export function runwayExtras(runways, db) {
       else if (!m && ap && isMissingRunway(ap, r)) list.push([idA, idB, oA, oB, laA, loA, laB, loB, Math.round((Number(w) || 0) * 10) / 10, ...flags])
       else if (oA > 0 || oB > 0) list.push([idA, idB, oA, oB])
     }
+    if (ap) for (const q of unconfirmedRunways(ap, rows)) list.push([q.li, q.hi, -1, -1])
     if (list.length) out[icao] = list
   }
   return out

@@ -149,4 +149,11 @@ describe("runways X-Plane has that a database airport lacks", () => {
     const right = runwayExtras({ KDB: [['9', '27', 0, 0, 40, -100.02, 40, -99.98, 30, 1, 3]] }, db as never) as Record<string, unknown[][]>
     expect(right.KDB).toBeUndefined()
   })
+  it('flags a database runway that no X-Plane runway confirms by designators or within 1.5 km, and never the airport\'s last one', () => {
+    const two = [{ i: 'KDB', r: [db[0]!.r[0], { li: '15', hi: '33', la1: 41, lo1: -100.02, la2: 41, lo2: -99.98, e1: 0, e2: 0, l: 7000, w: 100, s: 0, lt: 0 }] }]
+    const out = runwayExtras({ KDB: [['9', '27', 0, 0, 40, -100.02, 40, -99.98, 30, 1, 3]] }, two as never) as Record<string, unknown[][]>
+    expect(out.KDB).toEqual([['15', '33', -1, -1]])                                       // 111 km from X-Plane's runway
+    const one = runwayExtras({ KDB: [['16', '34', 0, 0, 45, -100.02, 45, -99.98, 30, 1, 3]] }, db as never) as Record<string, unknown[][]>
+    expect((one.KDB ?? []).filter((r) => r[2] === -1)).toEqual([])                              // the only database runway stays
+  })
 })

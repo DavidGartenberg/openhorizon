@@ -57,4 +57,12 @@ describe('adding X-Plane-only airports to the database', () => {
     expect(a.belowSeaFieldNear(36.46, -116.0)).toBe(false)         // 70 km away
     expect(a.belowSeaFieldNear(40, -100)).toBe(false)
   })
+  it('removes the runways X-Plane disproves, keeping the last one', async () => {
+    const { applyRunwayExtras } = await import('../src/world/airport-flatten')
+    const base = ap('KDB', 40, -100); base.r[0]!.li = '9'; base.r[0]!.hi = '27'
+    const second = { ...base.r[0]!, li: '15', hi: '33' }
+    const list = [{ ...base, r: [base.r[0]!, second] }]
+    applyRunwayExtras(list, { KDB: [['15', '33', -1, -1], ['09', '27', -1, -1]] })
+    expect(list[0]!.r.map((r) => r.li)).toEqual(['9'])
+  })
 })

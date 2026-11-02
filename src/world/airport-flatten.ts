@@ -97,6 +97,7 @@ export function applyRunwayExtras(airports: ReadonlyArray<Pick<AirportData, 'i' 
   for (const ap of airports) {
     const rows = extras[ap.i]
     if (!Array.isArray(rows)) continue
+    removeUnconfirmedRunways(ap, rows)
     addMissingRunways(ap, rows)
     for (const r of ap.r) {
       const li = endKey(r.li), hi = endKey(r.hi)
@@ -122,6 +123,17 @@ export function applyRunwayExtras(airports: ReadonlyArray<Pick<AirportData, 'i' 
         break
       }
     }
+  }
+}
+
+/** Drop the runways X-Plane does not confirm: rows [first end, second end, -1, -1]. Never the airport's last runway. */
+function removeUnconfirmedRunways(ap: Pick<AirportData, 'i' | 'r'>, rows: RunwayExtras[string]): void {
+  for (const row of rows) {
+    if (!Array.isArray(row) || row.length !== 4 || !(Number(row[2]) < 0) || !(Number(row[3]) < 0)) continue
+    if (ap.r.length < 2) return
+    const a = endKey(row[0]), b = endKey(row[1])
+    const k = ap.r.findIndex((q) => { const li = endKey(q.li), hi = endKey(q.hi); return (a === li && b === hi) || (a === hi && b === li) })
+    if (k >= 0) ap.r.splice(k, 1)
   }
 }
 
