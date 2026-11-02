@@ -51,6 +51,8 @@ export interface XpCockpit {
   parts: LoadedObj8[]
   /** The panel bitmap behind every display and MCP window: draw into it, then commit(). */
   panel: XpPanel
+  /** Invisible hit boxes of every manipulator (button, knob, switch, lever), moving with the controls they sit on. */
+  hits: THREE.Mesh[]
   /** Re-pose every animated node from this reader. */
   pose(read: DatarefReader): void
   /** The captain's eye as the cockpit camera wants it: forward / lateral / up from the airplane origin, metres. */
@@ -122,7 +124,7 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
     // The panel mesh: its only enabled draw samples the panel bitmap, so it takes the live panel material.
     signal?.throwIfAborted()
     const pu = url(model.panelObj)
-    const panelPart = await loadObj8(pu, { textureBase: pu.slice(0, pu.lastIndexOf('/') + 1), loadTextures: false, cockpitMaterial: panelMaterial })
+    const panelPart = await loadObj8(pu, { textureBase: pu.slice(0, pu.lastIndexOf('/') + 1), loadTextures: false, cockpitMaterial: panelMaterial, hitBoxes: true })
     signal?.throwIfAborted()
     if (!panelPart.parsed.draws.some((d) => d.cockpit) || !panelPart.parsed.vertices.every(Number.isFinite)) throw new Error(`Invalid panel mesh ${model.panelObj}`)
     panelPart.group.name = 'panel'
@@ -131,13 +133,15 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
     await panelLoaded
   } catch (error) { dispose(); throw error }
 
-  // The panel mesh's own animation nodes are manipulator hit boxes (no geometry): never pose them.
-  const animated = parts.filter((p) => p.group.name !== 'panel').flatMap((p) => p.animated)
+  // The panel mesh's animation nodes carry the manipulators' hit boxes, so they are posed too:
+  // a lever's hit box follows the lever. (The drawn panel mesh itself sits at the root.)
+  const animated = parts.flatMap((p) => p.animated)
+  const hits = parts.flatMap((p) => p.hits)
   const lamps: LightLevelGroup[] = parts.flatMap((p) => p.lights)
   const datarefs = [...new Set(parts.filter((p) => p.group.name !== 'panel').flatMap((p) => p.parsed.anims.flatMap((n) => n.specs.map((s) => s.dataref))))]
   const eye = eyeFromObj(model)
   return {
-    group, parts, panel, dispose,
+    group, parts, panel, hits, dispose,
     evidence: {
       objects: parts.length,
       triangles: parts.reduce((n, p) => n + p.parsed.draws.filter((d) => d.lod === 0).reduce((m, d) => m + d.count / 3, 0), 0),

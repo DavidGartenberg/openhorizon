@@ -61,6 +61,7 @@ import { upgradePlayerAircraft } from './render/local-aircraft'
 import { XP_COCKPIT_B738, eyeFromObj, loadXpCockpit, type XpCockpit } from './render/xplane-cockpit'
 import { makeXpDatarefReader } from './render/xplane-datarefs'
 import { mcpTexts } from './render/xplane-panel'
+import { XpInteraction, describeXpAction, type XpAction, type XpHover } from './render/xplane-interact'
 import type { Mcp737State } from './render/cockpit-737-paint'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
@@ -355,6 +356,11 @@ sky.setShadowSize(FLEET_ACTIVE.params.spanM)
 const exteriorCabin: THREE.Object3D[] = []
 mesh.group.traverse(o => { if (o.userData.exteriorCabin) exteriorCabin.push(o) })
 const cockpitInteraction = new CockpitInteraction(camera)
+function toggleGear(): void {
+  if (!aircraft.P.gearRetractable) return
+  aircraft.gearDownCommanded = !aircraft.gearDownCommanded
+  toast(aircraft.gearDownCommanded ? 'GEAR DOWN' : 'GEAR UP')
+}
 /** The real X-Plane 737 flight deck, when X-Plane is installed (render/xplane-cockpit.ts).
  *  Until it has loaded — or when it cannot — the procedural deck is used. */
 let xpCockpit: XpCockpit | null = null
@@ -382,6 +388,57 @@ function xpDatarefs(): (ref: string) => number {
     atDisconnect: autothrottle.disconnectLight && Math.floor(performance.now() / 250) % 2 === 0,
     panelLight: xpNightLevel(),
   }, xpOverrides)
+}
+/** Mouse operation of the X-Plane deck: every manipulator in the airplane's own panel mesh is a hit box. */
+const xpInteraction = new XpInteraction(camera)
+const xpTip = document.createElement('div')
+xpTip.style.cssText = 'position:fixed;left:0;top:0;pointer-events:none;z-index:30;padding:3px 8px;border-radius:5px;background:rgba(12,14,18,.88);color:#e8ecf2;font:600 12px system-ui,-apple-system,sans-serif;white-space:nowrap;display:none'
+document.body.appendChild(xpTip)
+let lastUnsimulatedToast = ''
+let lastUnsimulatedAt = 0
+/** Carry out what a click on the X-Plane deck means: the same functions the keyboard uses. */
+function xpAct(a: XpAction): void {
+  switch (a.kind) {
+    case 'ap': apPress(a.button); break
+    case 'speed': atSpeedPressed = true; break
+    case 'disengage': systemsControls.apMaster = false; apDisconnectPressedFlag = true; break
+    case 'apTurn': apTurn(a.knob, a.steps); break
+    case 'atSwitch': if (atArmSwitch !== a.arm) apPress('at'); break
+    case 'atDisconnect': atDisconnectPressed = true; break
+    case 'flaps': {
+      const before = aircraft.controls.flapsIndex
+      aircraft.selectFlaps(before + a.steps)
+      const label = aircraft.P.flapLabels?.[aircraft.controls.flapsIndex] ?? String(aircraft.P.flapDetentsDeg[aircraft.controls.flapsIndex] ?? aircraft.controls.flapsIndex)
+      if (aircraft.controls.flapsIndex !== before) toast(`FLAPS ${label}`)
+      break
+    }
+    case 'gear': toggleGear(); break
+    case 'speedbrake': toast(cycleSpeedbrake(aircraft)); break
+    case 'parking': parkingBrake = !parkingBrake; toast(parkingBrake ? 'PARKING BRAKE SET' : 'PARKING BRAKE RELEASED'); break
+    case 'autobrake': for (let i = 0; i < Math.abs(a.steps); i++) cycleAutobrake(a.steps > 0 ? 1 : -1); break
+    case 'landingLights':
+      if (aircraft.P.electrical === false) toast('NO ELECTRICAL SYSTEM — NO LIGHTS')
+      else { aircraftLights.landingOn = !aircraftLights.landingOn; toast(aircraftLights.landingOn ? 'LANDING LIGHTS ON' : 'LANDING LIGHTS OFF') }
+      break
+    case 'baro': baroSetInHg = Math.min(Math.max(baroSetInHg + 0.01 * a.steps, 27.5), 31.5); break
+    case 'course': radios.obs1Deg = (((radios.obs1Deg + a.steps) % 360) + 360) % 360; break
+    case 'unsimulated': {
+      const line = describeXpAction(a)
+      if (line !== lastUnsimulatedToast || performance.now() - lastUnsimulatedAt > 2500) { toast(line); lastUnsimulatedToast = line; lastUnsimulatedAt = performance.now() }
+      break
+    }
+    case 'none': break
+  }
+}
+function xpHoverUi(hover: XpHover | null): void {
+  const canvas = renderer.domElement
+  canvas.style.cursor = hover ? 'pointer' : ''
+  if (!hover || !hover.manip.tooltip) { xpTip.style.display = 'none'; return }
+  const rect = canvas.getBoundingClientRect()
+  const { x, y } = input.pointerPixels()
+  xpTip.textContent = hover.manip.tooltip
+  xpTip.style.display = 'block'
+  xpTip.style.transform = `translate(${Math.round(rect.left + x + 14)}px, ${Math.round(rect.top + y + 18)}px)`
 }
 /** 0 in daylight … 1 at night: the panel backlights and lit textures glow as the sun goes down. */
 function xpNightLevel(): number { return 1 - Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1) }
@@ -1220,10 +1277,7 @@ function handleDiscreteKeys(): void {
   if (input.wasPressed('KeyO')) saveSnapshot()
   if (input.wasPressed('KeyP')) loadSnapshot()
   // Fleet keys (11g): U gear (retractable only), H hand-prop, K carb heat.
-  if (input.wasPressed('KeyU') && aircraft.P.gearRetractable) {
-    aircraft.gearDownCommanded = !aircraft.gearDownCommanded
-    toast(aircraft.gearDownCommanded ? 'GEAR DOWN' : 'GEAR UP')
-  }
+  if (input.wasPressed('KeyU')) toggleGear()
   if (input.wasPressed('KeyH')) handPropRequested = true
   if (input.wasPressed('KeyK') && aircraft.P.carburetor) {
     carbHeatOn = !carbHeatOn
@@ -3186,7 +3240,17 @@ function advanceFrame(elapsed: number, now: number): void {
       camera.near = COCKPIT_NEAR
       camera.updateProjectionMatrix()
     }
-    cockpitInteraction.update(input, cockpit, systemsControls, aircraft.controls, radios)
+    if (xpCockpit?.group.visible) {
+      // The real deck is on screen: its own manipulators take the clicks (the procedural deck is hidden and inert).
+      const { x, y } = input.pointerPixels()
+      const { w, h } = input.targetSize()
+      const step = xpInteraction.update({ x, y, w, h, pressed: input.wasMousePressed(), down: input.isMouseDown(), released: input.wasMouseReleased(), wheel: input.consumeWheel() }, xpCockpit.hits)
+      for (const a of step.actions) xpAct(a)
+      xpHoverUi(step.hover)
+    } else {
+      xpHoverUi(null)
+      cockpitInteraction.update(input, cockpit, systemsControls, aircraft.controls, radios)
+    }
     const deckClick = cockpitInteraction.consumeDeckClick()
     // Held guidance-panel knob halves auto-repeat (faster the longer held).
     const held = cockpitInteraction.heldDeckControl
@@ -3227,9 +3291,10 @@ function advanceFrame(elapsed: number, now: number): void {
       (d.pitchDeg * Math.PI) / 180,
       (d.rollDeg * Math.PI) / 180,
       input,
-      !cockpitInteraction.isDraggingControl,
+      !cockpitInteraction.isDraggingControl && !xpInteraction.isDraggingControl,
     )
   } else {
+    xpHoverUi(null)
     if (camera.near !== DEFAULT_NEAR) {
       camera.near = DEFAULT_NEAR
       camera.updateProjectionMatrix()

@@ -69,6 +69,18 @@ export interface AnimNode {
  *  `(dataref − v1) / (v2 − v1)` clamped to 0…1, at `nits` (null when the file gives none). */
 export interface Obj8Light { v1: number; v2: number; dataref: string; nits: number | null }
 
+/** An ATTR_manip_*: what a click or drag on the geometry that follows does in X-Plane. */
+export interface Obj8Manip {
+  /** The ATTR_manip_ suffix: command, command_knob, command_switch_up_down, axis_knob, toggle, drag_rotate, … */
+  type: string
+  cursor: string
+  /** Command names (command, knob, switch types), in file order. */
+  commands: string[]
+  /** Dataref names (axis_knob, toggle, drag types), in file order. */
+  datarefs: string[]
+  tooltip: string
+}
+
 /** A maximal run of index-contiguous TRIS with no state change between. */
 export interface Obj8Draw {
   /** Offset into `indices`. */
@@ -83,6 +95,9 @@ export interface Obj8Draw {
   cockpit: boolean
   /** The ATTR_light_level in effect (a lamp, a backlight), when there is one. */
   light?: Obj8Light
+  /** A hit box: disabled geometry under a manipulator, kept only when parsed with `hitBoxes`. */
+  hidden?: boolean
+  manip?: Obj8Manip
 }
 
 export interface ParsedObj8 {
@@ -111,6 +126,36 @@ export interface ParsedObj8 {
   pointCounts?: { tris: number; lines: number; lights: number; indices: number }
   /** Unknown commands, malformed lines, structural oddities (deduplicated). */
   warnings: string[]
+}
+
+/** Number of leading numeric fields after the cursor, and how many dataref / command names follow, per manipulator type. */
+const MANIP_SHAPE: Record<string, { numbers: number; commands: number; datarefs: number }> = {
+  command: { numbers: 0, commands: 1, datarefs: 0 },
+  command_axis: { numbers: 3, commands: 2, datarefs: 0 },
+  command_knob: { numbers: 0, commands: 2, datarefs: 0 },
+  command_switch_up_down: { numbers: 0, commands: 2, datarefs: 0 },
+  command_switch_left_right: { numbers: 0, commands: 2, datarefs: 0 },
+  axis_knob: { numbers: 4, commands: 0, datarefs: 1 },
+  toggle: { numbers: 2, commands: 0, datarefs: 1 },
+  drag_rotate: { numbers: 13, commands: 0, datarefs: 2 },
+  drag_xy: { numbers: 6, commands: 0, datarefs: 2 },
+  drag_axis: { numbers: 7, commands: 0, datarefs: 1 },
+  push: { numbers: 2, commands: 0, datarefs: 1 },
+  radio: { numbers: 1, commands: 0, datarefs: 1 },
+  delta: { numbers: 4, commands: 0, datarefs: 1 },
+  wheel: { numbers: 1, commands: 0, datarefs: 0 },
+  noop: { numbers: 0, commands: 0, datarefs: 0 },
+}
+
+/** `ATTR_manip_<type> <cursor> <numbers…> <commands|datarefs…> <tooltip…>`; null for ATTR_manip_none / unknown shapes. */
+function parseManip(cmd: string, t: string[]): Obj8Manip | null {
+  const type = cmd.slice('ATTR_manip_'.length)
+  const shape = MANIP_SHAPE[type]
+  if (!shape) return null
+  let i = 2 + shape.numbers
+  const commands = t.slice(i, i + shape.commands); i += shape.commands
+  const datarefs = t.slice(i, i + shape.datarefs); i += shape.datarefs
+  return { type, cursor: t[1] ?? '', commands, datarefs, tooltip: t.slice(i).join(' ') }
 }
 
 function sameLight(a: Obj8Light | undefined, b: Obj8Light | null): boolean {
@@ -150,7 +195,7 @@ const IGNORED = /^(ATTR_|LIGHT|GLOBAL_|TEXTURE|VLINE|VLIGHT|LINES|smoke_|PARTICL
 
 const byValue = <K extends [number, unknown]>(a: K, b: K): number => a[0] - b[0]
 
-export function parseObj8(text: string): ParsedObj8 {
+export function parseObj8(text: string, opts: { hitBoxes?: boolean } = {}): ParsedObj8 {
   const warnings = new Set<string>()
   const warn = (s: string): void => {
     warnings.add(s)
@@ -183,6 +228,7 @@ export function parseObj8(text: string): ParsedObj8 {
   let drawEnabled = true
   let cockpit = false
   let light: Obj8Light | null = null
+  let manip: Obj8Manip | null = null
   let lodIndex = 0
   // Held in an object: it is assigned inside addSpec(), which TS's flow
   // analysis can't see, so a bare `let` would narrow to null at the read.
@@ -272,14 +318,17 @@ export function parseObj8(text: string): ParsedObj8 {
       case 'TRIS': {
         const start = n(1)
         const count = n(2)
-        if (bad || !drawEnabled) break
-        if (lastDraw && lastDraw.start + lastDraw.count === start && lastDraw.cockpit === cockpit && sameLight(lastDraw.light, light)) {
+        if (bad) break
+        const hidden = !drawEnabled
+        if (hidden && !(opts.hitBoxes && manip)) break
+        if (lastDraw && lastDraw.start + lastDraw.count === start && lastDraw.cockpit === cockpit && sameLight(lastDraw.light, light) && !!lastDraw.hidden === hidden && lastDraw.manip === (hidden ? manip ?? undefined : undefined)) {
           lastDraw.count += count
         } else {
-          lastDraw = { start, count, animPath: stack.map((e) => e.id), lod: lodIndex, cockpit, ...(light ? { light } : {}) }
+          lastDraw = { start, count, animPath: stack.map((e) => e.id), lod: lodIndex, cockpit, ...(light ? { light } : {}), ...(hidden && manip ? { hidden: true, manip } : {}) }
           draws.push(lastDraw)
         }
-        for (const e of stack) nodeHasDraws[e.id] = true
+        // A hit box is not drawn, so it does not make its block a drawn one.
+        if (!hidden) for (const e of stack) nodeHasDraws[e.id] = true
         break
       }
       case 'POINT_COUNTS':
@@ -405,7 +454,10 @@ export function parseObj8(text: string): ParsedObj8 {
         break
       }
       default:
-        if (/^\d+$/.test(cmd)) {
+        if (cmd === 'ATTR_manip_none') manip = null
+        else if (cmd === 'ATTR_manip_keyframe') { /* belongs to the drag_rotate before it */ }
+        else if (cmd.startsWith('ATTR_manip_')) manip = parseManip(cmd, t)
+        else if (/^\d+$/.test(cmd)) {
           if (cmd !== '800') warn(`unsupported OBJ version ${cmd}`)
         } else if (!IGNORED.test(cmd)) {
           warn(`unknown command ${cmd}`)
@@ -566,6 +618,8 @@ export function applyObj8Lights(groups: readonly LightLevelGroup[], read: Datare
 }
 
 export interface BuildObj8Options {
+  /** Build the parsed hit boxes (parseObj8 with `hitBoxes`) as invisible, raycastable meshes carrying `userData.manip`. */
+  hitBoxes?: boolean
   /** Give every distinct ATTR_light_level its own material so it can glow on its own dataref
    *  (cockpits). Off by default: exteriors keep their single shared material. */
   lightLevels?: boolean
@@ -611,7 +665,7 @@ export function buildObj8(
   parsed: ParsedObj8,
   material: THREE.Material,
   opts: BuildObj8Options = {},
-): { group: THREE.Group; animated: THREE.Group[]; lights: LightLevelGroup[] } {
+): { group: THREE.Group; animated: THREE.Group[]; lights: LightLevelGroup[]; hits: THREE.Mesh[] } {
   const lod = opts.lod ?? 0
   validateObj8(parsed, lod)
   const root = new THREE.Group()
@@ -642,6 +696,8 @@ export function buildObj8(
 
   let propAlphaMaterial: THREE.Material | undefined
   let cockpitMaterial = opts.cockpitMaterial
+  const hits: THREE.Mesh[] = []
+  let hitMaterial: THREE.MeshBasicMaterial | undefined
   const lightGroups = new Map<string, LightLevelGroup>()
   const lightMaterial = (l: Obj8Light): THREE.Material => {
     const key = `${l.dataref}|${l.v1}|${l.v2}|${l.nits}`
@@ -657,6 +713,7 @@ export function buildObj8(
   }
   for (const d of parsed.draws) {
     if (d.lod !== lod || d.count <= 0) continue
+    if (d.hidden && !opts.hitBoxes) continue
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', position)
     geo.setAttribute('normal', normal)
@@ -665,6 +722,17 @@ export function buildObj8(
     geo.setDrawRange(d.start, d.count)
     geo.boundingBox = drawBounds(parsed, d)
     geo.boundingSphere = geo.boundingBox.getBoundingSphere(new THREE.Sphere())
+    if (d.hidden) {
+      hitMaterial ??= new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, visible: false })
+      const hit = new THREE.Mesh(geo, hitMaterial)
+      hit.name = `hit:${d.manip?.tooltip ?? d.start}`
+      hit.visible = false
+      hit.userData.manip = d.manip
+      const owner = d.animPath[d.animPath.length - 1]
+      ;(owner === undefined ? root : animated[owner]!).add(hit)
+      hits.push(hit)
+      continue
+    }
     if (d.cockpit && !cockpitMaterial) {
       cockpitMaterial = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.8, metalness: 0.1 })
     }
@@ -687,7 +755,7 @@ export function buildObj8(
   // Static pose: every block evaluated at dataref value 0; hide/show is
   // recorded on userData but not applied (everything stays visible).
   for (const g of animated) applyObj8Anim(g, ZERO_DATAREFS)
-  return { group: root, animated, lights: [...lightGroups.values()] }
+  return { group: root, animated, lights: [...lightGroups.values()], hits }
 }
 
 // ------------------------------------------------------------- textures --
@@ -817,6 +885,8 @@ export interface LoadObj8Options {
   cockpitMaterial?: THREE.Material
   /** Lamps and backlights glow on their own datarefs (see BuildObj8Options.lightLevels). */
   lightLevels?: boolean
+  /** Parse and build the manipulators' hit boxes (see parseObj8). */
+  hitBoxes?: boolean
 }
 
 export interface LoadedObj8 {
@@ -825,6 +895,8 @@ export interface LoadedObj8 {
   animated: THREE.Group[]
   /** Lamps / backlights (empty unless loaded with lightLevels). */
   lights: LightLevelGroup[]
+  /** Invisible hit boxes of the file's manipulators (empty unless loaded with hitBoxes). */
+  hits: THREE.Mesh[]
   /** Texture file names referenced by the OBJ. */
   textures: string[]
   material: THREE.MeshStandardMaterial
@@ -835,7 +907,7 @@ export interface LoadedObj8 {
 export async function loadObj8(url: string, opts: LoadObj8Options): Promise<LoadedObj8> {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`loadObj8: ${url} → HTTP ${res.status}`)
-  const parsed = parseObj8(await res.text())
+  const parsed = parseObj8(await res.text(), opts.hitBoxes ? { hitBoxes: true } : {})
   validateObj8(parsed, opts.lod ?? 0)
   const warnings = [...parsed.warnings]
 
@@ -853,6 +925,6 @@ export async function loadObj8(url: string, opts: LoadObj8Options): Promise<Load
 
   const material = makeObj8Material({ map, emissiveMap, normalMap, materialGlossMap, glossMap }, parsed)
   const name = url.split('?')[0]!.split('/').pop() || 'obj8'
-  const built = buildObj8(parsed, material, { name, ...(opts.lod !== undefined ? { lod: opts.lod } : {}), ...(opts.cockpitMaterial ? { cockpitMaterial: opts.cockpitMaterial } : {}), ...(opts.lightLevels ? { lightLevels: true } : {}) })
+  const built = buildObj8(parsed, material, { name, ...(opts.lod !== undefined ? { lod: opts.lod } : {}), ...(opts.cockpitMaterial ? { cockpitMaterial: opts.cockpitMaterial } : {}), ...(opts.lightLevels ? { lightLevels: true } : {}), ...(opts.hitBoxes ? { hitBoxes: true } : {}) })
   return { ...built, textures: parsed.textures, material, parsed, warnings }
 }
