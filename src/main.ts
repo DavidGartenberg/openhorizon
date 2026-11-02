@@ -58,6 +58,7 @@ import { interpretTransmission } from './sim/atc/freetext'
 import { ApproachController, HANDOFF_GATE_M } from './sim/atc/approach'
 import { buildPlayerAircraft } from './render/player-aircraft'
 import { upgradePlayerAircraft } from './render/local-aircraft'
+import { XP_COCKPIT_B738, eyeFromObj, loadXpCockpit, type XpCockpit } from './render/xplane-cockpit'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
 import { B738 } from './sim/aircraft/b738'
@@ -350,6 +351,31 @@ sky.setShadowSize(FLEET_ACTIVE.params.spanM)
 const exteriorCabin: THREE.Object3D[] = []
 mesh.group.traverse(o => { if (o.userData.exteriorCabin) exteriorCabin.push(o) })
 const cockpitInteraction = new CockpitInteraction(camera)
+/** The real X-Plane 737 flight deck, when X-Plane is installed (render/xplane-cockpit.ts).
+ *  Until it has loaded — or when it cannot — the procedural deck is used. */
+let xpCockpit: XpCockpit | null = null
+let xpCockpitStatus = fleetKey === '737' ? 'loading' : 'not for this airplane'
+/** Square canvases for the X-Plane glass displays (its screens are ~178 × 173 mm): the same
+ *  drawing code as the procedural deck, at 768². Drawn only while the X-Plane cockpit is shown. */
+function xpCanvas(n: number): { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; size: number } {
+  const canvas = document.createElement('canvas'); canvas.width = canvas.height = n
+  const ctx = canvas.getContext('2d')!
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace
+  return { ctx, texture, size: n }
+}
+const xpScreens = fleetKey === '737' ? { pfd: xpCanvas(768), nd: xpCanvas(768), eicas: xpCanvas(768) } : null
+if (fleetKey === '737') {
+  void loadXpCockpit(XP_COCKPIT_B738, { cduTexture: cockpit.deck737?.cdu.texture }).then((c) => {
+    if (!c) { xpCockpitStatus = 'X-Plane not installed'; return }
+    xpCockpit = c
+    xpCockpitStatus = 'loaded'
+    c.group.visible = false
+    mesh.group.add(c.group)
+    cockpitCam.setEyePoint(c.eyePoint())
+    c.pose(() => 0)
+    if (xpScreens) c.mountScreens({ pfd: xpScreens.pfd.texture, nd: xpScreens.nd.texture, eicas: xpScreens.eicas.texture })
+  }).catch((err) => { xpCockpitStatus = `failed: ${err instanceof Error ? err.message : String(err)}`; console.warn('[xplane cockpit]', err) })
+}
 
 const wind = new WindModel()
 const chase = new ChaseCamera(camera)
@@ -2576,6 +2602,16 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
     drawIsfd(cockpit.boeingScreens.isfd.ctx, 256, { iasKt, altFt, pitchDeg: d.pitchDeg, rollDeg: d.rollDeg, baroInHg: baroSetInHg })
     cockpit.boeingScreens.isfd.texture.needsUpdate = true
   }
+  // The same live displays, square, for the X-Plane flight deck's glass.
+  if (xpCockpit && xpScreens) {
+    drawGaBoeingPfd(xpScreens.pfd.ctx, xpScreens.pfd.size, xpScreens.pfd.size, makeBoeingPfdInput(d, nav, iasKt, altFt, vsFpm), {
+      com1: radios.com1, nav1: radios.nav1, squawk: '1200', oatC, ktas: d.ktas, groundSpeedKt: d.groundSpeedKt,
+      windDirDeg: windDirFromNed(aircraft.windNed), windKt, alerts: [],
+    })
+    drawSquareFitted(xpScreens.nd.ctx, 0, 0, xpScreens.nd.size, xpScreens.nd.size, (c, S) => drawBoeingNd(c, S, ndIn))
+    drawSquareFitted(xpScreens.eicas.ctx, 0, 0, xpScreens.eicas.size, xpScreens.eicas.size, (c, S) => drawBoeingEicas(c, S, eng))
+    xpScreens.pfd.texture.needsUpdate = xpScreens.nd.texture.needsUpdate = xpScreens.eicas.texture.needsUpdate = true
+  }
   const gearPos = aircraft.P.gearRetractable ? aircraft.gearPos : 1
   const fireTest = auralFireTest || cockpitInteraction.heldDeckControl === 'fireTest'
   const destWp = wps.length ? wps[wps.length - 1] : undefined
@@ -3079,7 +3115,8 @@ function advanceFrame(elapsed: number, now: number): void {
   // the interior eyepoint, not the exterior silhouette — it must never
   // ride on top of the outside view (it poked through the C172's roof).
   // Hiding it outside cockpit mode also drops its draw calls.
-  cockpit.group.visible = cameraMode === 'cockpit'
+  cockpit.group.visible = cameraMode === 'cockpit' && !xpCockpit
+  if (xpCockpit) xpCockpit.group.visible = cameraMode === 'cockpit'
   for (const o of exteriorCabin) o.visible = cameraMode !== 'cockpit'
   if (cameraMode === 'chase') chase.update(elapsed, mesh.group.position, (d.headingDeg * Math.PI) / 180)
   else if (cameraMode === 'orbit') orbit.update(input, mesh.group.position)
@@ -3599,6 +3636,26 @@ Object.assign(window as unknown as Record<string, unknown>, {
     return { arm: atArmSwitch, ...autothrottle }
   },
   /** Post-processing controls (verification): enable, strengths. */
+  /** X-Plane cockpit (verification): status, evidence, and recalibrating the eye (OBJ metres: x right, y up, z aft). */
+  __ohXp: (o?: { eye?: [number, number, number] }) => {
+    if (o?.eye && o.eye.every(Number.isFinite) && xpCockpit) cockpitCam.setEyePoint(eyeFromObj(XP_COCKPIT_B738, o.eye))
+    return { status: xpCockpitStatus, evidence: xpCockpit ? { ...xpCockpit.evidence, datarefs: xpCockpit.evidence.datarefs.length, warnings: xpCockpit.evidence.warnings.slice(0, 5) } : null }
+  },
+  /** Which X-Plane cockpit mesh is under a pixel (verification): part, mesh name, draw range, triangle vertices (object frame), UV. */
+  __ohXpPick: (px: number, py: number) => {
+    if (!xpCockpit) return null
+    const rect = renderer.domElement.getBoundingClientRect()
+    const ndc = new THREE.Vector2(((px - rect.left) / rect.width) * 2 - 1, -(((py - rect.top) / rect.height) * 2 - 1))
+    const rc = new THREE.Raycaster(); rc.setFromCamera(ndc, camera)
+    const hits = rc.intersectObject(xpCockpit.group, true).filter((h) => h.object.visible).slice(0, 3)
+    return hits.map((h) => {
+      let part = h.object; while (part.parent && part.parent !== xpCockpit!.group) part = part.parent
+      const g = (h.object as THREE.Mesh).geometry, pos = g.getAttribute('position'), uv = g.getAttribute('uv'), idx = g.index!
+      const tri = h.faceIndex ?? 0, ids = [idx.getX(tri * 3), idx.getX(tri * 3 + 1), idx.getX(tri * 3 + 2)]
+      return { part: part.name, mesh: h.object.name, dist: +h.distance.toFixed(3), drawRange: g.drawRange, faceIndex: tri, vertexIds: ids,
+        verts: ids.map((i) => [pos.getX(i), pos.getY(i), pos.getZ(i)].map((v) => +v.toFixed(3))), uvs: ids.map((i) => [uv.getX(i), uv.getY(i)].map((v) => +v.toFixed(4))) }
+    })
+  },
   /** First officer state (verification): the ILS flag the minimums calls depend on, what has fired, the line on screen. */
   __ohCopilot: () => ({ ils: copilotIls, fired: [...copilotLatches.fired], line: performance.now() < copilotUntil ? copilotLine : '', pending: copilotPending?.text ?? null }),
   /** Frame pacing (verification): read the mode, or switch it. */

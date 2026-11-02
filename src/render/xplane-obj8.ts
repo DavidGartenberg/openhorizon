@@ -755,6 +755,8 @@ export interface LoadObj8Options {
   lod?: number
   /** Per-aircraft texture ownership/cache; never shared across disposed aircraft. */
   textureCache?: Map<string, Promise<THREE.Texture | null>>
+  /** Material for ATTR_cockpit* draws (X-Plane's panel / device screens), e.g. a live display. */
+  cockpitMaterial?: THREE.Material
 }
 
 export interface LoadedObj8 {
@@ -789,6 +791,6 @@ export async function loadObj8(url: string, opts: LoadObj8Options): Promise<Load
 
   const material = makeObj8Material({ map, emissiveMap, normalMap, materialGlossMap, glossMap }, parsed)
   const name = url.split('?')[0]!.split('/').pop() || 'obj8'
-  const built = buildObj8(parsed, material, { name, ...(opts.lod !== undefined ? { lod: opts.lod } : {}) })
+  const built = buildObj8(parsed, material, { name, ...(opts.lod !== undefined ? { lod: opts.lod } : {}), ...(opts.cockpitMaterial ? { cockpitMaterial: opts.cockpitMaterial } : {}) })
   return { ...built, textures: parsed.textures, material, parsed, warnings }
 }
