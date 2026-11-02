@@ -4,6 +4,7 @@ import { disposeAirportObject, ownMaterial, type GroundPoint, type SurfaceObstac
 import { buildRunwayMarkings, buildRunwayOverruns, type RunwayLocal } from './airport-detail'
 import { osmIdentSegs } from './osm-layout'
 import { parkedAircraftFor } from './parked-aircraft'
+import { papiMaterial, papiBoxAngles, type PapiArray } from './papi'
 import { lightGlowTexture } from '../render/light-glow'
 import { pavementMaterial as proceduralPavement } from '../render/surface-materials'
 
@@ -42,6 +43,8 @@ export interface AptLayout {
   rwy: AptRunway[]
   ramps: AptRamp[]
   wind?: Array<{ lat: number; lon: number }>
+  /** PAPI arrays (apt.dat light types 2–4): the position of the innermost unit, the approach heading and the glide slope. */
+  papi?: Array<{ lat: number; lon: number; type: number; hdg: number; gs: number }>
   taxi: { nodes: AptTaxiNode[]; edges: AptTaxiEdge[] }
 }
 
@@ -90,6 +93,7 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     return Number.isFinite(o?.lat) && Number.isFinite(o?.lon) ? [{ lat: Number(o.lat), lon: Number(o.lon), hdg: Number(o.hdg) || 0, kind: String(o.kind ?? ''), cats: Array.isArray(o.cats) ? o.cats.map(String) : [], name: String(o.name ?? '').slice(0, 40) }] : []
   })
   const wind = arr(d.wind).slice(0, 40).flatMap((w) => { const o = w as Record<string, unknown>; return Number.isFinite(o?.lat) && Number.isFinite(o?.lon) && Math.abs(Number(o.lat)) <= 90 && Math.abs(Number(o.lon)) <= 180 ? [{ lat: Number(o.lat), lon: Number(o.lon) }] : [] })
+  const papi = arr(d.papi).slice(0, 400).flatMap((w) => { const o = w as Record<string, unknown>; const type = Number(o?.type); return Number.isFinite(o?.lat) && Number.isFinite(o?.lon) && Math.abs(Number(o.lat)) <= 90 && Math.abs(Number(o.lon)) <= 180 && type >= 2 && type <= 4 ? [{ lat: Number(o.lat), lon: Number(o.lon), type, hdg: Number(o.hdg) || 0, gs: Number(o.gs) || 3 }] : [] })
   const tx = (d.taxi ?? {}) as Record<string, unknown>
   const nodes: AptTaxiNode[] = arr(tx.nodes).slice(0, 8000).flatMap((n) => {
     const o = n as Record<string, unknown>
@@ -100,7 +104,7 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     return Number.isFinite(o?.a) && Number.isFinite(o?.b) ? [{ a: Number(o.a), b: Number(o.b), oneway: !!o.oneway, kind: String(o.kind ?? ''), name: String(o.name ?? '').slice(0, 12) }] : []
   })
   if (!pav.length && !lines.length) return null
-  return { icao: String(d.icao ?? ''), name: String(d.name ?? ''), elevFt: Number(d.elevFt) || 0, pav, lines, lights, signs, rwy, ramps, wind, taxi: { nodes, edges } }
+  return { icao: String(d.icao ?? ''), name: String(d.name ?? ''), elevFt: Number(d.elevFt) || 0, pav, lines, lights, signs, rwy, ramps, wind, papi, taxi: { nodes, edges } }
 }
 
 // ------------------------------------------------------------- surfaces --
@@ -524,6 +528,50 @@ export function buildAptPaint(layout: AptLayout, toLocal: (lat: number, lon: num
     if (m) { m.renderOrder = 22; out.push(m) }
   }
   return out
+}
+
+// -------------------------------------------------------------------- PAPI --
+
+/** Metres between the four boxes of a PAPI. */
+export const PAPI_BOX_SPACING_M = 9
+
+/**
+ * The PAPI arrays X-Plane's layout lists, at their real positions: four boxes 9 m apart running away from the runway
+ * from the listed point (to the left of the approach for PAPI-4L, to the right otherwise), set for the listed glide
+ * slope and visible from the approach side. Colored every frame by Airports.updatePapi.
+ */
+export function buildAptPapis(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number, ground?: GroundFn): { group: THREE.Group; arrays: PapiArray[] } | null {
+  if (!layout.papi?.length) return null
+  const group = new THREE.Group()
+  group.name = 'aptPapi'
+  const arrays: PapiArray[] = []
+  for (const row of layout.papi) {
+    const p = toLocal(row.lat, row.lon)
+    const H = (row.hdg * Math.PI) / 180
+    const right = { x: Math.cos(H), z: Math.sin(H) }                    // right of the approach heading
+    const side = row.type === 2 ? -1 : 1
+    const y = (ground ? ground(p.x, p.z) : elevM) + 0.6
+    const pos = new Float32Array(12)
+    for (let i = 0; i < 4; i++) {
+      pos[i * 3] = p.x + right.x * side * i * PAPI_BOX_SPACING_M
+      pos[i * 3 + 1] = y
+      pos[i * 3 + 2] = p.z + right.z * side * i * PAPI_BOX_SPACING_M
+    }
+    const geo = new THREE.BufferGeometry()
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+    const colors = new THREE.BufferAttribute(new Float32Array(12), 3)
+    geo.setAttribute('color', colors)
+    const pts = new THREE.Points(geo, papiMaterial())
+    pts.frustumCulled = false
+    pts.renderOrder = 30
+    group.add(pts)
+    arrays.push({
+      colors, baseX: (pos[0]! + pos[9]!) / 2, baseY: y, baseZ: (pos[2]! + pos[11]!) / 2,
+      outX: -Math.sin(H), outZ: Math.cos(H),                            // from the array back toward the approaching airplane
+      boxAngles: papiBoxAngles(row.gs), rwyIdent: '', points: pts,
+    })
+  }
+  return { group, arrays }
 }
 
 // ---------------------------------------------------------------- windsocks --
@@ -963,6 +1011,12 @@ export async function enhanceAirportWithXplane(group: THREE.Group, icao: string,
   await idle(); if (!alive()) return false
   built.add(...buildAptPaint(layout, toLocal, elevM, ground))
   { const numbers = buildAptGateLabels(layout, toLocal, elevM, ground); if (numbers) built.add(numbers) }
+  const papis = buildAptPapis(layout, toLocal, elevM, ground)
+  if (papis) {
+    // X-Plane's PAPIs replace the heuristic ones placed 300 m in from each long runway's threshold.
+    for (const old of (group.userData.papis as PapiArray[] | undefined) ?? []) { old.points?.removeFromParent(); old.points?.geometry.dispose() }
+    built.add(papis.group); group.userData.papis = papis.arrays
+  }
   const socks = buildAptWindsocks(layout, toLocal, elevM, ground)
   if (socks) {
     built.add(socks.group); group.userData.aptSocks = socks.pivots

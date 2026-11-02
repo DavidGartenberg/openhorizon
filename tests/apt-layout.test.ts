@@ -6,7 +6,7 @@ vi.mock('../src/render/light-glow', () => ({ lightGlowTexture: () => ({ isTextur
 vi.mock('../src/world/airport-detail', async (importActual) => { const T = await import('three'); return { ...(await importActual<typeof import('../src/world/airport-detail')>()), buildRunwayMarkings: () => new T.Group() } })
 import * as THREE from 'three'
 import {
-  sockDirection, sockDroop, buildAptWindsocks, gateLabel, runwayRects, insideRunway, groundGrid, densify, subdivideTriangles, normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, buildAptPavement, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
+  buildAptPapis, PAPI_BOX_SPACING_M, sockDirection, sockDroop, buildAptWindsocks, gateLabel, runwayRects, insideRunway, groundGrid, densify, subdivideTriangles, normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, buildAptPavement, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
 } from '../src/world/apt-layout'
 
 const toLocal = (lat: number, lon: number): XZ => ({ x: lon * 100_000, z: -lat * 111_320 })
@@ -421,5 +421,29 @@ describe('windsocks', () => {
   it('keeps the listed windsocks through validation and drops malformed ones', () => {
     const l = normalizeApt({ pav: [{ surf: 1, rings: [[[0, 0], [0, 1], [1, 1]]] }], wind: [{ lat: 1, lon: 2 }, { lat: 'x' }, { lat: 95, lon: 0 }] })!
     expect(l.wind).toEqual([{ lat: 1, lon: 2 }])
+  })
+})
+
+describe("X-Plane's PAPI arrays", () => {
+  const base = { icao: 'X', name: 'x', elevFt: 0, pav: [], lines: [], signs: [], rwy: [], lights: [], ramps: [], taxi: { nodes: [], edges: [] } } as unknown as AptLayout
+  it('keeps PAPI rows (types 2–4) and drops the other light types and malformed rows', () => {
+    const l = normalizeApt({ pav: [{ surf: 1, rings: [[[0, 0], [0, 1], [1, 1]]] }], papi: [{ lat: 1, lon: 2, type: 2, hdg: 100, gs: 3 }, { lat: 1, lon: 2, type: 6, hdg: 0, gs: 3 }, { lat: 'x', type: 3 }, { lat: 1, lon: 2, type: 3, hdg: 280, gs: 0 }] })!
+    expect(l.papi).toEqual([{ lat: 1, lon: 2, type: 2, hdg: 100, gs: 3 }, { lat: 1, lon: 2, type: 3, hdg: 280, gs: 3 }])
+  })
+  it('lays four boxes 9 m apart away from the runway, on the left for a 4L and the right for a 4R, facing the approach', () => {
+    const row = (type: number) => ({ ...base, papi: [{ lat: 0.001, lon: 0.001, type, hdg: 90, gs: 3 }] })   // landing eastward
+    const left = buildAptPapis(row(2), toLocal, 5, () => 10)!, right = buildAptPapis(row(3), toLocal, 5, () => 10)!
+    const z = (g: ReturnType<typeof buildAptPapis>): number[] => { const a = (g!.arrays[0]!.points!.geometry.getAttribute('position')); return [0, 1, 2, 3].map((i) => a.getZ(i)) }
+    // Heading east: the pilot's right is south (+z); a 4L runs to the north (−z), a 4R to the south.
+    expect(z(left)[3]! - z(left)[0]!).toBeCloseTo(-3 * PAPI_BOX_SPACING_M, 3); expect(z(right)[3]! - z(right)[0]!).toBeCloseTo(3 * PAPI_BOX_SPACING_M, 3)
+    const a = left.arrays[0]!
+    expect(a.outX).toBeCloseTo(-1, 6); expect(a.outZ).toBeCloseTo(0, 6)               // out toward the west, back along the approach
+    expect(a.baseY).toBeCloseTo(10.6)
+    expect(a.boxAngles).toEqual([3.5, 3.17, 2.83, 2.5].map((v) => expect.closeTo(v, 5)))
+  })
+  it('sets the boxes for the listed glide slope', () => {
+    const a = buildAptPapis({ ...base, papi: [{ lat: 0, lon: 0, type: 2, hdg: 0, gs: 3.5 }] }, toLocal, 0)!.arrays[0]!
+    expect(a.boxAngles[0]).toBeCloseTo(4); expect(a.boxAngles[3]).toBeCloseTo(3)
+    expect(buildAptPapis(base, toLocal, 0)).toBeNull()
   })
 })

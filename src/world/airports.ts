@@ -7,7 +7,7 @@ import type { WorldFrame, RunwayFlatten } from './tiles'
 import { buildRunwayMarkings, buildDistanceSigns, buildTaxiwayComplex, dimPaintForNight, type RunwayLocal } from './airport-detail'
 import { airportBeacon, rabbitOn } from '../sim/lights'
 import { lightGlowTexture } from '../render/light-glow'
-import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
+import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount, papiMaterial, type PapiArray } from './papi'
 import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
 import type { ParkedSource } from './parked-aircraft'
 import { enhanceAirportWithXplane, setAptNight, NIGHT_GLOW, sockDirection, sockDroop } from './apt-layout'
@@ -56,14 +56,6 @@ const STRIPE_BASE = 0xd8d8d0
 const EDGE_SPHERE_BASE = 0xffffff
 const SOCK_ORANGE = new THREE.MeshStandardMaterial({ color: 0xe8641b, roughness: 0.8 })
 const MAST = new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 0.9 })
-/** 13d PAPI boxes: constant-pixel additive glow points, on day and night. */
-const PAPI_MAT = new THREE.PointsMaterial({
-  map: lightGlowTexture(), size: 5, sizeAttenuation: false, vertexColors: true,
-  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-})
-
-PAPI_MAT.userData.airportShared = true
-
 /** 13c: one additive Points cloud per airport (edge white, threshold
  *  green / end red, floodlit windsock) faded in by night, plus the
  *  white/green rotating beacon flashed by sim/lights cadence. */
@@ -73,23 +65,6 @@ interface NightLights {
   /** 16c sequenced approach flashers: per-point station index. */
   rabbit: THREE.Points | null
   rabbitStations: number[]
-}
-
-/** 13d: one 4-box PAPI array per qualifying runway end. Colors are
- *  recomputed each frame from the CAMERA's elevation angle to the
- *  array (what the lens sees is what a pilot's eye would see). */
-interface PapiArray {
-  colors: THREE.BufferAttribute
-  /** Array center in airport-group-local coords. */
-  baseX: number
-  baseY: number
-  baseZ: number
-  /** Unit vector (x,z) pointing from the array out along the approach. */
-  outX: number
-  outZ: number
-  /** Per-box setting angle, box order matching the vertex order. */
-  boxAngles: number[]
-  rwyIdent: string
 }
 
 export { searchAirports } from './airport-search'
@@ -419,7 +394,7 @@ export class Airports {
             geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
             const colors = new THREE.BufferAttribute(new Float32Array(12), 3)
             geo.setAttribute('color', colors)
-            const pts = new THREE.Points(geo, PAPI_MAT)
+            const pts = new THREE.Points(geo, papiMaterial())
             pts.frustumCulled = false // four points, colored per frame
             pts.renderOrder = 30
             group.add(pts)
@@ -437,6 +412,7 @@ export class Airports {
               outX: end * along.x, outZ: end * along.z,
               boxAngles,
               rwyIdent: end === -1 ? r.li : r.hi,
+              points: pts,
             })
           }
         }
