@@ -39,3 +39,11 @@ never copied into the repository.
 - [x] King Air C90B is an exact model; twin turboprops borrow it
 - [ ] More installed aircraft as exact models (SF50, RV-10, L-5, Lancair, Aerolite, R22, S-76 — none is in the flyable roster); prop disc too faint at running RPM
 - [ ] Other lane's gate: `tests/dg800-*.test.ts` (untracked) need `flapNeutralIndex` in `AircraftParams`; they fail by design until that lands
+
+## Airport taxiway refinement (2026-11-02, until 3 pm)
+
+- [x] X-Plane pavement, paint, lights and signs follow the ground (taxiways were buried under terrain); rebuilt when the fine terrain has loaded
+- [x] Levelled ground sized from X-Plane's real pavement extent and runway overruns (`/api/apt-extent.json`, `/api/apt-runways.json`)
+- [x] Blast pads / overruns with chevrons; asphalt and concrete finish; night glow; sign backs
+- [ ] Terminals are OpenStreetMap footprints; no parked aircraft (the traffic layer draws only live targets); no gate labels (X-Plane has none); a taxiway polygon that overlaps a runway can cover the runway surface
+- Checked in the browser: KSFO, KJFK, KLAX, KASE, EGLL; 355 layouts build in node without errors
