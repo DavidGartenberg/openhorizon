@@ -4046,7 +4046,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     if (!g || !layout || la === null || lo === null) return null
     const l = frame.toLocal(la, lo)
     const wp = new THREE.Vector3(); g.getWorldPosition(wp)
-    const ray = new THREE.Raycaster(new THREE.Vector3(l.e, 400, -l.n), new THREE.Vector3(0, -1, 0))
+    const ray = new THREE.Raycaster(new THREE.Vector3(l.e, (aircraft.groundElevAt?.(l.n, l.e) ?? 0) + 300, -l.n), new THREE.Vector3(0, -1, 0))
     const hits = ray.intersectObject(layout, true).map((h) => { let vis = true; for (let o: THREE.Object3D | null = h.object; o; o = o.parent) if (!o.visible) vis = false; const m = (h.object as THREE.Mesh).material as THREE.Material; return `${h.object.name}@${h.point.y.toFixed(2)}${vis ? '' : ' HIDDEN'}${m.visible ? '' : ' MATHIDDEN'} order${h.object.renderOrder} off${(m as THREE.MeshStandardMaterial).polygonOffsetFactor}` })
     return { hits, terrain: Math.round(tiles.elevationAt(la, lo) * 100) / 100, ground: Math.round((aircraft.groundElevAt?.(l.n, l.e) ?? 0) * 100) / 100, group: wp.toArray() }
   },
