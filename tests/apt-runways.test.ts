@@ -30,7 +30,7 @@ const write = (name: string, text: string): string => { const f = path.join(dir,
 describe('apt.dat runway scan', () => {
   const rows = scanAptRunways(write('apt.dat', FILE)) as Map<string, Array<[string, string, number, number]>>
   it('reads both end designators and the overrun beyond each, per airport', () => {
-    expect(rows.get('KAAA')).toEqual([['10L', '28R', 250, 100, 37.5, -122.26, 37.5, -122.24, 45.72], ['10R', '28L', 0, 0, 37.5, -122.26, 37.5, -122.24, 45.72]])
+    expect(rows.get('KAAA')).toEqual([['10L', '28R', 250, 100, 37.5, -122.26, 37.5, -122.24, 45.72, 1, 3], ['10R', '28L', 0, 0, 37.5, -122.26, 37.5, -122.24, 45.72, 1, 3]])
     expect(rows.get('KBBB')!.map((r) => r.slice(0, 4))).toEqual([['9', '27', 0, 61]])
   })
   it('lists airports with no (or malformed) runway rows as empty, never attributing rows to the wrong airport', () => {
@@ -81,7 +81,7 @@ describe('the overrun table for the client', () => {
 })
 
 // @ts-expect-error plain ES module without types (server code)
-import { runwayExtras, MAX_RUNWAY_FIX_M } from '../server/apt.mjs'
+import { runwayExtras, MAX_RUNWAY_FIX_M, aptOnlyAirports, aptAirportsNear } from '../server/apt.mjs'
 describe('correcting the old database with X-Plane\'s runways', () => {
   const rows = { KAAA: [['10L', '28R', 250, 100, 37.5, -122.26, 37.5, -122.24, 45.7], ['10R', '28L', 0, 0, 37.51, -122.26, 37.51, -122.24, 45.7]] }
   const dbRwy = (li: string, hi: string, la1: number, lo1: number, la2: number, lo2: number, wFt: number) => ({ li, hi, la1, lo1, la2, lo2, w: wFt })
@@ -101,5 +101,30 @@ describe('correcting the old database with X-Plane\'s runways', () => {
     expect((runwayExtras(rows, far) as Record<string, unknown[][]>).KAAA![0]).toEqual(['10L', '28R', 250, 100])
     const none = runwayExtras(rows, null) as Record<string, unknown[][]>
     expect(none.KAAA).toEqual([['10L', '28R', 250, 100]])
+  })
+})
+
+describe("airports X-Plane has and the old database lacks", () => {
+  const runways = {
+    KNEW: [['9', '27', 0, 0, 37.5, -122.26, 37.5, -122.24, 30, 1, 3], ['1', '19', 0, 0, 37.49, -122.25, 37.51, -122.25, 20, 3, 0]],
+    KOLD: [['10', '28', 0, 0, 40, -100, 40, -99.98, 40, 1, 3]],
+    HELI: [['H1', 'H1', 0, 0, 40, -100, 40, -100, 10, 1, 0]],
+    KTINY: [['9', '27', 0, 0, 10, 10, 10, 10.0005, 10, 1, 0]],
+  }
+  const meta = { KNEW: { name: 'New Field', elevFt: 120, code: 1 }, KOLD: { name: 'Old', elevFt: 5, code: 1 }, HELI: { name: 'Heli', elevFt: 5, code: 17 }, KTINY: { name: 'Tiny', elevFt: 5, code: 1 } }
+  it('builds database-shaped entries for airports the database lacks, skipping known ones, heliports and tiny strips', () => {
+    const out = aptOnlyAirports(runways, meta, [{ i: 'KOLD', r: [] }]) as Array<Record<string, any>>
+    expect(out.map((a) => a.i)).toEqual(['KNEW'])
+    const a = out[0]!
+    expect(a).toMatchObject({ n: 'New Field', e: 120, t: 0, xo: true })
+    expect(a.r).toHaveLength(2); expect(a.r[0]).toMatchObject({ li: '9', hi: '27', s: 0, lt: 1, e1: 120, e2: 120 })
+    expect(a.r[0].l).toBeGreaterThan(5000); expect(a.r[0].w).toBeCloseTo(98.4, 0)          // 30 m in feet
+    expect(a.r[1]).toMatchObject({ s: 1, lt: 0 })                                           // a turf runway is not hard
+    expect(a.la).toBeCloseTo(37.5, 2); expect(a.lo).toBeCloseTo(-122.25, 2)
+  })
+  it('selects the airports within a radius of a point, and all of them without one', () => {
+    const list = [{ la: 37.5, lo: -122.25 }, { la: 41, lo: -100 }]
+    expect(aptAirportsNear(list, 37.5, -122.2, 20_000)).toHaveLength(1)
+    expect(aptAirportsNear(list, NaN, 0, 1)).toHaveLength(2)
   })
 })

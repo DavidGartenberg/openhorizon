@@ -120,6 +120,9 @@ export function scanAptRunways(file) {
   /** Per airport: the reference (first runway end) and the box of its pavement / line nodes within 0.1° of it. */
   const ext = new Map()
   out.extents = ext
+  /** Per airport: its name and elevation (feet) from the header row. */
+  const meta = new Map()
+  out.meta = meta
   const fd = fs.openSync(file, 'r')
   try {
     const size = fs.fstatSync(fd).size
@@ -136,7 +139,7 @@ export function scanAptRunways(file) {
         const c0 = buf[i], c1 = buf[i + 1], c2 = buf[i + 2]
         if (c0 === 0x31 && (c1 === 0x20 || ((c1 === 0x36 || c1 === 0x37) && c2 === 0x20))) {
           const m = /^(1|16|17)\s+-?\d+\s+\d+\s+\d+\s+(\S+)/.exec(buf.toString('latin1', i, nl))
-          if (m) { icao = m[2]; out.set(icao, []); ext.delete(icao) }
+          if (m) { icao = m[2]; out.set(icao, []); ext.delete(icao); const h = /^(?:1|16|17)\s+(-?\d+)\s+\d+\s+\d+\s+\S+\s*(.*)$/.exec(buf.toString('latin1', i, nl)); meta.set(icao, { name: (h?.[2] ?? '').trim().slice(0, 60), elevFt: Number(h?.[1] ?? 0) || 0, code: Number(buf.toString('latin1', i, i + 2)) }) }
         } else if (icao && c0 === 0x31 && c1 === 0x31 && c2 >= 0x31 && c2 <= 0x36 && buf[i + 3] === 0x20) {
           // A pavement / line / boundary node (111…116): lat lon are the next two fields.
           const e = ext.get(icao)
@@ -152,8 +155,8 @@ export function scanAptRunways(file) {
           const f = buf.toString('latin1', i, nl).trim().split(/\s+/)
           if (f.length >= 26) {
             const a = Math.round(Number(f[12])), b = Math.round(Number(f[21]))
-            // [end A, end B, overrun beyond A (m), beyond B (m), A lat, A lon, B lat, B lon, width (m)]
-            out.get(icao).push([f[8], f[17], Number.isFinite(a) ? Math.max(0, a) : 0, Number.isFinite(b) ? Math.max(0, b) : 0, Number(f[9]), Number(f[10]), Number(f[18]), Number(f[19]), Number(f[1])])
+            // [end A, end B, overrun beyond A (m), beyond B (m), A lat, A lon, B lat, B lon, width (m), surface code, edge lights]
+            out.get(icao).push([f[8], f[17], Number.isFinite(a) ? Math.max(0, a) : 0, Number.isFinite(b) ? Math.max(0, b) : 0, Number(f[9]), Number(f[10]), Number(f[18]), Number(f[19]), Number(f[1]), Number(f[2]), Number(f[6])])
             if (!ext.has(icao)) { const la = Number(f[9]), lo = Number(f[10]); if (Number.isFinite(la) && Number.isFinite(lo)) ext.set(icao, { ref: [la, lo], box: [la, lo, la, lo] }) }
           }
         }
@@ -165,6 +168,7 @@ export function scanAptRunways(file) {
   } finally { fs.closeSync(fd) }
 }
 
+let metaTable = null
 let runwaysTable = null     // { ICAO: [[endA, endB, overA, overB, laA, loA, laB, loB, widthM], …] } for every airport with runways
 let extentsJson = null
 let extrasMemo = null
@@ -176,24 +180,24 @@ function loadRunwayTables(cacheDir, files) {
   if (cacheFile && fs.existsSync(cacheFile)) {
     try {
       const j = JSON.parse(fs.readFileSync(cacheFile, 'utf8'))
-      if (j.key === key && j.extents && j.runways) { runwaysTable = j.runways; extentsJson = JSON.stringify(j.extents); return }
+      if (j.key === key && j.extents && j.runways && j.meta) { runwaysTable = j.runways; metaTable = j.meta; extentsJson = JSON.stringify(j.extents); return }
     } catch { /* rescan */ }
   }
-  const merged = new Map(), boxes = new Map()
+  const merged = new Map(), boxes = new Map(), metas = new Map()
   for (const file of files) {
     const scanned = scanAptRunways(file)
-    for (const [icao, rows] of scanned) { merged.set(icao, rows); boxes.delete(icao); const e = scanned.extents.get(icao); if (e) boxes.set(icao, e.box) }
+    for (const [icao, rows] of scanned) { merged.set(icao, rows); boxes.delete(icao); const e = scanned.extents.get(icao); if (e) boxes.set(icao, e.box); metas.set(icao, scanned.meta.get(icao)) }
   }
-  const runways = {}
-  for (const [icao, rows] of merged) if (rows.length) runways[icao] = rows
+  const runways = {}, meta = {}
+  for (const [icao, rows] of merged) if (rows.length) { runways[icao] = rows; meta[icao] = metas.get(icao) ?? { name: '', elevFt: 0, code: 1 } }
   // Only airports bigger than ~1.5 km across need an extent: the client's own size rule covers the rest.
   const extents = {}
   for (const [icao, b] of boxes) {
     const dLat = (b[2] - b[0]) * 111_319.5, dLon = (b[3] - b[1]) * 111_319.5 * Math.cos((((b[0] + b[2]) / 2) * Math.PI) / 180)
     if (Math.hypot(dLat, dLon) > 1500) extents[icao] = b.map((v) => Math.round(v * 1e5) / 1e5)
   }
-  if (cacheFile) { try { fs.writeFileSync(cacheFile, JSON.stringify({ key, runways, extents })) } catch { /* cache is optional */ } }
-  runwaysTable = runways; extentsJson = JSON.stringify(extents)
+  if (cacheFile) { try { fs.writeFileSync(cacheFile, JSON.stringify({ key, runways, meta, extents })) } catch { /* cache is optional */ } }
+  runwaysTable = runways; metaTable = meta; extentsJson = JSON.stringify(extents)
 }
 
 const endKey = (id) => String(id).trim().toUpperCase().replace(/^0+(?=\d)/, '')
@@ -254,4 +258,52 @@ export function aptExtents(cacheDir, files = aptFiles()) {
   if (!files.length) return null
   loadRunwayTables(cacheDir, files)
   return extentsJson
+}
+
+const FT_PER_M = 1 / 0.3048
+/** apt.dat surface codes that are not hard pavement: turf, dirt, gravel, dry lakebed, snow / ice. */
+const SOFT_SURFACES = new Set([3, 4, 5, 12, 14])
+
+/**
+ * Airports X-Plane has that the old database does not (22,000 of them, mostly small fields), in the database's own
+ * shape so the client can treat them alike: { i, n, la, lo, e (ft), t: 0, xo: true, r: [{ li, hi, la1, lo1, la2, lo2,
+ * e1, e2 (ft), l, w (ft), s (1 = not hard), lt }] }. Land airports with a runway at least 200 m long.
+ */
+export function aptOnlyAirports(runways, meta, db) {
+  const have = new Set(db.map((a) => a.i))
+  const out = []
+  for (const [icao, rows] of Object.entries(runways)) {
+    if (have.has(icao)) continue
+    const m = meta[icao]
+    if (m && m.code !== 1) continue                                   // not a land airport (16 seaplane base, 17 heliport)
+    const r = []
+    let sla = 0, slo = 0, n = 0
+    for (const row of rows) {
+      const [idA, idB, , , la1, lo1, la2, lo2, w, surf, edge] = row
+      if (![la1, lo1, la2, lo2].every(Number.isFinite) || Math.abs(la1) > 90 || Math.abs(la2) > 90 || Math.abs(lo1) > 180 || Math.abs(lo2) > 180) continue
+      const lenM = metres(la1, lo1, la2, lo2)
+      if (lenM < 200) continue
+      const e = m?.elevFt ?? 0
+      r.push({ li: String(idA), hi: String(idB), la1: +la1.toFixed(6), lo1: +lo1.toFixed(6), la2: +la2.toFixed(6), lo2: +lo2.toFixed(6), e1: e, e2: e, l: Math.round(lenM * FT_PER_M), w: Math.round(Math.max(Number(w) || 0, 6) * FT_PER_M), s: SOFT_SURFACES.has(surf) ? 1 : 0, lt: edge > 0 ? 1 : 0 })
+      sla += (la1 + la2) / 2; slo += (lo1 + lo2) / 2; n++
+    }
+    if (!n) continue
+    out.push({ i: icao, n: m?.name || icao, la: +(sla / n).toFixed(5), lo: +(slo / n).toFixed(5), e: m?.elevFt ?? 0, t: 0, xo: true, r })
+  }
+  return out
+}
+
+let onlyList = null
+/** The X-Plane-only airports (see `aptOnlyAirports`) as an array; built once per process. */
+export function aptAirportsOnlyInXplane(cacheDir, files = aptFiles(), db = []) {
+  if (!files.length) return null
+  loadRunwayTables(cacheDir, files)
+  if (!onlyList) onlyList = aptOnlyAirports(runwaysTable, metaTable, db)
+  return onlyList
+}
+
+/** The X-Plane-only airports within `radiusM` of a point (the whole list when no point is given). */
+export function aptAirportsNear(list, lat, lon, radiusM) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(radiusM)) return list
+  return list.filter((a) => metres(lat, lon, a.la, a.lo) <= radiusM)
 }

@@ -47,3 +47,4 @@ never copied into the repository.
 - [x] Blast pads / overruns with chevrons; asphalt and concrete finish; night glow; sign backs; pavement cut out of runway footprints; decorative parked airplanes at the gates; gate numbers painted on the apron
 - [x] Terminals: OpenStreetMap footprints (X-Plane has no terminal data) with a curtain-wall finish
 - Checked in the browser (16): KSFO, KJFK, KLAX, KASE, EGLL, KORD, PHNL, KATL, EDDF, YSSY, OMDB, RJTT, SBGR, KJAC, BIKF, TNCM; pavement-on-ground probes at KSFO, KORD, KDEN, KLAX, EGLL, LFPG, VHHH, CYYZ (known limit: reclaimed land the elevation data shows as sea, e.g. VHHH); all 38,890 airports' layouts build in node with 0 issues (`scripts/xplane/sweep-airports.ts`)
+- [x] Airports X-Plane has and the old database lacks (22,313, mostly small fields) are fetched by region and drawn (`/api/apt-airports.json`); checked at 4OR4 near Corvallis, OR

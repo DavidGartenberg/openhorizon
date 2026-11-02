@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process'
 import { buildAirports, buildNavaids, buildCifpProcedures, buildUsAirspace, buildFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb , buildIls } from './parse.mjs'
 import { voiceRoute } from './voice.mjs'
 import { xpRoute } from './xp-static.mjs'
-import { aptAirport, aptRunwayExtras, aptExtents } from './apt.mjs'
+import { aptAirport, aptRunwayExtras, aptExtents, aptAirportsOnlyInXplane, aptAirportsNear } from './apt.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 /** Vendored offline fallbacks committed with the repo (Phase 12a). */
@@ -651,6 +651,15 @@ export async function route(url, res, method = 'GET', req) {
       const json = aptRunwayExtras(cacheDir, undefined, JSON.parse(await airportsData())) ?? '{}'
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' })
       res.end(json)
+      return true
+    }
+    if (bare === '/api/apt-airports.json') {
+      // Airports X-Plane has and the old database lacks (server/apt.mjs), within ?r= metres of ?lat=&lon=.
+      const list = aptAirportsOnlyInXplane(cacheDir, undefined, JSON.parse(await airportsData())) ?? []
+      const q = new URL(url, 'http://x').searchParams
+      const near = aptAirportsNear(list, parseFloat(q.get('lat') ?? ''), parseFloat(q.get('lon') ?? ''), Math.min(parseFloat(q.get('r') ?? '') || 0, 300_000))
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' })
+      res.end(JSON.stringify(Number.isFinite(parseFloat(q.get('lat') ?? '')) ? near : []))
       return true
     }
     if (bare === '/api/apt-extent.json') {

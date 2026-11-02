@@ -42,6 +42,8 @@ export interface AirportData {
   r: RunwayData[]
   /** The box [minLat, minLon, maxLat, maxLon] of the airport's pavement in X-Plane's layout (airports over ~1.5 km across). */
   x?: [number, number, number, number]
+  /** An airport X-Plane has and the old database lacks (added from X-Plane's own list). */
+  xo?: boolean
 }
 
 /** The runway strip stands this far above the ground plane. (0.1 m, above X-Plane's taxiway pavement, was tried: it blackened the runway markings in this renderer.) */
@@ -74,6 +76,10 @@ export class Airports {
   private readonly cells = new Map<string, AirportData[]>()
   private readonly rendered = new Map<string, THREE.Group>()
   loaded = false
+  private runwayExtras: RunwayExtras = {}
+  private airportExtents: AirportExtents = {}
+  private xplaneOnlyAt: { lat: number; lon: number } | null = null
+  private xplaneOnlyBusy = false
   /** Rendered terrain height (m) at a position, 0 when its tile is not loaded: lets the airport's pavement follow the ground. */
   terrainAt: ((lat: number, lon: number) => number) | null = null
   /** Whether the finest terrain tile at a position has loaded: the layout is draped on it, so it is rebuilt once it has. */
@@ -88,8 +94,8 @@ export class Airports {
     // X-Plane's blast pads / overruns (best effort: without an X-Plane install there are none).
     try {
       const [extras, extents] = await Promise.all([fetch('/api/apt-runways.json'), fetch('/api/apt-extent.json')])
-      if (extras.ok) applyRunwayExtras(this.all, (await extras.json()) as RunwayExtras)
-      if (extents.ok) applyAirportExtents(this.all, (await extents.json()) as AirportExtents)
+      if (extras.ok) { this.runwayExtras = (await extras.json()) as RunwayExtras; applyRunwayExtras(this.all, this.runwayExtras) }
+      if (extents.ok) { this.airportExtents = (await extents.json()) as AirportExtents; applyAirportExtents(this.all, this.airportExtents) }
     } catch { /* keep the database as it is */ }
     for (const ap of this.all) {
       const key = `${Math.floor(ap.la * 2)},${Math.floor(ap.lo * 2)}`
@@ -98,6 +104,37 @@ export class Airports {
       arr.push(ap)
     }
     this.loaded = true
+  }
+
+  /**
+   * Airports that X-Plane has and the old database lacks (about 22,000, mostly small fields) are fetched for the region
+   * around the player (120 km) as they fly, and added to the database: they are drawn like any other airport.
+   */
+  async ensureXplaneOnlyNear(lat: number, lon: number): Promise<void> {
+    if (!this.loaded || this.xplaneOnlyBusy) return
+    if (this.xplaneOnlyAt && distanceM({ lat, lon }, this.xplaneOnlyAt) < 40_000) return
+    this.xplaneOnlyBusy = true
+    try {
+      const res = await fetch(`/api/apt-airports.json?lat=${lat.toFixed(3)}&lon=${lon.toFixed(3)}&r=120000`)
+      if (!res.ok) return
+      this.xplaneOnlyAt = { lat, lon }
+      this.addAirports((await res.json()) as AirportData[])
+    } catch { /* the database as it is */ } finally { this.xplaneOnlyBusy = false }
+  }
+
+  /** Add airports to the database (those already in it are skipped). */
+  addAirports(list: readonly AirportData[]): number {
+    const have = new Set(this.all.map((a) => a.i))
+    const fresh = list.filter((a) => a && typeof a.i === 'string' && !have.has(a.i) && Array.isArray(a.r) && a.r.length && Number.isFinite(a.la) && Number.isFinite(a.lo))
+    applyRunwayExtras(fresh, this.runwayExtras); applyAirportExtents(fresh, this.airportExtents)
+    for (const ap of fresh) {
+      this.all.push(ap)
+      const key = `${Math.floor(ap.la * 2)},${Math.floor(ap.lo * 2)}`
+      let arr = this.cells.get(key)
+      if (!arr) this.cells.set(key, (arr = []))
+      arr.push(ap)
+    }
+    return fresh.length
   }
 
   /** The rendered group for an airport (verification hooks). */
@@ -186,6 +223,7 @@ export class Airports {
   /** Build/refresh runway visuals near the aircraft. */
   updateVisuals(lat: number, lon: number): void {
     if (!this.loaded) return
+    void this.ensureXplaneOnlyNear(lat, lon)
     const nearby = this.near(lat, lon, 60_000)
     const wanted = new Set(nearby.map((a) => a.i))
     for (const [icao, group] of this.rendered) {
@@ -232,7 +270,7 @@ export class Airports {
     // X-Plane's own layout (apt.dat) is the authority where it has the airport; OSM then only
     // adds the terminal buildings. Unmapped there, the OSM / procedural layout stays as before.
     void enhanceAirportWithXplane(g, ap.i, ap.la, ap.lo, elevM, (lat, lon) => { const t = this.terrainAt?.(lat, lon) ?? 0; return this.flattenElevation(t > 0 ? t : elevM, lat, lon) }).then((applied) => {
-      if (!withOsm) return
+      if (!withOsm || ap.xo) return          // X-Plane-only fields are small: no terminal buildings to look up
       const extra = applied ? g.userData.aptApplied as { aprons: GroundPoint[][]; obstacles: SurfaceObstacle[] } | undefined : undefined
       return enhanceAirportWithOsm(g, ap.i, ap.la, ap.lo, elevM, ap.r, extra ? { terminalsOnly: true, extra } : undefined)
     })
