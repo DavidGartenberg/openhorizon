@@ -38,7 +38,7 @@ const EXTENT_MARGIN_M = 150
 
 /** Radius (m) of the level area around the airport reference: from its runways, and from the reach of its pavement when X-Plane's layout is known. */
 export function airportFlatRadiusM(ap: Pick<AirportData, 'r' | 't'> & Partial<Pick<AirportData, 'la' | 'lo' | 'x'>>): number {
-  const longest = Math.max(0, ...ap.r.map((r) => (Number.isFinite(r.l) ? r.l : 0))) * FT
+  const longest = Math.max(0, ...ap.r.map((r) => (!r.water && Number.isFinite(r.l) ? r.l : 0))) * FT   // a water lane is not ground to level
   if (longest < 400) return 0                                   // a strip or heli pad: runway corridor only
   const commercial = ap.t >= 1 && longest >= 2100
   const base = commercial ? Math.min(2600, Math.max(900, 0.4 * longest + 600)) : Math.min(700, Math.max(250, 0.2 * longest + 250))

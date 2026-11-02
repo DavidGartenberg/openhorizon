@@ -45,7 +45,7 @@ Three more routes carry what the old OurAirports database gets wrong or lacks, a
 | `GET /api/apt-runways.json` | per airport: overruns; X-Plane's runway ends / width / hard-soft / edge lights where they differ; runways the database lacks; runways X-Plane disproves (`[end, end, -1, -1]`) |
 | `GET /api/apt-extent.json` | the box that holds an airport's pavement (airports over ~1.5 km across) |
 | `GET /api/apt-land.json?lat&lon&r` | where low airports (up to 20 m) are certainly land, from their X-Plane pavement and runways: runs along 100 m rows; the client levels them only where the elevation data says sea (reclaimed land) |
-| `GET /api/apt-airports.json?lat&lon&r` | airports X-Plane has and the database lacks (22k small fields, plus 6.8k heliports whose pads are short `pad` entries), drawn but kept off the ND / MFD lists |
+| `GET /api/apt-airports.json?lat&lon&r` | airports X-Plane has and the database lacks (22k small fields, 6.8k heliports whose pads are short `pad` entries, 589 seaplane bases whose lanes are `pad` + `water` entries), drawn but kept off the ND / MFD lists |
 
 Fields below sea level keep the elevation data's negative heights as land within 12 km (polders, Death Valley) and the ocean is hidden around them; reclaimed land (VHHH, where the data says sea) is levelled from the land mask.
 
@@ -74,6 +74,6 @@ Fields below sea level keep the elevation data's negative heights as land within
 Recorded in `PROGRESS.md` (overnight shift): overhead switches are resting positions, the lower DU shows modelled
 readouts, one autopilot stands behind CMD A/B, and only the airliner exteriors take X-Plane liveries (two at a time).
 Airports: sea the elevation data puts beyond 13.5 km of a below-sea field (the Dutch coast) and reclaimed land of fields above 20 m is
-not handled; terminal heights come from OpenStreetMap; seaplane bases (water runways) are not drawn; the
+not handled; terminal heights come from OpenStreetMap; seaplane bases exist but there is no floatplane physics; the
 shoreline where a level area meets the sea is stepped at the terrain's cell size; the parked airplanes are scenery
 (no label, no radar return).

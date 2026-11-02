@@ -201,3 +201,22 @@ describe('heliports: airports with helipads and no runway', () => {
     expect(a.r[0].la1).toBeCloseTo(a.r[0].la2, 5)
   })
 })
+
+describe('seaplane bases: airports with water runways and nothing else', () => {
+  const WATER = ['1    100 0 0 SPB1 [S] Lake Base', '101 150.00 1 17 61.5000000 -149.5000000 35 61.5100000 -149.5000000', '1    100 0 0 SPB2 [S] Tiny Base', '101 20.00 1 1 61.0000000 -149.0000000 19 61.0001000 -149.0000000', ''].join('\n')
+  it('reads the water runways of each airport (row 101)', () => {
+    const scan = scanAptRunways(write('water.dat', WATER)) as Map<string, unknown[]> & { waters: Map<string, unknown[][]> }
+    expect(scan.waters.get('SPB1')).toEqual([['17', '35', 61.5, -149.5, 61.51, -149.5, 150]])
+    expect(scan.get('SPB1')).toEqual([])
+  })
+  it('become airports of water-flagged lanes, leaving out lanes under 100 m and airports that already have runways or pads', () => {
+    const water = { SPB1: [['17', '35', 61.5, -149.5, 61.51, -149.5, 150]], SPB2: [['1', '19', 61, -149, 61.0001, -149, 20]], KRWY: [['1', '2', 62, -149, 62.01, -149, 50]] }
+    const meta = { SPB1: { name: '[S] Lake Base', elevFt: 300, code: 16 }, SPB2: { name: 'Tiny', elevFt: 5, code: 16 }, KRWY: { name: 'Has a runway', elevFt: 5, code: 1 } }
+    const out = aptOnlyAirports({ KRWY: [['9', '27', 0, 0, 62, -149, 62, -148.98, 30, 1, 0]] }, meta, [], {}, water) as Array<Record<string, any>>
+    expect(out.filter((a) => a.r.every((r: Record<string, unknown>) => r.water)).map((a) => a.i)).toEqual(['SPB1'])
+    const a = out.find((x) => x.i === 'SPB1')!
+    expect(a).toMatchObject({ n: '[S] Lake Base', e: 300, xo: true })
+    expect(a.r[0]).toMatchObject({ li: '17', hi: '35', pad: true, water: true, e1: 300 })
+    expect(a.r[0].l).toBeGreaterThan(3500)                                                      // 1.1 km in feet
+  })
+})

@@ -115,4 +115,14 @@ describe('adding X-Plane-only airports to the database', () => {
     expect(a.nearestField(40, -100, 1000)).toBeUndefined()
     expect(a.runwaysNear(40, -100, 5000).map((r) => r.li).sort()).toEqual(['9', '9'])           // the two airfields' runways, not H1
   })
+  it('neither levels nor draws a water lane, and gives a seaplane base no level area', async () => {
+    const { airportFlatRadiusM } = await import('../src/world/airport-flatten')
+    const a = make()
+    const lake = ap('LAKE', 61.5, -149.5)
+    lake.r = [{ ...lake.r[0]!, li: '17', hi: '35', la1: 61.495, la2: 61.505, lo1: -149.5, lo2: -149.5, l: 3600, w: 150, e1: 300, e2: 300, pad: true, water: true }]
+    a.addAirports([lake])
+    expect(a.runwaysInBounds(61.4, 61.6, -149.6, -149.4)).toEqual([])                          // no disk, no corridor
+    expect(airportFlatRadiusM(lake)).toBe(0)
+    expect(a.flattenElevation(10, 61.5, -149.5)).toBe(10)
+  })
 })

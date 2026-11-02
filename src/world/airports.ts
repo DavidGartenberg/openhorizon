@@ -28,6 +28,8 @@ export interface RunwayData {
   s: number // 0 hard, 1 soft
   /** A helipad of a heliport: short, drawn by X-Plane's layout (pavement and H), not as a runway strip. */
   pad?: boolean
+  /** A water lane of a seaplane base (always a `pad` too): neither drawn nor levelled. */
+  water?: boolean
   lt: number
   /** Blast pad / overrun beyond the li (o1) and hi (o2) ends, metres (X-Plane's airport data); absent = none/unknown. */
   o1?: number
@@ -268,6 +270,7 @@ export class Airports {
       if (disk) out.push({ la1: disk.lat, lo1: disk.lon, la2: disk.lat, lo2: disk.lon, e1M: disk.elevM, e2M: disk.elevM, halfWidthM: disk.halfWidthM, disk: true })
       if (ap.land) for (const [a, b, c, d] of ap.land) out.push({ la1: a, lo1: b, la2: c, lo2: d, e1M: airportFieldElevationM(ap), e2M: airportFieldElevationM(ap), halfWidthM: LAND_RUN_HALF_WIDTH_M, land: true })
       for (const r of ap.r) {
+        if (r.water) continue
         const f = flattenEnds({ ...r, e1M: r.e1 * FT, e2M: r.e2 * FT })
         out.push({
           la1: f.la1, lo1: f.lo1, la2: f.la2, lo2: f.lo2,
@@ -309,6 +312,7 @@ export class Airports {
         for (const [a, b, c, d] of ap.land) h = flattenForRunway(h, 0, 0, (b - lon) * mLon, (a - lat) * mLat, (d - lon) * mLon, (c - lat) * mLat, e, e, LAND_RUN_HALF_WIDTH_M)
       }
       for (const r of ap.r) {
+        if (r.water) continue
         // Work in a small local meter frame around the sample.
         const mLat = 111_319.5
         const mLon = mLat * Math.cos((lat * Math.PI) / 180)

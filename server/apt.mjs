@@ -126,6 +126,9 @@ export function scanAptRunways(file) {
   /** Per airport: its helipads (row 102) as [lat, lon, heading, length m, width m, surface]. */
   const pads = new Map()
   out.pads = pads
+  /** Per airport: its water runways (row 101) as [designator, designator, lat, lon, lat, lon, width m]. */
+  const waters = new Map()
+  out.waters = waters
   const fd = fs.openSync(file, 'r')
   try {
     const size = fs.fstatSync(fd).size
@@ -154,6 +157,10 @@ export function scanAptRunways(file) {
               if (la > e.box[2]) e.box[2] = la; if (lo > e.box[3]) e.box[3] = lo
             }
           }
+        } else if (icao && c0 === 0x31 && c1 === 0x30 && c2 === 0x31 && buf[i + 3] === 0x20) {
+          const f = buf.toString('latin1', i, nl).trim().split(/\s+/)
+          const row = [f[3], f[6], Number(f[4]), Number(f[5]), Number(f[7]), Number(f[8]), Number(f[1])]
+          if (f.length >= 9 && row.slice(2).every(Number.isFinite)) { const list = waters.get(icao) ?? []; list.push(row); waters.set(icao, list) }
         } else if (icao && c0 === 0x31 && c1 === 0x30 && c2 === 0x32 && buf[i + 3] === 0x20) {
           const f = buf.toString('latin1', i, nl).trim().split(/\s+/)
           const row = [f[1], Number(f[2]), Number(f[3]), Number(f[4]), Number(f[5]), Number(f[6]), Number(f[7])]
@@ -175,6 +182,7 @@ export function scanAptRunways(file) {
   } finally { fs.closeSync(fd) }
 }
 
+let waterTable = null      // { ICAO: [[designator, designator, lat, lon, lat, lon, width m], …] } for airports with water runways only
 let padsTable = null       // { ICAO: [[designator, lat, lon, heading, length m, width m, surface], …] } for airports with helipads and no runway
 let metaTable = null
 let runwaysTable = null     // { ICAO: [[endA, endB, overA, overB, laA, loA, laB, loB, widthM], …] } for every airport with runways
@@ -188,26 +196,28 @@ function loadRunwayTables(cacheDir, files) {
   if (cacheFile && fs.existsSync(cacheFile)) {
     try {
       const j = JSON.parse(fs.readFileSync(cacheFile, 'utf8'))
-      if (j.key === key && j.extents && j.runways && j.meta && j.pads) { runwaysTable = j.runways; metaTable = j.meta; padsTable = j.pads; extentsJson = JSON.stringify(j.extents); return }
+      if (j.key === key && j.extents && j.runways && j.meta && j.pads && j.water) { runwaysTable = j.runways; metaTable = j.meta; padsTable = j.pads; waterTable = j.water; extentsJson = JSON.stringify(j.extents); return }
     } catch { /* rescan */ }
   }
-  const merged = new Map(), boxes = new Map(), metas = new Map(), padRows = new Map()
+  const merged = new Map(), boxes = new Map(), metas = new Map(), padRows = new Map(), waterRows = new Map()
   for (const file of files) {
     const scanned = scanAptRunways(file)
-    for (const [icao, rows] of scanned) { merged.set(icao, rows); boxes.delete(icao); const e = scanned.extents.get(icao); if (e) boxes.set(icao, e.box); metas.set(icao, scanned.meta.get(icao)); padRows.delete(icao); const p = scanned.pads.get(icao); if (p) padRows.set(icao, p) }
+    for (const [icao, rows] of scanned) { merged.set(icao, rows); boxes.delete(icao); const e = scanned.extents.get(icao); if (e) boxes.set(icao, e.box); metas.set(icao, scanned.meta.get(icao)); padRows.delete(icao); const p = scanned.pads.get(icao); if (p) padRows.set(icao, p); waterRows.delete(icao); const w = scanned.waters.get(icao); if (w) waterRows.set(icao, w) }
   }
   const runways = {}, meta = {}
   for (const [icao, rows] of merged) if (rows.length) { runways[icao] = rows; meta[icao] = metas.get(icao) ?? { name: '', elevFt: 0, code: 1 } }
   const pads = {}
   for (const [icao, rows] of merged) if (!rows.length && padRows.get(icao)?.length) { pads[icao] = padRows.get(icao); meta[icao] = metas.get(icao) ?? { name: '', elevFt: 0, code: 17 } }
+  const water = {}
+  for (const [icao, rows] of merged) if (!rows.length && !padRows.get(icao)?.length && waterRows.get(icao)?.length) { water[icao] = waterRows.get(icao); meta[icao] = metas.get(icao) ?? { name: '', elevFt: 0, code: 16 } }
   // Only airports bigger than ~1.5 km across need an extent: the client's own size rule covers the rest.
   const extents = {}
   for (const [icao, b] of boxes) {
     const dLat = (b[2] - b[0]) * 111_319.5, dLon = (b[3] - b[1]) * 111_319.5 * Math.cos((((b[0] + b[2]) / 2) * Math.PI) / 180)
     if (Math.hypot(dLat, dLon) > 1500) extents[icao] = b.map((v) => Math.round(v * 1e5) / 1e5)
   }
-  if (cacheFile) { try { fs.writeFileSync(cacheFile, JSON.stringify({ key, runways, meta, pads, extents })) } catch { /* cache is optional */ } }
-  runwaysTable = runways; metaTable = meta; padsTable = pads; extentsJson = JSON.stringify(extents)
+  if (cacheFile) { try { fs.writeFileSync(cacheFile, JSON.stringify({ key, runways, meta, pads, water, extents })) } catch { /* cache is optional */ } }
+  runwaysTable = runways; metaTable = meta; padsTable = pads; waterTable = water; extentsJson = JSON.stringify(extents)
 }
 
 const endKey = (id) => String(id).trim().toUpperCase().replace(/^0+(?=\d)/, '')
@@ -326,7 +336,7 @@ const SOFT_SURFACES = new Set([3, 4, 5, 12, 14])
 /** Helipads on platforms, rigs and ships stand over the sea: not drawn. */
 const OFFSHORE_NAME = /\b(platform|rig|fpso|fso|ship|vessel|drill\w*|offshore|jack-?up|semi-?sub\w*|barge|tlp|spar|plattform|plataforma|pl\.)\b/i
 
-export function aptOnlyAirports(runways, meta, db, pads = {}) {
+export function aptOnlyAirports(runways, meta, db, pads = {}, water = {}) {
   const have = new Set(db.map((a) => a.i))
   const out = []
   for (const [icao, rows] of Object.entries(runways)) {
@@ -367,6 +377,24 @@ export function aptOnlyAirports(runways, meta, db, pads = {}) {
     if (!r.length) continue
     out.push({ i: icao, n: m?.name || icao, la: +(sla / r.length).toFixed(5), lo: +(slo / r.length).toFixed(5), e: m?.elevFt ?? 0, t: 0, xo: true, r })
   }
+  // Seaplane bases: airports with water runways and nothing else. A water lane is flagged `pad` and `water`: not drawn,
+  // not levelled (the lake is where it is); X-Plane's layout draws the docks and ramps, if it has any.
+  for (const [icao, rows] of Object.entries(water)) {
+    if (have.has(icao) || runways[icao] || pads[icao]) continue
+    const m = meta[icao]
+    const r = []
+    let sla = 0, slo = 0
+    for (const [a, b, la1, lo1, la2, lo2, w] of rows) {
+      if (![la1, lo1, la2, lo2].every(Number.isFinite) || Math.abs(la1) > 90 || Math.abs(la2) > 90 || Math.abs(lo1) > 180 || Math.abs(lo2) > 180) continue
+      const lenM = metres(la1, lo1, la2, lo2)
+      if (lenM < 100 || lenM > 20_000) continue
+      const e = m?.elevFt ?? 0
+      r.push({ li: String(a), hi: String(b), la1: +la1.toFixed(6), lo1: +lo1.toFixed(6), la2: +la2.toFixed(6), lo2: +lo2.toFixed(6), e1: e, e2: e, l: Math.round(lenM * FT_PER_M), w: Math.round(Math.max(Number(w) || 0, 10) * FT_PER_M), s: 1, lt: 0, pad: true, water: true })
+      sla += (la1 + la2) / 2; slo += (lo1 + lo2) / 2
+    }
+    if (!r.length) continue
+    out.push({ i: icao, n: m?.name || icao, la: +(sla / r.length).toFixed(5), lo: +(slo / r.length).toFixed(5), e: m?.elevFt ?? 0, t: 0, xo: true, r })
+  }
   return out
 }
 
@@ -375,7 +403,7 @@ let onlyList = null
 export function aptAirportsOnlyInXplane(cacheDir, files = aptFiles(), db = []) {
   if (!files.length) return null
   loadRunwayTables(cacheDir, files)
-  if (!onlyList) onlyList = aptOnlyAirports(runwaysTable, metaTable, db, padsTable ?? {})
+  if (!onlyList) onlyList = aptOnlyAirports(runwaysTable, metaTable, db, padsTable ?? {}, waterTable ?? {})
   return onlyList
 }
 

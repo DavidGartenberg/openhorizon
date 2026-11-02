@@ -3229,3 +3229,8 @@ What changed, and what is real versus a recorded stand-in:
 ### Tried and reverted: a 192-cell grid for the nearest terrain ring (2026-11-02)
 
 - Doubling the z13 ring's grid (51 m to 25 m cells) to soften the stepped shoreline passed the test suite, but at KBOS the frame time went from p50 10-16 ms to 24 ms and the geometry to 351 MB, for little visible change. Reverted; the shoreline stays stepped at 51 m (a limit, not a defect that a cheap change removes).
+
+### Seaplane bases (2026-11-02)
+
+- X-Plane's water runways (row 101) are read now. An airport with water runways and nothing else (665 in apt.dat; 589 are new to the database) becomes an entry whose lanes are flagged `pad` and `water`: not drawn, not levelled (the lake is where it is), no level disk around it. The docks, ramps and windsock come from X-Plane's layout like any other airport, and the base can be found by name or ICAO and spawned at. Not checked visually (their regions are Alaska and Canada, not cached here); covered by tests of the scan, the entries, and the levelling.
+- Still open: floatplane physics (the sim has none); a seaplane base is not a nearest "airfield" for the logbook or landing references.
