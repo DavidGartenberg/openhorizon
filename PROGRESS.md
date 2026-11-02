@@ -3144,3 +3144,8 @@ What changed, and what is real versus a recorded stand-in:
 ### Database runways X-Plane does not confirm (2026-11-02)
 
 - 40 database runways (of 12,028) match no X-Plane runway by designator or within 1.5 km (for example ESKS 15/33 against X-Plane's 16/34, FALM 10L/28R against 10/28); some are renumbered, not phantom, so they are left drawn rather than risk removing a real runway. Runways that match by designator are corrected to X-Plane's ends (up to 5 km off), and runways X-Plane has that the database lacks are added.
+
+### Coastal airports, a recorded limit (2026-11-02)
+
+- Fresh-clone gate on 99e4816: `tsc` clean, 167 files / 2212 tests, `vite build` ok.
+- Checked KDFW (fillets, yellow centrelines, hold-short bars, concrete shoulders) and KBOS. At KBOS the bay north of 4R/22L shows blocky dark pits: elevation cells the data says are sea (0 m) beside levelled ground at the field's 4.9 m, at the terrain's ~51 m cell size. The pavement itself is on the ground there; only the shoreline is jagged. Fixing it needs the worker and the physics ground to agree on a new water rule at every coastal airport, so it is left as a known limit alongside reclaimed land (VHHH).
