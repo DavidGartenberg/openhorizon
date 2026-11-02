@@ -6,7 +6,7 @@ vi.mock('../src/render/light-glow', () => ({ lightGlowTexture: () => ({ isTextur
 vi.mock('../src/world/airport-detail', async (importActual) => { const T = await import('three'); return { ...(await importActual<typeof import('../src/world/airport-detail')>()), buildRunwayMarkings: () => new T.Group() } })
 import * as THREE from 'three'
 import {
-  groundGrid, densify, subdivideTriangles, normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, buildAptPavement, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
+  runwayRects, insideRunway, groundGrid, densify, subdivideTriangles, normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, buildAptPavement, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
 } from '../src/world/apt-layout'
 
 const toLocal = (lat: number, lon: number): XZ => ({ x: lon * 100_000, z: -lat * 111_320 })
@@ -359,5 +359,36 @@ describe('following the ground', () => {
       expect(y).toBeGreaterThan(ground(x)); expect(y - ground(x)).toBeLessThan(0.2)
     }
     expect(pos.count).toBeGreaterThan(6)                                         // subdivided
+  })
+})
+
+describe('pavement is cut out of runway footprints', () => {
+  // toLocal: x = lon·100000 m, z = −lat·111320 m. A runway 2 km long due east along lat 0.0005, 60 m wide.
+  const lat = 0.0005
+  const rwy = [{ w: 60, surf: 1, ends: [{ id: '9', dthr: 0, over: 0, mark: 3, lat, lon: 0 }, { id: '27', dthr: 0, over: 0, mark: 3, lat, lon: 0.02 }] as never }]
+  it('turns runway ends into footprints, skipping runways without coordinates or too short', () => {
+    expect(runwayRects(rwy, toLocal)).toHaveLength(1)
+    expect(runwayRects([{ w: 45, surf: 1, ends: [{ id: '1', dthr: 0, over: 0, mark: 0 }, { id: '19', dthr: 0, over: 0, mark: 0 }] as never }], toLocal)).toHaveLength(0)
+    expect(runwayRects([{ w: 45, surf: 1, ends: [{ id: '1', dthr: 0, over: 0, mark: 0, lat: 0, lon: 0 }, { id: '19', dthr: 0, over: 0, mark: 0, lat: 0, lon: 0.0001 }] as never }], toLocal)).toHaveLength(0)
+  })
+  it('knows whether a point is inside a footprint, between the ends and inside the edges (less the inset)', () => {
+    const r = runwayRects(rwy, toLocal), z = -lat * 111_320
+    expect(insideRunway(1000, z, r)).toBe(true); expect(insideRunway(1000, z + 29, r)).toBe(true); expect(insideRunway(1000, z + 31, r)).toBe(false)
+    expect(insideRunway(1000, z + 29, r, 1.5)).toBe(false); expect(insideRunway(-5, z, r)).toBe(false); expect(insideRunway(2005, z, r)).toBe(false)
+  })
+  it('a taxiway polygon crossing the runway keeps no pavement inside it, and all of it outside', () => {
+    // A strip 20 m wide (x 990–1010) running north-south across the runway.
+    const layout = normalizeApt({ pav: [{ surf: 1, rings: [[[-0.002, 0.0099], [0.003, 0.0099], [0.003, 0.0101], [-0.002, 0.0101]]] }], rwy })!
+    const z = -lat * 111_320
+    const mesh = (r?: ReturnType<typeof runwayRects>) => buildAptPavement(layout, toLocal, 0, () => 3, r)[0]!.geometry.getAttribute('position')
+    const area = (pos: ReturnType<typeof mesh>): number => { let a = 0; for (let i = 0; i < pos.count; i += 3) a += Math.abs((pos.getX(i + 1) - pos.getX(i)) * (pos.getZ(i + 2) - pos.getZ(i)) - (pos.getX(i + 2) - pos.getX(i)) * (pos.getZ(i + 1) - pos.getZ(i))) / 2; return a }
+    const whole = area(mesh()), cut = area(mesh(runwayRects(rwy, toLocal)))
+    const crossing = 20 * 57                                               // strip width × (runway width − 2 × inset)
+    expect(whole - cut).toBeGreaterThan(crossing * 0.9); expect(whole - cut).toBeLessThan(crossing * 1.15)
+    const pos = mesh(runwayRects(rwy, toLocal))
+    for (let i = 0; i < pos.count; i += 3) {
+      const cx = (pos.getX(i) + pos.getX(i + 1) + pos.getX(i + 2)) / 3, cz = (pos.getZ(i) + pos.getZ(i + 1) + pos.getZ(i + 2)) / 3
+      expect(Math.abs(cz - z) < 28.4 && cx > 900 && cx < 1100).toBe(false)
+    }
   })
 })

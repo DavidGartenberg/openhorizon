@@ -44,6 +44,6 @@ never copied into the repository.
 
 - [x] X-Plane pavement, paint, lights and signs follow the ground (taxiways were buried under terrain); rebuilt when the fine terrain has loaded
 - [x] Levelled ground sized from X-Plane's real pavement extent and runway overruns (`/api/apt-extent.json`, `/api/apt-runways.json`)
-- [x] Blast pads / overruns with chevrons; asphalt and concrete finish; night glow; sign backs
-- [ ] Terminals are OpenStreetMap footprints; no parked aircraft (the traffic layer draws only live targets); no gate labels (X-Plane has none); a taxiway polygon that overlaps a runway can cover the runway surface
+- [x] Blast pads / overruns with chevrons; asphalt and concrete finish; night glow; sign backs; pavement cut out of runway footprints
+- [ ] Terminals are OpenStreetMap footprints; no parked aircraft (the traffic layer draws only live targets); no gate labels (X-Plane has none)
 - Checked in the browser: KSFO, KJFK, KLAX, KASE, EGLL; 355 layouts build in node without errors

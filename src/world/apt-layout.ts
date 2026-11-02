@@ -27,7 +27,8 @@ export interface AptPavement { surf: number; name: string; rings: [number, numbe
 export interface AptTaxiNode { id: number; lat: number; lon: number; use: string; name: string }
 export interface AptTaxiEdge { a: number; b: number; oneway: boolean; kind: string; name: string }
 export interface AptSign { lat: number; lon: number; hdg: number; size: number; text: string }
-export interface AptRunway { w: number; surf: number; ends: [{ id: string; dthr: number; over: number; mark: number }, { id: string; dthr: number; over: number; mark: number }] }
+export interface AptRunwayEnd { id: string; dthr: number; over: number; mark: number; lat?: number; lon?: number }
+export interface AptRunway { w: number; surf: number; ends: [AptRunwayEnd, AptRunwayEnd] }
 export interface AptRamp { lat: number; lon: number; hdg: number; kind: string; cats: string[]; name: string }
 export interface AptLayout {
   icao: string
@@ -73,7 +74,7 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     const o = r as Record<string, unknown>
     const ends = arr(o?.ends).slice(0, 2).map((e) => {
       const x = e as Record<string, unknown>
-      return typeof x?.id === 'string' ? { id: x.id, dthr: Math.max(0, Number(x.dthr) || 0), over: Math.max(0, Number(x.over) || 0), mark: Number(x.mark) || 0 } : null
+      return typeof x?.id === 'string' ? { id: x.id, dthr: Math.max(0, Number(x.dthr) || 0), over: Math.max(0, Number(x.over) || 0), mark: Number(x.mark) || 0, ...(Number.isFinite(x.lat) && Number.isFinite(x.lon) && Math.abs(Number(x.lat)) <= 90 && Math.abs(Number(x.lon)) <= 180 ? { lat: Number(x.lat), lon: Number(x.lon) } : {}) } : null
     })
     return ends.length === 2 && ends[0] && ends[1] ? [{ w: Number(o.w) || 0, surf: Number(o.surf) || 0, ends: [ends[0], ends[1]] as AptRunway['ends'] }] : []
   })
@@ -111,6 +112,10 @@ const GROUND_GRID_M = 20
 /** Where the ground is level to within this (m) over a triangle or a segment, it is not subdivided (up to FLAT_MAX_SPAN_M across). */
 const FLAT_TOL_M = 0.01
 const FLAT_MAX_SPAN_M = 90
+/** Pavement near a runway is cut into triangles of this size, and cut away inside the runway's footprint less this inset (m). */
+const RUNWAY_CUT_EDGE_M = 8
+const RUNWAY_CUT_PAD_M = 6
+const RUNWAY_CUT_INSET_M = 1.5
 
 /** apt.dat surface codes → paint. 15 (transparent) and 13/14 (water, snow) draw nothing. */
 export function surfaceStyle(surf: number): { color: number; lift: number; roughness: number } | null {
@@ -230,11 +235,50 @@ export function densify(pts: readonly XZ[], maxSeg: number, ground?: GroundFn, f
   return out
 }
 
+/** A runway's footprint on the ground (airport-local metres): the segment between its ends and its half-width. */
+export interface RunwayRect { ax: number; az: number; bx: number; bz: number; hw: number }
+
+/** The runways of X-Plane's layout that carry their end coordinates, as footprints. */
+export function runwayRects(rwy: readonly AptRunway[], toLocal: (lat: number, lon: number) => XZ): RunwayRect[] {
+  const out: RunwayRect[] = []
+  for (const r of rwy) {
+    const [a, b] = r.ends
+    if (a.lat === undefined || a.lon === undefined || b.lat === undefined || b.lon === undefined) continue
+    const pa = toLocal(a.lat, a.lon), pb = toLocal(b.lat, b.lon)
+    if (Math.hypot(pb.x - pa.x, pb.z - pa.z) < 50) continue
+    out.push({ ax: pa.x, az: pa.z, bx: pb.x, bz: pb.z, hw: Math.max(r.w, 8) / 2 })
+  }
+  return out
+}
+
+/** Whether a point is within `inset` metres inside a runway footprint (between its ends, inside its edges). */
+export function insideRunway(x: number, z: number, rects: readonly RunwayRect[], inset = 0): boolean {
+  for (const r of rects) {
+    const dx = r.bx - r.ax, dz = r.bz - r.az, len2 = dx * dx + dz * dz
+    const t = ((x - r.ax) * dx + (z - r.az) * dz) / len2
+    if (t < 0 || t > 1) continue
+    if (Math.hypot(x - (r.ax + t * dx), z - (r.az + t * dz)) < r.hw - inset) return true
+  }
+  return false
+}
+
+/** Whether a runway footprint (grown by `pad`) could touch a triangle: its distance to the triangle's centre is within the pad plus the triangle's own reach. */
+function nearRunway(x0: number, z0: number, x1: number, z1: number, x2: number, z2: number, rects: readonly RunwayRect[], pad: number): boolean {
+  const cx = (x0 + x1 + x2) / 3, cz = (z0 + z1 + z2) / 3
+  const reach = Math.max(Math.hypot(x0 - cx, z0 - cz), Math.hypot(x1 - cx, z1 - cz), Math.hypot(x2 - cx, z2 - cz))
+  for (const r of rects) {
+    const dx = r.bx - r.ax, dz = r.bz - r.az, len2 = dx * dx + dz * dz
+    const t = Math.min(Math.max(((cx - r.ax) * dx + (cz - r.az) * dz) / len2, 0), 1)
+    if (Math.hypot(cx - (r.ax + t * dx), cz - (r.az + t * dz)) < r.hw + pad + reach) return true
+  }
+  return false
+}
+
 /**
  * Split triangles (flat x,y,z positions in the xz plane, y ignored) at the middle of their longest edge until no
  * edge exceeds `maxEdge`, so a pavement can follow the ground. Returns flat positions, three vertices per triangle.
  */
-export function subdivideTriangles(pos: ArrayLike<number>, index: ArrayLike<number> | null, maxEdge: number, maxTriangles = 400_000, ground?: GroundFn, flatTol = FLAT_TOL_M, maxFlat = FLAT_MAX_SPAN_M): number[] {
+export function subdivideTriangles(pos: ArrayLike<number>, index: ArrayLike<number> | null, maxEdge: number, maxTriangles = 400_000, ground?: GroundFn, flatTol = FLAT_TOL_M, maxFlat = FLAT_MAX_SPAN_M, finer?: (x0: number, z0: number, x1: number, z1: number, x2: number, z2: number) => number | null): number[] {
   const out: number[] = []
   const vert = (i: number): [number, number] => [pos[i * 3]!, pos[i * 3 + 2]!]
   const stack: Array<[number, number, number, number, number, number]> = []
@@ -247,8 +291,9 @@ export function subdivideTriangles(pos: ArrayLike<number>, index: ArrayLike<numb
       const [x0, z0, x1, z1, x2, z2] = stack.pop()!
       const e0 = Math.hypot(x1 - x0, z1 - z0), e1 = Math.hypot(x2 - x1, z2 - z1), e2 = Math.hypot(x0 - x2, z0 - z2)
       const longest = Math.max(e0, e1, e2)
-      if (longest <= maxEdge || out.length / 9 >= maxTriangles) { out.push(x0, 0, z0, x1, 0, z1, x2, 0, z2); continue }
-      if (ground && longest <= maxFlat) {
+      const limit = finer?.(x0, z0, x1, z1, x2, z2) ?? null     // a region that needs smaller triangles than the rest (the edges of a cut)
+      if (longest <= (limit ?? maxEdge) || out.length / 9 >= maxTriangles) { out.push(x0, 0, z0, x1, 0, z1, x2, 0, z2); continue }
+      if (limit === null && ground && longest <= maxFlat) {
         // Level ground (the whole of a flattened airport): a triangle that lies flat on it needs no more vertices.
         const cx = (x0 + x1 + x2) / 3, cz = (z0 + z1 + z2) / 3
         const ys = [ground(x0, z0), ground(x1, z1), ground(x2, z2), ground((x0 + x1) / 2, (z0 + z1) / 2), ground((x1 + x2) / 2, (z1 + z2) / 2), ground((x2 + x0) / 2, (z2 + z0) / 2), ground(cx, cz)]
@@ -386,7 +431,7 @@ export function buildAptMeshes(layout: AptLayout, toLocal: (lat: number, lon: nu
 }
 
 /** The pavement polygons, merged per surface (the expensive part: every polygon is triangulated). */
-export function buildAptPavement(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number, ground?: GroundFn): THREE.Mesh[] {
+export function buildAptPavement(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number, ground?: GroundFn, runways?: readonly RunwayRect[]): THREE.Mesh[] {
   const out: THREE.Mesh[] = []
   // ---- pavement, merged per surface
   const bySurface = new Map<number, THREE.BufferGeometry[]>()
@@ -402,7 +447,18 @@ export function buildAptPavement(layout: AptLayout, toLocal: (lat: number, lon: 
       let geo: THREE.BufferGeometry
       if (ground) {
         // Follow the ground: fine enough triangles, each vertex on the terrain surface plus the surface's own lift.
-        const tri = subdivideTriangles(flat.getAttribute('position').array, flat.index ? flat.index.array : null, PAVEMENT_MAX_EDGE_M, 400_000, ground)
+        // Where a runway lies, the pavement is cut out of its footprint (the runway is drawn there), so a crossing taxiway never covers it.
+        const finer = runways?.length ? (x0: number, z0: number, x1: number, z1: number, x2: number, z2: number): number | null => (nearRunway(x0, z0, x1, z1, x2, z2, runways, RUNWAY_CUT_PAD_M) ? RUNWAY_CUT_EDGE_M : null) : undefined
+        let tri = subdivideTriangles(flat.getAttribute('position').array, flat.index ? flat.index.array : null, PAVEMENT_MAX_EDGE_M, 400_000, ground, FLAT_TOL_M, FLAT_MAX_SPAN_M, finer)
+        if (runways?.length) {
+          const kept: number[] = []
+          for (let i = 0; i < tri.length; i += 9) {
+            const cx = (tri[i]! + tri[i + 3]! + tri[i + 6]!) / 3, cz = (tri[i + 2]! + tri[i + 5]! + tri[i + 8]!) / 3
+            if (!insideRunway(cx, cz, runways, RUNWAY_CUT_INSET_M)) for (let k = 0; k < 9; k++) kept.push(tri[i + k]!)
+          }
+          tri = kept
+          if (!tri.length) continue
+        }
         for (let i = 0; i < tri.length; i += 3) tri[i + 1] = ground(tri[i]!, tri[i + 2]!) + style.lift + DRAPE_BIAS_M
         // The shape's triangles face down once laid on the xz plane: swap two corners of each so the surface is lit from above.
         for (let i = 0; i < tri.length; i += 9) for (let k = 0; k < 3; k++) { const t = tri[i + 3 + k]!; tri[i + 3 + k] = tri[i + 6 + k]!; tri[i + 6 + k] = t }
@@ -779,7 +835,7 @@ export async function enhanceAirportWithXplane(group: THREE.Group, icao: string,
       await idle(); if (!alive()) return false
     }
   }
-  built.add(...buildAptPavement(layout, toLocal, elevM, ground))
+  built.add(...buildAptPavement(layout, toLocal, elevM, ground, runwayRects(layout.rwy, toLocal)))
   await idle(); if (!alive()) return false
   built.add(...buildAptPaint(layout, toLocal, elevM, ground))
   await idle(); if (!alive()) return false
