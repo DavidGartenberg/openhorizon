@@ -447,3 +447,22 @@ describe("X-Plane's PAPI arrays", () => {
     expect(buildAptPapis(base, toLocal, 0)).toBeNull()
   })
 })
+
+describe('helipads', () => {
+  it('become a pavement rectangle of their surface with a white H, and malformed pads are dropped', () => {
+    const l = normalizeApt({ icao: 'H1', name: 'H', elevFt: 10, heli: [
+      { id: 'H1', lat: 47.5, lon: -122.3, hdg: 90, len: 20, wid: 10, surf: 2 },
+      { id: 'H2', lat: 47.5, lon: -122.3, hdg: 0, len: 0, wid: 10, surf: 1 },
+      { id: 'H3', lat: 200, lon: -122.3, hdg: 0, len: 20, wid: 20, surf: 1 },
+    ] })!
+    expect(l.pav).toHaveLength(1)
+    expect(l.pav[0]).toMatchObject({ surf: 2, name: 'helipad' })
+    const ring = l.pav[0]!.rings[0]!
+    expect(ring).toHaveLength(4)
+    const lons = ring.map((p) => p[1]), lats = ring.map((p) => p[0])
+    expect((Math.max(...lons) - Math.min(...lons)) * 111_319.5 * Math.cos((47.5 * Math.PI) / 180)).toBeCloseTo(20, 0)   // heading 90: the 20 m length runs east-west
+    expect((Math.max(...lats) - Math.min(...lats)) * 111_319.5).toBeCloseTo(10, 0)
+    expect(l.lines).toHaveLength(3)
+    expect(l.lines.every((x) => x.t === 24)).toBe(true)
+  })
+})

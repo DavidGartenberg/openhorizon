@@ -69,6 +69,22 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     const p = pts(o?.p, 2)
     if (p && Number.isFinite(o.t)) lines.push({ t: Number(o.t), p, ...(o.edge ? { edge: true } : {}) })
   }
+  // Helipads (apt.dat row 102): a pavement rectangle of the pad's own surface with a white H.
+  for (const h of arr(d.heli).slice(0, 300)) {
+    const o = h as Record<string, unknown>
+    const lat = Number(o?.lat), lon = Number(o?.lon), len = Number(o?.len), wid = Number(o?.wid)
+    if (!isLatLon([lat, lon]) || !(len >= 3 && len <= 200 && wid >= 3 && wid <= 200)) continue
+    const hdg = ((Number(o.hdg) || 0) * Math.PI) / 180
+    const mLat = 111_319.5, mLon = mLat * Math.cos((lat * Math.PI) / 180)
+    if (!(mLon > 1)) continue
+    const at = (along: number, across: number): [number, number] => [
+      lat + (Math.cos(hdg) * along - Math.sin(hdg) * across) / mLat,
+      lon + (Math.sin(hdg) * along + Math.cos(hdg) * across) / mLon,
+    ]
+    pav.push({ surf: Number(o.surf) || 1, name: 'helipad', rings: [[at(-len / 2, -wid / 2), at(-len / 2, wid / 2), at(len / 2, wid / 2), at(len / 2, -wid / 2)]] })
+    const m = Math.min(len, wid)
+    lines.push({ t: 24, p: [at(-0.3 * m, -0.2 * m), at(0.3 * m, -0.2 * m)] }, { t: 24, p: [at(-0.3 * m, 0.2 * m), at(0.3 * m, 0.2 * m)] }, { t: 24, p: [at(0, -0.2 * m), at(0, 0.2 * m)] })
+  }
   const lights: AptLights[] = []
   for (const l of arr(d.lights).slice(0, 20_000)) {
     const o = l as Record<string, unknown>

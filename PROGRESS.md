@@ -3191,3 +3191,8 @@ What changed, and what is real versus a recorded stand-in:
 ### All-airport sweep at 6bded15 (2026-11-02)
 
 - `scripts/xplane/sweep-airports.ts` over all 38,890 airports: 21,424 layouts built (17,466 have no drawable pavement), 0 issues, none slow, 229 s; KDEN is the only build over 1.2 M triangles (1.68 M). Also looked at KATL at ground level (concrete taxiways with continuous yellow centrelines and edge lines) and KMSO, LFPG, 12K at night.
+
+### Helipads (2026-11-02)
+
+- apt.dat helipads (row 102, parsed by the server all along but dropped by the client) now draw as a pavement rectangle of the pad's own surface with a white H, through the same draped pavement and paint code (`normalizeApt`). Pads whose surface is "transparent" (15) draw only the H, on the apron beneath. Checked at KSFO (two concrete 20 m pads with their H); KSFO has two, KJFK two, PHNL four.
+- Still not drawn: heliports and seaplane bases as airports of their own (no runway to hang them on).
