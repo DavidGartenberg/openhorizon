@@ -223,5 +223,5 @@ export function interpretTransmission(text: string, ctx: FreeTextCtx): AtcReply 
     return { intent: 'noEmergency', response: 'roger, no emergency' }
   }
 
-  return { intent: 'unknown', response: `say again, ${ctx.callsign}` }
+  return { intent: 'unknown', response: 'say again' }
 }

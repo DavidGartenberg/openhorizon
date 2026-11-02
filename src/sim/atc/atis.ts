@@ -48,10 +48,13 @@ export function buildAtis(
   wx: BlendedWeather | null,
   runways: readonly RunwayHeading[],
   letterIndex: number,
+  /** The time the report was made (sim clock): read as "one eight five zero zulu" after the information letter. */
+  observed?: Date,
 ): AtisBroadcast {
   const letter = PHONETIC[letterIndex % 26]!
   const activeRunway = chooseActiveRunway(runways, wx?.windDirDeg ?? 0)
-  const parts: string[] = [`${facilityName} information ${letter}.`]
+  const zulu = observed ? `${String(observed.getUTCHours()).padStart(2, '0')}${String(observed.getUTCMinutes()).padStart(2, '0')} zulu` : ''
+  const parts: string[] = [`${facilityName} information ${letter}${zulu ? `, ${zulu}` : ''}.`]
   if (wx) {
     parts.push(
       wx.windKt < 1
@@ -69,7 +72,7 @@ export function buildAtis(
   } else {
     parts.push('weather unavailable.')
   }
-  parts.push(`runway ${activeRunway} in use.`)
+  parts.push(`landing and departing runway ${activeRunway}.`)
   parts.push(`advise on initial contact you have information ${letter}.`)
   return { letter, text: parts.join(' '), activeRunway }
 }

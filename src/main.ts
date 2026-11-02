@@ -13,6 +13,7 @@ import { TcasComputer } from './sim/tcas'
 import { TawsComputer } from './sim/taws'
 import { inRunwayApproach } from './sim/safety-approach'
 import { SafetySpeechController } from './audio/safety-speech'
+import { toSpokenAviation, CallsignBook, styleForAirport } from './audio/spoken-aviation'
 import { BrowserSpeechDriver } from './audio/browser-speech'
 import { makeSurfaceSmoother } from './render/surface-smoother'
 import { boeingAurals, makeAuralLatches } from './sim/boeing-aurals'
@@ -32,6 +33,9 @@ import { FlightRecorder, analyzeLanding, type RunwayRef } from './sim/recorder'
 import { buildAtis } from './sim/atc/atis'
 import { TowerController, pilotPhrase, type PilotRequestKind, type TrafficView } from './sim/atc/tower'
 import { GroundController } from './sim/atc/ground'
+import { speakerRole, readbackText, fieldName, windPhrase } from './sim/atc/phraseology'
+import { radioCallsign } from './sim/atc/callsign'
+import { AmbientRadio } from './sim/atc/ambient'
 import { trim } from './sim/trim'
 import { FT, KT, isa, kcasFromKias, indicatedAltitudeFt } from './sim/atmosphere'
 import { C172S, flapInterp } from './sim/aircraft/c172s'
@@ -1629,6 +1633,10 @@ interface ActiveAtc {
    *  forces a facility refresh so the broadcast is never frozen. */
   atisWx: string
   atisHour: number
+  /** How each facility of the field is called on the air. */
+  names: { tower: string; ground: string; approach: string }
+  /** Other aircraft talking on this field's ground / approach / departure frequencies. */
+  ambient: AmbientRadio
 }
 let activeAtc: ActiveAtc | null = null
 let atisPlayedFor = ''
@@ -1927,6 +1935,10 @@ function updateSafety(now: number): void {
 }
 let lastAtcScanAt = -Infinity
 let lastTowerTickAt = -Infinity
+let lastAmbientAt = -Infinity
+/** When the player last keyed the radio (ms): background chatter keeps quiet around their exchange. */
+let lastPlayerTxAt = -Infinity
+function hashSeed(text: string): number { let h = 0; for (const c of text) h = (Math.imul(h, 31) + c.charCodeAt(0)) | 0; return Math.abs(h) }
 let atcMenuOpen = false
 
 // 9A: tracked ATC reply timers. Raw setTimeout replies used to fire
@@ -2038,7 +2050,7 @@ voicePanel.append(talkButton,menuButton,cancelVoice,retryVoice,voiceStatus,voice
 /** Local Whisper when it is set up (audio never leaves this computer); otherwise the
  *  browser's own speech recognition, so talking to ATC works with nothing installed. */
 const useBrowserSpeech=()=>!localVoice.status.transcription&&webSpeechAvailable()
-voicePtt=new PushToTalk({capture:signal=>useBrowserSpeech()?captureWebSpeech(signal,text=>{if(voicePtt?.state.phase==='listening')voiceStatus.textContent=text?`Hearing: “${text}”`:'Listening — speak now'},()=>voicePtt?.hold('toggle',false)):captureMicrophone(signal,()=>voicePtt?.hold('toggle',false)),transcribe:(audio,signal)=>localVoice.transcribe(audio,signal),send:sendFreeTextAtc,suspend:setRadioListening,context:()=>`${flightVoiceEpoch}:${activeAtc?.ident}:${radios.com1.activeMhz}`,allowed:()=>document.hasFocus()&&!document.hidden&&(localVoice.status.transcription||webSpeechAvailable())&&!!activeAtc&&!loop.paused&&input.enabled&&!safetySpeech.captureBlocked,onState:state=>{voiceStatus.textContent=useBrowserSpeech()&&state.phase==='processing'?'Understanding…':useBrowserSpeech()&&state.phase==='listening'?'Listening — speak, then release to transmit':state.message;talkButton.setAttribute('aria-pressed',String(state.phase==='listening'));voicePanel.dataset.phase=state.phase}})
+voicePtt=new PushToTalk({capture:signal=>useBrowserSpeech()?captureWebSpeech(signal,text=>{if(voicePtt?.state.phase==='listening')voiceStatus.textContent=text?`Hearing: “${text}”`:'Listening — speak now'},()=>voicePtt?.hold('toggle',false)):captureMicrophone(signal,()=>voicePtt?.hold('toggle',false)),transcribe:(audio,signal)=>localVoice.transcribe(audio,signal),send:said=>{playerSpoke=true;try{sendFreeTextAtc(said)}finally{playerSpoke=false}},suspend:setRadioListening,context:()=>`${flightVoiceEpoch}:${activeAtc?.ident}:${radios.com1.activeMhz}`,allowed:()=>document.hasFocus()&&!document.hidden&&(localVoice.status.transcription||webSpeechAvailable())&&!!activeAtc&&!loop.paused&&input.enabled&&!safetySpeech.captureBlocked,onState:state=>{voiceStatus.textContent=useBrowserSpeech()&&state.phase==='processing'?'Understanding…':useBrowserSpeech()&&state.phase==='listening'?'Listening — speak, then release to transmit':state.message;talkButton.setAttribute('aria-pressed',String(state.phase==='listening'));voicePanel.dataset.phase=state.phase}})
 const unbindVoice=bindPushToTalk(voicePtt,talkButton,window,()=>input.enabled&&!loop.paused)
 window.addEventListener('pagehide',()=>{unbindVoice();browserSpeech.cancel()},{once:true})
 async function refreshVoice():Promise<void>{
@@ -2144,11 +2156,18 @@ function radioSquelch(): void {
   } catch { /* pre-gesture autoplay block — fine */ }
 }
 
-/** Voice: speechSynthesis with a per-speaker voice. LIMITATION (recorded):
- *  the Web Speech API cannot route through WebAudio, so the §12.3 band-pass
- *  radio effect is approximated with squelch clicks around the utterance. */
+/** Which callsigns have been said lately: general-aviation ones are shortened once the exchange is under way. */
+const callsignBook = new CallsignBook()
+/** Everything said on the radio is voiced in role: a controller, another aircraft's crew, the ATIS. The player's own menu and typed calls are
+ *  voiced too (as a pilot); a call the player spoke into the microphone is not repeated back at them. */
+let playerSpoke = false
+let voiceMyCalls = true
+try { voiceMyCalls = localStorage.getItem('oh-voice-my-calls') !== 'OFF' } catch { /* private mode */ }
 function speak(t: Transmission): void {
-  safetySpeech.radio(t.text, performance.now(), t.from)
+  const style = styleForAirport(activeAtc?.ident ?? '')
+  const now = performance.now()
+  const spoken = toSpokenAviation(t.text, { style, callsigns: callsignBook, nowMs: now })
+  safetySpeech.radio(t.text, now, t.from, { role: speakerRole(t.from), ambient: t.ambient, style, spoken })
 }
 
 comms.subscribe((t) => {
@@ -2158,7 +2177,11 @@ comms.subscribe((t) => {
   transcriptDiv.style.display = 'block'
   transcriptDiv.textContent = transcript.join('\n')
   if (t.from !== CALLSIGN) { speak(t); shell?.notifier.push(`${t.from}: ${t.text}`, 7000) }
+  else { lastPlayerTxAt = performance.now(); if (voiceMyCalls && !playerSpoke) speak(t) }
+  // The last instruction given to the player, so the menu can read it back the way it was given.
+  if (t.to === CALLSIGN && t.kind) lastInstruction.set(t.kind, t)
 })
+const lastInstruction = new Map<string, Transmission>()
 
 /** Going around (9B): a captured glideslope had no un-capture path — the
  *  AP kept chasing a beam behind the aircraft. A go-around drops an
@@ -2195,6 +2218,8 @@ function scanAtc(lat: number, lon: number, now: number): void {
       const twrF = fs.find((f) => f.t === 'TWR')!.f
       const gndF = fs.find((f) => f.t === 'GND')?.f ?? twrF
       const atisF = fs.find((f) => f.t === 'ATIS')?.f ?? twrF
+      const appFreq = fs.find((f) => f.t === 'APP')?.f ?? fs.find((f) => f.t === 'DEP')?.f
+      const depFreq = fs.find((f) => f.t === 'DEP')?.f
       const runwayHeadings = nearest.r.flatMap((r) => {
         const h = bearingDeg({ lat: r.la1, lon: r.lo1 }, { lat: r.la2, lon: r.lo2 })
         return [
@@ -2202,11 +2227,11 @@ function scanAtc(lat: number, lon: number, now: number): void {
           { ident: r.hi, headingDeg: (h + 180) % 360 },
         ]
       })
-      const name = nearest.n.replace(/ (Airport|Field|Municipal.*|Regional.*|International.*)$/i, '')
+      const name = fieldName(nearest.n)
       // 9A: the letter comes from the SIM clock hour (was process
       // uptime — meaningless and never advancing with time scrubs).
       const atisHour = Math.floor((baseDate.getTime() / 1000 + loop.simTime + scrubSeconds) / 3600) % 26
-      const atis = buildAtis(name, wxBlended, runwayHeadings, atisHour)
+      const atis = buildAtis(name, wxBlended, runwayHeadings, atisHour, new Date(baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000))
       // A facility change abandons the old controller's pending replies.
       cancelAtcTimers()
       const actRw = nearest.r.find((r) => r.li === atis.activeRunway || r.hi === atis.activeRunway)
@@ -2221,6 +2246,8 @@ function scanAtc(lat: number, lon: number, now: number): void {
           runwayLengthM: actRw
             ? distanceM({ lat: actRw.la1, lon: actRw.lo1 }, { lat: actRw.la2, lon: actRw.lo2 })
             : undefined,
+          windText: () => windPhrase(wxBlended?.windDirDeg ?? 0, wxBlended?.windKt ?? 0, wxBlended?.gustKt ?? 0),
+          ...(gndF !== twrF ? { groundFreqMhz: gndF } : {}),
         }),
         ground: new GroundController({ facility: `${name} Ground`, freqMhz: gndF, activeRunway: atis.activeRunway }),
         approach: new ApproachController({
@@ -2232,6 +2259,17 @@ function scanAtc(lat: number, lon: number, now: number): void {
         appF: fs.find((x) => x.t === 'APP')?.f ?? fs.find((x) => x.t === 'DEP')?.f ?? twrF,
         atis, twrF, gndF, atisF,
         atisWx: wxDesc, atisHour,
+        names: { tower: `${name} Tower`, ground: `${name} Ground`, approach: `${name} Approach` },
+        ambient: new AmbientRadio({
+          field: name, runway: atis.activeRunway, atis: atis.letter,
+          tower: { name: `${name} Tower`, freqMhz: twrF },
+          ground: { name: `${name} Ground`, freqMhz: gndF },
+          ...(appFreq && appFreq !== twrF ? { approach: { name: `${name} Approach`, freqMhz: appFreq } } : {}),
+          ...(depFreq && depFreq !== appFreq && depFreq !== twrF ? { departure: { name: `${name} Departure`, freqMhz: depFreq } } : {}),
+          taxiways: () => [...new Set((osmIdentSegs.get(nearest.i) ?? []).map((sg) => sg.ref).filter(Boolean))].slice(0, 12),
+          busy: aiDensity === 0 ? 0 : [0.3, 0.6, 0.95][Math.min(nearest.t, 2)]! * (aiDensity >= 5 ? 1 : 0.75),
+          airlines: nearest.t >= 1,
+        }, { seed: hashSeed(`${nearest.i}:${atisHour}`) }),
       }
       atisPlayedFor = ''
       // Rebuild AI pattern traffic for the new field's active runway end
@@ -2249,10 +2287,12 @@ function scanAtc(lat: number, lon: number, now: number): void {
           headingDeg: bearingDeg({ lat: thr.lat, lon: thr.lon }, far),
           elevFt: thr.e,
         }
-        for (const [cs, des, delay] of AI_ROSTER.slice(0, aiDensity)) {
+        for (const [tail, des, delay] of AI_ROSTER.slice(0, aiDensity)) {
+          const cs = radioCallsign(tail, des)
           const pilot = new AiPatternPilot({
             callsign: cs, runway: patternRwy, runwayIdent: act,
             tower: activeAtc.tower, bus: comms, freqMhz: twrF, startDelayS: loop.simTime + delay,
+            facility: `${name} Tower`, atis: atis.letter,
           })
           const info = typeInfo(des)
           const aiSpec = archetypeFor(des, info.desc, info.wtc)
@@ -2285,6 +2325,12 @@ function scanAtc(lat: number, lon: number, now: number): void {
       atisPlayedFor = key
       comms.transmit({ freqMhz: activeAtc.atisF, from: `${activeAtc.ident} ATIS`, text: activeAtc.atis.text, atSimS: loop.simTime })
     }
+    if (now - lastAmbientAt > 1500) {
+      lastAmbientAt = now
+      const busy = now - lastPlayerTxAt < 25_000 || voicePtt?.state.phase === 'listening' || voicePtt?.state.phase === 'processing'
+      const taken = new Set([CALLSIGN, ...aiShips.map((sh) => sh.pilot.callsign)])
+      for (const t of activeAtc.ambient.tick(loop.simTime, radios.com1.activeMhz, busy, taken)) comms.transmit(t)
+    }
     if (now - lastTowerTickAt > 5000) {
       lastTowerTickAt = now
       for (const t of activeAtc.tower.tick(loop.simTime, [{ callsign: CALLSIGN, view: playerAtcView() }])) comms.transmit(t)
@@ -2307,7 +2353,12 @@ function atcMenuItems(): AtcMenuItem[] {
     // (Found by the §27 flight: both calls went out on the boot default
     // 118.00 and no controller ever heard them.)
     radios.com1.activeMhz = freq
-    comms.transmit({ freqMhz: radios.com1.activeMhz, from: CALLSIGN, text: pilotPhrase(CALLSIGN, kind, a.atis.activeRunway), atSimS: loop.simTime })
+    const calling = freq === a.gndF && a.gndF !== a.twrF ? a.names.ground : freq === a.appF && a.appF !== a.twrF ? a.names.approach : a.names.tower
+    comms.transmit({
+      freqMhz: radios.com1.activeMhz, from: CALLSIGN,
+      text: pilotPhrase(CALLSIGN, kind, a.atis.activeRunway, { facility: calling, atis: a.atis.letter, milesOut: Math.max(1, Math.round(view.distanceM / 1852)) }),
+      atSimS: loop.simTime,
+    })
     if (isAudible(freq, radios.com1.activeMhz)) {
       const replies = handle()
       atcDelay(() => replies.forEach((r) => comms.transmit({ ...r, atSimS: loop.simTime })), 700)
@@ -2320,7 +2371,7 @@ function atcMenuItems(): AtcMenuItem[] {
         radios.com1.activeMhz = a.gndF // readback goes to whoever issued it
         comms.transmit({
           freqMhz: radios.com1.activeMhz, from: CALLSIGN,
-          text: `runway ${a.atis.activeRunway}, taxi via the parallel, hold short ${a.atis.activeRunway}, ${CALLSIGN}`,
+          text: (lastInstruction.get('taxi') && readbackText(lastInstruction.get('taxi')!, CALLSIGN)) || `runway ${a.atis.activeRunway}, taxi to the runway, ${CALLSIGN}`,
           atSimS: loop.simTime,
         })
         if (isAudible(a.gndF, radios.com1.activeMhz)) {

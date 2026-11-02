@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toSpokenAviation } from '../src/audio/spoken-aviation'
+import { toSpokenAviation, CallsignBook, styleForAirport } from '../src/audio/spoken-aviation'
 
 const say = toSpokenAviation
 
@@ -127,5 +127,67 @@ describe('a full ATC transmission', () => {
   it('reads like a controller', () => {
     expect(say('N172SP, runway 28L, wind 280 at 12, cleared for takeoff')).toBe(
       'November one seven two Sierra Papa, runway two eight left, wind two eight zero at one two, cleared for takeoff')
+  })
+})
+
+describe('general-aviation callsigns', () => {
+  it('say the type word, then the tail digit by digit and letter by letter', () => {
+    expect(say('Skyhawk 123AB, runway 28L, cleared for takeoff')).toBe('Skyhawk one two three Alpha Bravo, runway two eight left, cleared for takeoff')
+    expect(say('Cessna 4PK and King Air 77GA')).toBe('Cessna four Papa Kilo and King Air seven seven Golf Alpha')
+    expect(say('Cherokee 905TB, contact tower')).toBe('Cherokee niner zero five Tango Bravo, contact tower')
+  })
+  it('are said in full the first times and shortened once the exchange is under way, airlines never', () => {
+    const book = new CallsignBook()
+    const said = (text: string, t: number) => toSpokenAviation(text, { callsigns: book, nowMs: t })
+    expect(said('Skyhawk 123AB, taxi', 0)).toBe('Skyhawk one two three Alpha Bravo, taxi')
+    expect(said('Skyhawk 123AB, hold short', 10_000)).toBe('Skyhawk one two three Alpha Bravo, hold short')
+    expect(said('Skyhawk 123AB, cleared for takeoff', 20_000)).toBe('Skyhawk three Alpha Bravo, cleared for takeoff')
+    expect(said('UAL2262, hello', 21_000)).toBe('United twenty two sixty two, hello')
+    expect(said('UAL2262, hello', 22_000)).toBe('United twenty two sixty two, hello')
+    expect(said('UAL2262, hello', 23_000)).toBe('United twenty two sixty two, hello')
+  })
+  it('forget an aircraft after ten minutes of silence, and keep aircraft apart', () => {
+    const book = new CallsignBook()
+    const said = (text: string, t: number) => toSpokenAviation(text, { callsigns: book, nowMs: t })
+    for (let i = 0; i < 3; i++) said('N42PK, one', i * 1000)
+    expect(said('N42PK, two', 4000)).toBe('two Papa Kilo, two')
+    expect(said('N42PK, later', 4000 + 11 * 60_000)).toBe('November four two Papa Kilo, later')
+    expect(said('N99XY, other', 5000)).toBe('November niner niner X-ray Yankee, other')
+  })
+  it('stay idempotent: a line already spoken passes through untouched', () => {
+    const once = toSpokenAviation('Skyhawk 123AB, runway 28L, cleared for takeoff, wind 270 at 8')
+    expect(toSpokenAviation(once)).toBe(once)
+  })
+})
+
+describe('weather and time', () => {
+  it('says visibility digit by digit, cloud bases as altitudes and the report time in zulu', () => {
+    expect(say('visibility 10. few clouds at 4500.')).toBe('visibility one zero. few clouds at four thousand five hundred.')
+    expect(say('broken clouds at 800')).toBe('broken clouds at eight hundred')
+    expect(say('visibility 1/2')).toBe('visibility 1/2')
+    expect(say('Palo Alto information Bravo, 1805 zulu.')).toBe('Palo Alto information Bravo, one eight zero five Zulu.')
+  })
+})
+
+describe('taxi instructions', () => {
+  it('spell taxiway letters after taxiway, hold short of, exit and cross', () => {
+    expect(say('hold short of B3, cross A, exit C')).toBe('hold short of Bravo three, cross Alpha, exit Charlie')
+    expect(say('turn left on B, taxiway D')).toBe('turn left on Bravo, taxiway Delta')
+  })
+})
+
+describe('ICAO phraseology outside North America', () => {
+  const icao = (text: string) => toSpokenAviation(text, { style: 'icao' })
+  it('says tree, fife, decimal, degrees and knots, and the QNH', () => {
+    expect(icao('BAW3, runway 35, wind 350 at 15')).toBe('Speedbird tree, runway tree fife, wind tree fife zero degrees one fife knots')
+    expect(icao('contact tower 118.50')).toBe('contact tower one one eight decimal fife')
+    expect(icao('altimeter 29.92')).toBe('QNH one zero one tree')
+  })
+  it('chooses the style from the airport', () => {
+    for (const id of ['KSFO', 'PHNL', 'PANC', 'CYYZ', 'TJSJ', 'MMMX']) expect(styleForAirport(id)).toBe('faa')
+    for (const id of ['EGLL', 'LFPG', 'YSSY', 'RJTT', 'OMDB', 'SBGR']) expect(styleForAirport(id)).toBe('icao')
+  })
+  it('leaves the FAA style alone', () => {
+    expect(toSpokenAviation('runway 35, wind 350 at 15')).toBe('runway three five, wind three five zero at one five')
   })
 })
