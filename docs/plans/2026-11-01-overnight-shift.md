@@ -48,3 +48,7 @@ never copied into the repository.
 - [x] Terminals: OpenStreetMap footprints (X-Plane has no terminal data) with a curtain-wall finish
 - Checked in the browser (16): KSFO, KJFK, KLAX, KASE, EGLL, KORD, PHNL, KATL, EDDF, YSSY, OMDB, RJTT, SBGR, KJAC, BIKF, TNCM; pavement-on-ground probes at KSFO, KORD, KDEN, KLAX, EGLL, LFPG, VHHH, CYYZ (known limit: reclaimed land the elevation data shows as sea, e.g. VHHH); all 38,890 airports' layouts build in node with 0 issues (`scripts/xplane/sweep-airports.ts`)
 - [x] Airports X-Plane has and the old database lacks (22,313, mostly small fields) are fetched by region and drawn (`/api/apt-airports.json`); checked at 4OR4 near Corvallis, OR
+- [x] Runways: X-Plane's ends, widths, overruns, hard / soft finish and edge lights replace the old database's; 503 runways it lists that the database lacks are added
+- [x] Coastal and low-lying fields: shore pits closed (KBOS); fields below sea level are levelled over the data's sea cells with the ocean hidden around them (KL06)
+- [x] Unpaved surfaces and turf runways read in overcast; blast pads no longer go black under terrain shadow
+- Known limits: land the elevation data shows as sea beyond a below-sea field's margin (polders, VHHH reclaimed land), 40 unconfirmed database runways, heliports / seaplane bases not drawn

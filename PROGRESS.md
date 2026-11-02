@@ -3174,3 +3174,7 @@ What changed, and what is real versus a recorded stand-in:
 - 28 database airports lie below sea level (Schiphol, Furnace Creek, Imperial County, Astrakhan …). The terrain clamps negative heights to sea, so their level area skipped the "water" and the ocean plane (y = 0) covered the field. Now the worker's level disk applies over sea cells when the field is at or below sea level, the physics ground matches (`flattenElevation`), and the sea is hidden within the level area plus 1.5 km (`Airports.belowSeaFieldNear`, `Ocean.setVisible`).
 - Checked at KL06 (Furnace Creek, −201 ft): runway on the desert floor, ground −63 m, no sea. EHAM could not be checked here: its terrain tiles are not cached and the sandbox has no network.
 - Limit: the 1.5 km margin ends abruptly where the sea resumes (Netherlands polders beyond it still show as sea, as the elevation data clamps below-datum land to sea everywhere).
+
+### Gate at 94e6818 (2026-11-02)
+
+- Fresh clone: `tsc` clean, 167 files / 2219 tests pass, `vite build` ok.
