@@ -36,3 +36,63 @@ export function airportFlatDisk(ap: Pick<AirportData, 'r' | 't' | 'e' | 'la' | '
   if (radius <= 0) return null
   return { lat: ap.la, lon: ap.lo, elevM: airportFieldElevationM(ap), halfWidthM: Math.max(1, radius - FLAT_INNER_MARGIN_M) }
 }
+
+const M_PER_DEG_LAT = 111_319.5
+
+export interface FlattenEnds { la1: number; lo1: number; la2: number; lo2: number; e1M?: number; e2M?: number }
+
+/**
+ * The two ends of the ground that is levelled for a runway: its pavement ends pushed outward by the blast pad /
+ * overrun beyond each (`o1` beyond end 1, `o2` beyond end 2; X-Plane's apt.dat), so the level ground reaches
+ * the end of the paved overrun instead of stopping about 70 m past the runway. The end elevations (`e1M`, `e2M`,
+ * metres, when given) are carried along the runway's own slope, so the plane over the runway itself is unchanged.
+ * No overrun → the runway's own ends.
+ */
+export function flattenEnds(r: FlattenEnds & { o1?: number; o2?: number }): FlattenEnds {
+  const o1 = Number.isFinite(r.o1) ? Math.max(0, r.o1!) : 0, o2 = Number.isFinite(r.o2) ? Math.max(0, r.o2!) : 0
+  const base: FlattenEnds = { la1: r.la1, lo1: r.lo1, la2: r.la2, lo2: r.lo2, ...(r.e1M !== undefined ? { e1M: r.e1M } : {}), ...(r.e2M !== undefined ? { e2M: r.e2M } : {}) }
+  if (!(o1 > 0 || o2 > 0)) return base
+  const mLon = M_PER_DEG_LAT * Math.cos((((r.la1 + r.la2) / 2) * Math.PI) / 180)
+  const dx = (r.lo2 - r.lo1) * mLon, dy = (r.la2 - r.la1) * M_PER_DEG_LAT
+  const len = Math.hypot(dx, dy)
+  if (!(len > 1) || !(mLon > 1)) return base
+  const ux = dx / len, uy = dy / len
+  const out: FlattenEnds = {
+    la1: r.la1 - (uy * o1) / M_PER_DEG_LAT, lo1: r.lo1 - (ux * o1) / mLon,
+    la2: r.la2 + (uy * o2) / M_PER_DEG_LAT, lo2: r.lo2 + (ux * o2) / mLon,
+  }
+  if (Number.isFinite(r.e1M) && Number.isFinite(r.e2M)) {
+    const slope = (r.e2M! - r.e1M!) / len                       // metres of rise per metre along the runway
+    out.e1M = r.e1M! - slope * o1; out.e2M = r.e2M! + slope * o2
+  }
+  return out
+}
+
+/** X-Plane's overruns by airport: [one end's designator, the other end's, overrun beyond the first (m), beyond the second (m)] per runway. */
+export type RunwayExtras = Record<string, Array<[string, string, number, number]>>
+
+/** "09L" and "9L" are the same runway end. */
+const endKey = (id: string): string => String(id).trim().toUpperCase().replace(/^0+(?=\d)/, '')
+
+/** Put X-Plane's overrun lengths on the matching runways (in place). Unmatched or malformed entries are ignored. */
+export function applyRunwayExtras(airports: ReadonlyArray<Pick<AirportData, 'i' | 'r'>>, extras: RunwayExtras): void {
+  if (!extras || typeof extras !== 'object') return
+  for (const ap of airports) {
+    const rows = extras[ap.i]
+    if (!Array.isArray(rows)) continue
+    for (const r of ap.r) {
+      const li = endKey(r.li), hi = endKey(r.hi)
+      for (const row of rows) {
+        if (!Array.isArray(row) || row.length < 4) continue
+        const a = endKey(row[0]), b = endKey(row[1])
+        const forward = a === li && b === hi, reverse = a === hi && b === li
+        if (!forward && !reverse) continue
+        const oa = Number(row[2]), ob = Number(row[3])
+        const first = forward ? oa : ob, second = forward ? ob : oa
+        if (Number.isFinite(first) && first > 0) r.o1 = Math.min(first, 600)
+        if (Number.isFinite(second) && second > 0) r.o2 = Math.min(second, 600)
+        break
+      }
+    }
+  }
+}

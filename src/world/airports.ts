@@ -10,7 +10,7 @@ import { lightGlowTexture } from '../render/light-glow'
 import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
 import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
 import { enhanceAirportWithXplane } from './apt-layout'
-import { airportFlatDisk, airportFieldElevationM } from './airport-flatten'
+import { airportFlatDisk, airportFieldElevationM, flattenEnds, applyRunwayExtras, type RunwayExtras } from './airport-flatten'
 import { primaryRunway, planAirportFacilities, buildAirportFacilities, updateAirportServices, disposeAirportObject, mappedApronPlan, footprintObstacle, type SurfaceObstacle, type GroundPoint } from './airport-scenery'
 
 export interface RunwayData {
@@ -26,6 +26,9 @@ export interface RunwayData {
   w: number
   s: number // 0 hard, 1 soft
   lt: number
+  /** Blast pad / overrun beyond the li (o1) and hi (o2) ends, metres (X-Plane's airport data); absent = none/unknown. */
+  o1?: number
+  o2?: number
 }
 
 export interface AirportData {
@@ -98,6 +101,11 @@ export class Airports {
     const res = await fetch('/api/airports.json')
     if (!res.ok) throw new Error(`airports: HTTP ${res.status}`)
     this.all = (await res.json()) as AirportData[]
+    // X-Plane's blast pads / overruns (best effort: without an X-Plane install there are none).
+    try {
+      const extras = await fetch('/api/apt-runways.json')
+      if (extras.ok) applyRunwayExtras(this.all, (await extras.json()) as RunwayExtras)
+    } catch { /* keep the database as it is */ }
     for (const ap of this.all) {
       const key = `${Math.floor(ap.la * 2)},${Math.floor(ap.lo * 2)}`
       let arr = this.cells.get(key)
@@ -151,9 +159,10 @@ export class Airports {
       const disk = airportFlatDisk(ap)
       if (disk) out.push({ la1: disk.lat, lo1: disk.lon, la2: disk.lat, lo2: disk.lon, e1M: disk.elevM, e2M: disk.elevM, halfWidthM: disk.halfWidthM, disk: true })
       for (const r of ap.r) {
+        const f = flattenEnds({ ...r, e1M: r.e1 * FT, e2M: r.e2 * FT })
         out.push({
-          la1: r.la1, lo1: r.lo1, la2: r.la2, lo2: r.lo2,
-          e1M: r.e1 * FT, e2M: r.e2 * FT,
+          la1: f.la1, lo1: f.lo1, la2: f.la2, lo2: f.lo2,
+          e1M: f.e1M!, e2M: f.e2M!,
           halfWidthM: Math.max((r.w * FT) / 2, 12),
         })
       }
@@ -176,11 +185,12 @@ export class Airports {
         // Work in a small local meter frame around the sample.
         const mLat = 111_319.5
         const mLon = mLat * Math.cos((lat * Math.PI) / 180)
+        const f = flattenEnds({ ...r, e1M: r.e1 * FT, e2M: r.e2 * FT })
         h = flattenForRunway(
           h, 0, 0,
-          (r.lo1 - lon) * mLon, (r.la1 - lat) * mLat,
-          (r.lo2 - lon) * mLon, (r.la2 - lat) * mLat,
-          r.e1 * FT, r.e2 * FT,
+          (f.lo1 - lon) * mLon, (f.la1 - lat) * mLat,
+          (f.lo2 - lon) * mLon, (f.la2 - lat) * mLat,
+          f.e1M!, f.e2M!,
           Math.max((r.w * FT) / 2, 12),
         )
       }

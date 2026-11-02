@@ -81,8 +81,9 @@ export interface RunwayLocal {
   elevAt: (t: number) => number // t ∈ [-0.5, 0.5] → elevation offset vs center
 }
 
-/** Merge flat quads (runway-local x/y, painted at z≈0) into one geometry. */
-function mergedQuads(quads: Quad[], r: RunwayLocal, lift: number): THREE.BufferGeometry {
+/** Merge flat quads (runway-local x/y, painted at z≈0) into one geometry. `clamp: false` lets the ground
+ *  height keep following the runway's slope past its ends (the overruns). */
+function mergedQuads(quads: Quad[], r: RunwayLocal, lift: number, clamp = true): THREE.BufferGeometry {
   const pos: number[] = []
   const uv: number[] = []
   const idx: number[] = []
@@ -96,7 +97,7 @@ function mergedQuads(quads: Quad[], r: RunwayLocal, lift: number): THREE.BufferG
       const x = q.x + dx * c - dy * s
       const y = q.y + dx * s + dy * c
       const t = y / r.lenM
-      pos.push(x, r.elevAt(Math.max(-0.5, Math.min(0.5, t))) + lift, -y)
+      pos.push(x, r.elevAt(clamp ? Math.max(-0.5, Math.min(0.5, t)) : t) + lift, -y)
       uv.push(x / PAINT_TILE_M, y / PAINT_TILE_M) // wear map tiles in world metres
     }
     idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
@@ -215,14 +216,17 @@ const OVERRUN_CONCRETE = pavementMaterial(0x8e908b, 'xz')
 export function buildRunwayOverruns(r: RunwayLocal, concrete: boolean): THREE.Group {
   const g = new THREE.Group()
   const geo = overrunGeometry(r.lenM, r.widM, r.overrunLowM, r.overrunHighM)
+  // The ground under an overrun keeps the runway's slope (the terrain is levelled as its continuation).
+  const eLow = r.elevAt(-0.5), eHigh = r.elevAt(0.5)
+  const onSlope: RunwayLocal = { ...r, elevAt: (t) => eLow + (t + 0.5) * (eHigh - eLow) }
   if (geo.pavement.length) {
-    const pave = new THREE.Mesh(mergedQuads(geo.pavement, r, 0.05), concrete ? OVERRUN_CONCRETE : OVERRUN_ASPHALT)
+    const pave = new THREE.Mesh(mergedQuads(geo.pavement, onSlope, 0.05, false), concrete ? OVERRUN_CONCRETE : OVERRUN_ASPHALT)
     pave.receiveShadow = true
     pave.renderOrder = 20
     g.add(pave)
   }
   if (geo.chevrons.length) {
-    const paint = new THREE.Mesh(mergedQuads(geo.chevrons, r, 0.16), TAXI_LINE)
+    const paint = new THREE.Mesh(mergedQuads(geo.chevrons, onSlope, 0.16, false), TAXI_LINE)
     paint.renderOrder = 22
     g.add(paint)
   }

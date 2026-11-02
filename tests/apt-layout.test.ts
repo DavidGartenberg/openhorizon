@@ -264,6 +264,16 @@ describe('blast pads / overruns from the airport data', () => {
     const ys = Array.from({ length: pos.count }, (_, i) => -pos.getZ(i))              // runway-local y is −z
     expect(Math.min(...ys)).toBeGreaterThanOrEqual(1500 - 1e-6)                        // only the high (27R) end is paved
   })
+  it('lays the overrun on the runway\'s own slope rather than flat at the end height', () => {
+    const group = new THREE.Group(), detail = new THREE.Group()
+    group.userData.runwayDetails = [{ li: '10L', hi: '28R', rl: { lenM: 3000, widM: 45, liIdent: '10L', hiIdent: '28R', elevAt: (t: number) => 2 * Math.max(-0.5, Math.min(0.5, t)) }, detail }]
+    applyRunwayOverruns(group, rwy('10L', 0, '28R', 150))
+    const mesh = (detail.getObjectByName('runwayOverruns') as THREE.Group).children[0] as THREE.Mesh
+    const pos = mesh.geometry.getAttribute('position')
+    const ys = Array.from({ length: pos.count }, (_, i) => pos.getY(i))
+    // At the runway end (t = 0.5) the ground is 1 m; 150 m farther (t = 0.55) it is 1.1 m — plus the 0.05 m lift.
+    expect(Math.min(...ys)).toBeCloseTo(1 + 0.05, 5); expect(Math.max(...ys)).toBeCloseTo(1.1 + 0.05, 5)
+  })
   it('does nothing for no overrun, an unlisted runway or a group without runway details', () => {
     const a = holder('10L', '28R')
     expect(applyRunwayOverruns(a.group, rwy('10L', 0, '28R', 0))).toBe(0)
