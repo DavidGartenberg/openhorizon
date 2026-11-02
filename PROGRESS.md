@@ -3225,3 +3225,7 @@ What changed, and what is real versus a recorded stand-in:
 ### Gate at 79a3ece (2026-11-02)
 
 - Fresh clone: `tsc` clean, 167 files / 2231 tests pass, `vite build` ok. Working tree: only the other session's `tests/dg800-*` fail (5, by design).
+
+### Tried and reverted: a 192-cell grid for the nearest terrain ring (2026-11-02)
+
+- Doubling the z13 ring's grid (51 m to 25 m cells) to soften the stepped shoreline passed the test suite, but at KBOS the frame time went from p50 10-16 ms to 24 ms and the geometry to 351 MB, for little visible change. Reverted; the shoreline stays stepped at 51 m (a limit, not a defect that a cheap change removes).
