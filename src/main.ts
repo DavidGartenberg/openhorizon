@@ -60,7 +60,7 @@ import { buildPlayerAircraft } from './render/player-aircraft'
 import { upgradePlayerAircraft } from './render/local-aircraft'
 import { XP_COCKPIT_B738, eyeFromObj, loadXpCockpit, type XpCockpit } from './render/xplane-cockpit'
 import { makeXpDatarefReader } from './render/xplane-datarefs'
-import { mcpTexts } from './render/xplane-panel'
+import { mcpTexts, formatCom, formatNav } from './render/xplane-panel'
 import { XpInteraction, describeXpAction, type XpAction, type XpHover } from './render/xplane-interact'
 import type { Mcp737State } from './render/cockpit-737-paint'
 import type { AircraftParams } from './sim/aircraft/params'
@@ -2716,6 +2716,12 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
     const m = mcpState()
     const win = mcpTexts({ iasKt: m.iasKt, hdgDeg: m.hdgDeg, altFt: m.altFt, vsFpm: m.vsFpm, vsActive: m.vsActive, courseDeg: m.courseDeg })
     for (const k of Object.keys(win) as Array<keyof typeof win>) panel.led(k, win[k])
+    // The pedestal's radio tune panels and transponder: the sim's own COM / NAV frequencies and squawk.
+    panel.radio('com1A', formatCom(radios.com1.activeMhz)); panel.radio('com1S', formatCom(radios.com1.standbyMhz))
+    panel.radio('nav1A', formatNav(radios.nav1.activeMhz)); panel.radio('nav1S', formatNav(radios.nav1.standbyMhz))
+    panel.radio('com2A', formatCom(radios.com2.activeMhz)); panel.radio('com2S', formatCom(radios.com2.standbyMhz))
+    panel.radio('nav2A', formatNav(radios.nav2.activeMhz)); panel.radio('nav2S', formatNav(radios.nav2.standbyMhz))
+    panel.xponder('1200')
     panel.commit()
   }
   const gearPos = aircraft.P.gearRetractable ? aircraft.gearPos : 1

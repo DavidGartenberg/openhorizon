@@ -100,3 +100,32 @@ describe.skipIf(!fs.existsSync(OBJ))('panel layout matches the X-Plane panel mes
     }
   })
 })
+
+import { radioCells, formatCom, formatNav, RADIO_ADVANCE, type RadioWindow } from '../src/render/xplane-panel'
+
+describe('radio windows', () => {
+  it('formats COM to the kilohertz and NAV to 10 kHz, as the tune panels show them', () => {
+    expect(formatCom(118.7)).toBe('118.700'); expect(formatCom(121.825)).toBe('121.825'); expect(formatCom(136)).toBe('136.000')
+    expect(formatNav(108.1)).toBe('108.10'); expect(formatNav(110.35)).toBe('110.35')
+    expect(formatCom(NaN)).toBe('       '); expect(formatNav(Infinity)).toBe('      ')
+  })
+  it('lays the digits 23 px apart with a narrower point, centred on the window', () => {
+    const c = radioCells('118.700', 1801)
+    expect(c.map((x) => x.glyph)).toEqual([1, 1, 8, 10, 7, 0, 0])
+    const total = 6 * RADIO_ADVANCE.digit + RADIO_ADVANCE.point
+    expect(c[0]!.x).toBeCloseTo(1801 - total / 2)
+    expect(c[1]!.x - c[0]!.x).toBe(RADIO_ADVANCE.digit)
+    expect(c[4]!.x - c[3]!.x).toBe(RADIO_ADVANCE.point)
+    expect(radioCells('108.10', 1801).length).toBe(6)
+  })
+  it('the eight windows sit in two columns (active, standby) and four rows inside the bitmap', () => {
+    const keys = ['com1A', 'com1S', 'nav1A', 'nav1S', 'com2A', 'com2S', 'nav2A', 'nav2S'] as RadioWindow[]
+    const others = [...Object.entries(XP_B738_PANEL.displays), ...Object.entries(XP_B738_PANEL.mcp), ['xponder', XP_B738_PANEL.xponder]] as Array<[string, PanelRect]>
+    for (const k of keys) {
+      const r = XP_B738_PANEL.radio[k]
+      expect(inside(r), k).toBe(true)
+      for (const [name, o] of others) expect(overlap(r, o), `${k} × ${name}`).toBe(false)
+      for (const k2 of keys) if (k2 !== k) expect(overlap(r, XP_B738_PANEL.radio[k2]), `${k} × ${k2}`).toBe(false)
+    }
+  })
+})
