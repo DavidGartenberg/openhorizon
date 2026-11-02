@@ -24,9 +24,14 @@ never copied into the repository.
 
 ## Status (update as lanes finish)
 
-- [x] 737 deck: real panel mesh + bitmap, live PFD/ND/EICAS/ISFD, lit MCP windows/lamps/dials (commit 04cdae5)
-- [ ] Traffic and AI aircraft drawn with the X-Plane exterior models
-- [ ] Airports from `Global Scenery/Global Airports/Earth nav data/apt.dat`
-- [ ] More installed aircraft mapped (King Air, SF50, Lancair, RV-10, L-5, Aerolite, R22, S-76 …)
-- [ ] Cockpit: per-draw lamp/panel lighting (`ATTR_light_level`), clickable manipulators, resting switch states
+- [x] 737 deck: real panel mesh + bitmap, live PFD/ND/EICAS/ISFD, lit MCP windows/lamps/dials (04cdae5)
+- [x] Traffic and AI aircraft drawn with the X-Plane exterior models, shared geometry, nearest 8 to the camera (166c367)
+- [x] Airports from `Global Scenery/Global Airports/Earth nav data/apt.dat`: pavement polygons with holes, painted lines, taxi network for ground control, level terrain disk (fbd7fc5)
+- [x] Cockpit: per-draw lamp/backlight levels (`ATTR_light_level`), night lighting (2004b84)
+- [x] Cockpit: mouse operation through the airplane's own manipulators, tooltips (f48073d)
+- [x] The player's own roster aircraft use the closest installed model, scaled (this commit); 3- and 4-engine types keep the procedural airframe
+- [ ] Resting switch positions on the overhead; lower DU content; clocks; radio windows
+- [ ] Runway ends / displaced thresholds / lights from apt.dat; signs; gate labels; parked aircraft at real ramp starts
+- [ ] More installed aircraft as exact models (King Air C90B, SF50, RV-10, L-5, Lancair, Aerolite, R22, S-76)
+- [ ] Per-airline liveries for traffic
 - [ ] Final check: tsc, full tests, validate, build, fresh-clone run, browser verification

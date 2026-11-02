@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
 import { XP_MODELS, XP_PLACEMENT, XP_CONTROL_LIMITS, XP_SURFACE_CALIBRATION } from './xplane-manifest'
 import { applyObj8Anim, applyObj8Visibility, loadObj8, type LoadedObj8 } from './xplane-obj8'
+import { resolveLocalModel } from './xplane-proxy'
 
 /** A cheap copy of a loaded exterior that shares its geometry, materials and textures (traffic). */
 export interface LocalAircraftInstance {
@@ -21,6 +22,9 @@ export interface LocalAircraftVisual {
 }
 const modelKey = (key: string): string => key === '172' ? 'C172' : key === '737' ? 'B738' : key
 export function exactLocalModel(key: string) { return XP_MODELS[modelKey(key)] }
+const KNOWN_MODELS: ReadonlySet<string> = new Set(Object.keys(XP_MODELS))
+/** The installed model that draws this aircraft (exact, or the closest one scaled); null = keep the procedural airframe. */
+export function localModelFor(key: string) { return resolveLocalModel(key, KNOWN_MODELS) }
 const signed = (v: number | undefined): number => Number.isFinite(v) ? THREE.MathUtils.clamp(v!, -1, 1) : 0
 const unit = (v: number): number => Number.isFinite(v) ? THREE.MathUtils.clamp(v, 0, 1) : 0
 
@@ -82,7 +86,7 @@ export function disposeAircraftGeometry(root: THREE.Object3D): void {
 let activeLoads = 0
 const waitingLoads: Array<() => void> = []
 export async function loadLocalAircraft(key: string, signal?: AbortSignal): Promise<LocalAircraftVisual | null> {
-  if (!exactLocalModel(key)) return null
+  if (!localModelFor(key)) return null
   if (activeLoads >= 2) await new Promise<void>(resolve => waitingLoads.push(resolve))
   else activeLoads++
   try { signal?.throwIfAborted(); return await loadLocalAircraftInSlot(key, signal) }
@@ -94,14 +98,18 @@ export async function loadLocalAircraft(key: string, signal?: AbortSignal): Prom
 }
 
 async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promise<LocalAircraftVisual | null> {
-  const entry = exactLocalModel(key), placement = XP_PLACEMENT[modelKey(key)]
-  if (!entry || !placement) return null
+  const resolved = localModelFor(key)
+  const mk = resolved?.model ?? ''
+  const entry = XP_MODELS[mk], placement = XP_PLACEMENT[mk]
+  if (!resolved || !entry || !placement) return null
   const manifest = await fetch('/xp/manifest.json', {signal: signal ?? null})
   if (!manifest.ok || !(await manifest.json() as {available?: boolean}).available) return null
   const group = new THREE.Group()
-  group.name = `local-aircraft:${modelKey(key)}`
+  group.name = `local-aircraft:${mk}${resolved.exact ? '' : `@${key}`}`
   const offset = placement.attachmentFt ?? [0, 0, 0]
-  group.position.set(...placement.cgFt.map((cg, i) => (offset[i]! - cg) * .3048) as [number, number, number])
+  // A stand-in model is scaled about the airplane's centre of gravity, so its own offset scales with it.
+  group.position.set(...placement.cgFt.map((cg, i) => (offset[i]! - cg) * .3048 * resolved.scale) as [number, number, number])
+  group.scale.setScalar(resolved.scale)
   const parts: LoadedObj8[] = []
   const textureCache = new Map<string, Promise<THREE.Texture | null>>()
   let disposed = false
@@ -139,7 +147,7 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promi
       } })
     }
     const animated = parts.flatMap(p => p.animated)
-    const ranges = new Map<string, number>(Object.entries(XP_CONTROL_LIMITS[modelKey(key)] ?? {}))
+    const ranges = new Map<string, number>(Object.entries(XP_CONTROL_LIMITS[mk] ?? {}))
     for (const part of parts) for (const node of part.parsed.anims) for (const spec of node.specs) {
       if (spec.kind === 'rotate' || spec.kind === 'trans') {
         const max = Math.max(0, ...spec.keys.map(k => Math.abs(k[0])))
@@ -150,7 +158,7 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promi
     const surfaceRefs = [...new Set(parts.flatMap(p => p.parsed.anims.flatMap(n => n.specs.map(s => s.dataref))))]
       .filter(ref => /\/(?:aileron|elevator|rudder|flap|slat|spoiler|speedbrake)[12]_|\/composite_|\/stabilizer_deflection|\/controls\/(?:elevator|rudder)_trim/.test(ref))
     const pose = (): void => {
-      const read = localDatarefReader(state, angle, rpm, ranges, key)
+      const read = localDatarefReader(state, angle, rpm, ranges, mk)
       for (const node of animated) { applyObj8Anim(node, read); applyObj8Visibility(node, read) }
       group.userData.surfaceValues = Object.fromEntries(surfaceRefs.map(ref => [ref, read(ref)]))
     }
@@ -178,7 +186,7 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promi
         const stamp = `${s.gearPos.toFixed(2)}|${(s.flapFrac ?? 0).toFixed(2)}|${(s.spoilerFrac ?? 0).toFixed(2)}|${rpmIn > 900}`
         if (stamp === last) return
         last = stamp
-        const read = localDatarefReader({...s}, 0, rpmIn, ranges, key)
+        const read = localDatarefReader({...s}, 0, rpmIn, ranges, mk)
         for (const node of nodes) { applyObj8Anim(node, read); applyObj8Visibility(node, read) }
       }}
     }
