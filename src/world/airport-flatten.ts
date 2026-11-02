@@ -77,13 +77,18 @@ export function flattenEnds(r: FlattenEnds & { o1?: number; o2?: number }): Flat
   return out
 }
 
-/** X-Plane's overruns by airport: [one end's designator, the other end's, overrun beyond the first (m), beyond the second (m)] per runway. */
-export type RunwayExtras = Record<string, Array<[string, string, number, number]>>
+/**
+ * X-Plane's runway table by airport. Each row is [one end's designator, the other end's, overrun beyond the first (m),
+ * beyond the second (m)] and, where the old database has the runway in the wrong place or width, also
+ * [first end's lat, lon, second end's lat, lon, width (m)] — X-Plane's own.
+ */
+export type RunwayExtras = Record<string, Array<[string, string, number, number] | [string, string, number, number, number, number, number, number, number]>>
 
 /** "09L" and "9L" are the same runway end. */
 const endKey = (id: string): string => String(id).trim().toUpperCase().replace(/^0+(?=\d)/, '')
+const FT_PER_M = 1 / 0.3048
 
-/** Put X-Plane's overrun lengths on the matching runways (in place). Unmatched or malformed entries are ignored. */
+/** Put X-Plane's overrun lengths — and where it differs, its runway ends and width — on the matching runways (in place). Unmatched or malformed entries are ignored. */
 export function applyRunwayExtras(airports: ReadonlyArray<Pick<AirportData, 'i' | 'r'>>, extras: RunwayExtras): void {
   if (!extras || typeof extras !== 'object') return
   for (const ap of airports) {
@@ -100,6 +105,15 @@ export function applyRunwayExtras(airports: ReadonlyArray<Pick<AirportData, 'i' 
         const first = forward ? oa : ob, second = forward ? ob : oa
         if (Number.isFinite(first) && first > 0) r.o1 = Math.min(first, 600)
         if (Number.isFinite(second) && second > 0) r.o2 = Math.min(second, 600)
+        if (row.length >= 9) {
+          const [laA, loA, laB, loB, wM] = row.slice(4, 9).map(Number) as [number, number, number, number, number]
+          if ([laA, loA, laB, loB].every(Number.isFinite) && Math.abs(laA) <= 90 && Math.abs(laB) <= 90 && Math.abs(loA) <= 180 && Math.abs(loB) <= 180) {
+            const [l1, o1, l2, o2] = forward ? [laA, loA, laB, loB] : [laB, loB, laA, loA]
+            r.la1 = l1; r.lo1 = o1; r.la2 = l2; r.lo2 = o2
+            r.l = Math.hypot((o2 - o1) * 111_319.5 * Math.cos((((l1 + l2) / 2) * Math.PI) / 180), (l2 - l1) * 111_319.5) * FT_PER_M
+            if (Number.isFinite(wM) && wM > 0) r.w = wM * FT_PER_M
+          }
+        }
         break
       }
     }

@@ -30,8 +30,8 @@ const write = (name: string, text: string): string => { const f = path.join(dir,
 describe('apt.dat runway scan', () => {
   const rows = scanAptRunways(write('apt.dat', FILE)) as Map<string, Array<[string, string, number, number]>>
   it('reads both end designators and the overrun beyond each, per airport', () => {
-    expect(rows.get('KAAA')).toEqual([['10L', '28R', 250, 100], ['10R', '28L', 0, 0]])
-    expect(rows.get('KBBB')).toEqual([['9', '27', 0, 61]])
+    expect(rows.get('KAAA')).toEqual([['10L', '28R', 250, 100, 37.5, -122.26, 37.5, -122.24, 45.72], ['10R', '28L', 0, 0, 37.5, -122.26, 37.5, -122.24, 45.72]])
+    expect(rows.get('KBBB')!.map((r) => r.slice(0, 4))).toEqual([['9', '27', 0, 61]])
   })
   it('lists airports with no (or malformed) runway rows as empty, never attributing rows to the wrong airport', () => {
     expect(rows.get('KCCC')).toEqual([]); expect(rows.get('KDDD')).toEqual([])
@@ -71,10 +71,35 @@ describe('the overrun table for the client', () => {
     const cache = fs.mkdtempSync(path.join(dir, 'cache-'))
     const text = (await fresh()).aptRunwayExtras(cache, [f]) as string
     expect(JSON.parse(text)).toEqual({ KAAA: [['10L', '28R', 250, 100]], KBBB: [['9', '27', 0, 61]] })
-    expect(JSON.parse(fs.readFileSync(path.join(cache, 'apt-runways.json'), 'utf8')).extras).toEqual(JSON.parse(text))
+    const cached = JSON.parse(fs.readFileSync(path.join(cache, 'apt-runways.json'), 'utf8'))
+    expect(Object.keys(cached.runways).sort()).toEqual(['KAAA', 'KBBB'])               // the full scan is what is cached
   })
   it('is null without any X-Plane apt.dat, and an empty file scans to nothing', async () => {
     expect((await fresh()).aptRunwayExtras(undefined, [])).toBeNull()
     expect(scanAptRunways(write('empty.dat', '')).size).toBe(0)
+  })
+})
+
+// @ts-expect-error plain ES module without types (server code)
+import { runwayExtras, MAX_RUNWAY_FIX_M } from '../server/apt.mjs'
+describe('correcting the old database with X-Plane\'s runways', () => {
+  const rows = { KAAA: [['10L', '28R', 250, 100, 37.5, -122.26, 37.5, -122.24, 45.7], ['10R', '28L', 0, 0, 37.51, -122.26, 37.51, -122.24, 45.7]] }
+  const dbRwy = (li: string, hi: string, la1: number, lo1: number, la2: number, lo2: number, wFt: number) => ({ li, hi, la1, lo1, la2, lo2, w: wFt })
+  it('sends the overrun alone for a runway that is where the database puts it, and X-Plane\'s ends and width when it is not', () => {
+    const db = [{ i: 'KAAA', r: [dbRwy('10L', '28R', 37.5, -122.26, 37.5, -122.24, 150), dbRwy('10R', '28L', 37.5115, -122.2602, 37.5115, -122.2402, 150)] }]
+    const out = runwayExtras(rows, db) as Record<string, unknown[][]>
+    expect(out.KAAA![0]).toEqual(['10L', '28R', 250, 100])                       // within 3 m and 0.1 m of width: no correction
+    expect(out.KAAA![1]).toEqual(['10R', '28L', 0, 0, 37.51, -122.26, 37.51, -122.24, 45.7])   // ≈ 170 m off: X-Plane's position
+  })
+  it('matches ends in either order with or without a leading zero, and orients the corrected ends to the database\'s', () => {
+    const db = [{ i: 'KAAA', r: [dbRwy('28L', '10R', 37.5, -122.24, 37.5, -122.26, 150)] }]            // stored the other way round, 170 m off
+    const out = runwayExtras({ KAAA: [['10R', '28L', 0, 0, 37.51, -122.26, 37.51, -122.24, 45.7]] }, db) as Record<string, unknown[][]>
+    expect(out.KAAA![0]!.length).toBe(9)
+  })
+  it('leaves a database runway alone when X-Plane\'s is implausibly far (a different runway or a database error) and without a database sends overruns only', () => {
+    const far = [{ i: 'KAAA', r: [dbRwy('10L', '28R', 37.5 + (MAX_RUNWAY_FIX_M + 1000) / 111_320, -122.26, 37.5, -122.24, 150)] }]
+    expect((runwayExtras(rows, far) as Record<string, unknown[][]>).KAAA![0]).toEqual(['10L', '28R', 250, 100])
+    const none = runwayExtras(rows, null) as Record<string, unknown[][]>
+    expect(none.KAAA).toEqual([['10L', '28R', 250, 100]])
   })
 })

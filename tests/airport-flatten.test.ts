@@ -113,3 +113,21 @@ describe('the level area covers the whole airport X-Plane lays out', () => {
     expect(() => applyAirportExtents(a, null as never)).not.toThrow()
   })
 })
+
+describe("X-Plane's runway ends and width replace the old database's", () => {
+  it('sets the ends in the database runway\'s own order (forward or reversed), the length and the width', () => {
+    const mk = () => ({ i: 'KSFO', r: [{ ...rwy(11000, 5, 9), li: '10R', hi: '28L', la1: 37.6, lo1: -122.4, la2: 37.6, lo2: -122.3, w: 150 }] })
+    const row = ['10R', '28L', 0, 0, 37.61, -122.4, 37.61, -122.3, 61] as const
+    const a = mk(); applyRunwayExtras([a], { KSFO: [[...row]] })
+    expect(a.r[0]).toMatchObject({ la1: 37.61, lo1: -122.4, la2: 37.61, lo2: -122.3 })
+    expect(a.r[0]!.w).toBeCloseTo(61 / 0.3048, 6); expect(a.r[0]!.l).toBeCloseTo((0.1 * 111_319.5 * Math.cos((37.61 * Math.PI) / 180)) / 0.3048, 0)
+    const b = mk(); applyRunwayExtras([b], { KSFO: [['28L', '10R', 0, 0, 37.61, -122.3, 37.61, -122.4, 61]] })        // listed the other way round
+    expect(b.r[0]).toMatchObject({ la1: 37.61, lo1: -122.4, la2: 37.61, lo2: -122.3 })
+  })
+  it('ignores impossible coordinates and rows without a correction keep the database\'s geometry', () => {
+    const a = { i: 'KSFO', r: [{ ...rwy(11000, 5, 9), li: '10R', hi: '28L', la1: 37.6, lo1: -122.4, la2: 37.6, lo2: -122.3 }] }
+    applyRunwayExtras([a], { KSFO: [['10R', '28L', 120, 0, 95, -122.4, 37.6, -122.3, 61]] })
+    expect(a.r[0]).toMatchObject({ la1: 37.6, la2: 37.6, o1: 120 })
+    applyRunwayExtras([a], { KSFO: [['10R', '28L', 0, 0]] }); expect(a.r[0]!.la1).toBe(37.6)
+  })
+})

@@ -648,7 +648,7 @@ export async function route(url, res, method = 'GET', req) {
     }
     if (bare === '/api/apt-runways.json') {
       // X-Plane's blast pads / overruns (server/apt.mjs); an empty object when there is no X-Plane install.
-      const json = aptRunwayExtras(cacheDir) ?? '{}'
+      const json = aptRunwayExtras(cacheDir, undefined, JSON.parse(await airportsData())) ?? '{}'
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' })
       res.end(json)
       return true
