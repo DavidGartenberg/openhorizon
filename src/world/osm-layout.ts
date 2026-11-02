@@ -29,7 +29,47 @@ const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8b23a })
 // shading lit aprons black from above; DoubleSide flips the shading
 // normal for the visible face.
 const APRON = new THREE.MeshStandardMaterial({ color: 0x55595e, roughness: 0.9, envMapIntensity: 0.3, side: THREE.DoubleSide })
-const TERMINAL = new THREE.MeshStandardMaterial({ color: 0x9aa2ab, roughness: 0.6, metalness: 0.2 })
+/**
+ * Terminal walls: a curtain wall of dark glass in three storeys with vertical mullions every 3 m, a pale concrete
+ * band at the base and under the roof, and a plain light roof. Drawn on the extruded footprint by the shader from the
+ * height above the ground (the footprint is extruded 11 m) and the distance along each wall, so any outline works.
+ */
+function terminalMaterial(): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color: 0xb4bac1, roughness: 0.6, metalness: 0.2 })
+  m.customProgramCacheKey = () => 'osm-terminal-v1'
+  m.onBeforeCompile = (shader) => {
+    shader.vertexShader = `varying vec3 vTWN;
+varying vec3 vTWP;
+varying float vTH;
+` + shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+vTWN = normalize(mat3(modelMatrix) * objectNormal);
+vTWP = (modelMatrix * vec4(transformed, 1.0)).xyz;
+vTH = transformed.y + 11.0;`)
+    shader.fragmentShader = `varying vec3 vTWN;
+varying vec3 vTWP;
+varying float vTH;
+` + shader.fragmentShader
+      .replace('#include <color_fragment>', `#include <color_fragment>
+float aptWin = 0.0;
+if (abs(vTWN.y) < 0.5) {
+  vec2 along = normalize(vec2(-vTWN.z, vTWN.x));
+  float u = dot(vTWP.xz, along);
+  float storey = fract(vTH / 3.4);
+  float glass = step(0.14, storey) * step(storey, 0.86) * step(1.2, vTH) * step(vTH, 9.9);
+  float mullion = step(0.10, fract(u / 3.0));
+  aptWin = glass * mullion;
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.055, 0.085, 0.12), aptWin * 0.92);
+} else if (vTWN.y > 0.5) {
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.63, 0.62), 0.55);
+}`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+roughnessFactor = mix(roughnessFactor, 0.12, aptWin);`)
+      .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
+metalnessFactor = mix(metalnessFactor, 0.5, aptWin);`)
+  }
+  return m
+}
+const TERMINAL = terminalMaterial()
 
 interface OsmLayout {
   tw: { r: string; p: [number, number][] }[]
