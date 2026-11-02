@@ -423,6 +423,11 @@ function xpAct(a: XpAction): void {
       break
     case 'baro': baroSetInHg = Math.min(Math.max(baroSetInHg + 0.01 * a.steps, 27.5), 31.5); break
     case 'course': radios.obs1Deg = (((radios.obs1Deg + a.steps) % 360) + 360) % 360; break
+    case 'drag':
+      // Up is more thrust / nose-up trim; about 240 px of travel moves a lever end to end.
+      if (a.control === 'throttle') aircraft.controls.throttle = Math.min(Math.max(aircraft.controls.throttle - a.dyPx / 240, 0), 1)
+      else aircraft.controls.trim = Math.min(Math.max(aircraft.controls.trim - a.dyPx / 600, -1), 1)
+      break
     case 'unsimulated': {
       const line = describeXpAction(a)
       if (line !== lastUnsimulatedToast || performance.now() - lastUnsimulatedAt > 2500) { toast(line); lastUnsimulatedToast = line; lastUnsimulatedAt = performance.now() }

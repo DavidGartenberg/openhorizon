@@ -29,6 +29,8 @@ export type XpAction =
   | { kind: 'baro'; steps: number }
   | { kind: 'course'; steps: number }
   | { kind: 'unsimulated'; tooltip: string }
+  /** A held drag on a lever or wheel: how far the pointer moved since the last frame (pixels, down is positive). */
+  | { kind: 'drag'; control: 'throttle' | 'trim'; dyPx: number }
   | { kind: 'none' }
 
 /** Where the pointer is on a control (relative to its centre), and the wheel travel if the wheel was used. */
@@ -62,6 +64,15 @@ const KNOBS: Array<[string, (steps: number) => XpAction]> = [
   ['sim/radios/obs_HSI_up', (steps) => ({ kind: 'course', steps })],
 ]
 
+/** Levers and wheels that follow the pointer while it is held on them. */
+const DRAGGABLE: Record<string, 'throttle' | 'trim'> = {
+  'sim/cockpit2/engine/actuators/throttle_jet_rev_ratio[0]': 'throttle',
+  'sim/cockpit2/engine/actuators/throttle_jet_rev_ratio[1]': 'throttle',
+  'sim/cockpit2/engine/actuators/throttle_jet_rev_ratio_all': 'throttle',
+  'sim/cockpit2/controls/elevator_trim': 'trim',
+}
+export const dragControlOf = (m: Obj8Manip): 'throttle' | 'trim' | null => (m.type === 'drag_rotate' ? DRAGGABLE[m.datarefs[0] ?? ''] ?? null : null)
+
 const wheelSteps = (wheel: number): number => -Math.sign(wheel) * Math.max(1, Math.round(Math.abs(wheel)))
 
 /** What clicking (or wheeling over) this manipulator does in this simulator. */
@@ -91,6 +102,7 @@ export function xpActionFor(m: Obj8Manip, press: XpPress): XpAction {
       if (/^sim\/cockpit2\/switches\/landing_lights_switch\[\d\]$/.test(dr)) return { kind: 'landingLights' }
       return unsimulated
     case 'drag_rotate': {
+      if (dragControlOf(m)) return { kind: 'none' }        // held-drag levers act while the button is down, not on the click itself
       if (dr === 'sim/cockpit2/controls/flap_ratio') {
         // The lever moves down to extend: the lower half and scrolling down give a gate more flap.
         if (press.wheel) return { kind: 'flaps', steps: Math.sign(press.wheel) * Math.max(1, Math.round(Math.abs(press.wheel))) }
@@ -136,6 +148,7 @@ export class XpInteraction {
   private readonly ndc = new THREE.Vector2()
   /** The control the button went down on, until it is released (the camera must not look around meanwhile). */
   private grabbed: XpHover | null = null
+  private dragLastY = 0
 
   constructor(private readonly camera: THREE.PerspectiveCamera) {}
 
@@ -169,7 +182,12 @@ export class XpInteraction {
     const actions: XpAction[] = []
     if (p.pressed && hover) {
       this.grabbed = hover
+      this.dragLastY = p.y
       actions.push(xpActionFor(hover.manip, this.half(p, hover.mesh)))
+    } else if (this.grabbed && p.down && dragControlOf(this.grabbed.manip)) {
+      const dy = p.y - this.dragLastY
+      this.dragLastY = p.y
+      if (dy !== 0) actions.push({ kind: 'drag', control: dragControlOf(this.grabbed.manip)!, dyPx: dy })
     } else if (p.wheel !== 0 && hover) {
       actions.push(xpActionFor(hover.manip, { ...this.half(p, hover.mesh), wheel: p.wheel }))
     }

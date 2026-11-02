@@ -86,3 +86,41 @@ describe('what is not simulated', () => {
     expect(describeXpAction({ kind: 'none' })).toBe('')
   })
 })
+
+import * as THREE from 'three'
+import { XpInteraction, dragControlOf } from '../src/render/xplane-interact'
+
+describe('dragging a lever or wheel', () => {
+  const lever = (dataref: string): { mesh: THREE.Mesh; cam: THREE.PerspectiveCamera } => {
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }))
+    mesh.userData.manip = { type: 'drag_rotate', cursor: 'hand', commands: [], datarefs: [dataref, 'none'], tooltip: 'Thrust Lever' }
+    const cam = new THREE.PerspectiveCamera(60, 1, 0.1, 100)
+    cam.position.set(0, 0, 3); cam.lookAt(0, 0, 0)
+    cam.updateMatrixWorld(true); mesh.updateMatrixWorld(true)
+    return { mesh, cam }
+  }
+  const ptr = (o: Partial<{ x: number; y: number; pressed: boolean; down: boolean; released: boolean; wheel: number }>) => ({ x: 100, y: 100, w: 200, h: 200, pressed: false, down: false, released: false, wheel: 0, ...o })
+  it('knows which manipulators are held-drag controls', () => {
+    expect(dragControlOf(lever('sim/cockpit2/engine/actuators/throttle_jet_rev_ratio[0]').mesh.userData.manip)).toBe('throttle')
+    expect(dragControlOf(lever('sim/cockpit2/engine/actuators/throttle_jet_rev_ratio_all').mesh.userData.manip)).toBe('throttle')
+    expect(dragControlOf(lever('sim/cockpit2/controls/elevator_trim').mesh.userData.manip)).toBe('trim')
+    expect(dragControlOf(lever('sim/cockpit2/controls/flap_ratio').mesh.userData.manip)).toBeNull()
+  })
+  it('the press only grabs it; moving the pointer then reports how far, frame by frame', () => {
+    const { mesh, cam } = lever('sim/cockpit2/engine/actuators/throttle_jet_rev_ratio[1]')
+    const x = new XpInteraction(cam)
+    expect(x.update(ptr({ pressed: true, down: true }), [mesh]).actions).toEqual([])
+    expect(x.isDraggingControl).toBe(true)
+    expect(x.update(ptr({ y: 130, down: true }), [mesh]).actions).toEqual([{ kind: 'drag', control: 'throttle', dyPx: 30 }])
+    expect(x.update(ptr({ y: 120, down: true }), [mesh]).actions).toEqual([{ kind: 'drag', control: 'throttle', dyPx: -10 }])
+    expect(x.update(ptr({ y: 120, down: true }), [mesh]).actions).toEqual([])      // no movement, no action
+  })
+  it('releasing ends the drag; the camera may look around again', () => {
+    const { mesh, cam } = lever('sim/cockpit2/controls/elevator_trim')
+    const x = new XpInteraction(cam)
+    x.update(ptr({ pressed: true, down: true }), [mesh])
+    x.update(ptr({ released: true, down: false }), [mesh])
+    expect(x.isDraggingControl).toBe(false)
+    expect(x.update(ptr({ y: 150, down: false }), [mesh]).actions).toEqual([])
+  })
+})
