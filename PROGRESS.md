@@ -3221,3 +3221,7 @@ What changed, and what is real versus a recorded stand-in:
 ### Nearest-airfield lookups (2026-11-02)
 
 - `Airports.near()` returns airports in cell order, not by distance, so `near()[0]` (logbook origin, saved spawn, the landing-runway reference, the final-approach flag) was only ever the first one found. With 29k more airports and thousands of helipads in cities that would sometimes have picked a heliport or small neighbour. They now use `nearestField` (the airfield whose runway end or middle is nearest within the radius; never a heliport) and `runwaysNear` (runways, never pads). Search ranking was already by match quality and then airport size, so pads rank last.
+
+### Gate at 79a3ece (2026-11-02)
+
+- Fresh clone: `tsc` clean, 167 files / 2231 tests pass, `vite build` ok. Working tree: only the other session's `tests/dg800-*` fail (5, by design).

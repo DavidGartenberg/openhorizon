@@ -52,3 +52,6 @@ never copied into the repository.
 - [x] Coastal and low-lying fields: shore pits closed (KBOS); fields below sea level are levelled over the data's sea cells with the ocean hidden around them (KL06)
 - [x] Unpaved surfaces and turf runways read in overcast; blast pads no longer go black under terrain shadow
 - Known limits: land the elevation data shows as sea beyond a below-sea field's margin (polders, VHHH reclaimed land), 40 unconfirmed database runways, heliports / seaplane bases not drawn
+- [x] Polders and reclaimed land: below-sea land keeps its true heights (12-40 km by depth) with the sea cut away per field in the ocean shader; reclaimed fields (VHHH) get a land mask from X-Plane's pavement; checked at KL06 and VHHH
+- [x] Heliports: 6.8k helipad-only airports join the X-Plane-only airports (pad entries, H and windsock from the layout); nearest-airfield lookups use runway distance and skip pads
+- Known limits now: seaplane bases (water runways not read), land masks only for fields up to 20 m, the 51 m stepped shoreline, sea beyond a below-sea field's lowland follows the elevation data
