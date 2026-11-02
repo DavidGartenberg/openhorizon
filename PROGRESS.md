@@ -3187,3 +3187,7 @@ What changed, and what is real versus a recorded stand-in:
 ### Gate at 396e232 (2026-11-02)
 
 - Fresh clone: `tsc` clean, 167 files / 2221 tests pass, `vite build` ok.
+
+### All-airport sweep at 6bded15 (2026-11-02)
+
+- `scripts/xplane/sweep-airports.ts` over all 38,890 airports: 21,424 layouts built (17,466 have no drawable pavement), 0 issues, none slow, 229 s; KDEN is the only build over 1.2 M triangles (1.68 M). Also looked at KATL at ground level (concrete taxiways with continuous yellow centrelines and edge lines) and KMSO, LFPG, 12K at night.
