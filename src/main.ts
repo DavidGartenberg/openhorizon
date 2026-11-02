@@ -59,6 +59,7 @@ import { ApproachController, HANDOFF_GATE_M } from './sim/atc/approach'
 import { buildPlayerAircraft } from './render/player-aircraft'
 import { upgradePlayerAircraft } from './render/local-aircraft'
 import { XP_COCKPIT_B738, eyeFromObj, loadXpCockpit, type XpCockpit } from './render/xplane-cockpit'
+import { makeXpDatarefReader } from './render/xplane-datarefs'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
 import { B738 } from './sim/aircraft/b738'
@@ -355,6 +356,8 @@ const cockpitInteraction = new CockpitInteraction(camera)
  *  Until it has loaded — or when it cannot — the procedural deck is used. */
 let xpCockpit: XpCockpit | null = null
 let xpCockpitStatus = fleetKey === '737' ? 'loading' : 'not for this airplane'
+/** Verification only: force any X-Plane dataref to a value (see __ohXpRef). */
+const xpOverrides: Record<string, number> = {}
 /** Square canvases for the X-Plane glass displays (its screens are ~178 × 173 mm): the same
  *  drawing code as the procedural deck, at 768². Drawn only while the X-Plane cockpit is shown. */
 function xpCanvas(n: number): { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; size: number } {
@@ -3116,7 +3119,24 @@ function advanceFrame(elapsed: number, now: number): void {
   // ride on top of the outside view (it poked through the C172's roof).
   // Hiding it outside cockpit mode also drops its draw calls.
   cockpit.group.visible = cameraMode === 'cockpit' && !xpCockpit
-  if (xpCockpit) xpCockpit.group.visible = cameraMode === 'cockpit'
+  if (xpCockpit) {
+    xpCockpit.group.visible = cameraMode === 'cockpit'
+    if (cameraMode === 'cockpit') {
+      // Every lever, wheel and needle in the X-Plane deck is posed from this airplane's real state.
+      xpCockpit.pose(makeXpDatarefReader({
+        pitch: aircraft.controls.pitch, roll: aircraft.controls.roll, yaw: aircraft.controls.yaw,
+        brakeLeft: pilotBrake, brakeRight: pilotBrake, parkingBrake,
+        trim: aircraft.controls.trim, rudderTrim: captainSystems.rudderTrim,
+        throttle: [aircraft.controls.throttle, aircraft.controls.throttle], reverse: [aircraft.reversePos, aircraft.reversePos],
+        flapsHandleIndex: aircraft.controls.flapsIndex, flapsDeg: aircraft.flapsDeg, flapDetentsDeg: aircraft.P.flapDetentsDeg,
+        gearHandleDown: aircraft.gearDownCommanded, speedbrake: aircraft.spoilerPos, speedbrakeArmed: aircraft.spoilerArmed,
+        engineRunning: [captainSystems.engine1Running, captainSystems.engine2Running],
+        autobrake: captainSystems.autobrake.setting,
+      }, xpOverrides))
+      // The LIT maps (panel lighting) glow as the sun goes down.
+      xpCockpit.setLit(1 - Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1))
+    }
+  }
   for (const o of exteriorCabin) o.visible = cameraMode !== 'cockpit'
   if (cameraMode === 'chase') chase.update(elapsed, mesh.group.position, (d.headingDeg * Math.PI) / 180)
   else if (cameraMode === 'orbit') orbit.update(input, mesh.group.position)
@@ -3655,6 +3675,13 @@ Object.assign(window as unknown as Record<string, unknown>, {
       return { part: part.name, mesh: h.object.name, dist: +h.distance.toFixed(3), drawRange: g.drawRange, faceIndex: tri, vertexIds: ids,
         verts: ids.map((i) => [pos.getX(i), pos.getY(i), pos.getZ(i)].map((v) => +v.toFixed(3))), uvs: ids.map((i) => [uv.getX(i), uv.getY(i)].map((v) => +v.toFixed(4))) }
     })
+  },
+  /** Force an X-Plane cockpit dataref (verification): __ohXpRef('sim/cockpit2/controls/total_pitch_ratio', -1); null clears. */
+  __ohXpRef: (name: string, value: number | null) => {
+    if (typeof name !== 'string') return
+    if (value === null) delete xpOverrides[name]
+    else { const v = finiteOr(value); if (v !== null) xpOverrides[name] = v }
+    return { ...xpOverrides }
   },
   /** First officer state (verification): the ILS flag the minimums calls depend on, what has fired, the line on screen. */
   __ohCopilot: () => ({ ils: copilotIls, fired: [...copilotLatches.fired], line: performance.now() < copilotUntil ? copilotLine : '', pending: copilotPending?.text ?? null }),
