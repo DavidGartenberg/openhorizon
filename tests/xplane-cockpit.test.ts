@@ -23,36 +23,8 @@ describe('X-Plane 737 cockpit placement', () => {
     expect(new Set(objs).size).toBe(objs.length)
     for (const o of objs) expect(o).toMatch(/^objects\/(738_cockpit_[A-Za-z0-9]+|FMS_screens)\.obj$/)
   })
-})
-
-import { XP_B738_SCREENS, screenPlacement } from '../src/render/xplane-cockpit'
-import * as THREE from 'three'
-describe('X-Plane display openings', () => {
-  it('has the five glass displays, each about 178 × 175 mm, mirrored about the centreline', () => {
-    expect(XP_B738_SCREENS.map((s) => s.id)).toEqual(['capt-pfd', 'capt-nd', 'center-eicas', 'fo-nd', 'fo-pfd'])
-    for (const s of XP_B738_SCREENS) {
-      const p = screenPlacement(s)
-      expect(p.width * 1000).toBeGreaterThan(172); expect(p.width * 1000).toBeLessThan(184)
-      expect(p.height * 1000).toBeGreaterThan(170); expect(p.height * 1000).toBeLessThan(182)
-    }
-    const centre = (id: string) => screenPlacement(XP_B738_SCREENS.find((s) => s.id === id)!).center
-    expect(centre('capt-pfd').x + centre('fo-pfd').x).toBeCloseTo(0, 1)
-    expect(centre('capt-nd').x + centre('fo-nd').x).toBeCloseTo(0, 1)
-  })
-  it('faces the pilot (toward +z, aft) and tilts back like the panel', () => {
-    for (const s of XP_B738_SCREENS) {
-      const n = new THREE.Vector3(0, 0, 1).applyQuaternion(screenPlacement(s).quaternion)
-      expect(n.z).toBeGreaterThan(0.94)            // faces aft toward the eyes
-      expect(n.y).toBeGreaterThan(0.25)            // tilted upward ~17° like the recess plane
-      expect(n.y).toBeLessThan(0.33)
-      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(screenPlacement(s).quaternion)
-      expect(up.y).toBeGreaterThan(0.95)           // image is upright
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(screenPlacement(s).quaternion)
-      expect(right.x).toBeGreaterThan(0.99)        // not mirrored
-    }
-  })
-  it('sits a hair in front of the recess, not through it', () => {
-    const a = screenPlacement(XP_B738_SCREENS[0]!, 0), b = screenPlacement(XP_B738_SCREENS[0]!, 0.001)
-    expect(b.center.distanceTo(a.center)).toBeCloseTo(0.001, 6)
+  it('names the panel mesh that puts the displays and MCP windows in place, apart from the shell objects', () => {
+    expect(XP_COCKPIT_B738.panelObj).toBe('objects/b738_cockpit.obj')
+    expect(XP_COCKPIT_B738.objs).not.toContain(XP_COCKPIT_B738.panelObj)
   })
 })

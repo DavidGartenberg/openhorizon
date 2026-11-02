@@ -60,6 +60,8 @@ import { buildPlayerAircraft } from './render/player-aircraft'
 import { upgradePlayerAircraft } from './render/local-aircraft'
 import { XP_COCKPIT_B738, eyeFromObj, loadXpCockpit, type XpCockpit } from './render/xplane-cockpit'
 import { makeXpDatarefReader } from './render/xplane-datarefs'
+import { mcpTexts } from './render/xplane-panel'
+import type { Mcp737State } from './render/cockpit-737-paint'
 import type { AircraftParams } from './sim/aircraft/params'
 import { J3CUB } from './sim/aircraft/j3cub'
 import { B738 } from './sim/aircraft/b738'
@@ -358,15 +360,44 @@ let xpCockpit: XpCockpit | null = null
 let xpCockpitStatus = fleetKey === '737' ? 'loading' : 'not for this airplane'
 /** Verification only: force any X-Plane dataref to a value (see __ohXpRef). */
 const xpOverrides: Record<string, number> = {}
-/** Square canvases for the X-Plane glass displays (its screens are ~178 × 173 mm): the same
- *  drawing code as the procedural deck, at 768². Drawn only while the X-Plane cockpit is shown. */
-function xpCanvas(n: number): { ctx: CanvasRenderingContext2D; texture: THREE.CanvasTexture; size: number } {
-  const canvas = document.createElement('canvas'); canvas.width = canvas.height = n
-  const ctx = canvas.getContext('2d')!
-  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace
-  return { ctx, texture, size: n }
+/** The X-Plane deck's datarefs as this airplane's state right now (what every lever and needle is posed from). */
+function xpDatarefs(): (ref: string) => number {
+  return makeXpDatarefReader({
+    pitch: aircraft.controls.pitch, roll: aircraft.controls.roll, yaw: aircraft.controls.yaw,
+    brakeLeft: pilotBrake, brakeRight: pilotBrake, parkingBrake,
+    trim: aircraft.controls.trim, rudderTrim: captainSystems.rudderTrim,
+    throttle: [aircraft.controls.throttle, aircraft.controls.throttle], reverse: [aircraft.reversePos, aircraft.reversePos],
+    flapsHandleDeg: aircraft.P.flapDetentsDeg[aircraft.controls.flapsIndex] ?? 0, flapsDeg: aircraft.flapsDeg,
+    gearHandleDown: aircraft.gearDownCommanded, speedbrake: aircraft.spoilerPos, speedbrakeArmed: aircraft.spoilerArmed,
+    onGround: aircraft.data.onGround,
+    engineRunning: [captainSystems.engine1Running, captainSystems.engine2Running],
+    autobrake: captainSystems.autobrake.setting,
+    mcp: xpMcpInputs(),
+  }, xpOverrides)
 }
-const xpScreens = fleetKey === '737' ? { pfd: xpCanvas(768), nd: xpCanvas(768), eicas: xpCanvas(768) } : null
+/** When each autopilot button was last pressed (performance.now()), for its pushed-in travel on the X-Plane MCP. */
+const apPressedAt: Record<string, number> = {}
+/** The mode control panel's state — one source for both flight decks' windows, lamps and switches. */
+function mcpState(): Mcp737State {
+  const atMode = autothrottle.mode
+  return {
+    iasKt: apTargets.iasTargetKt, hdgDeg: apTargets.headingBugDeg, altFt: apTargets.altitudeBugFt, vsFpm: apTargets.vsTargetFpm,
+    vsActive: apState.verticalMode === 'VS', courseDeg: radios.obs1Deg, cmdA: apState.masterEnabled,
+    lateral: apState.lateralMode, lateralArmed: apState.lateralArmed, vertical: apState.verticalMode, verticalArmed: apState.verticalArmed,
+    speedMode: atMode === 'MCP SPD', n1Mode: atMode === 'N1',
+    fdOn: apState.masterEnabled || apState.lateralMode !== 'ROL' || apState.verticalMode !== 'PIT', atArm: atArmSwitch,
+  }
+}
+function xpMcpInputs(): import('./render/xplane-datarefs').XpMcpInputs {
+  const m = mcpState(), av = apAvailability(), now = performance.now()
+  return {
+    headingDeg: m.hdgDeg, altitudeFt: m.altFt, iasKt: m.iasKt, vsFpm: m.vsFpm, courseDeg: m.courseDeg,
+    master: m.cmdA, lateral: m.lateral, lateralArmed: m.lateralArmed, vertical: m.vertical,
+    speedMode: m.speedMode, n1Mode: m.n1Mode, fdOn: m.fdOn, atArm: m.atArm,
+    navSource: av.gps ? 'gps' : av.nav ? 'vor' : null,
+    pressedAgoS: Object.fromEntries(Object.entries(apPressedAt).map(([k, t]) => [k, (now - t) / 1000])),
+  }
+}
 if (fleetKey === '737') {
   void loadXpCockpit(XP_COCKPIT_B738, { cduTexture: cockpit.deck737?.cdu.texture }).then((c) => {
     if (!c) { xpCockpitStatus = 'X-Plane not installed'; return }
@@ -376,7 +407,6 @@ if (fleetKey === '737') {
     mesh.group.add(c.group)
     cockpitCam.setEyePoint(c.eyePoint())
     c.pose(() => 0)
-    if (xpScreens) c.mountScreens({ pfd: xpScreens.pfd.texture, nd: xpScreens.nd.texture, eicas: xpScreens.eicas.texture })
   }).catch((err) => { xpCockpitStatus = `failed: ${err instanceof Error ? err.message : String(err)}`; console.warn('[xplane cockpit]', err) })
 }
 
@@ -2549,9 +2579,6 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
   const P = aircraft.P
   const oatC = isa(Math.max(d.altitudeFt, 0) * FT).temperatureK - 273.15 + aircraft.isaTempOffsetC
   const mach = (d.ktas * KT) / isa(Math.max(d.altitudeFt, 0) * FT).speedOfSoundMs
-  const fdOn = apState.masterEnabled || apState.lateralMode !== 'ROL' || apState.verticalMode !== 'PIT'
-  const atMode = autothrottle.mode
-  const speedMode = atMode === 'MCP SPD'
   const pfdC = cockpit.pfdCanvas, ndC = cockpit.mfdCanvas
   const windKt = Math.hypot(aircraft.windNed.x, aircraft.windNed.y) / KT
   drawGaBoeingPfd(cockpit.pfdCtx, pfdC.width, pfdC.height, makeBoeingPfdInput(d, nav, iasKt, altFt, vsFpm), {
@@ -2605,27 +2632,30 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
     drawIsfd(cockpit.boeingScreens.isfd.ctx, 256, { iasKt, altFt, pitchDeg: d.pitchDeg, rollDeg: d.rollDeg, baroInHg: baroSetInHg })
     cockpit.boeingScreens.isfd.texture.needsUpdate = true
   }
-  // The same live displays, square, for the X-Plane flight deck's glass.
-  if (xpCockpit && xpScreens) {
-    drawGaBoeingPfd(xpScreens.pfd.ctx, xpScreens.pfd.size, xpScreens.pfd.size, makeBoeingPfdInput(d, nav, iasKt, altFt, vsFpm), {
+  // The same live displays for the X-Plane flight deck: drawn into its panel bitmap, where the
+  // airplane's own panel mesh puts each one on its screen; the first officer's side repeats the captain's.
+  if (xpCockpit) {
+    const panel = xpCockpit.panel
+    panel.display('captPfd', (c, w, h) => drawGaBoeingPfd(c, w, h, makeBoeingPfdInput(d, nav, iasKt, altFt, vsFpm), {
       com1: radios.com1, nav1: radios.nav1, squawk: '1200', oatC, ktas: d.ktas, groundSpeedKt: d.groundSpeedKt,
       windDirDeg: windDirFromNed(aircraft.windNed), windKt, alerts: [],
-    })
-    drawSquareFitted(xpScreens.nd.ctx, 0, 0, xpScreens.nd.size, xpScreens.nd.size, (c, S) => drawBoeingNd(c, S, ndIn))
-    drawSquareFitted(xpScreens.eicas.ctx, 0, 0, xpScreens.eicas.size, xpScreens.eicas.size, (c, S) => drawBoeingEicas(c, S, eng))
-    xpScreens.pfd.texture.needsUpdate = xpScreens.nd.texture.needsUpdate = xpScreens.eicas.texture.needsUpdate = true
+    }))
+    panel.display('captNd', (c, w, h) => drawSquareFitted(c, 0, 0, w, h, (cc, S) => drawBoeingNd(cc, S, ndIn)))
+    panel.display('eicas', (c, w, h) => drawSquareFitted(c, 0, 0, w, h, (cc, S) => drawBoeingEicas(cc, S, eng)))
+    panel.display('standby', (c, w, h) => drawIsfd(c, Math.min(w, h), { iasKt, altFt, pitchDeg: d.pitchDeg, rollDeg: d.rollDeg, baroInHg: baroSetInHg }))
+    panel.copyDisplay('captPfd', 'foPfd')
+    panel.copyDisplay('captNd', 'foNd')
+    const m = mcpState()
+    const win = mcpTexts({ iasKt: m.iasKt, hdgDeg: m.hdgDeg, altFt: m.altFt, vsFpm: m.vsFpm, vsActive: m.vsActive, courseDeg: m.courseDeg })
+    for (const k of Object.keys(win) as Array<keyof typeof win>) panel.led(k, win[k])
+    panel.commit()
   }
   const gearPos = aircraft.P.gearRetractable ? aircraft.gearPos : 1
   const fireTest = auralFireTest || cockpitInteraction.heldDeckControl === 'fireTest'
   const destWp = wps.length ? wps[wps.length - 1] : undefined
   const nextWp = activeIdx >= 0 ? wps[activeIdx + 1] : undefined
   update737Live(deck, {
-    mcp: {
-      iasKt: apTargets.iasTargetKt, hdgDeg: apTargets.headingBugDeg, altFt: apTargets.altitudeBugFt, vsFpm: apTargets.vsTargetFpm,
-      vsActive: apState.verticalMode === 'VS', courseDeg: radios.obs1Deg, cmdA: apState.masterEnabled,
-      lateral: apState.lateralMode, lateralArmed: apState.lateralArmed, vertical: apState.verticalMode, verticalArmed: apState.verticalArmed,
-      speedMode, n1Mode: atMode === 'N1', fdOn, atArm: atArmSwitch,
-    },
+    mcp: mcpState(),
     fireWarn: fireTest,
     prst: { ap: auralLatches.wailerUntilS > performance.now() / 1000, at: autothrottle.disconnectLight },
     masterCaution: fireTest,
@@ -3123,16 +3153,7 @@ function advanceFrame(elapsed: number, now: number): void {
     xpCockpit.group.visible = cameraMode === 'cockpit'
     if (cameraMode === 'cockpit') {
       // Every lever, wheel and needle in the X-Plane deck is posed from this airplane's real state.
-      xpCockpit.pose(makeXpDatarefReader({
-        pitch: aircraft.controls.pitch, roll: aircraft.controls.roll, yaw: aircraft.controls.yaw,
-        brakeLeft: pilotBrake, brakeRight: pilotBrake, parkingBrake,
-        trim: aircraft.controls.trim, rudderTrim: captainSystems.rudderTrim,
-        throttle: [aircraft.controls.throttle, aircraft.controls.throttle], reverse: [aircraft.reversePos, aircraft.reversePos],
-        flapsHandleIndex: aircraft.controls.flapsIndex, flapsDeg: aircraft.flapsDeg, flapDetentsDeg: aircraft.P.flapDetentsDeg,
-        gearHandleDown: aircraft.gearDownCommanded, speedbrake: aircraft.spoilerPos, speedbrakeArmed: aircraft.spoilerArmed,
-        engineRunning: [captainSystems.engine1Running, captainSystems.engine2Running],
-        autobrake: captainSystems.autobrake.setting,
-      }, xpOverrides))
+      xpCockpit.pose(xpDatarefs())
       // The LIT maps (panel lighting) glow as the sun goes down.
       xpCockpit.setLit(1 - Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1))
     }
@@ -3676,6 +3697,12 @@ Object.assign(window as unknown as Record<string, unknown>, {
         verts: ids.map((i) => [pos.getX(i), pos.getY(i), pos.getZ(i)].map((v) => +v.toFixed(3))), uvs: ids.map((i) => [uv.getX(i), uv.getY(i)].map((v) => +v.toFixed(4))) }
     })
   },
+  /** What the X-Plane deck is being told right now for the given datarefs (verification): the values its levers are posed from. */
+  __ohXpRead: (refs: string[]) => {
+    if (!Array.isArray(refs)) return null
+    const read = xpDatarefs()
+    return Object.fromEntries(refs.filter((r) => typeof r === 'string').map((r) => [r, +read(r).toFixed(4)]))
+  },
   /** Force an X-Plane cockpit dataref (verification): __ohXpRef('sim/cockpit2/controls/total_pitch_ratio', -1); null clears. */
   __ohXpRef: (name: string, value: number | null) => {
     if (typeof name !== 'string') return
@@ -4075,6 +4102,7 @@ function apSay(msg: string | undefined): void {
 }
 /** One press on the guidance panel (window, deck MCP, or key). */
 function apPress(a: ApAction): void {
+  apPressedAt[a] = performance.now()
   apPanel = { ...apPanel, direct: false }
   const snap = apSnapshot()
   if (a === 'at') {
