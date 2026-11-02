@@ -25,6 +25,9 @@ export function exactLocalModel(key: string) { return XP_MODELS[modelKey(key)] }
 const KNOWN_MODELS: ReadonlySet<string> = new Set(Object.keys(XP_MODELS))
 /** The installed model that draws this aircraft (exact, or the closest one scaled); null = keep the procedural airframe. */
 export function localModelFor(key: string) { return resolveLocalModel(key, KNOWN_MODELS) }
+/** Models whose OBJ has no propeller blur disc (X-Plane draws that itself): they keep their blades and spin them at a capped visual rate. */
+const BLADES_ONLY: ReadonlySet<string> = new Set(['BE9L'])
+const BLADES_ONLY_MAX_RPM = 300
 /** Cosmetic blade pitch (degrees) for models whose propeller animates on `prop_pitch_deg`. */
 const PROP_BLADE_PITCH_DEG = 20
 const signed = (v: number | undefined): number => Number.isFinite(v) ? THREE.MathUtils.clamp(v!, -1, 1) : 0
@@ -42,7 +45,7 @@ export function localDatarefReader(state: SurfaceState, angle: number, rpm: numb
     if (/\/gear\/deploy_ratio\[/.test(ref)) return unit(state.gearPos)
     if (/\/(?:prop|engine)_rotation_angle_deg\[/.test(ref)) return Number.isFinite(angle) ? angle : 0
     if (/\/engine_rotation_speed_rad_sec\[/.test(ref)) return Number.isFinite(rpm) ? Math.max(0, rpm) * Math.PI / 30 : 0
-    if (/\/prop_is_disc\[/.test(ref)) return rpm > 900 ? 1 : 0
+    if (/\/prop_is_disc\[/.test(ref)) return rpm > 900 && !(key && BLADES_ONLY.has(modelKey(key))) ? 1 : 0
     // Blade angle: the sim has no propeller governor, so a turning prop shows a typical cruise pitch (cosmetic).
     if (/\/prop_pitch_deg\[/.test(ref)) return PROP_BLADE_PITCH_DEG
     if (/\/thrust_reverser_deploy_ratio\[/.test(ref)) return unit(state.reverseFrac ?? 0)
@@ -196,7 +199,9 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promi
       }}
     }
     return {group, propDisc, dispose, instantiate, surfaces: s => { state = {...s}; pose() }, updateProp: (nextRpm, dt) => {
-      rpm = Number.isFinite(nextRpm) ? Math.max(0, nextRpm) : 0; angle = (angle + rpm * 6 * (Number.isFinite(dt) ? Math.max(0, dt) : 0)) % 360; pose()
+      rpm = Number.isFinite(nextRpm) ? Math.max(0, nextRpm) : 0
+      const spin = BLADES_ONLY.has(mk) ? Math.min(rpm, BLADES_ONLY_MAX_RPM) : rpm
+      angle = (angle + spin * 6 * (Number.isFinite(dt) ? Math.max(0, dt) : 0)) % 360; pose()
     }}
   } catch (error) { dispose(); throw error }
 }

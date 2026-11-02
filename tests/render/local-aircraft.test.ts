@@ -115,3 +115,10 @@ it('reads the flap handle ratio and a cosmetic blade pitch, as the King Air exte
  expect(read('sim/flightmodel2/engines/prop_pitch_deg[1]')).toBe(20)
  expect(localDatarefReader({flapFrac:NaN,spoilerFrac:0,gearPos:1},0,0,new Map())('sim/cockpit2/controls/flap_handle_deploy_ratio')).toBe(0)
 })
+
+it('a model whose OBJ carries no blur disc keeps its blades at running RPM; others switch to the disc',()=>{
+ const st={flapFrac:0,spoilerFrac:0,gearPos:1}
+ expect(localDatarefReader(st,0,2200,new Map(),'BE9L')('sim/flightmodel2/engines/prop_is_disc[0]')).toBe(0)
+ expect(localDatarefReader(st,0,2200,new Map(),'C172')('sim/flightmodel2/engines/prop_is_disc[0]')).toBe(1)
+ expect(localDatarefReader(st,0,500,new Map(),'C172')('sim/flightmodel2/engines/prop_is_disc[0]')).toBe(0)
+})
