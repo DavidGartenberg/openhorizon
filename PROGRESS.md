@@ -3140,3 +3140,7 @@ What changed, and what is real versus a recorded stand-in:
 ### Dirt, gravel and turf surfaces (2026-11-02)
 
 - Dirt / gravel / turf taxiways and aprons from X-Plane drew nearly black. The geometry and material were right (checked with the new `__ohAptMesh` hook: colour, normals up); what made them black was the weather: with 7% direct sunlight (overcast) a dark plain material has almost no light, while the aerial imagery is baked bright. In clear weather they were brown / green. They are now paler (dirt `8c7757`, gravel `9a9283`, turf `607f43`) so they read in overcast too; checked at 12K (Superior Muni) in both overcast and clear METAR.
+
+### Database runways X-Plane does not confirm (2026-11-02)
+
+- 40 database runways (of 12,028) match no X-Plane runway by designator or within 1.5 km (for example ESKS 15/33 against X-Plane's 16/34, FALM 10L/28R against 10/28); some are renumbered, not phantom, so they are left drawn rather than risk removing a real runway. Runways that match by designator are corrected to X-Plane's ends (up to 5 km off), and runways X-Plane has that the database lacks are added.
