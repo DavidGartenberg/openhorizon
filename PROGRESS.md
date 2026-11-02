@@ -3196,3 +3196,7 @@ What changed, and what is real versus a recorded stand-in:
 
 - apt.dat helipads (row 102, parsed by the server all along but dropped by the client) now draw as a pavement rectangle of the pad's own surface with a white H, through the same draped pavement and paint code (`normalizeApt`). Pads whose surface is "transparent" (15) draw only the H, on the apron beneath. Checked at KSFO (two concrete 20 m pads with their H); KSFO has two, KJFK two, PHNL four.
 - Still not drawn: heliports and seaplane bases as airports of their own (no runway to hang them on).
+
+### All-airport sweep at 652de01 (2026-11-02)
+
+- With helipads drawn, 27,711 of the 38,890 airports now build a layout (21,424 before; the rest are heliports and the like with nothing else to draw), 0 issues, only KDEN slow (4.5 s, 1.68 M triangles); 634 s on a loaded machine.
