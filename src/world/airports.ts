@@ -48,6 +48,8 @@ export interface AirportData {
 
 /** The runway strip stands this far above the ground plane. (0.1 m, above X-Plane's taxiway pavement, was tried: it blackened the runway markings in this renderer.) */
 export const RUNWAY_STRIP_LIFT_M = 0.06
+/** How long to wait before asking again for the X-Plane-only airports after a failed request. */
+const XPLANE_ONLY_RETRY_MS = 30_000
 const ASPHALT = pavementMaterial(0x484b4d, 'xy', 'runway')
 /** Concrete runways (X-Plane's surface codes 2 and 30–38) are paler than asphalt ones. */
 const CONCRETE_RUNWAY = pavementMaterial(0x8e908b, 'xy', 'runway')
@@ -81,6 +83,8 @@ export class Airports {
   private airportExtents: AirportExtents = {}
   private xplaneOnlyAt: { lat: number; lon: number } | null = null
   private xplaneOnlyBusy = false
+  /** Not before this time (ms) after a failed fetch. */
+  private xplaneOnlyRetryAt = 0
   /** Rendered terrain height (m) at a position, 0 when its tile is not loaded: lets the airport's pavement follow the ground. */
   terrainAt: ((lat: number, lon: number) => number) | null = null
   /** Whether the finest terrain tile at a position has loaded: the layout is draped on it, so it is rebuilt once it has. */
@@ -112,15 +116,15 @@ export class Airports {
    * around the player (120 km) as they fly, and added to the database: they are drawn like any other airport.
    */
   async ensureXplaneOnlyNear(lat: number, lon: number): Promise<void> {
-    if (!this.loaded || this.xplaneOnlyBusy) return
+    if (!this.loaded || this.xplaneOnlyBusy || Date.now() < this.xplaneOnlyRetryAt) return
     if (this.xplaneOnlyAt && distanceM({ lat, lon }, this.xplaneOnlyAt) < 40_000) return
     this.xplaneOnlyBusy = true
     try {
       const res = await fetch(`/api/apt-airports.json?lat=${lat.toFixed(3)}&lon=${lon.toFixed(3)}&r=120000`)
-      if (!res.ok) return
+      if (!res.ok) { this.xplaneOnlyRetryAt = Date.now() + XPLANE_ONLY_RETRY_MS; return }
       this.xplaneOnlyAt = { lat, lon }
       this.addAirports((await res.json()) as AirportData[])
-    } catch { /* the database as it is */ } finally { this.xplaneOnlyBusy = false }
+    } catch { this.xplaneOnlyRetryAt = Date.now() + XPLANE_ONLY_RETRY_MS /* the database as it is; ask again later, not every frame */ } finally { this.xplaneOnlyBusy = false }
   }
 
   /** Add airports to the database (those already in it are skipped). */

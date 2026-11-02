@@ -30,4 +30,15 @@ describe('adding X-Plane-only airports to the database', () => {
     expect(list[0]!.r[1]).toMatchObject({ hi: '22', s: 1, lt: 1, e1: 100 })
     expect(list[0]!.r[1]!.w).toBeCloseTo(98.4, 0); expect(list[0]!.r[1]!.l).toBeGreaterThan(7000)
   })
+  it('asks for the X-Plane-only airports once near a place, and not again every frame when the server fails', async () => {
+    const a = make() as unknown as { loaded: boolean; ensureXplaneOnlyNear(la: number, lo: number): Promise<void> }
+    a.loaded = true
+    let calls = 0
+    const real = globalThis.fetch
+    globalThis.fetch = (async () => { calls++; return { ok: false } }) as never
+    try {
+      await a.ensureXplaneOnlyNear(40, -100); await a.ensureXplaneOnlyNear(40, -100); await a.ensureXplaneOnlyNear(40, -100)
+      expect(calls).toBe(1)
+    } finally { globalThis.fetch = real }
+  })
 })
