@@ -438,6 +438,9 @@ export function paintSign(c: CanvasRenderingContext2D, panels: SignPanel[], size
   })
 }
 
+/** X-Plane's concrete surface codes: 2 and the weathered 30–38. */
+export const isConcreteSurface = (surf: number): boolean => surf === 2 || (surf >= 30 && surf <= 38)
+
 /** "09L" and "9L" are the same runway end. */
 const identKey = (id: string): string => id.trim().toUpperCase().replace(/^0+(?=\d)/, '')
 
@@ -446,13 +449,14 @@ const identKey = (id: string): string => id.trim().toUpperCase().replace(/^0+(?=
  * where the airport data puts them. Runways without a displacement keep their markings. Returns how many changed.
  */
 export function applyDisplacedThresholds(group: THREE.Group, rwy: readonly AptRunway[]): number {
-  const details = group.userData.runwayDetails as Array<{ li: string; hi: string; rl: RunwayLocal; detail: THREE.Group }> | undefined
+  const details = group.userData.runwayDetails as Array<{ li: string; hi: string; rl: RunwayLocal; detail: THREE.Group; setConcrete?: (on: boolean) => void }> | undefined
   if (!details) return 0
   let changed = 0
   for (const d of details) {
     const low = identKey(d.li), high = identKey(d.hi)
     const m = rwy.find((r) => { const a = identKey(r.ends[0].id), b = identKey(r.ends[1].id); return (a === low && b === high) || (a === high && b === low) })
     if (!m) continue
+    d.setConcrete?.(isConcreteSurface(m.surf))
     const endOf = (k: string): number => m.ends.find((e) => identKey(e.id) === k)?.dthr ?? 0
     const displacedLowM = endOf(low), displacedHighM = endOf(high)
     if (!(displacedLowM > 0 || displacedHighM > 0)) continue

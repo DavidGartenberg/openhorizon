@@ -208,7 +208,7 @@ describe('taxi signs', () => {
   })
 })
 
-import { applyDisplacedThresholds } from '../src/world/apt-layout'
+import { applyDisplacedThresholds, isConcreteSurface } from '../src/world/apt-layout'
 describe('displaced thresholds from the airport data', () => {
   const holder = (li: string, hi: string): { group: THREE.Group; detail: THREE.Group } => {
     const group = new THREE.Group(), detail = new THREE.Group()
@@ -237,5 +237,20 @@ describe('displaced thresholds from the airport data', () => {
   it('keeps the runway list from the airport data, dropping a malformed one', () => {
     const l = normalizeApt({ pav: [{ surf: 1, rings: [[[0, 0], [0, 1], [1, 1]]] }], rwy: [{ w: 45, surf: 1, ends: [{ id: '10L', dthr: 0, over: 0, mark: 3 }, { id: '28R', dthr: 90, over: 50, mark: 3 }] }, { ends: [{ id: 5 }] }] })!
     expect(l.rwy).toHaveLength(1); expect(l.rwy[0]!.ends[1]).toEqual({ id: '28R', dthr: 90, over: 50, mark: 3 })
+  })
+})
+
+describe('runway surfaces', () => {
+  it('concrete is surface 2 and the weathered 30–38; asphalt and the rest are not', () => {
+    for (const c of [2, 30, 33, 38]) expect(isConcreteSurface(c), String(c)).toBe(true)
+    for (const a of [1, 3, 20, 29, 39, 50]) expect(isConcreteSurface(a), String(a)).toBe(false)
+  })
+  it('a runway found in the airport data is switched to its own surface', () => {
+    const group = new THREE.Group(), detail = new THREE.Group()
+    const calls: boolean[] = []
+    group.userData.runwayDetails = [{ li: '10L', hi: '28R', rl: { lenM: 3000, widM: 45, liIdent: '10L', hiIdent: '28R', elevAt: () => 0 }, detail, setConcrete: (on: boolean) => calls.push(on) }]
+    const mk = (surf: number) => [{ w: 45, surf, ends: [{ id: '10L', dthr: 0, over: 0, mark: 3 }, { id: '28R', dthr: 0, over: 0, mark: 3 }] as never }]
+    applyDisplacedThresholds(group, mk(2)); applyDisplacedThresholds(group, mk(1))
+    expect(calls).toEqual([true, false])
   })
 })

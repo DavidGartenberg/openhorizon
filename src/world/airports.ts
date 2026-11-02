@@ -39,6 +39,8 @@ export interface AirportData {
 }
 
 const ASPHALT = pavementMaterial(0x484b4d, 'xy', 'runway')
+/** Concrete runways (X-Plane's surface codes 2 and 30–38) are paler than asphalt ones. */
+const CONCRETE_RUNWAY = pavementMaterial(0x8e908b, 'xy', 'runway')
 const TURF = new THREE.MeshStandardMaterial({ color: 0x3c5233, roughness: 1, envMapIntensity: 0.25 })
 const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8d8d0 })
 const EDGE_LIGHT = new THREE.MeshBasicMaterial({ color: 0xffffff })
@@ -234,7 +236,7 @@ export class Airports {
     const rabbitStations: number[] = []
     const primary = primaryRunway(ap)
     /** Each marked runway's holder, so the X-Plane layout can redraw its markings with displaced thresholds. */
-    const runwayDetails: Array<{ li: string; hi: string; rl: RunwayLocal; detail: THREE.Group }> = []
+    const runwayDetails: Array<{ li: string; hi: string; rl: RunwayLocal; detail: THREE.Group; setConcrete: (on: boolean) => void }> = []
     group.userData.runwayDetails = runwayDetails
     for (const r of ap.r) {
       const lenM = r.l * FT
@@ -310,7 +312,7 @@ export class Airports {
         const markings = buildRunwayMarkings(rl)
         markings.name = 'runwayMarkings'
         detail.add(markings)
-        runwayDetails.push({ li: r.li, hi: r.hi, rl, detail })
+        runwayDetails.push({ li: r.li, hi: r.hi, rl, detail, setConcrete: (on) => { strip.material = on ? CONCRETE_RUNWAY : ASPHALT } })
         detail.add(buildDistanceSigns(rl))
         if (r === primary && lenM >= 1100) {
           // 16c: collect taxiway blue-edge lights (detail-local frame)
