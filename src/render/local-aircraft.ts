@@ -93,11 +93,14 @@ export function disposeAircraftGeometry(root: THREE.Object3D): void {
 // evicted requests whose current image decode is not abortable by Three.
 let activeLoads = 0
 const waitingLoads: Array<() => void> = []
-export async function loadLocalAircraft(key: string, signal?: AbortSignal): Promise<LocalAircraftVisual | null> {
+/** Options for a traffic copy: a livery folder name (…/liveries/<name>) and a texture cache shared with the model's other loads (never disposed). */
+export interface LocalAircraftOptions { livery?: string; textureCache?: Map<string, Promise<THREE.Texture | null>> }
+
+export async function loadLocalAircraft(key: string, signal?: AbortSignal, opts: LocalAircraftOptions = {}): Promise<LocalAircraftVisual | null> {
   if (!localModelFor(key)) return null
   if (activeLoads >= 2) await new Promise<void>(resolve => waitingLoads.push(resolve))
   else activeLoads++
-  try { signal?.throwIfAborted(); return await loadLocalAircraftInSlot(key, signal) }
+  try { signal?.throwIfAborted(); return await loadLocalAircraftInSlot(key, signal, opts) }
   finally {
     const next = waitingLoads.shift()
     if (next) next()
@@ -105,7 +108,7 @@ export async function loadLocalAircraft(key: string, signal?: AbortSignal): Prom
   }
 }
 
-async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promise<LocalAircraftVisual | null> {
+async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal, opts: LocalAircraftOptions = {}): Promise<LocalAircraftVisual | null> {
   const resolved = localModelFor(key)
   const mk = resolved?.model ?? ''
   const entry = XP_MODELS[mk], placement = XP_PLACEMENT[mk]
@@ -119,7 +122,8 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promi
   group.position.set(...placement.cgFt.map((cg, i) => (offset[i]! - cg) * .3048 * resolved.scale) as [number, number, number])
   group.scale.setScalar(resolved.scale)
   const parts: LoadedObj8[] = []
-  const textureCache = new Map<string, Promise<THREE.Texture | null>>()
+  const textureCache = opts.textureCache ?? new Map<string, Promise<THREE.Texture | null>>()
+  const liveryBase = opts.livery ? '/xp/aircraft/' + `${entry.folder}/liveries/${opts.livery}/objects`.split('/').map(encodeURIComponent).join('/') + '/' : undefined
   let disposed = false
   const dispose = (): void => {
     if (disposed) return
@@ -136,7 +140,7 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promi
     for (const path of entry.objs) {
       signal?.throwIfAborted()
       const url = '/xp/aircraft/' + path.split('/').map(encodeURIComponent).join('/')
-      const part = await loadObj8(url, {textureBase: url.slice(0, url.lastIndexOf('/') + 1), textureCache})
+      const part = await loadObj8(url, {textureBase: url.slice(0, url.lastIndexOf('/') + 1), textureCache, ...(liveryBase ? {textureOverrideBase: liveryBase} : {})})
       if (/\/[^/]*(?:cfm|trent|engine)[^/]*\.obj$/i.test(path)) part.group.name = 'engineNacelle'
       parts.push(part); group.add(part.group)
       signal?.throwIfAborted()

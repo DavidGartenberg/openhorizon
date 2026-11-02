@@ -122,3 +122,21 @@ export function resolveLocalModel(key: string, known: ReadonlySet<string>): Reso
   const choice = chooseTrafficModel({ archetype, spanM: s.spanM, lengthM: s.lengthM, engines }, key, { allowHeavy: true })
   return choice && known.has(choice.key) ? { model: choice.key, scale: choice.scale, exact: false } : null
 }
+
+// ---------------------------------------------------------------- liveries --
+
+/**
+ * The installed airline liveries, by the airline's ICAO callsign prefix (the "DAL" of "DAL2635"), for the models
+ * that have them. Folder names are the install's own (…/liveries/<name>). The A330's liveries are three times
+ * the size of the 737's and are not used.
+ */
+export const XP_LIVERIES: Record<string, Record<string, string>> = {
+  B738: { ARG: 'Aerolineas Argentinas', CCA: 'Air China', ASA: 'Alaska', CES: 'China Eastern', DAL: 'Delta', KLM: 'KLM', QFA: 'Qantas', RYR: 'Ryanair', SWA: 'Southwest', TLM: 'Thai Lion', CXA: 'Xiamen' },
+  MD82: { AMX: 'Aeromexico', ASA: 'Alaska Airlines', AZA: 'Alitalia', DAL: 'Delta Airlines', IBE: 'Iberia', JAL: 'JAL', SAS: 'Scandinavian Airlines' },
+}
+
+/** The livery folder for an airplane drawn with `model` and flying under `callsign`, or null for the default paint. */
+export function liveryFor(model: string, callsign: string | undefined): string | null {
+  const m = /^([A-Z]{3})\d/.exec((callsign ?? '').trim().toUpperCase())
+  return (m && XP_LIVERIES[model]?.[m[1]!]) || null
+}

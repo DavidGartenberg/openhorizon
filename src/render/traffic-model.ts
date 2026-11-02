@@ -26,34 +26,59 @@ export interface TrafficModelInstance {
 
 interface Proto { instantiate: () => LocalAircraftInstance; minY: number }
 
+/** At most this many airline liveries are held at once (each is tens of megabytes of textures); later ones keep the default paint. */
+export const MAX_LIVERIES = 3
+
 /** Loads each X-Plane exterior once and stamps out shared-geometry copies. */
 export class TrafficModelLibrary {
   private readonly protos = new Map<string, Proto | 'loading' | 'failed'>()
+  /** Textures shared by a model and its liveries (a livery replaces only what it paints; the rest is loaded once). Never disposed. */
+  private readonly textures = new Map<string, Map<string, Promise<THREE.Texture | null>>>()
+  private liveriesStarted = 0
+
+  private start(slot: string, key: string, livery?: string): void {
+    this.protos.set(slot, 'loading')
+    let cache = this.textures.get(key)
+    if (!cache) this.textures.set(key, (cache = new Map()))
+    void loadLocalAircraft(key, undefined, { textureCache: cache, ...(livery ? { livery } : {}) }).then((v) => {
+      if (!v?.instantiate) { this.protos.set(slot, 'failed'); return }
+      v.surfaces({ flapFrac: 0, spoilerFrac: 0, gearPos: 1 })
+      // Lowest point with the gear down (the tyres), in the model's own frame.
+      const box = new THREE.Box3().setFromObject(v.group)
+      this.protos.set(slot, { instantiate: v.instantiate, minY: Number.isFinite(box.min.y) ? box.min.y : 0 })
+    }).catch(() => this.protos.set(slot, 'failed'))
+  }
 
   /** Start loading a model (once); false while it is not ready or has failed. */
   ensure(key: string): boolean {
     const p = this.protos.get(key)
+    if (p === undefined) { this.start(key, key); return false }
+    return typeof p === 'object'
+  }
+
+  /** Start loading an airline livery of a model (once, within MAX_LIVERIES); true when it is ready to use. */
+  ensureLivery(key: string, livery: string): boolean {
+    const slot = `${key}@${livery}`
+    const p = this.protos.get(slot)
     if (p === undefined) {
-      this.protos.set(key, 'loading')
-      void loadLocalAircraft(key).then((v) => {
-        if (!v?.instantiate) { this.protos.set(key, 'failed'); return }
-        v.surfaces({ flapFrac: 0, spoilerFrac: 0, gearPos: 1 })
-        // Lowest point with the gear down (the tyres), in the model's own frame.
-        const box = new THREE.Box3().setFromObject(v.group)
-        this.protos.set(key, { instantiate: v.instantiate, minY: Number.isFinite(box.min.y) ? box.min.y : 0 })
-      }).catch(() => this.protos.set(key, 'failed'))
+      if (this.liveriesStarted < MAX_LIVERIES && this.status(key) === 'ready') { this.liveriesStarted++; this.start(slot, key, livery) }
       return false
     }
     return typeof p === 'object'
   }
+
+  /** Every model / livery slot and whether it is ready (verification). */
+  slots(): string[] { return [...this.protos].map(([k, v]) => `${k}=${typeof v === 'object' ? 'ready' : v}`) }
 
   status(key: string): 'loading' | 'ready' | 'failed' | 'unrequested' {
     const p = this.protos.get(key)
     return p === undefined ? 'unrequested' : p === 'loading' ? 'loading' : p === 'failed' ? 'failed' : 'ready'
   }
 
-  create(choice: TrafficModelChoice): TrafficModelInstance | null {
-    const p = this.protos.get(choice.key)
+  /** A copy of the model (in the livery, when that livery is ready; otherwise the default paint). */
+  create(choice: TrafficModelChoice, livery?: string): TrafficModelInstance | null {
+    const liveryProto = livery ? this.protos.get(`${choice.key}@${livery}`) : undefined
+    const p = typeof liveryProto === 'object' ? liveryProto : this.protos.get(choice.key)
     if (typeof p !== 'object') return null
     const inst = p.instantiate()
     const wrapper = new THREE.Group()

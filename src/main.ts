@@ -77,6 +77,7 @@ import { AircraftLights } from './render/aircraft-lights'
 import { ReplayView } from './render/replay-view'
 import { buildReplayPlots } from './sim/replay'
 import { TrafficLayer } from './render/traffic-layer'
+import { sharedTrafficModels } from './render/traffic-model'
 import { XpShipGraphics, chooseTrafficModel } from './render/traffic-model'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
 import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
@@ -3916,6 +3917,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   }),
   __ohAi: () => aiShips.map((s) => ({ cs: s.pilot.callsign, phase: s.pilot.phase, gsKt: Math.round(s.pilot.plane.gsKt), altFt: Math.round(s.pilot.plane.altFt), xp: s.xp.active, pos: s.mesh.group.position.toArray().map((v) => Math.round(v)) })),
   __ohTraffic: () => ({
+    xpModels: sharedTrafficModels.slots(),
     on: liveTrafficOn,
     count: liveTraffic.targets.size,
     pollCount: trafficPollCount,

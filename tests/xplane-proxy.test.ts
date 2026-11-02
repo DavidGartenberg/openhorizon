@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { ROSTER } from '../src/sim/aircraft/roster'
 import { XP_MODELS } from '../src/render/xplane-manifest'
-import { resolveLocalModel } from '../src/render/xplane-proxy'
+import { resolveLocalModel, liveryFor, XP_LIVERIES } from '../src/render/xplane-proxy'
 
 const known = new Set(Object.keys(XP_MODELS))
 const r = (k: string) => resolveLocalModel(k, known)
@@ -45,5 +45,26 @@ describe('which installed model draws each flyable aircraft', () => {
       expect(m.scale, spec.designator).toBeGreaterThan(0.5); expect(m.scale, spec.designator).toBeLessThan(2.6)
     }
     expect(resolved).toBeGreaterThan(ROSTER.length * 0.8)
+  })
+})
+
+describe('airline liveries by callsign', () => {
+  it('maps the airline prefix of a callsign to the installed livery for that model', () => {
+    expect(liveryFor('B738', 'DAL2635')).toBe('Delta')
+    expect(liveryFor('B738', ' swa123 ')).toBe('Southwest')
+    expect(liveryFor('MD82', 'DAL9')).toBe('Delta Airlines')
+  })
+  it('gives the default paint to unknown airlines, other models, registrations and junk', () => {
+    expect(liveryFor('B738', 'UAL264')).toBeNull()
+    expect(liveryFor('A333', 'DAL1')).toBeNull()
+    expect(liveryFor('B738', 'N12345')).toBeNull()
+    expect(liveryFor('B738', undefined)).toBeNull(); expect(liveryFor('B738', '')).toBeNull(); expect(liveryFor('B738', 'DAL')).toBeNull()
+  })
+  it('every livery names a folder that exists in the install (when it is present)', async () => {
+    const fs = await import('node:fs')
+    const base = '/Users/davidgartenberg/X-Plane 12/Aircraft/Laminar Research/'
+    if (!fs.existsSync(base)) return
+    const folder: Record<string, string> = { B738: 'Boeing 737-800', MD82: 'McDonnell Douglas MD-82' }
+    for (const [model, table] of Object.entries(XP_LIVERIES)) for (const name of Object.values(table)) expect(fs.existsSync(`${base}${folder[model]}/liveries/${name}/objects`), `${model} ${name}`).toBe(true)
   })
 })

@@ -793,30 +793,48 @@ function alternateName(name: string): string | null {
   return null
 }
 
+/** The URLs tried, in order, for one texture name: a livery's own file first (when there is one), then the airplane's. */
+export function textureCandidates(name: string, base: string, overrideBase?: string): string[] {
+  const alt = alternateName(name)
+  const names = alt ? [name, alt] : [name]
+  return [...(overrideBase ? names.map((n) => overrideBase + n) : []), ...names.map((n) => base + n)]
+}
+
+async function firstTexture(urls: string[], srgb: boolean): Promise<THREE.Texture | null> {
+  for (const url of urls) {
+    try { return await loadTexture(url, srgb) } catch { /* try the next candidate */ }
+  }
+  return null
+}
+
 async function loadTextureWithFallback(
   name: string | undefined,
   base: string,
   srgb: boolean,
   warnings: string[],
   cache?: Map<string, Promise<THREE.Texture | null>>,
+  overrideBase?: string,
 ): Promise<THREE.Texture | null> {
-  if (cache && name) {
+  if (!name) return null
+  if (overrideBase) {
+    // A livery paints only some textures; the others are the airplane's own, loaded once and shared through the cache.
+    const key = `${overrideBase}${name}:${srgb}`
+    const own = (): Promise<THREE.Texture | null> => firstTexture(textureCandidates(name, base, overrideBase).slice(0, alternateName(name) ? 2 : 1), srgb)
+      .then((t) => t ?? loadTextureWithFallback(name, base, srgb, warnings, cache))
+    if (!cache) return own()
+    let pending = cache.get(key)
+    if (!pending) { pending = own(); cache.set(key, pending) }
+    return pending
+  }
+  if (cache) {
     const key = `${base}${name}:${srgb}`
     let pending = cache.get(key)
     if (!pending) { pending = loadTextureWithFallback(name, base, srgb, warnings); cache.set(key, pending) }
     return pending
   }
-  if (!name) return null
-  const alt = alternateName(name)
-  for (const candidate of alt ? [name, alt] : [name]) {
-    try {
-      return await loadTexture(base + candidate, srgb)
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  warnings.push(`texture not found: ${base}${name}`)
-  return null
+  const found = await firstTexture(textureCandidates(name, base), srgb)
+  if (!found) warnings.push(`texture not found: ${base}${name}`)
+  return found
 }
 
 export interface Obj8MaterialMaps {
@@ -881,6 +899,8 @@ export interface LoadObj8Options {
   lod?: number
   /** Per-aircraft texture ownership/cache; never shared across disposed aircraft. */
   textureCache?: Map<string, Promise<THREE.Texture | null>>
+  /** A livery's texture folder (URL prefix): its files replace the airplane's of the same name, the rest fall back to `textureBase`. */
+  textureOverrideBase?: string
   /** Material for ATTR_cockpit* draws (X-Plane's panel / device screens), e.g. a live display. */
   cockpitMaterial?: THREE.Material
   /** Lamps and backlights glow on their own datarefs (see BuildObj8Options.lightLevels). */
@@ -912,14 +932,15 @@ export async function loadObj8(url: string, opts: LoadObj8Options): Promise<Load
   const warnings = [...parsed.warnings]
 
   const base = opts.textureBase.endsWith('/') ? opts.textureBase : `${opts.textureBase}/`
+  const overrideBase = opts.textureOverrideBase ? (opts.textureOverrideBase.endsWith('/') ? opts.textureOverrideBase : `${opts.textureOverrideBase}/`) : undefined
   const want = opts.loadTextures ?? true
   const [map, emissiveMap, normalMap, materialGlossMap, glossMap] = want
     ? await Promise.all([
-        loadTextureWithFallback(parsed.albedo, base, true, warnings, opts.textureCache),
-        loadTextureWithFallback(parsed.lit, base, true, warnings, opts.textureCache),
-        loadTextureWithFallback(parsed.normal, base, false, warnings, opts.textureCache),
-        loadTextureWithFallback(parsed.materialGloss, base, false, warnings, opts.textureCache),
-        loadTextureWithFallback(parsed.gloss, base, false, warnings, opts.textureCache),
+        loadTextureWithFallback(parsed.albedo, base, true, warnings, opts.textureCache, overrideBase),
+        loadTextureWithFallback(parsed.lit, base, true, warnings, opts.textureCache, overrideBase),
+        loadTextureWithFallback(parsed.normal, base, false, warnings, opts.textureCache, overrideBase),
+        loadTextureWithFallback(parsed.materialGloss, base, false, warnings, opts.textureCache, overrideBase),
+        loadTextureWithFallback(parsed.gloss, base, false, warnings, opts.textureCache, overrideBase),
       ])
     : [null, null, null, null, null]
 

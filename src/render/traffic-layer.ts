@@ -16,6 +16,7 @@ import { typeInfo, aircraftTypesLoaded } from '../world/aircraft-types'
 import { buildArchetype } from './fleet-mesh'
 import { beaconOn, strobeOn } from '../sim/lights'
 import { sharedTrafficModels, chooseTrafficModel, trafficConfiguration, type TrafficModelInstance } from './traffic-model'
+import { liveryFor } from './xplane-proxy'
 import { lightGlowTexture } from './light-glow'
 
 const FT = 0.3048
@@ -248,13 +249,17 @@ export class TrafficLayer {
     const info = typeInfo(des)
     const choice = chooseTrafficModel(archetypeFor(des, info.desc, info.wtc), des, { allowHeavy })
     if (!choice) { e.body.visible = true; return }
-    if (e.xp && e.xpKey === choice.key) return
     if (!this.models.ensure(choice.key)) { e.body.visible = !e.xp; return }
-    const inst = this.models.create(choice)
+    // The airline's livery once it has loaded (the default paint until then, and for airlines without one).
+    const name = liveryFor(choice.key, t.cs)
+    const livery = name && this.models.ensureLivery(choice.key, name) ? name : undefined
+    const slot = livery ? `${choice.key}@${livery}` : choice.key
+    if (e.xp && e.xpKey === slot) return
+    const inst = this.models.create(choice, livery)
     if (!inst) return
     if (e.xp) e.group.remove(e.xp.group)
     e.group.add(inst.group)
-    e.xp = inst; e.xpKey = choice.key
+    e.xp = inst; e.xpKey = slot
     e.body.visible = false
   }
 
