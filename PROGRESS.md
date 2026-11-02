@@ -3154,3 +3154,8 @@ What changed, and what is real versus a recorded stand-in:
 
 - At KMSO (a terraced field) the blast pad drew much darker than its runway: it was receiving the terrain's shadow. Pads no longer receive shadows (tone matches the runway, chevrons read). The overrun group is now named `runwayOverruns` for `__ohAptShow`.
 - The X-Plane-only airstrips are drawn and can be flown from, but are left off the ND and MFD airport lists, as a real navigation database would not chart every private strip.
+
+### Runway finish from X-Plane (2026-11-02)
+
+- Of 11,103 database runways that X-Plane also lists, 196 had the wrong hard / soft surface (e.g. 63K 17/35, 75FL 9/27 and AGGN 14/32 drawn as grass although asphalt) and 1,159 the wrong edge-light flag. `/api/apt-runways.json` now sends X-Plane's finish for those (rows of 11 fields: …, width m, soft, edge-lit, also for runways it adds) and the client applies it. 1,817 runways carry an 11-field row.
+- Checked at 63K (runway now asphalt with centreline markings).

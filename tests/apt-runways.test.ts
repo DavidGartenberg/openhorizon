@@ -84,7 +84,7 @@ describe('the overrun table for the client', () => {
 import { runwayExtras, MAX_RUNWAY_FIX_M, aptOnlyAirports, aptAirportsNear } from '../server/apt.mjs'
 describe('correcting the old database with X-Plane\'s runways', () => {
   const rows = { KAAA: [['10L', '28R', 250, 100, 37.5, -122.26, 37.5, -122.24, 45.7], ['10R', '28L', 0, 0, 37.51, -122.26, 37.51, -122.24, 45.7]] }
-  const dbRwy = (li: string, hi: string, la1: number, lo1: number, la2: number, lo2: number, wFt: number) => ({ li, hi, la1, lo1, la2, lo2, w: wFt })
+  const dbRwy = (li: string, hi: string, la1: number, lo1: number, la2: number, lo2: number, wFt: number) => ({ li, hi, la1, lo1, la2, lo2, w: wFt, s: 0, lt: 0 })
   it('sends the overrun alone for a runway that is where the database puts it, and X-Plane\'s ends and width when it is not', () => {
     const db = [{ i: 'KAAA', r: [dbRwy('10L', '28R', 37.5, -122.26, 37.5, -122.24, 150), dbRwy('10R', '28L', 37.5115, -122.2602, 37.5115, -122.2402, 150)] }]
     const out = runwayExtras(rows, db) as Record<string, unknown[][]>
@@ -141,6 +141,12 @@ describe("runways X-Plane has that a database airport lacks", () => {
       ],
     }, db as never) as Record<string, unknown[][]>
     expect(out.KDB).toHaveLength(1)
-    expect(out.KDB![0]!.slice(0, 2)).toEqual(['4', '22']); expect(out.KDB![0]).toHaveLength(11); expect(out.KDB![0]!.slice(9)).toEqual([3, 0])
+    expect(out.KDB![0]!.slice(0, 2)).toEqual(['4', '22']); expect(out.KDB![0]).toHaveLength(11); expect(out.KDB![0]!.slice(9)).toEqual([1, 0])
+  })
+  it('sends X-Plane\'s finish (soft, edge-lit) for a runway the database has wrong, with its ends, and nothing for one it has right', () => {
+    const wrong = runwayExtras({ KDB: [['9', '27', 0, 0, 40, -100.02, 40, -99.98, 30, 3, 0]] }, db as never) as Record<string, unknown[][]>
+    expect(wrong.KDB![0]).toHaveLength(11); expect(wrong.KDB![0]!.slice(9)).toEqual([1, 0])          // turf, unlit; the database says hard and lit
+    const right = runwayExtras({ KDB: [['9', '27', 0, 0, 40, -100.02, 40, -99.98, 30, 1, 3]] }, db as never) as Record<string, unknown[][]>
+    expect(right.KDB).toBeUndefined()
   })
 })

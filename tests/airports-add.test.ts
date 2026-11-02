@@ -41,4 +41,11 @@ describe('adding X-Plane-only airports to the database', () => {
       expect(calls).toBe(1)
     } finally { globalThis.fetch = real }
   })
+  it('replaces the database\'s hard / soft and edge-light flags where X-Plane\'s row carries its own', async () => {
+    const { applyRunwayExtras } = await import('../src/world/airport-flatten')
+    const base = ap('KDB', 40, -100); base.r[0]!.li = '9'; base.r[0]!.hi = '27'; base.r[0]!.s = 0; base.r[0]!.lt = 1
+    const list = [base]
+    applyRunwayExtras(list, { KDB: [['9', '27', 0, 0, 40, -100.01, 40, -99.99, 30, 1, 0]] })
+    expect(list[0]!.r[0]).toMatchObject({ s: 1, lt: 0 })
+  })
 })

@@ -238,7 +238,7 @@ export function runwayExtras(runways, db) {
     const list = []
     for (const r of rows) {
       const [idA, idB, oA, oB, laA, loA, laB, loB, w] = r
-      let fix = false
+      let fix = false, finish = false
       const m = ap?.r.find((q) => { const a = endKey(q.li), b = endKey(q.hi); return (a === endKey(idA) && b === endKey(idB)) || (a === endKey(idB) && b === endKey(idA)) })
       if (m && [laA, loA, laB, loB].every(Number.isFinite)) {
         const forward = endKey(m.li) === endKey(idA)
@@ -246,9 +246,14 @@ export function runwayExtras(runways, db) {
         const off = Math.max(metres(m.la1, m.lo1, a1[0], a1[1]), metres(m.la2, m.lo2, a2[0], a2[1]))
         const dw = Number.isFinite(w) && w > 0 ? Math.abs(m.w * 0.3048 - w) : 0
         fix = off <= MAX_RUNWAY_FIX_M && (off > RUNWAY_FIX_MIN_M || dw > RUNWAY_FIX_MIN_M)
+        // Where X-Plane disagrees about hard / soft or about edge lights, it is the newer record.
+        finish = (SOFT_SURFACES.has(Number(r[9])) ? 1 : 0) !== m.s || (Number(r[10]) > 0 ? 1 : 0) !== m.lt
+        if (finish && !fix) fix = ap.r.length > 0 && off <= MAX_RUNWAY_FIX_M            // carry its ends with the finish
       }
-      if (fix) list.push([idA, idB, oA, oB, laA, loA, laB, loB, Math.round(w * 10) / 10])
-      else if (!m && ap && isMissingRunway(ap, r)) list.push([idA, idB, oA, oB, laA, loA, laB, loB, Math.round((Number(w) || 0) * 10) / 10, Number(r[9]) || 0, Number(r[10]) || 0])
+      const flags = [SOFT_SURFACES.has(Number(r[9])) ? 1 : 0, Number(r[10]) > 0 ? 1 : 0]
+      if (fix && finish) list.push([idA, idB, oA, oB, laA, loA, laB, loB, Math.round(w * 10) / 10, ...flags])
+      else if (fix) list.push([idA, idB, oA, oB, laA, loA, laB, loB, Math.round(w * 10) / 10])
+      else if (!m && ap && isMissingRunway(ap, r)) list.push([idA, idB, oA, oB, laA, loA, laB, loB, Math.round((Number(w) || 0) * 10) / 10, ...flags])
       else if (oA > 0 || oB > 0) list.push([idA, idB, oA, oB])
     }
     if (list.length) out[icao] = list
