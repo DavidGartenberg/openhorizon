@@ -4,7 +4,7 @@
  * tile-local frame (x east, y up, z south; origin at tile NW corner's SW...
  * origin = tile center, y = height meters). Transfers buffers to main.
  */
-import { terrariumDecode, flattenForRunway, tileGridUv } from '../math/geo'
+import { terrariumDecode, flattenForRunway, fillShorePits, tileGridUv } from '../math/geo'
 import { classifyNlcdPixel } from './nlcd-palette'
 
 export interface TileRequest {
@@ -102,6 +102,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
     const G = req.gridSize
     const heights = new Float32Array(G * G)
     const sea = new Uint8Array(G * G)
+    const levelled = new Uint8Array(G * G)   // 1 where an airport's levelling moved the height
     for (let j = 0; j < G; j++) {
       for (let i = 0; i < G; i++) {
         const sx = Math.min(Math.round((i / (G - 1)) * (px - 1)), px - 1)
@@ -113,18 +114,23 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
         // Local coords: x east from -sizeE/2, y north from +sizeN/2 (row j=0 = north)
         const lx = (i / (G - 1) - 0.5) * req.sizeEastM
         const ly = (0.5 - j / (G - 1)) * req.sizeNorthM
+        const natural = h
         for (const rw of req.runways) {
           // An airport's level disk stops at the water's edge: it never raises the bay into land.
           if (rw.disk && belowDatum) continue
           h = flattenForRunway(h, lx, ly, rw.ax, rw.ay, rw.bx, rw.by, rw.ha, rw.hb, rw.halfW)
         }
         heights[j * G + i] = h
+        if (h !== natural) levelled[j * G + i] = 1
         // Sea-clamped verts render slightly below the y=0 ocean plane so
         // the water wins the coplanar depth fight deterministically
         // (physics heights keep 0; runway-flattened verts are exempt).
         sea[j * G + i] = belowDatum && h === 0 ? 1 : 0
       }
     }
+
+    // Where the level area meets a bay, the sea cells it skipped between levelled ones were left as pits: close them.
+    if (req.runways.some((rw) => rw.disk)) fillShorePits(heights, sea, levelled, G)
 
     // Intermittent Worker-side ImageBitmap/getImageData flakiness can yield
     // non-finite heights (see PROGRESS.md). Reject the tile rather than

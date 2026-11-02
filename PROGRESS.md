@@ -3163,3 +3163,8 @@ What changed, and what is real versus a recorded stand-in:
 ### Gate at e14e095 (2026-11-02)
 
 - Fresh clone: `tsc` clean, 167 files / 2215 tests pass, `vite build` ok. The working tree adds only the other session's untracked `tests/dg800-*` (5 failing by design).
+
+### Shore pits at coastal airports (2026-11-02)
+
+- The KBOS bay pits are closed: after the terrain worker levels an airport, a sea cell with levelled ground on two perpendicular sides is filled to its neighbours' height, up to six passes (`fillShorePits`, `src/math/geo.ts`, tested). A one-cell channel and open water stay open. Checked at KBOS: the blocky dark pits north of 4R/22L are gone (a thin line remains). The filled cells are also in the tile heights the physics reads, so mesh and ground agree.
+- Still open: VHHH (reclaimed land the elevation data shows entirely as sea, so there is no levelled neighbour to fill from).
