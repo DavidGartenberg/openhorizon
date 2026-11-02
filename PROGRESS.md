@@ -3159,3 +3159,7 @@ What changed, and what is real versus a recorded stand-in:
 
 - Of 11,103 database runways that X-Plane also lists, 196 had the wrong hard / soft surface (e.g. 63K 17/35, 75FL 9/27 and AGGN 14/32 drawn as grass although asphalt) and 1,159 the wrong edge-light flag. `/api/apt-runways.json` now sends X-Plane's finish for those (rows of 11 fields: …, width m, soft, edge-lit, also for runways it adds) and the client applies it. 1,817 runways carry an 11-field row.
 - Checked at 63K (runway now asphalt with centreline markings).
+
+### Gate at e14e095 (2026-11-02)
+
+- Fresh clone: `tsc` clean, 167 files / 2215 tests pass, `vite build` ok. The working tree adds only the other session's untracked `tests/dg800-*` (5 failing by design).
