@@ -9,6 +9,7 @@ import { airportBeacon, rabbitOn } from '../sim/lights'
 import { lightGlowTexture } from '../render/light-glow'
 import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
 import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
+import type { ParkedSource } from './parked-aircraft'
 import { enhanceAirportWithXplane, setAptNight, NIGHT_GLOW } from './apt-layout'
 import { airportFlatDisk, airportFieldElevationM, flattenEnds, applyRunwayExtras, applyAirportExtents, type RunwayExtras, type AirportExtents } from './airport-flatten'
 import { primaryRunway, planAirportFacilities, buildAirportFacilities, updateAirportServices, disposeAirportObject, mappedApronPlan, footprintObstacle, type SurfaceObstacle, type GroundPoint } from './airport-scenery'
@@ -689,6 +690,16 @@ export class Airports {
   }
 
   /** Reposition all rendered airports (call every frame — cheap — and after rebase). */
+  /** Every rendered airport's parked-airplane spots (X-Plane's layout), with the group that places them. */
+  parkedSources(): ParkedSource[] {
+    const out: ParkedSource[] = []
+    for (const [icao, g] of this.rendered) {
+      const spots = g.userData.aptParked as ParkedSource['spots'] | undefined
+      if (spots?.length) out.push({ id: icao, group: g, spots })
+    }
+    return out
+  }
+
   positionAll(): void {
     for (const group of this.rendered.values()) {
       const ll = group.userData.latLon as LatLon

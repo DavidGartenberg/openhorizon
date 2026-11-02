@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import { disposeAirportObject, ownMaterial, type GroundPoint, type SurfaceObstacle } from './airport-scenery'
 import { buildRunwayMarkings, buildRunwayOverruns, type RunwayLocal } from './airport-detail'
 import { osmIdentSegs } from './osm-layout'
+import { parkedAircraftFor } from './parked-aircraft'
 import { lightGlowTexture } from '../render/light-glow'
 import { pavementMaterial as proceduralPavement } from '../render/surface-materials'
 
@@ -840,6 +841,8 @@ export async function enhanceAirportWithXplane(group: THREE.Group, icao: string,
   built.add(...buildAptPaint(layout, toLocal, elevM, ground))
   await idle(); if (!alive()) return false
   group.userData.aptDisplaced = applyDisplacedThresholds(group, layout.rwy)
+  // Decorative airplanes at the gates and tie-downs (scenery: no datablock, no radar entry).
+  group.userData.aptParked = parkedAircraftFor(layout.ramps.map((r) => ({ ...toLocal(r.lat, r.lon), hdg: r.hdg, kind: r.kind, cats: r.cats, name: r.name }))).map((p) => ({ ...p, y: ground ? ground(p.x, p.z) : elevM }))
   group.userData.aptOverruns = applyRunwayOverruns(group, layout.rwy)
   const lights = buildAptLights(layout, toLocal, elevM, ground)
   if (lights) { group.add(lights); group.userData.aptLights = lights }

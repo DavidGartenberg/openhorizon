@@ -77,6 +77,7 @@ import { AircraftLights } from './render/aircraft-lights'
 import { ReplayView } from './render/replay-view'
 import { buildReplayPlots } from './sim/replay'
 import { TrafficLayer } from './render/traffic-layer'
+import { ParkedAircraftLayer } from './render/parked-aircraft-layer'
 import { sharedTrafficModels } from './render/traffic-model'
 import { XpShipGraphics, chooseTrafficModel } from './render/traffic-model'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
@@ -324,6 +325,8 @@ const aircraftLights = new AircraftLights(scene)
 aircraftLights.attach(mesh.group)
 // 14d: live-traffic silhouettes + labels.
 const trafficLayer = new TrafficLayer(scene)
+const parkedLayer = new ParkedAircraftLayer(scene)
+let lastParkedUpdate = 0
 // 16d: replay viewer (REPLAY verb).
 const replayView = new ReplayView()
 /** This airplane's cockpit, tailored per type (render/cockpit-profile.ts):
@@ -3143,6 +3146,13 @@ function advanceFrame(elapsed: number, now: number): void {
     // fps other than 60.
     Math.min(elapsed || 1 / 60, 0.5),
   )
+  // Scenery airplanes at the nearest gates: re-chosen about once a second, never on a stand where a live target is on the ground.
+  if (now - lastParkedUpdate > 1000) {
+    lastParkedUpdate = now
+    const standing = [...liveTraffic.targets.values()].filter((t) => t.gnd).map((t) => { const l = frame.toLocal(t.lat, t.lon); return { x: l.e, z: -l.n } })
+    parkedLayer.update(airports.parkedSources(), camera.position, (x, z) => standing.some((s) => Math.hypot(s.x - x, s.z - z) < 30))
+  }
+  parkedLayer.follow()
   updateRadar(ll.lat, ll.lon, now)
   scanAtc(ll.lat, ll.lon, now)
   updateSafety(now)
@@ -3925,6 +3935,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohAi: () => aiShips.map((s) => ({ cs: s.pilot.callsign, phase: s.pilot.phase, gsKt: Math.round(s.pilot.plane.gsKt), altFt: Math.round(s.pilot.plane.altFt), xp: s.xp.active, pos: s.mesh.group.position.toArray().map((v) => Math.round(v)) })),
   __ohTraffic: () => ({
     xpModels: sharedTrafficModels.slots(),
+    parked: { at: parkedLayer.positions().map((p) => p.map((v) => Math.round(v))), drawn: parkedLayer.count, spots: airports.parkedSources().reduce((n, s) => n + s.spots.length, 0), sources: airports.parkedSources().length },
     on: liveTrafficOn,
     count: liveTraffic.targets.size,
     pollCount: trafficPollCount,
