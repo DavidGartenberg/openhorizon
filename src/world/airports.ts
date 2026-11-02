@@ -51,7 +51,8 @@ export const RUNWAY_STRIP_LIFT_M = 0.06
 const ASPHALT = pavementMaterial(0x484b4d, 'xy', 'runway')
 /** Concrete runways (X-Plane's surface codes 2 and 30–38) are paler than asphalt ones. */
 const CONCRETE_RUNWAY = pavementMaterial(0x8e908b, 'xy', 'runway')
-const TURF = new THREE.MeshStandardMaterial({ color: 0x3c5233, roughness: 1, envMapIntensity: 0.25 })
+/** Mown grass: a little paler than the fields around it, so a turf runway reads as a strip rather than a hole. */
+const TURF = new THREE.MeshStandardMaterial({ color: 0x7a9a52, roughness: 1, envMapIntensity: 0.25 })
 const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8d8d0 })
 const EDGE_LIGHT = new THREE.MeshBasicMaterial({ color: 0xffffff })
 const STRIPE_BASE = 0xd8d8d0

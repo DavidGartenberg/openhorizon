@@ -3132,3 +3132,7 @@ What changed, and what is real versus a recorded stand-in:
 - At database airports, X-Plane lists 503 runways (at 423 airports) that sit on no database runway. `/api/apt-runways.json` now sends them as 11-field rows (… width m, surface code, edge lights) and the client adds them (`addMissingRunways`), so they get a strip, markings and levelled ground. A runway the database has under another number, or shifted within 250 m and 25° of one, is not a missing runway.
 - Checked at KACK (Nantucket): runways, taxiways and apron draw together. Strips under 200 m are skipped.
 - Flaky under load: `tests/render/prop-surfaces-repair.test.ts` failed one test in two of the fresh-clone gates that ran beside a type-check and passes alone (23/23).
+
+### Turf runways (2026-11-02)
+
+- Turf and other soft runway strips drew nearly black (a hole in the fields). They now use a mown-grass tone slightly paler than the imagery. Checked at 12K (Superior Muni, Nebraska), where X-Plane lists a 61 m wide turf strip beside the paved runway.
