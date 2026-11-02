@@ -111,7 +111,7 @@ export function normalizeApt(raw: unknown): AptLayout | null {
 
 /** Pavement follows the ground in triangles no longer than this (m), and sits this far above it on top of the surface's own lift (the terrain mesh interpolates the levelling between its vertices, so it can stand a few centimetres above the sampled ground). */
 const PAVEMENT_MAX_EDGE_M = 30
-const DRAPE_BIAS_M = 0.05
+const DRAPE_BIAS_M = 0.07
 /** Painted lines follow the ground in segments no longer than this (m). */
 const PAINT_MAX_SEG_M = 14
 /** The ground is sampled on a grid of this spacing (m) over the airport. */
@@ -502,8 +502,8 @@ export function buildAptPaint(layout: AptLayout, toLocal: (lat: number, lon: num
   const out: THREE.Mesh[] = []
   const paint = new Map<PaintColor, Ribbons>()
   const borders = ribbon()
-  const yPaint: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.15 : elevM + 0.09
-  const yBorder: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.13 : elevM + 0.075
+  const yPaint: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.17 : elevM + 0.09
+  const yBorder: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.15 : elevM + 0.075
   const fine = (pts: XZ[]): XZ[] => (ground ? densify(pts, PAINT_MAX_SEG_M, ground) : pts)
   for (const l of layout.lines) {
     const style = lineStyle(l.t)
@@ -668,7 +668,7 @@ export function buildAptGateLabels(layout: AptLayout, toLocal: (lat: number, lon
     const ux = Math.sin(H), uz = -Math.cos(H), rx = Math.cos(H), rz = Math.sin(H)
     const cx = p.x + ux * GATE_LABEL_AHEAD_M, cz = p.z + uz * GATE_LABEL_AHEAD_M
     const h = GATE_LABEL_H_M, w = h * (GATE_ATLAS.cellW / GATE_ATLAS.cellH)
-    const y = (ground ? ground(cx, cz) : elevM) + 0.14
+    const y = (ground ? ground(cx, cz) : elevM) + 0.19
     const u0 = cell.x / canvas.width, u1 = (cell.x + GATE_ATLAS.cellW) / canvas.width
     const v0 = 1 - (cell.y + GATE_ATLAS.cellH) / canvas.height, v1 = 1 - cell.y / canvas.height
     const base = pos.length / 3
