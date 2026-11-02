@@ -33,9 +33,20 @@ geometry, gear / flaps / prop disc from observed kinematics, nearest 8 to the ca
 - Mouse: every `ATTR_manip_*` in the panel mesh is an invisible hit box that moves with its lever; a click maps to
   the matching simulator action (`xpActionFor`) or says "NOT SIMULATED" with the control's own name.
 
-**Airports** (`src/world/apt-layout.ts`, `airport-flatten.ts`, `runway-marks.ts`): pavement polygons with
-holes and Bézier edges, painted lines, taxi lights, signs, displaced thresholds, concrete versus asphalt, the
-taxi network (names real taxiways for ground control), and a level terrain disk under the airport.
+**Airports** (`src/world/apt-layout.ts`, `airport-flatten.ts`, `runway-marks.ts`, `server/apt.mjs`): pavement polygons with
+holes and Bézier edges draped on the ground (rebuilt when the fine terrain has loaded), painted lines, gate numbers,
+taxi lights and signs, displaced thresholds, blast pads / overruns with chevrons, PAPI and windsocks, decorative parked
+airplanes at the gates, concrete versus asphalt, the taxi network (names real taxiways for ground control) and a level
+terrain area sized from X-Plane's real pavement extent. Terminals are OpenStreetMap footprints (X-Plane has none).
+Three more routes carry what the old OurAirports database gets wrong or lacks, all read from `apt.dat` and cached on disk:
+
+| Route | Serves |
+| --- | --- |
+| `GET /api/apt-runways.json` | per airport: overruns; X-Plane's runway ends / width / hard-soft / edge lights where they differ; runways the database lacks; runways X-Plane disproves (`[end, end, -1, -1]`) |
+| `GET /api/apt-extent.json` | the box that holds an airport's pavement (airports over ~1.5 km across) |
+| `GET /api/apt-airports.json?lat&lon&r` | airports X-Plane has and the database lacks (22k, mostly small fields), drawn but kept off the ND / MFD lists |
+
+Fields below sea level are levelled over what the elevation data calls sea and the ocean is hidden around them.
 
 ## How to look at it (verification recipes)
 
@@ -59,6 +70,9 @@ taxi network (names real taxiways for ground control), and a level terrain disk 
 
 ## Known limits
 
-Recorded in `PROGRESS.md` (overnight shift): overhead switches are resting positions, the lower DU / clocks /
-annunciator bricks are not driven, one autopilot stands behind CMD A/B, liveries are not applied, the airport
-terrain disk is a heuristic radius, runway ends come from the old database (X-Plane's agree to within metres).
+Recorded in `PROGRESS.md` (overnight shift): overhead switches are resting positions, the lower DU shows modelled
+readouts, one autopilot stands behind CMD A/B, and only the airliner exteriors take X-Plane liveries (two at a time).
+Airports: land the elevation data calls sea beyond a below-sea field's margin (Dutch polders, VHHH's reclaimed land)
+still shows as sea; terminal heights come from OpenStreetMap; heliports and seaplane bases are not drawn; the
+shoreline where a level area meets the sea is stepped at the terrain's cell size; the parked airplanes are scenery
+(no label, no radar return).
