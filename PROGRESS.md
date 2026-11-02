@@ -3149,3 +3149,8 @@ What changed, and what is real versus a recorded stand-in:
 
 - Fresh-clone gate on 99e4816: `tsc` clean, 167 files / 2212 tests, `vite build` ok.
 - Checked KDFW (fillets, yellow centrelines, hold-short bars, concrete shoulders) and KBOS. At KBOS the bay north of 4R/22L shows blocky dark pits: elevation cells the data says are sea (0 m) beside levelled ground at the field's 4.9 m, at the terrain's ~51 m cell size. The pavement itself is on the ground there; only the shoreline is jagged. Fixing it needs the worker and the physics ground to agree on a new water rule at every coastal airport, so it is left as a known limit alongside reclaimed land (VHHH).
+
+### Blast pads and the avionics lists (2026-11-02)
+
+- At KMSO (a terraced field) the blast pad drew much darker than its runway: it was receiving the terrain's shadow. Pads no longer receive shadows (tone matches the runway, chevrons read). The overrun group is now named `runwayOverruns` for `__ohAptShow`.
+- The X-Plane-only airstrips are drawn and can be flown from, but are left off the ND and MFD airport lists, as a real navigation database would not chart every private strip.

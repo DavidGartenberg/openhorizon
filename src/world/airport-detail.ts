@@ -215,13 +215,14 @@ const OVERRUN_ASPHALT = pavementMaterial(0x484b4d, 'xz')
 const OVERRUN_CONCRETE = pavementMaterial(0x8e908b, 'xz')
 export function buildRunwayOverruns(r: RunwayLocal, concrete: boolean): THREE.Group {
   const g = new THREE.Group()
+  g.name = 'runwayOverruns'
   const geo = overrunGeometry(r.lenM, r.widM, r.overrunLowM, r.overrunHighM)
   // The ground under an overrun keeps the runway's slope (the terrain is levelled as its continuation).
   const eLow = r.elevAt(-0.5), eHigh = r.elevAt(0.5)
   const onSlope: RunwayLocal = { ...r, elevAt: (t) => eLow + (t + 0.5) * (eHigh - eLow) }
   if (geo.pavement.length) {
     const pave = new THREE.Mesh(mergedQuads(geo.pavement, onSlope, 0.05, false), concrete ? OVERRUN_CONCRETE : OVERRUN_ASPHALT)
-    pave.receiveShadow = true
+    pave.receiveShadow = false // a pad this thin beside the terrain's shadow map went nearly black on a terraced field (KMSO)
     pave.renderOrder = 20
     g.add(pave)
   }
