@@ -3132,6 +3132,7 @@ function advanceFrame(elapsed: number, now: number): void {
     airports.updateVisuals(ll.lat, ll.lon)
   }
   airports.positionAll()
+  airports.setWind(windDirFromNed(aircraft.windNed), Math.hypot(aircraft.windNed.x, aircraft.windNed.y) / KT)
   updateLiveWeather(ll.lat, ll.lon, now)
   updateLiveTraffic(ll.lat, ll.lon, now)
   trafficLayer.update(

@@ -6,7 +6,7 @@ vi.mock('../src/render/light-glow', () => ({ lightGlowTexture: () => ({ isTextur
 vi.mock('../src/world/airport-detail', async (importActual) => { const T = await import('three'); return { ...(await importActual<typeof import('../src/world/airport-detail')>()), buildRunwayMarkings: () => new T.Group() } })
 import * as THREE from 'three'
 import {
-  gateLabel, runwayRects, insideRunway, groundGrid, densify, subdivideTriangles, normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, buildAptPavement, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
+  sockDirection, sockDroop, buildAptWindsocks, gateLabel, runwayRects, insideRunway, groundGrid, densify, subdivideTriangles, normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, buildAptPavement, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
 } from '../src/world/apt-layout'
 
 const toLocal = (lat: number, lon: number): XZ => ({ x: lon * 100_000, z: -lat * 111_320 })
@@ -398,5 +398,28 @@ describe('gate numbers', () => {
     expect(gateLabel('Gate 54A', 'gate')).toBe('54A'); expect(gateLabel('A12', 'gate')).toBe('A12'); expect(gateLabel('gate g3', 'gate')).toBe('G3')
     expect(gateLabel('B7 Heavy', 'gate')).toBe('B7'); expect(gateLabel('Ramp', 'gate')).toBeNull()
     expect(gateLabel('Gate 54A', 'tie-down')).toBeNull(); expect(gateLabel('', 'gate')).toBeNull(); expect(gateLabel('Terminal Building 4 North', 'gate')).toBeNull()
+  })
+})
+
+describe('windsocks', () => {
+  it('point downwind and hang limp in calm air, level in a fresh wind', () => {
+    const near = (a: { x: number; z: number }, x: number, z: number): void => { expect(a.x).toBeCloseTo(x, 6); expect(a.z).toBeCloseTo(z, 6) }
+    near(sockDirection(0), 0, 1)                    // wind from the north blows toward the south (+z)
+    near(sockDirection(90), -1, 0)                  // from the east → toward the west
+    near(sockDirection(270), 1, 0); near(sockDirection(180), 0, -1)
+    expect(sockDroop(0)).toBeGreaterThan(1); expect(sockDroop(15)).toBe(0); expect(sockDroop(40)).toBe(0); expect(sockDroop(NaN)).toBeGreaterThan(1)
+    expect(sockDroop(5)).toBeLessThan(sockDroop(2))
+  })
+  it('builds one mast and one turning sock per listed windsock, none when there are none', () => {
+    const base = { icao: 'X', name: 'x', elevFt: 0, pav: [], lines: [], signs: [], rwy: [], lights: [], ramps: [], taxi: { nodes: [], edges: [] } } as unknown as AptLayout
+    expect(buildAptWindsocks(base, toLocal, 5)).toBeNull()
+    const w = buildAptWindsocks({ ...base, wind: [{ lat: 0.001, lon: 0.001 }, { lat: 0.002, lon: 0.003 }] }, toLocal, 5, () => 7)!
+    expect(w.pivots).toHaveLength(2); expect(w.group.children).toHaveLength(4)
+    expect(w.pivots[0]!.position.y).toBeCloseTo(13)                       // ground 7 + a 6 m mast
+    expect(w.pivots[0]!.getObjectByName('sock')).toBeTruthy()
+  })
+  it('keeps the listed windsocks through validation and drops malformed ones', () => {
+    const l = normalizeApt({ pav: [{ surf: 1, rings: [[[0, 0], [0, 1], [1, 1]]] }], wind: [{ lat: 1, lon: 2 }, { lat: 'x' }, { lat: 95, lon: 0 }] })!
+    expect(l.wind).toEqual([{ lat: 1, lon: 2 }])
   })
 })

@@ -10,7 +10,7 @@ import { lightGlowTexture } from '../render/light-glow'
 import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
 import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
 import type { ParkedSource } from './parked-aircraft'
-import { enhanceAirportWithXplane, setAptNight, NIGHT_GLOW } from './apt-layout'
+import { enhanceAirportWithXplane, setAptNight, NIGHT_GLOW, sockDirection, sockDroop } from './apt-layout'
 import { airportFlatDisk, airportFieldElevationM, flattenEnds, applyRunwayExtras, applyAirportExtents, type RunwayExtras, type AirportExtents } from './airport-flatten'
 import { primaryRunway, planAirportFacilities, buildAirportFacilities, updateAirportServices, disposeAirportObject, mappedApronPlan, footprintObstacle, type SurfaceObstacle, type GroundPoint } from './airport-scenery'
 
@@ -491,14 +491,17 @@ export class Airports {
         }
       }
     }
-    // Windsock at the airport reference point.
+    // Windsock at the airport reference point (the stand-in; X-Plane's own windsocks replace it where its layout is known).
+    const stand = new THREE.Group()
+    stand.name = 'proceduralWindsock'
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 5, 6), EDGE_LIGHT)
     pole.position.set(30, ap.e * FT + 2.5, 30)
-    group.add(pole)
+    stand.add(pole)
     const sock = new THREE.Mesh(new THREE.ConeGeometry(0.32, 1.8, 8), SOCK_ORANGE)
     sock.position.set(30, ap.e * FT + 5, 30)
     sock.rotation.z = Math.PI / 2
-    group.add(sock)
+    stand.add(sock)
+    group.add(stand)
     if (anyLighted) addLight(30, ap.e * FT + 5.7, 30, 1, 0.85, 0.58) // floodlit sock
 
     // 13c: assemble the night layer.
@@ -690,6 +693,17 @@ export class Airports {
   }
 
   /** Reposition all rendered airports (call every frame — cheap — and after rebase). */
+  /** Turn every windsock of X-Plane's layouts downwind: the wind blows from `fromDeg` (true) at `kt` knots. */
+  setWind(fromDeg: number, kt: number): void {
+    if (!Number.isFinite(fromDeg)) return
+    const d = sockDirection(fromDeg), droop = sockDroop(kt)
+    for (const g of this.rendered.values()) {
+      const pivots = g.userData.aptSocks as THREE.Object3D[] | undefined
+      if (!pivots) continue
+      for (const p of pivots) { p.rotation.set(0, -Math.atan2(d.z, d.x), -droop) }
+    }
+  }
+
   /** Every rendered airport's parked-airplane spots (X-Plane's layout), with the group that places them. */
   parkedSources(): ParkedSource[] {
     const out: ParkedSource[] = []

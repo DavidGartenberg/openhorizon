@@ -41,6 +41,7 @@ export interface AptLayout {
   signs: AptSign[]
   rwy: AptRunway[]
   ramps: AptRamp[]
+  wind?: Array<{ lat: number; lon: number }>
   taxi: { nodes: AptTaxiNode[]; edges: AptTaxiEdge[] }
 }
 
@@ -88,6 +89,7 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     const o = r as Record<string, unknown>
     return Number.isFinite(o?.lat) && Number.isFinite(o?.lon) ? [{ lat: Number(o.lat), lon: Number(o.lon), hdg: Number(o.hdg) || 0, kind: String(o.kind ?? ''), cats: Array.isArray(o.cats) ? o.cats.map(String) : [], name: String(o.name ?? '').slice(0, 40) }] : []
   })
+  const wind = arr(d.wind).slice(0, 40).flatMap((w) => { const o = w as Record<string, unknown>; return Number.isFinite(o?.lat) && Number.isFinite(o?.lon) && Math.abs(Number(o.lat)) <= 90 && Math.abs(Number(o.lon)) <= 180 ? [{ lat: Number(o.lat), lon: Number(o.lon) }] : [] })
   const tx = (d.taxi ?? {}) as Record<string, unknown>
   const nodes: AptTaxiNode[] = arr(tx.nodes).slice(0, 8000).flatMap((n) => {
     const o = n as Record<string, unknown>
@@ -98,7 +100,7 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     return Number.isFinite(o?.a) && Number.isFinite(o?.b) ? [{ a: Number(o.a), b: Number(o.b), oneway: !!o.oneway, kind: String(o.kind ?? ''), name: String(o.name ?? '').slice(0, 12) }] : []
   })
   if (!pav.length && !lines.length) return null
-  return { icao: String(d.icao ?? ''), name: String(d.name ?? ''), elevFt: Number(d.elevFt) || 0, pav, lines, lights, signs, rwy, ramps, taxi: { nodes, edges } }
+  return { icao: String(d.icao ?? ''), name: String(d.name ?? ''), elevFt: Number(d.elevFt) || 0, pav, lines, lights, signs, rwy, ramps, wind, taxi: { nodes, edges } }
 }
 
 // ------------------------------------------------------------- surfaces --
@@ -524,6 +526,63 @@ export function buildAptPaint(layout: AptLayout, toLocal: (lat: number, lon: num
   return out
 }
 
+// ---------------------------------------------------------------- windsocks --
+
+/** Where a windsock's cone points for a wind blowing FROM `windFromDeg` (downwind), in the airport frame (x east, z south): a unit direction. */
+export function sockDirection(windFromDeg: number): { x: number; z: number } {
+  const h = (((windFromDeg + 180) % 360) * Math.PI) / 180
+  return { x: Math.sin(h), z: -Math.cos(h) }
+}
+
+/** How far a sock hangs (radians below horizontal) in a wind of `kt` knots: limp in calm air, level from about 15 kt. */
+export function sockDroop(kt: number): number {
+  const k = Number.isFinite(kt) ? Math.max(0, kt) : 0
+  return (1 - Math.min(k / 15, 1)) * 1.2
+}
+
+const SOCK_ORANGE_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, side: THREE.DoubleSide })
+const MAST_MAT = new THREE.MeshStandardMaterial({ color: 0xb8bcc0, roughness: 0.6, metalness: 0.4 })
+let sockGeometry: THREE.BufferGeometry | null = null
+
+/** A striped orange / white cone 3 m long along +x, wide end at the origin (shared by every windsock). */
+function sockCone(): THREE.BufferGeometry {
+  if (sockGeometry) return sockGeometry
+  const g = new THREE.CylinderGeometry(0.2, 0.45, 3, 12, 5, true)    // radiusTop (the small, free end) 0.2, bottom 0.45 (on the ring)
+  g.rotateZ(-Math.PI / 2)                                              // axis along +x, the wide end at x = −1.5 → shifted below
+  g.translate(1.5, 0, 0)
+  const pos = g.getAttribute('position'), col = new Float32Array(pos.count * 3)
+  for (let i = 0; i < pos.count; i++) {
+    const band = Math.min(4, Math.floor((pos.getX(i) / 3) * 5 + 1e-6))
+    const orange = band % 2 === 0
+    col.set(orange ? [0.93, 0.36, 0.08] : [0.94, 0.94, 0.9], i * 3)
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3))
+  sockGeometry = g
+  return g
+}
+
+/** Windsocks at the positions X-Plane's layout lists, each on a 6 m mast. `pivots` turn them downwind (see Airports.setWind). */
+export function buildAptWindsocks(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number, ground?: GroundFn): { group: THREE.Group; pivots: THREE.Object3D[] } | null {
+  if (!layout.wind?.length) return null
+  const group = new THREE.Group()
+  group.name = 'aptWindsocks'
+  const pivots: THREE.Object3D[] = []
+  for (const w of layout.wind.slice(0, 40)) {
+    const p = toLocal(w.lat, w.lon)
+    const y = ground ? ground(p.x, p.z) : elevM
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 6, 6), MAST_MAT)
+    mast.position.set(p.x, y + 3, p.z)
+    const pivot = new THREE.Group()
+    pivot.position.set(p.x, y + 6, p.z)
+    const sock = new THREE.Mesh(sockCone(), SOCK_ORANGE_MAT)
+    sock.name = 'sock'
+    pivot.add(sock)
+    group.add(mast, pivot)
+    pivots.push(pivot)
+  }
+  return { group, pivots }
+}
+
 // ------------------------------------------------------------ gate numbers --
 
 /** The number painted on a stand from its ramp start's name ("Gate 54A", "A12", "G3 Heavy"), or null when there is none to read. */
@@ -904,6 +963,12 @@ export async function enhanceAirportWithXplane(group: THREE.Group, icao: string,
   await idle(); if (!alive()) return false
   built.add(...buildAptPaint(layout, toLocal, elevM, ground))
   { const numbers = buildAptGateLabels(layout, toLocal, elevM, ground); if (numbers) built.add(numbers) }
+  const socks = buildAptWindsocks(layout, toLocal, elevM, ground)
+  if (socks) {
+    built.add(socks.group); group.userData.aptSocks = socks.pivots
+    // X-Plane's windsocks replace the stand-in cone at the airport reference point.
+    const old = group.getObjectByName('proceduralWindsock'); if (old) disposeAirportObject(old)
+  }
   await idle(); if (!alive()) return false
   group.userData.aptDisplaced = applyDisplacedThresholds(group, layout.rwy)
   // Decorative airplanes at the gates and tie-downs (scenery: no datablock, no radar entry).
