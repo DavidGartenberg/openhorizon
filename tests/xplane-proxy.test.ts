@@ -7,8 +7,8 @@ const known = new Set(Object.keys(XP_MODELS))
 const r = (k: string) => resolveLocalModel(k, known)
 
 describe('which installed model draws each flyable aircraft', () => {
-  it('the nine installed types are exact, at scale 1', () => {
-    for (const [k, m] of [['172', 'C172'], ['737', 'B738'], ['A333', 'A333'], ['SR22', 'SR22'], ['BE58', 'BE58'], ['PA18', 'PA18'], ['AS21', 'AS21'], ['C750', 'C750']] as const) {
+  it('the ten installed types are exact, at scale 1', () => {
+    for (const [k, m] of [['172', 'C172'], ['737', 'B738'], ['A333', 'A333'], ['SR22', 'SR22'], ['BE58', 'BE58'], ['PA18', 'PA18'], ['AS21', 'AS21'], ['C750', 'C750'], ['BE9L', 'BE9L']] as const) {
       expect(r(k)).toEqual({ model: m, scale: 1, exact: true })
     }
   })
@@ -26,7 +26,7 @@ describe('which installed model draws each flyable aircraft', () => {
     expect(r('C182')).toMatchObject({ model: 'C172' })
     expect(r('SR20')).toMatchObject({ model: 'SR22' })
     expect(r('PA34')).toMatchObject({ model: 'BE58' })
-    expect(r('B350')).toMatchObject({ model: 'BE58' })
+    expect(r('B350')).toMatchObject({ model: 'BE9L', exact: false })     // twin turboprops borrow the King Air
     for (const g of ['DG80', 'LS8', 'DISC']) expect(r(g)).toMatchObject({ model: 'AS21', exact: false })
   })
   it('three- and four-engine types keep their own airframe', () => {

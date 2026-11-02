@@ -17,6 +17,7 @@ export const XP_NATIVE_SIZE: Record<string, { lengthM: number; spanM: number }> 
   A333: { lengthM: 63.7, spanM: 60.3 },
   MD82: { lengthM: 45.1, spanM: 32.9 },
   C750: { lengthM: 22.0, spanM: 19.4 },
+  BE9L: { lengthM: 10.82, spanM: 15.32 },
   C172: { lengthM: 8.28, spanM: 11.0 },
   SR22: { lengthM: 7.9, spanM: 11.7 },
   BE58: { lengthM: 9.1, spanM: 11.5 },
@@ -50,7 +51,7 @@ export function chooseTrafficModel(spec: ArchetypeSpec, designator: string, opts
     case 'taildragger': return fit('PA18', 0.8, 1.6)
     case 'twin-piston': return fit('BE58', 0.85, 1.5)
     case 'single-turboprop': return fit('SR22', 1, 2)
-    case 'twin-turboprop': return spec.lengthM <= 20 ? fit('BE58', 1, 2.2) : null
+    case 'twin-turboprop': return spec.lengthM <= 20 ? fit('BE9L', 0.8, 1.9) : null
     case 'glider': return fit('AS21', 0.8, 1.6)
     default: return null
   }
