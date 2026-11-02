@@ -75,6 +75,20 @@ describe('adding X-Plane-only airports to the database', () => {
     expect(calls).toEqual([[22.3, 113.9, 6000]])
     expect(a.find('LOW2')!.land).toEqual([[22.3, 113.89, 22.3, 113.91]])                              // the malformed run is dropped
   })
+  it('asks for the terrain to be rebuilt only where the loaded terrain under a mask is sea', () => {
+    const a = make() as unknown as Airports & { onLandMask: (la: number, lo: number, r: number) => void }
+    a.addAirports([ap('DRY1', 10, 10), ap('WET1', 20, 20)])
+    const calls: string[] = []
+    a.onLandMask = (la) => calls.push(String(la))
+    a.terrainReady = () => true
+    a.terrainAt = (la) => (la === 20 ? 0 : 50)                                                // land at DRY1, sea at WET1
+    a.applyLandMasks({ DRY1: [[10, 10, 10, 10.01]], WET1: [[20, 20, 20, 20.01]] })
+    expect(calls).toEqual(['20'])
+    a.addAirports([ap('NEW1', 30, 30)])
+    a.terrainReady = () => false                                                              // not loaded yet: build it again when it is
+    a.applyLandMasks({ NEW1: [[30, 30, 30, 30.01]] })
+    expect(calls).toEqual(['20', '30'])
+  })
   it('hands the terrain the land runs and the lowland circle of a field below sea level, and levels sea cells at a reclaimed field', () => {
     const a = make()
     const reclaimed = ap('RECL', 22.3, 113.9); reclaimed.r[0]!.e1 = 25; reclaimed.r[0]!.e2 = 25; reclaimed.e = 25

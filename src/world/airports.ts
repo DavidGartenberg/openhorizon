@@ -152,6 +152,17 @@ export class Airports {
     } catch { this.landRetryAt = Date.now() + XPLANE_ONLY_RETRY_MS } finally { this.landBusy = false }
   }
 
+  /** True unless the terrain under a land mask is already loaded and entirely land (so building it again would change nothing). */
+  private landMaskChangesTerrain(runs: ReadonlyArray<readonly [number, number, number, number]>): boolean {
+    if (!this.terrainAt || !this.terrainReady) return true
+    for (const [a, b, c, d] of runs) {
+      for (const [la, lo] of [[a, b], [(a + c) / 2, (b + d) / 2], [c, d]] as const) {
+        if (!this.terrainReady(la, lo) || this.terrainAt(la, lo) <= 0) return true
+      }
+    }
+    return false
+  }
+
   /** Put land masks on their airports (those that have one already are left); returns how many were new. */
   applyLandMasks(masks: Record<string, unknown>): number {
     let added = 0
@@ -162,7 +173,7 @@ export class Airports {
       const ok = runs.filter((r): r is [number, number, number, number] => Array.isArray(r) && r.length === 4 && r.every((v) => Number.isFinite(v) && Math.abs(v as number) <= 180)).slice(0, 1000)
       if (!ok.length) continue
       ap.land = ok; added++
-      this.onLandMask?.(ap.la, ap.lo, 6000)
+      if (this.landMaskChangesTerrain(ok)) this.onLandMask?.(ap.la, ap.lo, 6000)
     }
     return added
   }
