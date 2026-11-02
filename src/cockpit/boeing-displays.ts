@@ -5,7 +5,8 @@
  * Colour conventions follow Boeing: white = current/scale, magenta =
  * selected/command, green = engaged/active modes, cyan = armed / non-active
  * route, amber = caution, red = limit. Every value shown comes from the sim
- * (inputs below); anything not modeled is omitted, never invented.
+ * (inputs below); anything not modeled is omitted, never invented — except the
+ * recorded MODELED readouts (EGT, and the lower display's N2 / oil / vibration).
  */
 
 export interface BoeingPfdInput {
@@ -565,6 +566,41 @@ export function drawBoeingEicas(c: Ctx, S: number, d: BoeingEicasInput): void {
     txt(c, i === 0 ? 'L' : 'R', x * k, 712 * k, 20 * k, C.white)
   }
   txt(c, `TOTAL ${Math.round(d.fuelKg[0] + d.fuelKg[1])} KG`, 384 * k, 740 * k, 20 * k)
+}
+
+// ---------------------------------------------------------------------------
+// Lower display unit: secondary engine page (values: see jet-secondary.ts — N2/oil/vibration are modeled)
+// ---------------------------------------------------------------------------
+
+export interface BoeingLowerDuInput {
+  engines: ReadonlyArray<{ n1Pct: number; n2Pct: number; ffKgH: number; oilPressPsi: number; oilTempC: number; oilQtyPct: number; vibN1: number; vibN2: number }>
+}
+
+export function drawBoeingLowerDu(c: Ctx, S: number, d: BoeingLowerDuInput): void {
+  const k = S / 768
+  c.fillStyle = C.black
+  c.fillRect(0, 0, S, S)
+  const n = Math.max(1, Math.min(4, d.engines.length))
+  const colW = (S - 40 * k) / n
+  const rows: Array<[string, (e: BoeingLowerDuInput['engines'][number]) => string, number]> = [
+    ['N2', (e) => e.n2Pct.toFixed(1), 150],
+    ['FF', (e) => (e.ffKgH / 1000).toFixed(2), 240],
+    ['OIL PRESS', (e) => String(Math.round(e.oilPressPsi)), 350],
+    ['OIL TEMP', (e) => String(Math.round(e.oilTempC)), 450],
+    ['OIL QTY', (e) => String(Math.round(e.oilQtyPct)), 550],
+    ['VIB N1', (e) => e.vibN1.toFixed(1), 650],
+  ]
+  for (const [label, fmt, y] of rows) {
+    txt(c, label, S / 2, (y - 36) * k, 20 * k, C.cyan)
+    for (let i = 0; i < n; i++) {
+      const cx = 20 * k + colW * (i + 0.5)
+      const e = d.engines[i]!
+      const bw = Math.min(150, colW / k * 0.7) * k, bh = 40 * k
+      c.strokeStyle = C.white; c.lineWidth = 2 * k
+      c.strokeRect(cx - bw / 2, y * k - bh / 2 + 8 * k, bw, bh)
+      txt(c, fmt(e), cx + bw / 2 - 8 * k, y * k + 8 * k, 28 * k, C.white, 'right')
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

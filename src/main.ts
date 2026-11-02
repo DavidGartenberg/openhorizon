@@ -18,7 +18,8 @@ import { makeSurfaceSmoother } from './render/surface-smoother'
 import { boeingAurals, makeAuralLatches } from './sim/boeing-aurals'
 import { atFitment, atGainsFor, makeAutothrottle, stepAutothrottle } from './sim/autothrottle'
 import { autolandConfigFor, makeAutolandState, stepAutoland, radioAltitudeFt, type AutolandConfig, type AutolandOutput } from './sim/autoland'
-import { drawBoeingNd, drawBoeingEicas, drawIsfd, boeingFma, egtFromN1, drawSquareFitted, drawMfdWithEngines, type BoeingEicasInput, type BoeingNdInput, type BoeingPfdInput } from './cockpit/boeing-displays'
+import { jetSecondary } from './cockpit/jet-secondary'
+import { drawBoeingNd, drawBoeingEicas, drawBoeingLowerDu, drawIsfd, boeingFma, egtFromN1, drawSquareFitted, drawMfdWithEngines, type BoeingEicasInput, type BoeingNdInput, type BoeingPfdInput } from './cockpit/boeing-displays'
 import { animate737, setInteriorFillScale, update737Live } from './render/cockpit-737'
 import { BoeingAuralsAudio } from './audio/boeing-aurals-audio'
 import { loadCustomPack } from './audio/custom-audio-pack'
@@ -2715,6 +2716,12 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
     }))
     panel.display('captNd', (c, w, h) => drawSquareFitted(c, 0, 0, w, h, (cc, S) => drawBoeingNd(cc, S, ndIn)))
     panel.display('eicas', (c, w, h) => drawSquareFitted(c, 0, 0, w, h, (cc, S) => drawBoeingEicas(cc, S, eng)))
+    if (!DECK_PROFILE?.turboprop) {
+      // Secondary engine page: fuel flow is the sim's; N2 / oil / vibration are modeled from N1 (src/cockpit/jet-secondary.ts, recorded).
+      panel.display('lowerDu', (c, w, h) => drawSquareFitted(c, 0, 0, w, h, (cc, S) => drawBoeingLowerDu(cc, S, {
+        engines: eng.n1Pct.map((n1, i) => ({ n1Pct: n1, ffKgH: eng.ffKgH[i] ?? 0, ...jetSecondary(n1, running[i] ?? false, oatC) })),
+      })))
+    }
     panel.display('standby', (c, w, h) => drawIsfd(c, Math.min(w, h), { iasKt, altFt, pitchDeg: d.pitchDeg, rollDeg: d.rollDeg, baroInHg: baroSetInHg }))
     panel.copyDisplay('captPfd', 'foPfd')
     panel.copyDisplay('captNd', 'foNd')
