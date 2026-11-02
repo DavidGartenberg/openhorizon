@@ -334,6 +334,18 @@ describe('following the ground', () => {
     expect(area).toBeCloseTo(3000, 3); expect(longest).toBeLessThanOrEqual(25 + 1e-9)
     expect(subdivideTriangles([0, 0, 0, 5, 0, 0, 0, 0, 5], null, 25)).toEqual([0, 0, 0, 5, 0, 0, 0, 0, 5])
   })
+  it('level ground is not subdivided, sloped ground is, and a very long triangle always is', () => {
+    const mid = [0, 0, 0, 60, 0, 0, 0, 0, 60]
+    expect(subdivideTriangles(mid, null, 30, 400_000, () => 3).length / 9).toBe(1)
+    expect(subdivideTriangles(mid, null, 30, 400_000, (x) => 3 + 0.01 * x).length / 9).toBeGreaterThan(4)
+    expect(subdivideTriangles([0, 0, 0, 2000, 0, 0, 0, 0, 2000], null, 30, 400_000, () => 3).length / 9).toBeGreaterThan(1)   // too long to trust as level
+  })
+  it('a segment over level ground is left whole, over a slope it is densified', () => {
+    const seg = [{ x: 0, z: 0 }, { x: 80, z: 0 }]
+    expect(densify(seg, 14, () => 3)).toHaveLength(2)
+    expect(densify(seg, 14, (x) => 3 + 0.01 * x).length).toBeGreaterThan(5)
+    expect(densify([{ x: 0, z: 0 }, { x: 400, z: 0 }], 14, () => 3).length).toBeGreaterThan(20)
+  })
   it('stops at the triangle budget rather than running away', () => {
     expect(subdivideTriangles([0, 0, 0, 1e6, 0, 0, 0, 0, 1e6], null, 1, 500).length / 9).toBeLessThan(1500)
   })

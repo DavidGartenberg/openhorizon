@@ -108,12 +108,15 @@ const DRAPE_BIAS_M = 0.05
 const PAINT_MAX_SEG_M = 14
 /** The ground is sampled on a grid of this spacing (m) over the airport. */
 const GROUND_GRID_M = 20
+/** Where the ground is level to within this (m) over a triangle or a segment, it is not subdivided (up to FLAT_MAX_SPAN_M across). */
+const FLAT_TOL_M = 0.01
+const FLAT_MAX_SPAN_M = 90
 
 /** apt.dat surface codes → paint. 15 (transparent) and 13/14 (water, snow) draw nothing. */
 export function surfaceStyle(surf: number): { color: number; lift: number; roughness: number } | null {
   switch (surf) {
     case 1: return { color: 0x8c9094, lift: 0.030, roughness: 0.95 }  // asphalt
-    case 2: return { color: 0xd0d1cc, lift: 0.045, roughness: 0.9 }   // concrete
+    case 2: return { color: 0xbebeb7, lift: 0.045, roughness: 0.9 }   // concrete
     case 3: return { color: 0x3c5233, lift: 0.004, roughness: 1 }     // turf
     case 4: return { color: 0x6a5a46, lift: 0.012, roughness: 1 }     // dirt
     case 5: return { color: 0x7a7367, lift: 0.020, roughness: 1 }     // gravel
@@ -121,7 +124,7 @@ export function surfaceStyle(surf: number): { color: number; lift: number; rough
     case 13: case 14: case 15: return null
     default:
       // X-Plane 12's weathered variants: 20–29 are asphalt, 30–38 concrete.
-      if (surf >= 30 && surf <= 38) return { color: 0xd0d1cc, lift: 0.047, roughness: 0.9 }
+      if (surf >= 30 && surf <= 38) return { color: 0xbebeb7, lift: 0.047, roughness: 0.9 }
       return { color: 0x8c9094, lift: 0.031, roughness: 0.95 }
   }
 }
@@ -205,15 +208,23 @@ export function groundGrid(b: { minX: number; maxX: number; minZ: number; maxZ: 
   }
 }
 
-/** A polyline with no segment longer than `maxSeg` (extra points on the segments), so it can follow the ground. Pure. */
-export function densify(pts: readonly XZ[], maxSeg: number): XZ[] {
+/**
+ * A polyline with no segment longer than `maxSeg` (extra points on the segments), so it can follow the ground.
+ * With `ground`, a segment over which the ground is level (within `flatTol`, up to `maxFlat` long) is left whole.
+ */
+export function densify(pts: readonly XZ[], maxSeg: number, ground?: GroundFn, flatTol = FLAT_TOL_M, maxFlat = FLAT_MAX_SPAN_M): XZ[] {
   const out: XZ[] = []
   for (let i = 0; i < pts.length; i++) {
     const a = pts[i]!
     out.push(a)
     const b = pts[i + 1]
     if (!b) break
-    const n = Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / maxSeg)
+    const len = Math.hypot(b.x - a.x, b.z - a.z)
+    if (ground && len <= maxFlat) {
+      const ys = [ground(a.x, a.z), ground((a.x + b.x) / 2, (a.z + b.z) / 2), ground(b.x, b.z), ground(a.x + (b.x - a.x) / 4, a.z + (b.z - a.z) / 4), ground(a.x + ((b.x - a.x) * 3) / 4, a.z + ((b.z - a.z) * 3) / 4)]
+      if (Math.max(...ys) - Math.min(...ys) <= flatTol) continue
+    }
+    const n = Math.ceil(len / maxSeg)
     for (let k = 1; k < n; k++) out.push({ x: a.x + ((b.x - a.x) * k) / n, z: a.z + ((b.z - a.z) * k) / n })
   }
   return out
@@ -223,7 +234,7 @@ export function densify(pts: readonly XZ[], maxSeg: number): XZ[] {
  * Split triangles (flat x,y,z positions in the xz plane, y ignored) at the middle of their longest edge until no
  * edge exceeds `maxEdge`, so a pavement can follow the ground. Returns flat positions, three vertices per triangle.
  */
-export function subdivideTriangles(pos: ArrayLike<number>, index: ArrayLike<number> | null, maxEdge: number, maxTriangles = 400_000): number[] {
+export function subdivideTriangles(pos: ArrayLike<number>, index: ArrayLike<number> | null, maxEdge: number, maxTriangles = 400_000, ground?: GroundFn, flatTol = FLAT_TOL_M, maxFlat = FLAT_MAX_SPAN_M): number[] {
   const out: number[] = []
   const vert = (i: number): [number, number] => [pos[i * 3]!, pos[i * 3 + 2]!]
   const stack: Array<[number, number, number, number, number, number]> = []
@@ -237,6 +248,12 @@ export function subdivideTriangles(pos: ArrayLike<number>, index: ArrayLike<numb
       const e0 = Math.hypot(x1 - x0, z1 - z0), e1 = Math.hypot(x2 - x1, z2 - z1), e2 = Math.hypot(x0 - x2, z0 - z2)
       const longest = Math.max(e0, e1, e2)
       if (longest <= maxEdge || out.length / 9 >= maxTriangles) { out.push(x0, 0, z0, x1, 0, z1, x2, 0, z2); continue }
+      if (ground && longest <= maxFlat) {
+        // Level ground (the whole of a flattened airport): a triangle that lies flat on it needs no more vertices.
+        const cx = (x0 + x1 + x2) / 3, cz = (z0 + z1 + z2) / 3
+        const ys = [ground(x0, z0), ground(x1, z1), ground(x2, z2), ground((x0 + x1) / 2, (z0 + z1) / 2), ground((x1 + x2) / 2, (z1 + z2) / 2), ground((x2 + x0) / 2, (z2 + z0) / 2), ground(cx, cz)]
+        if (Math.max(...ys) - Math.min(...ys) <= flatTol) { out.push(x0, 0, z0, x1, 0, z1, x2, 0, z2); continue }
+      }
       if (longest === e0) { const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2; stack.push([x0, z0, mx, mz, x2, z2], [mx, mz, x1, z1, x2, z2]) }
       else if (longest === e1) { const mx = (x1 + x2) / 2, mz = (z1 + z2) / 2; stack.push([x1, z1, mx, mz, x0, z0], [mx, mz, x2, z2, x0, z0]) }
       else { const mx = (x2 + x0) / 2, mz = (z2 + z0) / 2; stack.push([x2, z2, mx, mz, x1, z1], [mx, mz, x0, z0, x1, z1]) }
@@ -348,9 +365,6 @@ function pavementMaterial(surf: number): THREE.MeshStandardMaterial | null {
     const paved = surf === 1 || surf === 2 || (surf >= 20 && surf <= 38)
     m = paved ? proceduralPavement(s.color, 'xz', isConcreteSurface(surf) ? 'concrete' : 'asphalt') : new THREE.MeshStandardMaterial({ color: s.color, roughness: s.roughness, envMapIntensity: 0.25 })
     m.side = THREE.DoubleSide
-    // Overlapping polygons (concrete aprons on asphalt, paving on turf) resolve by rank, not by a few millimetres of height.
-    const rank = surf === 3 ? 0 : surf === 4 || surf === 12 ? 1 : surf === 5 ? 2 : isConcreteSurface(surf) ? 4 : 3
-    m.polygonOffset = true; m.polygonOffsetFactor = -rank; m.polygonOffsetUnits = -rank * 4
     m.userData.airportOwned = true
     pavementMaterials.set(surf, m)
   }
@@ -382,7 +396,7 @@ export function buildAptPavement(layout: AptLayout, toLocal: (lat: number, lon: 
       let geo: THREE.BufferGeometry
       if (ground) {
         // Follow the ground: fine enough triangles, each vertex on the terrain surface plus the surface's own lift.
-        const tri = subdivideTriangles(flat.getAttribute('position').array, flat.index ? flat.index.array : null, PAVEMENT_MAX_EDGE_M)
+        const tri = subdivideTriangles(flat.getAttribute('position').array, flat.index ? flat.index.array : null, PAVEMENT_MAX_EDGE_M, 400_000, ground)
         for (let i = 0; i < tri.length; i += 3) tri[i + 1] = ground(tri[i]!, tri[i + 2]!) + style.lift + DRAPE_BIAS_M
         // The shape's triangles face down once laid on the xz plane: swap two corners of each so the surface is lit from above.
         for (let i = 0; i < tri.length; i += 9) for (let k = 0; k < 3; k++) { const t = tri[i + 3 + k]!; tri[i + 3 + k] = tri[i + 6 + k]!; tri[i + 6 + k] = t }
@@ -420,7 +434,7 @@ export function buildAptPaint(layout: AptLayout, toLocal: (lat: number, lon: num
   const borders = ribbon()
   const yPaint: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.15 : elevM + 0.09
   const yBorder: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.13 : elevM + 0.075
-  const fine = (pts: XZ[]): XZ[] => (ground ? densify(pts, PAINT_MAX_SEG_M) : pts)
+  const fine = (pts: XZ[]): XZ[] => (ground ? densify(pts, PAINT_MAX_SEG_M, ground) : pts)
   for (const l of layout.lines) {
     const style = lineStyle(l.t)
     if (!style) continue

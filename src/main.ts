@@ -215,6 +215,7 @@ const frame = new WorldFrame(KHAF)
 const airports = new Airports(scene, frame)
 const tiles = new TileManager(scene, frame, (s, n, w, e) => airports.runwaysInBounds(s, n, w, e))
 airports.terrainAt = (lat, lon) => tiles.elevationAt(lat, lon)
+airports.terrainReady = (lat, lon) => tiles.fineReady(lat, lon)
 tiles.setSky(sky.radianceTexture)
 // Satellite imagery (13b) defaults ON; `IMAGERY OFF` persists across loads.
 try { if (localStorage.getItem('oh-imagery') === 'OFF') tiles.setImagery(false) } catch { /* private mode */ }
@@ -3994,6 +3995,17 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohLocal: (lat: number, lon: number) => { const l = frame.toLocal(finiteOr(lat) ?? 0, finiteOr(lon) ?? 0); return [Math.round(l.e * 10) / 10, Math.round(-l.n * 10) / 10] },
   /** Show or hide one named part of an airport (verification A/B): __ohAptShow('KSFO', 'aptLayout', false). */
   __ohAptShow: (icao: string, name: string, visible: boolean) => { const o = airports.groupFor(icao)?.getObjectByName(name); if (o) o.visible = !!visible; return !!o },
+  /** Heights (m) at which a vertical ray down onto an airport's X-Plane pavement at a latitude/longitude hits each mesh, next to the terrain height there (verification). */
+  __ohAptRay: (icao: string, lat: number, lon: number) => {
+    const g = airports.groupFor(icao); const la = finiteOr(lat), lo = finiteOr(lon)
+    const layout = g?.getObjectByName('aptLayout')
+    if (!g || !layout || la === null || lo === null) return null
+    const l = frame.toLocal(la, lo)
+    const wp = new THREE.Vector3(); g.getWorldPosition(wp)
+    const ray = new THREE.Raycaster(new THREE.Vector3(l.e, 400, -l.n), new THREE.Vector3(0, -1, 0))
+    const hits = ray.intersectObject(layout, true).map((h) => { let vis = true; for (let o: THREE.Object3D | null = h.object; o; o = o.parent) if (!o.visible) vis = false; const m = (h.object as THREE.Mesh).material as THREE.Material; return `${h.object.name}@${h.point.y.toFixed(2)}${vis ? '' : ' HIDDEN'}${m.visible ? '' : ' MATHIDDEN'} order${h.object.renderOrder} off${(m as THREE.MeshStandardMaterial).polygonOffsetFactor}` })
+    return { hits, terrain: Math.round(tiles.elevationAt(la, lo) * 100) / 100, ground: Math.round((aircraft.groundElevAt?.(l.n, l.e) ?? 0) * 100) / 100, group: wp.toArray() }
+  },
   /** What an airport's group holds right now (verification): child names, and X-Plane pavement vertex height / group position. */
   __ohAptInfo: (icao: string) => {
     const g = airports.groupFor(icao)

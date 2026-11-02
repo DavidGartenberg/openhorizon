@@ -98,6 +98,8 @@ export class Airports {
   loaded = false
   /** Rendered terrain height (m) at a position, 0 when its tile is not loaded: lets the airport's pavement follow the ground. */
   terrainAt: ((lat: number, lon: number) => number) | null = null
+  /** Whether the finest terrain tile at a position has loaded: the layout is draped on it, so it is rebuilt once it has. */
+  terrainReady: ((lat: number, lon: number) => boolean) | null = null
 
   constructor(private readonly scene: THREE.Scene, private readonly frame: WorldFrame) {}
 
@@ -221,16 +223,41 @@ export class Airports {
         this.rendered.set(ap.i, g)
         // N8: real ground layout (async; procedural stand-in retires when
         // real data lands, stays when the airport is unmapped).
-        const elevM = airportFieldElevationM(ap)
-        // X-Plane's own layout (apt.dat) is the authority where it has the airport; OSM then only
-        // adds the terminal buildings. Unmapped there, the OSM / procedural layout stays as before.
-        void enhanceAirportWithXplane(g, ap.i, ap.la, ap.lo, elevM, (lat, lon) => { const t = this.terrainAt?.(lat, lon) ?? 0; return this.flattenElevation(t > 0 ? t : elevM, lat, lon) }).then((applied) => {
-          const extra = applied ? g.userData.aptApplied as { aprons: GroundPoint[][]; obstacles: SurfaceObstacle[] } | undefined : undefined
-          return enhanceAirportWithOsm(g, ap.i, ap.la, ap.lo, elevM, ap.r, extra ? { terminalsOnly: true, extra } : undefined)
-        })
+        this.applyXplane(g, ap, true)
+      }
+    }
+    // A layout draped before the fine terrain had loaded sits on coarse heights: drape it again once the fine tiles are in.
+    for (const ap of nearby) {
+      const g = this.rendered.get(ap.i)
+      if (g && g.userData.aptApplied && g.userData.aptFine === false && !g.userData.aptRebuilt && this.fineTerrainAt(ap)) {
+        g.userData.aptRebuilt = true
+        for (const name of ['aptLayout', 'aptLights', 'aptSigns']) { const o = g.getObjectByName(name); if (o) disposeAirportObject(o) }
+        delete g.userData.aptApplied; delete g.userData.aptLights
+        this.applyXplane(g, ap, false)
       }
     }
     this.positionAll()
+  }
+
+  /** Whether the finest terrain tile has loaded under the airport's reference point and the corners of its pavement. */
+  private fineTerrainAt(ap: AirportData): boolean {
+    if (!this.terrainReady) return true
+    const pts: Array<[number, number]> = [[ap.la, ap.lo]]
+    if (ap.x) pts.push([ap.x[0], ap.x[1]], [ap.x[0], ap.x[3]], [ap.x[2], ap.x[1]], [ap.x[2], ap.x[3]])
+    return pts.every(([la, lo]) => this.terrainReady!(la, lo))
+  }
+
+  /** Draw X-Plane's layout for an airport on the ground; with `withOsm`, the OpenStreetMap terminals after it. */
+  private applyXplane(g: THREE.Group, ap: AirportData, withOsm: boolean): void {
+    const elevM = airportFieldElevationM(ap)
+    g.userData.aptFine = this.fineTerrainAt(ap)
+    // X-Plane's own layout (apt.dat) is the authority where it has the airport; OSM then only
+    // adds the terminal buildings. Unmapped there, the OSM / procedural layout stays as before.
+    void enhanceAirportWithXplane(g, ap.i, ap.la, ap.lo, elevM, (lat, lon) => { const t = this.terrainAt?.(lat, lon) ?? 0; return this.flattenElevation(t > 0 ? t : elevM, lat, lon) }).then((applied) => {
+      if (!withOsm) return
+      const extra = applied ? g.userData.aptApplied as { aprons: GroundPoint[][]; obstacles: SurfaceObstacle[] } | undefined : undefined
+      return enhanceAirportWithOsm(g, ap.i, ap.la, ap.lo, elevM, ap.r, extra ? { terminalsOnly: true, extra } : undefined)
+    })
   }
 
   private buildAirport(ap: AirportData): THREE.Group {

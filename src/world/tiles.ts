@@ -715,6 +715,12 @@ export class TileManager {
     return !tile.coverage?.covered(u, v)
   }
 
+  /** True when the finest terrain tile at a position (the one a nearby aircraft flies over) has loaded. */
+  fineReady(lat: number, lon: number): boolean {
+    const ring = RINGS[0]!
+    return this.tiles.get(`${ring.z}/${Math.floor(lonToTileX(lon, ring.z))}/${Math.floor(latToTileY(lat, ring.z))}`)?.state === 'ready'
+  }
+
   /** Terrain elevation (m MSL) at lat/lon from the best loaded tile. */
   elevationAt(lat: number, lon: number): number {
     for (const ring of RINGS) {
