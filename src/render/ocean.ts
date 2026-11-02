@@ -5,9 +5,11 @@ import { SKY_LOOKUP } from './atmosphere-shader'
 /** Wind-driven deep-water wave spectrum with filtered normals, dielectric
  * Fresnel and the same HDR atmosphere used by the sky and aircraft reflections.
  * Sea remains a flat visual surface: no bathymetry or water-landing dynamics. */
+/** Most sea cut-outs at once (fields that lie below sea level near the camera). */
+export const OCEAN_HOLES = 8
+
 export class Ocean {
   private readonly material: THREE.ShaderMaterial
-  private readonly mesh: THREE.Mesh
 
   constructor(scene: THREE.Scene, sky: THREE.Texture) {
     this.material = new THREE.ShaderMaterial({
@@ -19,6 +21,7 @@ export class Ocean {
         uWorldOffset: { value: new THREE.Vector2() }, uFogDensity: { value: 9e-6 },
         uSunTransmission: { value: 1 },
         uCloudDensity: { value: 0 }, uCloudColor: { value: new THREE.Color(0xc8ccd2) },
+        uHoles: { value: Array.from({ length: OCEAN_HOLES }, () => new THREE.Vector3(0, 0, -1)) },
       },
       vertexShader: /* glsl */ `
         varying vec3 vWorldPos;
@@ -34,12 +37,17 @@ export class Ocean {
         uniform sampler2D uSky;
         uniform float uTime, uDayness, uSlopeScale, uWhitecap, uFogDensity, uSunTransmission, uCloudDensity;
         uniform vec3 uCloudColor;
+        uniform vec3 uHoles[${OCEAN_HOLES}];
         uniform vec3 uSunDir;
         uniform vec2 uWind, uWorldOffset;
         varying vec3 vWorldPos;
         varying float vCloudDepth;
         ${SKY_LOOKUP}
         void main() {
+          // Land below sea level (a polder, Death Valley) is a hole in the sea: x, z and radius of each.
+          for (int h = 0; h < ${OCEAN_HOLES}; h++) {
+            if (uHoles[h].z > 0.0 && distance(vWorldPos.xz, uHoles[h].xy) < uHoles[h].z) discard;
+          }
           vec2 p = vWorldPos.xz + uWorldOffset;
           float footprint = max(length(dFdx(p)), length(dFdy(p)));
           vec2 slope = vec2(0.0);
@@ -101,7 +109,7 @@ export class Ocean {
         }
       `,
     })
-    const mesh = this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(800_000, 800_000), this.material)
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(800_000, 800_000), this.material)
     mesh.rotation.x = -Math.PI/2
     scene.add(mesh)
   }
@@ -111,8 +119,11 @@ export class Ocean {
     ;(this.material.uniforms.uCloudColor!.value as THREE.Color).copy(fog.color)
   }
 
-  /** Hide the sea (near an airport the elevation data puts below sea level, where the field would lie under it). */
-  setVisible(visible: boolean): void { this.mesh.visible = visible }
+  /** Cut the sea away over land that lies below sea level: centre (render-space x, z) and radius in metres, nearest first; at most OCEAN_HOLES. */
+  setHoles(holes: ReadonlyArray<{ x: number; z: number; r: number }>): void {
+    const list = this.material.uniforms.uHoles!.value as THREE.Vector3[]
+    for (let i = 0; i < list.length; i++) { const h = holes[i]; list[i]!.set(h ? h.x : 0, h ? h.z : 0, h ? h.r : -1) }
+  }
 
   update(timeSeconds: number, sunDir: THREE.Vector3, dayness: number, windMs: number,
     windTowardRad: number, worldOffsetE = 0, worldOffsetN = 0, fogDensity = 9e-6, sunTransmission = 1): void {

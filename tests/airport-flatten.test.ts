@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { airportFieldElevationM, airportFlatRadiusM, airportFlatDisk, FLAT_INNER_MARGIN_M, flattenEnds, applyRunwayExtras, applyAirportExtents, MAX_FLAT_RADIUS_M } from '../src/world/airport-flatten'
+import { airportFieldElevationM, airportFlatRadiusM, airportFlatDisk, FLAT_INNER_MARGIN_M, flattenEnds, applyRunwayExtras, applyAirportExtents, MAX_FLAT_RADIUS_M, lowlandRadiusM } from '../src/world/airport-flatten'
 import { flattenForRunway } from '../src/math/geo'
 
 const rwy = (l: number, e1: number, e2: number) => ({ li: '1', hi: '19', la1: 0, lo1: 0, la2: 0, lo2: 0, e1, e2, l, w: 150, s: 0, lt: 1 })
@@ -129,5 +129,14 @@ describe("X-Plane's runway ends and width replace the old database's", () => {
     applyRunwayExtras([a], { KSFO: [['10R', '28L', 120, 0, 95, -122.4, 37.6, -122.3, 61]] })
     expect(a.r[0]).toMatchObject({ la1: 37.6, la2: 37.6, o1: 120 })
     applyRunwayExtras([a], { KSFO: [['10R', '28L', 0, 0]] }); expect(a.r[0]!.la1).toBe(37.6)
+  })
+})
+
+describe('the lowland around a field below sea level', () => {
+  it('grows with the depth, from 12 km to 40 km', () => {
+    expect(lowlandRadiusM(-3.4)).toBeCloseTo(12_000 + 3.4 * 400, 0)          // a polder
+    expect(lowlandRadiusM(-64)).toBeCloseTo(12_000 + 64 * 400, 0)            // Death Valley
+    expect(lowlandRadiusM(-386)).toBe(40_000)                                // the Dead Sea basin
+    expect(lowlandRadiusM(0)).toBe(12_000)
   })
 })

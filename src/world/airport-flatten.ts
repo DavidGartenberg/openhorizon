@@ -25,6 +25,15 @@ export function airportFieldElevationM(ap: Pick<AirportData, 'r' | 'e'>): number
 export const MAX_FLAT_RADIUS_M = 4500
 /** A field lower than this (m) lies below sea level: land the elevation data calls sea (0 m is often just an unknown elevation). */
 export const BELOW_SEA_FIELD_M = -0.5
+/**
+ * Radius (m) around a field below sea level within which the elevation data's negative heights are land: a polder is a
+ * few km across, Death Valley or the Dead Sea basin tens of km, so the radius grows with the depth, 12 km to 40 km.
+ */
+export const LOWLAND_MIN_RADIUS_M = 12_000
+export const LOWLAND_MAX_RADIUS_M = 40_000
+export function lowlandRadiusM(fieldElevM: number): number {
+  return Math.min(LOWLAND_MAX_RADIUS_M, Math.max(LOWLAND_MIN_RADIUS_M, LOWLAND_MIN_RADIUS_M - fieldElevM * 400))
+}
 const EXTENT_MARGIN_M = 150
 
 /** Radius (m) of the level area around the airport reference: from its runways, and from the reach of its pavement when X-Plane's layout is known. */

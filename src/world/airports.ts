@@ -11,7 +11,7 @@ import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount, papiMaterial, type PapiA
 import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
 import type { ParkedSource } from './parked-aircraft'
 import { enhanceAirportWithXplane, setAptNight, NIGHT_GLOW, sockDirection, sockDroop } from './apt-layout'
-import { airportFlatDisk, airportFieldElevationM, BELOW_SEA_FIELD_M, flattenEnds, applyRunwayExtras, applyAirportExtents, type RunwayExtras, type AirportExtents } from './airport-flatten'
+import { airportFlatDisk, airportFieldElevationM, BELOW_SEA_FIELD_M, lowlandRadiusM, flattenEnds, applyRunwayExtras, applyAirportExtents, type RunwayExtras, type AirportExtents } from './airport-flatten'
 import { primaryRunway, planAirportFacilities, buildAirportFacilities, updateAirportServices, disposeAirportObject, mappedApronPlan, footprintObstacle, type SurfaceObstacle, type GroundPoint } from './airport-scenery'
 
 export interface RunwayData {
@@ -52,10 +52,6 @@ export interface AirportData {
 export const RUNWAY_STRIP_LIFT_M = 0.06
 /** How long to wait before asking again for the X-Plane-only airports after a failed request. */
 const XPLANE_ONLY_RETRY_MS = 30_000
-/** How far past a below-sea-level field's level area the sea stays hidden (m). */
-const BELOW_SEA_MARGIN_M = 1500
-/** Radius (m) around a below-sea-level field within which the elevation data's negative heights are kept as land. */
-const LOWLAND_RADIUS_M = 12_000
 /** Half width (m) of a run of a low field's land mask (its cells are 100 m). */
 const LAND_RUN_HALF_WIDTH_M = 75
 const ASPHALT = pavementMaterial(0x484b4d, 'xy', 'runway')
@@ -115,6 +111,7 @@ export class Airports {
       if (extras.ok) { this.runwayExtras = (await extras.json()) as RunwayExtras; applyRunwayExtras(this.all, this.runwayExtras) }
       if (extents.ok) { this.airportExtents = (await extents.json()) as AirportExtents; applyAirportExtents(this.all, this.airportExtents) }
     } catch { /* keep the database as it is */ }
+    this.lowFields = null
     for (const ap of this.all) {
       const key = `${Math.floor(ap.la * 2)},${Math.floor(ap.lo * 2)}`
       let arr = this.cells.get(key)
@@ -173,6 +170,7 @@ export class Airports {
     const have = new Set(this.all.map((a) => a.i))
     const fresh = list.filter((a) => a && typeof a.i === 'string' && !have.has(a.i) && Array.isArray(a.r) && a.r.length && Number.isFinite(a.la) && Number.isFinite(a.lo))
     applyRunwayExtras(fresh, this.runwayExtras); applyAirportExtents(fresh, this.airportExtents)
+    this.lowFields = null
     for (const ap of fresh) {
       this.all.push(ap)
       const key = `${Math.floor(ap.la * 2)},${Math.floor(ap.lo * 2)}`
@@ -223,8 +221,9 @@ export class Airports {
     const cLat = (latS + latN) / 2
     const cLon = (lonW + lonE) / 2
     // Land below sea level around a field that lies there keeps its true heights (the data's negative cells are land, not sea).
-    for (const ap of this.near(cLat, cLon, distanceM({ lat: latS, lon: lonW }, { lat: latN, lon: lonE }) / 2 + LOWLAND_RADIUS_M + 500)) {
-      if (airportFieldElevationM(ap) < BELOW_SEA_FIELD_M) out.push({ la1: ap.la, lo1: ap.lo, la2: ap.la, lo2: ap.lo, e1M: 0, e2M: 0, halfWidthM: LOWLAND_RADIUS_M, lowland: true })
+    for (const ap of this.lowFieldList()) {
+      const radius = lowlandRadiusM(airportFieldElevationM(ap))
+      if (distanceM({ lat: cLat, lon: cLon }, { lat: ap.la, lon: ap.lo }) < distanceM({ lat: latS, lon: lonW }, { lat: latN, lon: lonE }) / 2 + radius + 500) out.push({ la1: ap.la, lo1: ap.lo, la2: ap.la, lo2: ap.lo, e1M: 0, e2M: 0, halfWidthM: radius, lowland: true })
     }
     for (const ap of this.near(cLat, cLon, distanceM({ lat: latS, lon: lonW }, { lat: latN, lon: lonE }) / 2 + 4000)) {
       // The level disk first (a zero-length runway); the runway corridors then override it.
@@ -243,12 +242,17 @@ export class Airports {
     return out
   }
 
-  /** True near a field that lies below sea level (its lowland and a margin): the sea is not drawn there. */
-  belowSeaFieldNear(lat: number, lon: number): boolean {
-    for (const ap of this.near(lat, lon, LOWLAND_RADIUS_M + BELOW_SEA_MARGIN_M)) {
-      if (airportFieldElevationM(ap) < BELOW_SEA_FIELD_M && distanceM({ lat, lon }, { lat: ap.la, lon: ap.lo }) < LOWLAND_RADIUS_M + BELOW_SEA_MARGIN_M) return true
+  private lowFields: AirportData[] | null = null
+  private lowFieldList(): AirportData[] { return (this.lowFields ??= this.all.filter((ap) => airportFieldElevationM(ap) < BELOW_SEA_FIELD_M)) }
+
+  /** The fields that lie below sea level, within `rangeM` of a point: their positions and the radius (m) of land that keeps its true heights around each. Nearest first. */
+  belowSeaFields(lat: number, lon: number, rangeM: number): Array<{ lat: number; lon: number; radiusM: number }> {
+    const out: Array<{ lat: number; lon: number; radiusM: number; d: number }> = []
+    for (const ap of this.lowFieldList()) {
+      const d = distanceM({ lat, lon }, { lat: ap.la, lon: ap.lo })
+      if (d <= rangeM) out.push({ lat: ap.la, lon: ap.lo, radiusM: lowlandRadiusM(airportFieldElevationM(ap)), d })
     }
-    return false
+    return out.sort((a, b) => a.d - b.d).map(({ d: _d, ...f }) => f)
   }
 
   /** Physics-side flattening — must match the worker's mesh flattening. */

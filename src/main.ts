@@ -38,7 +38,7 @@ import { C172S, flapInterp } from './sim/aircraft/c172s'
 import { bearingDeg, distanceM, windDirFromNed, type LatLon } from './math/geo'
 import { createScene } from './render/scene'
 import { SkyDome } from './render/sky'
-import { Ocean } from './render/ocean'
+import { Ocean, OCEAN_HOLES } from './render/ocean'
 import { FlyCamera } from './render/camera'
 import { ChaseCamera } from './render/chase-camera'
 import { OrbitCamera } from './render/orbit-camera'
@@ -3494,7 +3494,7 @@ function advanceFrame(elapsed: number, now: number): void {
   const dayness = Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1)
   // 13e: METAR surface wind drives the sea state; sun-position dusk factor
   // (peaks with the sun at the horizon) warms the cloud decks.
-  ocean.setVisible(!airports.belowSeaFieldNear(ll.lat, ll.lon))
+  ocean.setHoles(airports.belowSeaFields(ll.lat, ll.lon, 150_000).slice(0, OCEAN_HOLES).map((f) => { const q = frame.toLocal(f.lat, f.lon); return { x: q.e, z: -q.n, r: f.radiusM } }))
   ocean.update(loop.simTime, sunDir, dayness, wind.steadyMs, wind.steadyTowardRad,
     worldShift.e, worldShift.n, tiles.fogDensity, sky.directTransmission)
   const dusk = Math.min(Math.max(1 - Math.abs(sky.elevationDeg) / 8, 0), 1)

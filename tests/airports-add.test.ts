@@ -48,14 +48,14 @@ describe('adding X-Plane-only airports to the database', () => {
     applyRunwayExtras(list, { KDB: [['9', '27', 0, 0, 40, -100.01, 40, -99.99, 30, 1, 0]] })
     expect(list[0]!.r[0]).toMatchObject({ s: 1, lt: 0 })
   })
-  it('hides the sea only near a field whose level area lies at or below sea level', () => {
+  it('lists the fields below sea level near a point, nearest first, and not the ones above it', () => {
     const a = make()
     const low = ap('LOW1', 36.46, -116.88); low.r[0]!.e1 = -200; low.r[0]!.e2 = -200; low.e = -200
-    const high = ap('HIGH', 40, -100); high.r[0]!.e1 = 1500; high.r[0]!.e2 = 1500; high.e = 1500
-    a.addAirports([low, high])
-    expect(a.belowSeaFieldNear(36.46, -116.88)).toBe(true)
-    expect(a.belowSeaFieldNear(36.46, -116.0)).toBe(false)         // 70 km away
-    expect(a.belowSeaFieldNear(40, -100)).toBe(false)
+    const low2 = ap('LOW2', 36.6, -116.88); low2.r[0]!.e1 = -100; low2.r[0]!.e2 = -100; low2.e = -100
+    const high = ap('HIGH', 36.5, -116.88); high.r[0]!.e1 = 1500; high.r[0]!.e2 = 1500; high.e = 1500
+    a.addAirports([low2, high, low])
+    expect(a.belowSeaFields(36.45, -116.88, 50_000).map((f) => f.lat)).toEqual([36.46, 36.6])
+    expect(a.belowSeaFields(40, -100, 50_000)).toEqual([])
   })
   it('removes the runways X-Plane disproves, keeping the last one', async () => {
     const { applyRunwayExtras } = await import('../src/world/airport-flatten')
@@ -85,9 +85,9 @@ describe('adding X-Plane-only airports to the database', () => {
     expect(near.filter((r) => r.land)).toHaveLength(1)
     expect(near.some((r) => r.lowland)).toBe(false)
     const low = a.runwaysInBounds(52.2, 52.4, 4.7, 4.9)
-    expect(low.filter((r) => r.lowland)).toHaveLength(1); expect(low.find((r) => r.lowland)!.halfWidthM).toBe(12_000)
+    expect(low.filter((r) => r.lowland)).toHaveLength(1); expect(low.find((r) => r.lowland)!.halfWidthM).toBeCloseTo(12_000 + 11 * 0.3048 * 400, 0)
     expect(a.flattenElevation(0, 22.3, 113.905)).toBeCloseTo(7.6, 0)                                  // sea at the run: 25 ft of land
     expect(a.flattenElevation(0, 22.4, 113.905)).toBe(0)                                              // sea far from it stays sea
-    expect(a.belowSeaFieldNear(52.3, 4.76)).toBe(true); expect(a.belowSeaFieldNear(22.3, 113.9)).toBe(false)
+    expect(a.belowSeaFields(52.3, 4.76, 20_000)).toEqual([{ lat: 52.3, lon: 4.76, radiusM: 12_000 + 11 * 0.3048 * 400 }]); expect(a.belowSeaFields(22.3, 113.9, 20_000)).toEqual([])
   })
 })
