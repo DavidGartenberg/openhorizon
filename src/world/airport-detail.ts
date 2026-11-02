@@ -18,7 +18,7 @@
 import * as THREE from 'three'
 import { ownMaterial } from './airport-scenery'
 import { pavementMaterial } from '../render/surface-materials'
-import { runwayMarkQuads, designatorLayout, FT, type Quad } from './runway-marks'
+import { runwayMarkQuads, designatorLayout, clampDisplaced, FT, type Quad } from './runway-marks'
 
 /** Painted markings: unlit, multiplied by a tiling wear map so fresh paint,
  *  scuffs and rubber-dulled patches read like the real thing. */
@@ -72,6 +72,9 @@ export interface RunwayLocal {
   widM: number
   liIdent: string // low end (at y = -len/2)
   hiIdent: string // high end (at y = +len/2)
+  /** Pavement before the landing threshold at each end (X-Plane's displaced thresholds), metres. */
+  displacedLowM?: number
+  displacedHighM?: number
   elevAt: (t: number) => number // t ∈ [-0.5, 0.5] → elevation offset vs center
 }
 
@@ -180,7 +183,7 @@ export function buildRunwayMarkings(r: RunwayLocal): THREE.Group {
   const halfLen = r.lenM / 2
   MARK_WHITE.map = paintWearTexture()
   MARK_WHITE.needsUpdate = true
-  const paint = new THREE.Mesh(mergedQuads(runwayMarkQuads(r.lenM, r.widM), r, 0.16), MARK_WHITE)
+  const paint = new THREE.Mesh(mergedQuads(runwayMarkQuads(r.lenM, r.widM, { ...(r.displacedLowM ? { displacedLowM: r.displacedLowM } : {}), ...(r.displacedHighM ? { displacedHighM: r.displacedHighM } : {}) }), r, 0.16), MARK_WHITE)
   paint.renderOrder = 22
   g.add(paint)
 
@@ -192,7 +195,7 @@ export function buildRunwayMarkings(r: RunwayLocal): THREE.Group {
       const wM = gl.text.length > 1 ? 12 : 8
       const mat = ownMaterial(new THREE.MeshBasicMaterial({ map: numeralTexture(gl.text), transparent: true }))
       const quad = new THREE.Mesh(new THREE.PlaneGeometry(wM, heightM), mat)
-      const y = end * (halfLen - gl.distM)
+      const y = end * (halfLen - gl.distM - clampDisplaced(r.lenM, end === -1 ? r.displacedLowM : r.displacedHighM))
       quad.rotation.x = -Math.PI / 2
       quad.rotation.z = end === -1 ? 0 : Math.PI
       quad.position.set(0, r.elevAt(y / r.lenM) + 0.17, -y)

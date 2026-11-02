@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { disposeAirportObject, ownMaterial, type GroundPoint, type SurfaceObstacle } from './airport-scenery'
+import { buildRunwayMarkings, type RunwayLocal } from './airport-detail'
 import { osmIdentSegs } from './osm-layout'
 import { lightGlowTexture } from '../render/light-glow'
 
@@ -25,6 +26,7 @@ export interface AptPavement { surf: number; name: string; rings: [number, numbe
 export interface AptTaxiNode { id: number; lat: number; lon: number; use: string; name: string }
 export interface AptTaxiEdge { a: number; b: number; oneway: boolean; kind: string; name: string }
 export interface AptSign { lat: number; lon: number; hdg: number; size: number; text: string }
+export interface AptRunway { w: number; surf: number; ends: [{ id: string; dthr: number; over: number; mark: number }, { id: string; dthr: number; over: number; mark: number }] }
 export interface AptRamp { lat: number; lon: number; hdg: number; kind: string; cats: string[]; name: string }
 export interface AptLayout {
   icao: string
@@ -34,6 +36,7 @@ export interface AptLayout {
   lines: AptLine[]
   lights: AptLights[]
   signs: AptSign[]
+  rwy: AptRunway[]
   ramps: AptRamp[]
   taxi: { nodes: AptTaxiNode[]; edges: AptTaxiEdge[] }
 }
@@ -65,6 +68,14 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     const p = pts(o?.p, 2)
     if (p && Number.isFinite(o.l)) lights.push({ l: Number(o.l), p })
   }
+  const rwy: AptRunway[] = arr(d.rwy).slice(0, 64).flatMap((r) => {
+    const o = r as Record<string, unknown>
+    const ends = arr(o?.ends).slice(0, 2).map((e) => {
+      const x = e as Record<string, unknown>
+      return typeof x?.id === 'string' ? { id: x.id, dthr: Math.max(0, Number(x.dthr) || 0), over: Math.max(0, Number(x.over) || 0), mark: Number(x.mark) || 0 } : null
+    })
+    return ends.length === 2 && ends[0] && ends[1] ? [{ w: Number(o.w) || 0, surf: Number(o.surf) || 0, ends: [ends[0], ends[1]] as AptRunway['ends'] }] : []
+  })
   const signs: AptSign[] = arr(d.signs).slice(0, 2000).flatMap((r) => {
     const o = r as Record<string, unknown>
     const text = typeof o?.text === 'string' ? o.text.slice(0, 80) : ''
@@ -84,7 +95,7 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     return Number.isFinite(o?.a) && Number.isFinite(o?.b) ? [{ a: Number(o.a), b: Number(o.b), oneway: !!o.oneway, kind: String(o.kind ?? ''), name: String(o.name ?? '').slice(0, 12) }] : []
   })
   if (!pav.length && !lines.length) return null
-  return { icao: String(d.icao ?? ''), name: String(d.name ?? ''), elevFt: Number(d.elevFt) || 0, pav, lines, lights, signs, ramps, taxi: { nodes, edges } }
+  return { icao: String(d.icao ?? ''), name: String(d.name ?? ''), elevFt: Number(d.elevFt) || 0, pav, lines, lights, signs, rwy, ramps, taxi: { nodes, edges } }
 }
 
 // ------------------------------------------------------------- surfaces --
@@ -427,6 +438,34 @@ export function paintSign(c: CanvasRenderingContext2D, panels: SignPanel[], size
   })
 }
 
+/** "09L" and "9L" are the same runway end. */
+const identKey = (id: string): string => id.trim().toUpperCase().replace(/^0+(?=\d)/, '')
+
+/**
+ * X-Plane's displaced thresholds: redraw each runway's markings with the landing threshold, arrows and bar
+ * where the airport data puts them. Runways without a displacement keep their markings. Returns how many changed.
+ */
+export function applyDisplacedThresholds(group: THREE.Group, rwy: readonly AptRunway[]): number {
+  const details = group.userData.runwayDetails as Array<{ li: string; hi: string; rl: RunwayLocal; detail: THREE.Group }> | undefined
+  if (!details) return 0
+  let changed = 0
+  for (const d of details) {
+    const low = identKey(d.li), high = identKey(d.hi)
+    const m = rwy.find((r) => { const a = identKey(r.ends[0].id), b = identKey(r.ends[1].id); return (a === low && b === high) || (a === high && b === low) })
+    if (!m) continue
+    const endOf = (k: string): number => m.ends.find((e) => identKey(e.id) === k)?.dthr ?? 0
+    const displacedLowM = endOf(low), displacedHighM = endOf(high)
+    if (!(displacedLowM > 0 || displacedHighM > 0)) continue
+    const old = d.detail.getObjectByName('runwayMarkings')
+    if (old) { d.detail.remove(old); disposeAirportObject(old) }
+    const fresh = buildRunwayMarkings({ ...d.rl, displacedLowM, displacedHighM })
+    fresh.name = 'runwayMarkings'
+    d.detail.add(fresh)
+    changed++
+  }
+  return changed
+}
+
 const SIGN_ATLAS = { cols: 8, rows: 32, cellW: 256, cellH: 64 }
 const SIGN_POST_M = 0.35
 
@@ -568,6 +607,7 @@ export async function enhanceAirportWithXplane(group: THREE.Group, icao: string,
   await idle(); if (!alive()) return false
   built.add(...buildAptPaint(layout, toLocal, elevM))
   await idle(); if (!alive()) return false
+  group.userData.aptDisplaced = applyDisplacedThresholds(group, layout.rwy)
   const lights = buildAptLights(layout, toLocal, elevM)
   if (lights) { group.add(lights); group.userData.aptLights = lights }
   const signs = buildAptSigns(layout, toLocal, elevM)

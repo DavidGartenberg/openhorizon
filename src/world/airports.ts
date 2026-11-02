@@ -233,6 +233,9 @@ export class Airports {
     const rabbitPos: number[] = []
     const rabbitStations: number[] = []
     const primary = primaryRunway(ap)
+    /** Each marked runway's holder, so the X-Plane layout can redraw its markings with displaced thresholds. */
+    const runwayDetails: Array<{ li: string; hi: string; rl: RunwayLocal; detail: THREE.Group }> = []
+    group.userData.runwayDetails = runwayDetails
     for (const r of ap.r) {
       const lenM = r.l * FT
       const widM = Math.max(r.w * FT, 8)
@@ -304,7 +307,10 @@ export class Airports {
           elevAt: (t) => elevAt(Math.max(-0.5, Math.min(0.5, t))) - elevM,
         }
         const detail = new THREE.Group()
-        detail.add(buildRunwayMarkings(rl))
+        const markings = buildRunwayMarkings(rl)
+        markings.name = 'runwayMarkings'
+        detail.add(markings)
+        runwayDetails.push({ li: r.li, hi: r.hi, rl, detail })
         detail.add(buildDistanceSigns(rl))
         if (r === primary && lenM >= 1100) {
           // 16c: collect taxiway blue-edge lights (detail-local frame)

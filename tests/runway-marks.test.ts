@@ -90,3 +90,52 @@ describe('runwayMarkQuads', () => {
     for (const x of s) expect(Math.abs(x.x) + x.w / 2).toBeLessThanOrEqual(9 + 1e-6)
   })
 })
+
+describe('displaced thresholds', () => {
+  const LEN = 3000, W = 45
+  const inY = (q: { y: number; l: number }, lo: number, hi: number): boolean => q.y - q.l / 2 >= lo - 0.01 && q.y + q.l / 2 <= hi + 0.01
+  it('no displacement is the same markings as before', () => {
+    expect(runwayMarkQuads(LEN, W, {})).toEqual(runwayMarkQuads(LEN, W))
+    expect(runwayMarkQuads(LEN, W, { displacedLowM: 0, displacedHighM: 0 })).toEqual(runwayMarkQuads(LEN, W))
+  })
+  it('the threshold stripes, aiming point and touchdown bars start at the displaced threshold, not at the pavement end', () => {
+    const base = runwayMarkQuads(LEN, W)
+    const d = runwayMarkQuads(LEN, W, { displacedLowM: 300 })
+    // the 30 m threshold stripes of the low end (centred 6 + 15 m in from the threshold) move 300 m inward
+    const stripes = (qs: typeof base): number[] => qs.filter((q) => q.w === 1.8 && q.l === 30 && q.y < 0).map((q) => q.y)
+    expect(Math.max(...stripes(base))).toBeCloseTo(-LEN / 2 + 21, 3)
+    expect(Math.min(...stripes(d))).toBeGreaterThan(-LEN / 2 + 300)
+    // nothing but arrows, edges and the centreline lies in the displaced stretch
+    const inside = d.filter((q) => inY(q, -LEN / 2, -LEN / 2 + 300) && !(Math.abs(q.x) > W / 2 - 3))
+    expect(inside.length).toBeGreaterThan(0)
+    expect(inside.every((q) => q.w <= 2.0 || q.x === 0)).toBe(true)
+  })
+  it('the displaced stretch carries centreline arrows pointing at the threshold, and a threshold bar across the runway', () => {
+    const d = runwayMarkQuads(LEN, W, { displacedLowM: 300 })
+    const bar = d.find((q) => q.w > W * 0.6 && q.l <= 3.5 && Math.abs(q.y - (-LEN / 2 + 300)) < 3)
+    expect(bar, 'threshold bar').toBeTruthy()
+    const arrows = d.filter((q) => q.x === 0 && q.w <= 1.0 && inY(q, -LEN / 2, -LEN / 2 + 300) && q.l <= 12)
+    expect(arrows.length).toBeGreaterThanOrEqual(8)
+    const heads = d.filter((q) => q.rotZ !== undefined && Math.abs(q.x) > 1 && inY(q, -LEN / 2, -LEN / 2 + 300))
+    expect(heads.length).toBe(arrows.length * 2)
+    // the tip is toward the threshold: the head strokes lie nearer the threshold than the shaft's centre
+    const shaft = arrows.find((q) => q.y > -LEN / 2 + 250)!
+    for (const h of heads.filter((x) => Math.abs(x.y - shaft.y) < 20)) expect(h.y).toBeGreaterThan(shaft.y)
+    // every painted piece stays on the pavement
+    for (const q of d) expect(q.y - q.l / 2).toBeGreaterThanOrEqual(-LEN / 2 - 0.5)
+  })
+  it('the edge lines still run the full length of the pavement', () => {
+    const d = runwayMarkQuads(LEN, W, { displacedLowM: 300, displacedHighM: 200 })
+    const edges = d.filter((q) => Math.abs(q.x) > W / 2 - 2 && q.l > LEN * 0.9)
+    expect(edges).toHaveLength(2)
+  })
+  it('displaced ends on both sides are symmetric about the middle', () => {
+    const d = runwayMarkQuads(LEN, W, { displacedLowM: 250, displacedHighM: 250 })
+    const ys = d.filter((q) => q.w === 1.8 && q.l === 30).map((q) => q.y).sort((a, b) => a - b)
+    expect(ys[0]).toBeCloseTo(-ys[ys.length - 1]!, 3)
+  })
+  it('an absurd displacement is limited to what the pavement can hold', () => {
+    const d = runwayMarkQuads(LEN, W, { displacedLowM: 99999, displacedHighM: 99999 })
+    for (const q of d) expect(Math.abs(q.y) - q.l / 2).toBeLessThanOrEqual(LEN / 2 + 0.5)
+  })
+})

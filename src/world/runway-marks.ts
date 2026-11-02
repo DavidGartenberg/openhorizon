@@ -43,8 +43,50 @@ export function designatorLayout(ident: string): { glyphs: { text: string; distM
   return { glyphs, heightM }
 }
 
-/** Every white painted quad on one paved runway. */
-export function runwayMarkQuads(lenM: number, widM: number): Quad[] {
+/** The displacement the markings honour: never more than 40 % of the pavement. */
+export function clampDisplaced(lenM: number, d: number | undefined): number {
+  return Math.min(Math.max(Number.isFinite(d) ? d! : 0, 0), lenM * 0.4)
+}
+
+export interface MarkOptions {
+  /** Metres of pavement before the landing threshold at the low (y = −len/2) / high end: arrows lead to it. */
+  displacedLowM?: number
+  displacedHighM?: number
+}
+
+/** A centreline arrow of the displaced stretch: 12 m long, its tip at `tipY`, pointing toward +y when `dir` is 1. */
+function displacedArrow(tipY: number, dir: 1 | -1): Quad[] {
+  return [
+    { x: 0, y: tipY - dir * 7.5, w: 0.9, l: 9 },
+    { x: -1.6, y: tipY - dir * 1.9, w: 0.9, l: 5, rotZ: -dir * 0.7 },
+    { x: 1.6, y: tipY - dir * 1.9, w: 0.9, l: 5, rotZ: dir * 0.7 },
+  ]
+}
+
+/** Every white painted quad on one paved runway. A displaced threshold moves the landing markings (threshold
+ *  stripes, designators' reference, aiming point, touchdown bars) inward and fills the stretch before it with
+ *  centreline arrows and a threshold bar; the edge lines still run the whole pavement. */
+export function runwayMarkQuads(lenM: number, widM: number, opts: MarkOptions = {}): Quad[] {
+  const dLow = clampDisplaced(lenM, opts.displacedLowM)
+  const dHigh = clampDisplaced(lenM, opts.displacedHighM)
+  if (dLow > 0 || dHigh > 0) {
+    const effLen = lenM - dLow - dHigh
+    const shift = (dLow - dHigh) / 2
+    const landing = runwayMarkQuads(effLen, widM).slice(2).map((q) => ({ ...q, y: q.y + shift }))   // [0,1] are the edge lines
+    const out: Quad[] = [...runwayMarkQuads(lenM, widM).slice(0, 2), ...landing]
+    const barW = widM - 3.6
+    for (const [d, end] of [[dLow, -1], [dHigh, 1]] as const) {
+      if (d <= 0) continue
+      const threshold = end * (lenM / 2 - d)                       // where landing starts
+      out.push({ x: 0, y: threshold + end * 1.5, w: barW, l: 3 })     // threshold bar, just on the pavement side
+      for (let k = 0; ; k++) {
+        const tip = threshold + end * (3 + k * 30)                    // the arrows walk back toward the pavement end
+        if (Math.abs(tip + end * 12) > lenM / 2 - 3) break           // …until the next tail would leave the pavement
+        out.push(...displacedArrow(tip, end === -1 ? 1 : -1))
+      }
+    }
+    return out
+  }
   const quads: Quad[] = []
   const halfLen = lenM / 2
   const halfW = widM / 2

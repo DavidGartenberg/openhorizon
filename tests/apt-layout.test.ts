@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 
 // The glow sprite needs a canvas; geometry and styling are what these tests are about.
 vi.mock('../src/render/light-glow', () => ({ lightGlowTexture: () => ({ isTexture: true }) }))
+// Marking meshes paint a wear texture on a canvas; the redraw logic is what these tests are about.
+vi.mock('../src/world/airport-detail', async () => { const T = await import('three'); return { buildRunwayMarkings: () => new T.Group() } })
 import * as THREE from 'three'
 import {
   normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
@@ -88,7 +90,7 @@ describe('dashes and offsets', () => {
 describe('the taxi network names real taxiways', () => {
   it('uses the midpoints of named taxiway edges only', () => {
     const l: AptLayout = {
-      icao: 'K', name: '', elevFt: 0, pav: [], lines: [], signs: [], lights: [], ramps: [],
+      icao: 'K', name: '', elevFt: 0, pav: [], lines: [], signs: [], rwy: [], lights: [], ramps: [],
       taxi: {
         nodes: [{ id: 0, lat: 0, lon: 0, use: 'both', name: '' }, { id: 1, lat: 0, lon: 0.001, use: 'both', name: '' }],
         edges: [{ a: 0, b: 1, oneway: false, kind: 'taxiway_A', name: 'A' }, { a: 0, b: 1, oneway: false, kind: 'runway', name: '10L/28R' }, { a: 0, b: 1, oneway: false, kind: 'taxiway_B', name: '' }, { a: 0, b: 9, oneway: false, kind: 'taxiway_C', name: 'C' }],
@@ -114,7 +116,7 @@ describe('meshes', () => {
   it('pavement with a hole covers outer minus hole, merged per surface', () => {
     // toLocal: 1° lon = 100 km, 1° lat = 111.32 km  →  use tiny degrees
     const outer = square(0, 0, 0.001), hole = square(0.0003, 0.0003, 0.0002)
-    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], signs: [], lights: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [outer, hole] }, { surf: 1, name: '', rings: [square(0.002, 0, 0.0005)] }, { surf: 15, name: '', rings: [square(0.003, 0, 0.001)] }] }
+    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], signs: [], rwy: [], lights: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [outer, hole] }, { surf: 1, name: '', rings: [square(0.002, 0, 0.0005)] }, { surf: 15, name: '', rings: [square(0.003, 0, 0.001)] }] }
     const g = buildAptMeshes(layout, toLocal, 10)
     const pav = g.children.filter((c) => c.name.startsWith('aptPavement')) as THREE.Mesh[]
     expect(pav).toHaveLength(1)                           // asphalt merged; the transparent surface draws nothing
@@ -124,7 +126,7 @@ describe('meshes', () => {
   })
   it('paints one mesh per colour and a border mesh only for bordered types', () => {
     const l = (t: number): AptLayout['lines'][number] => ({ t, p: [[0, 0], [0, 0.001]] })
-    const base: AptLayout = { icao: 'K', name: '', elevFt: 0, pav: [], lights: [], signs: [], ramps: [], taxi: { nodes: [], edges: [] }, lines: [l(1), l(2), l(3), l(20)] }
+    const base: AptLayout = { icao: 'K', name: '', elevFt: 0, pav: [], lights: [], signs: [], rwy: [], ramps: [], taxi: { nodes: [], edges: [] }, lines: [l(1), l(2), l(3), l(20)] }
     const g = buildAptMeshes(base, toLocal, 0)
     expect(g.children.map((c) => c.name).sort()).toEqual(['aptPaint-white', 'aptPaint-yellow'])
     const g2 = buildAptMeshes({ ...base, lines: [l(51)] }, toLocal, 0)
@@ -134,7 +136,7 @@ describe('meshes', () => {
     expect(yellow.geometry.getAttribute('position').getY(0)).toBeGreaterThan(0.06)
   })
   it('a degenerate polygon is dropped without failing the airport', () => {
-    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], signs: [], lights: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [[[0, 0], [0, 0], [0, 0]]] }, { surf: 2, name: '', rings: [square(0, 0, 0.001)] }] }
+    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], signs: [], rwy: [], lights: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [[[0, 0], [0, 0], [0, 0]]] }, { surf: 2, name: '', rings: [square(0, 0, 0.001)] }] }
     const g = buildAptMeshes(layout, toLocal, 0)
     expect(g.children.some((c) => c.name === 'aptPavement2')).toBe(true)
   })
@@ -155,7 +157,7 @@ describe('taxiway lights', () => {
     expect(samplePolyline([], 4)).toEqual([])
   })
   it('builds one Points cloud, dark until the airport fades it in, capped', () => {
-    const l: AptLayout = { icao: 'K', name: '', elevFt: 0, pav: [], lines: [], ramps: [], taxi: { nodes: [], edges: [] }, signs: [], lights: [{ l: 101, p: [[0, 0], [0, 0.001]] }, { l: 102, p: [[0, 0], [0.001, 0]] }] }
+    const l: AptLayout = { icao: 'K', name: '', elevFt: 0, pav: [], lines: [], ramps: [], taxi: { nodes: [], edges: [] }, signs: [], rwy: [], lights: [{ l: 101, p: [[0, 0], [0, 0.001]] }, { l: 102, p: [[0, 0], [0.001, 0]] }] }
     const pts = buildAptLights(l, toLocal, 3)!
     expect(pts.name).toBe('aptLights')
     expect((pts.material as THREE.PointsMaterial).opacity).toBe(0)
@@ -203,5 +205,37 @@ describe('taxi signs', () => {
   it('keeps the signs the airport lists (position, heading, text), dropping malformed ones', () => {
     const l = normalize({ pav: [{ surf: 1, rings: [[[0, 0], [0, 1], [1, 1]]] }], signs: [{ lat: 1, lon: 2, hdg: 90, size: 2, text: '{@L}A' }, { lat: 'x' }, { lat: 1, lon: 2, hdg: 0, size: 1, text: '' }] })!
     expect(l.signs).toEqual([{ lat: 1, lon: 2, hdg: 90, size: 2, text: '{@L}A' }])
+  })
+})
+
+import { applyDisplacedThresholds } from '../src/world/apt-layout'
+describe('displaced thresholds from the airport data', () => {
+  const holder = (li: string, hi: string): { group: THREE.Group; detail: THREE.Group } => {
+    const group = new THREE.Group(), detail = new THREE.Group()
+    const old = new THREE.Group(); old.name = 'runwayMarkings'; detail.add(old)
+    group.userData.runwayDetails = [{ li, hi, rl: { lenM: 3000, widM: 45, liIdent: li, hiIdent: hi, elevAt: () => 0 }, detail }]
+    return { group, detail }
+  }
+  const rwy = (a: string, da: number, b: string, db: number) => [{ w: 45, surf: 1, ends: [{ id: a, dthr: da, over: 0, mark: 3 }, { id: b, dthr: db, over: 0, mark: 3 }] as never }]
+  it('redraws the markings of a runway that has a displaced threshold', () => {
+    const { group, detail } = holder('10L', '28R')
+    const before = detail.getObjectByName('runwayMarkings')
+    expect(applyDisplacedThresholds(group, rwy('10L', 0, '28R', 90))).toBe(1)
+    const after = detail.getObjectByName('runwayMarkings')
+    expect(after).toBeTruthy(); expect(after).not.toBe(before)
+    expect(detail.children.filter((c) => c.name === 'runwayMarkings')).toHaveLength(1)
+  })
+  it('matches the ends whichever way round and with or without a leading zero', () => {
+    expect(applyDisplacedThresholds(holder('9L', '27R').group, rwy('27R', 100, '09L', 0))).toBe(1)
+  })
+  it('leaves runways with no displacement, and runways X-Plane does not list, alone', () => {
+    const a = holder('10L', '28R')
+    expect(applyDisplacedThresholds(a.group, rwy('10L', 0, '28R', 0))).toBe(0)
+    expect(applyDisplacedThresholds(a.group, rwy('1L', 50, '19R', 0))).toBe(0)
+    expect(applyDisplacedThresholds(new THREE.Group(), rwy('10L', 90, '28R', 0))).toBe(0)
+  })
+  it('keeps the runway list from the airport data, dropping a malformed one', () => {
+    const l = normalizeApt({ pav: [{ surf: 1, rings: [[[0, 0], [0, 1], [1, 1]]] }], rwy: [{ w: 45, surf: 1, ends: [{ id: '10L', dthr: 0, over: 0, mark: 3 }, { id: '28R', dthr: 90, over: 50, mark: 3 }] }, { ends: [{ id: 5 }] }] })!
+    expect(l.rwy).toHaveLength(1); expect(l.rwy[0]!.ends[1]).toEqual({ id: '28R', dthr: 90, over: 50, mark: 3 })
   })
 })
