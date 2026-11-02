@@ -266,6 +266,13 @@ function pavementMaterial(surf: number): THREE.MeshStandardMaterial | null {
 export function buildAptMeshes(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number): THREE.Group {
   const group = new THREE.Group()
   group.name = 'aptLayout'
+  group.add(...buildAptPavement(layout, toLocal, elevM), ...buildAptPaint(layout, toLocal, elevM))
+  return group
+}
+
+/** The pavement polygons, merged per surface (the expensive part: every polygon is triangulated). */
+export function buildAptPavement(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number): THREE.Mesh[] {
+  const out: THREE.Mesh[] = []
   // ---- pavement, merged per surface
   const bySurface = new Map<number, THREE.BufferGeometry[]>()
   for (const p of layout.pav) {
@@ -292,9 +299,14 @@ export function buildAptMeshes(layout: AptLayout, toLocal: (lat: number, lon: nu
     mesh.name = `aptPavement${surf}`
     mesh.receiveShadow = true
     mesh.renderOrder = 10
-    group.add(mesh)
+    out.push(mesh)
   }
-  // ---- painted lines, merged per colour (+ one black border mesh)
+  return out
+}
+
+/** The painted lines, merged per colour (+ one black border mesh). */
+export function buildAptPaint(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number): THREE.Mesh[] {
+  const out: THREE.Mesh[] = []
   const paint = new Map<PaintColor, Ribbons>()
   const borders = ribbon()
   const yPaint = elevM + 0.09, yBorder = elevM + 0.075
@@ -315,12 +327,12 @@ export function buildAptMeshes(layout: AptLayout, toLocal: (lat: number, lon: nu
     }
   }
   const b = toMesh(borders, paintMaterial('border', 0x16181a), 'aptLineBorders')
-  if (b) { b.renderOrder = 21; group.add(b) }
+  if (b) { b.renderOrder = 21; out.push(b) }
   for (const [color, r] of paint) {
     const m = toMesh(r, paintMaterial(color, PAINT[color]), `aptPaint-${color}`)
-    if (m) { m.renderOrder = 22; group.add(m) }
+    if (m) { m.renderOrder = 22; out.push(m) }
   }
-  return group
+  return out
 }
 
 // ------------------------------------------------------------------ signs --
@@ -531,11 +543,13 @@ export function buildAptLights(layout: AptLayout, toLocal: (lat: number, lon: nu
 /** Fetch and build X-Plane's layout for `icao`; true when it was applied. */
 export async function enhanceAirportWithXplane(group: THREE.Group, icao: string, refLat: number, refLon: number, elevM: number): Promise<boolean> {
   let layout: AptLayout | null
+  const t0 = performance.now()
   try {
     const res = await fetch(`/api/apt/${icao}.json`)
     if (!res.ok) return false
     layout = normalizeApt(await res.json())
   } catch { return false }
+  const tFetched = performance.now()
   if (!layout || group.userData.airportDisposed || group.getObjectByName('aptLayout')) return false
   const mLat = 111_320
   const mLon = 111_320 * Math.cos((refLat * Math.PI) / 180)
@@ -544,12 +558,22 @@ export async function enhanceAirportWithXplane(group: THREE.Group, icao: string,
   const near = (r: [number, number][]): boolean => r.every(([lat, lon]) => { const q = toLocal(lat, lon); return Math.hypot(q.x, q.z) < 25_000 })
   layout = { ...layout, pav: layout.pav.map((p) => ({ ...p, rings: p.rings.filter(near) })).filter((p) => p.rings.length), lines: layout.lines.filter((l) => near(l.p)), lights: layout.lights.filter((l) => near(l.p)) }
   if (!layout.pav.length) return false
-  const built = buildAptMeshes(layout, toLocal, elevM)
+  // Built in stages with a frame between each: a big airport is a couple of hundred milliseconds of work.
+  const built = new THREE.Group()
+  built.name = 'aptLayout'
   group.add(built)
+  const idle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+  const alive = (): boolean => !group.userData.airportDisposed
+  built.add(...buildAptPavement(layout, toLocal, elevM))
+  await idle(); if (!alive()) return false
+  built.add(...buildAptPaint(layout, toLocal, elevM))
+  await idle(); if (!alive()) return false
   const lights = buildAptLights(layout, toLocal, elevM)
   if (lights) { group.add(lights); group.userData.aptLights = lights }
   const signs = buildAptSigns(layout, toLocal, elevM)
   if (signs) group.add(signs)
+  await idle(); if (!alive()) return false
+  group.userData.aptTiming = { fetchMs: Math.round(tFetched - t0), buildMs: Math.round(performance.now() - tFetched), pavements: layout.pav.length, lines: layout.lines.length }
 
   // The stand-in taxiway complex retires: X-Plane's pavement replaces it.
   const stale: THREE.Object3D[] = []
