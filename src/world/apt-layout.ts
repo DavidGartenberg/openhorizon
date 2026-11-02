@@ -672,7 +672,13 @@ export function buildAptSigns(layout: AptLayout, toLocal: (lat: number, lon: num
   geo.setIndex(idx)
   const group = new THREE.Group()
   group.name = 'aptSigns'
-  const boards = new THREE.Mesh(geo, ownMaterial(new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })))
+  const boardMat = ownMaterial(new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }))
+  // A real sign is lettered on its front only: its back is a plain dark panel, not the mirrored lettering.
+  boardMat.onBeforeCompile = (shader) => {
+    shader.fragmentShader = shader.fragmentShader.replace('#include <map_fragment>', '#include <map_fragment>\n  if (!gl_FrontFacing) diffuseColor.rgb = vec3(0.045);')
+  }
+  boardMat.customProgramCacheKey = () => 'apt-sign-back'
+  const boards = new THREE.Mesh(geo, boardMat)
   boards.name = 'aptSignBoards'
   boards.frustumCulled = false
   group.add(boards)
