@@ -94,6 +94,8 @@ export class Airports {
   private readonly cells = new Map<string, AirportData[]>()
   private readonly rendered = new Map<string, THREE.Group>()
   loaded = false
+  /** Rendered terrain height (m) at a position, 0 when its tile is not loaded: lets the airport's pavement follow the ground. */
+  terrainAt: ((lat: number, lon: number) => number) | null = null
 
   constructor(private readonly scene: THREE.Scene, private readonly frame: WorldFrame) {}
 
@@ -219,7 +221,7 @@ export class Airports {
         const elevM = airportFieldElevationM(ap)
         // X-Plane's own layout (apt.dat) is the authority where it has the airport; OSM then only
         // adds the terminal buildings. Unmapped there, the OSM / procedural layout stays as before.
-        void enhanceAirportWithXplane(g, ap.i, ap.la, ap.lo, elevM).then((applied) => {
+        void enhanceAirportWithXplane(g, ap.i, ap.la, ap.lo, elevM, (lat, lon) => { const t = this.terrainAt?.(lat, lon) ?? 0; return this.flattenElevation(t > 0 ? t : elevM, lat, lon) }).then((applied) => {
           const extra = applied ? g.userData.aptApplied as { aprons: GroundPoint[][]; obstacles: SurfaceObstacle[] } | undefined : undefined
           return enhanceAirportWithOsm(g, ap.i, ap.la, ap.lo, elevM, ap.r, extra ? { terminalsOnly: true, extra } : undefined)
         })

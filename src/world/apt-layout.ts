@@ -4,6 +4,7 @@ import { disposeAirportObject, ownMaterial, type GroundPoint, type SurfaceObstac
 import { buildRunwayMarkings, buildRunwayOverruns, type RunwayLocal } from './airport-detail'
 import { osmIdentSegs } from './osm-layout'
 import { lightGlowTexture } from '../render/light-glow'
+import { pavementMaterial as proceduralPavement } from '../render/surface-materials'
 
 /**
  * X-Plane's real airport layouts: the pavement polygons (taxiways, aprons,
@@ -100,11 +101,19 @@ export function normalizeApt(raw: unknown): AptLayout | null {
 
 // ------------------------------------------------------------- surfaces --
 
+/** Pavement follows the ground in triangles no longer than this (m), and sits this far above it on top of the surface's own lift. */
+const PAVEMENT_MAX_EDGE_M = 30
+const DRAPE_BIAS_M = 0.05
+/** Painted lines follow the ground in segments no longer than this (m). */
+const PAINT_MAX_SEG_M = 14
+/** The ground is sampled on a grid of this spacing (m) over the airport. */
+const GROUND_GRID_M = 20
+
 /** apt.dat surface codes → paint. 15 (transparent) and 13/14 (water, snow) draw nothing. */
 export function surfaceStyle(surf: number): { color: number; lift: number; roughness: number } | null {
   switch (surf) {
-    case 1: return { color: 0x6a6d70, lift: 0.030, roughness: 0.95 }  // asphalt
-    case 2: return { color: 0xb2b3ae, lift: 0.034, roughness: 0.9 }   // concrete
+    case 1: return { color: 0x8c9094, lift: 0.030, roughness: 0.95 }  // asphalt
+    case 2: return { color: 0xd0d1cc, lift: 0.034, roughness: 0.9 }   // concrete
     case 3: return { color: 0x3c5233, lift: 0.010, roughness: 1 }     // turf
     case 4: return { color: 0x6a5a46, lift: 0.014, roughness: 1 }     // dirt
     case 5: return { color: 0x7a7367, lift: 0.018, roughness: 1 }     // gravel
@@ -112,8 +121,8 @@ export function surfaceStyle(surf: number): { color: number; lift: number; rough
     case 13: case 14: case 15: return null
     default:
       // X-Plane 12's weathered variants: 20–29 are asphalt, 30–38 concrete.
-      if (surf >= 30 && surf <= 38) return { color: 0xb2b3ae, lift: 0.036, roughness: 0.9 }
-      return { color: 0x6a6d70, lift: 0.031, roughness: 0.95 }
+      if (surf >= 30 && surf <= 38) return { color: 0xd0d1cc, lift: 0.036, roughness: 0.9 }
+      return { color: 0x8c9094, lift: 0.031, roughness: 0.95 }
   }
 }
 
@@ -172,6 +181,69 @@ export function lineStyle(code: number): LineStyle | null {
 const PAINT: Record<PaintColor, number> = { yellow: 0xd6b311, white: 0xe6e6de, red: 0xb02a22, orange: 0xd9741a, blue: 0x2457a8, green: 0x2f8a46 }
 
 export interface XZ { x: number; z: number }
+
+/** Ground height (m) at a point of the airport-local frame. */
+export type GroundFn = (x: number, z: number) => number
+
+/**
+ * A sampler of the ground over an area: `sample` is evaluated once on a regular grid and looked up bilinearly,
+ * so a pavement of tens of thousands of vertices costs a few tens of thousands of evaluations. Points outside the
+ * area take the nearest edge. The spacing grows when the area would need more than `maxCells` samples.
+ */
+export function groundGrid(b: { minX: number; maxX: number; minZ: number; maxZ: number }, spacing: number, sample: GroundFn, maxCells = 160_000): GroundFn {
+  const w = Math.max(b.maxX - b.minX, 1), h = Math.max(b.maxZ - b.minZ, 1)
+  const step = Math.max(spacing, Math.sqrt((w * h) / maxCells))
+  const nx = Math.ceil(w / step) + 1, nz = Math.ceil(h / step) + 1
+  const ys = new Float32Array(nx * nz)
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) ys[j * nx + i] = sample(b.minX + i * step, b.minZ + j * step)
+  return (x, z) => {
+    const fx = Math.min(Math.max((x - b.minX) / step, 0), nx - 1), fz = Math.min(Math.max((z - b.minZ) / step, 0), nz - 1)
+    const i = Math.min(Math.floor(fx), nx - 2), j = Math.min(Math.floor(fz), nz - 2)
+    const tx = fx - i, tz = fz - j
+    const a = ys[j * nx + i]!, c = ys[j * nx + i + 1]!, d = ys[(j + 1) * nx + i]!, e = ys[(j + 1) * nx + i + 1]!
+    return (a * (1 - tx) + c * tx) * (1 - tz) + (d * (1 - tx) + e * tx) * tz
+  }
+}
+
+/** A polyline with no segment longer than `maxSeg` (extra points on the segments), so it can follow the ground. Pure. */
+export function densify(pts: readonly XZ[], maxSeg: number): XZ[] {
+  const out: XZ[] = []
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i]!
+    out.push(a)
+    const b = pts[i + 1]
+    if (!b) break
+    const n = Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / maxSeg)
+    for (let k = 1; k < n; k++) out.push({ x: a.x + ((b.x - a.x) * k) / n, z: a.z + ((b.z - a.z) * k) / n })
+  }
+  return out
+}
+
+/**
+ * Split triangles (flat x,y,z positions in the xz plane, y ignored) at the middle of their longest edge until no
+ * edge exceeds `maxEdge`, so a pavement can follow the ground. Returns flat positions, three vertices per triangle.
+ */
+export function subdivideTriangles(pos: ArrayLike<number>, index: ArrayLike<number> | null, maxEdge: number, maxTriangles = 400_000): number[] {
+  const out: number[] = []
+  const vert = (i: number): [number, number] => [pos[i * 3]!, pos[i * 3 + 2]!]
+  const stack: Array<[number, number, number, number, number, number]> = []
+  const count = index ? index.length : pos.length / 3
+  for (let t = 0; t + 2 < count; t += 3) {
+    const [a, b, c] = index ? [index[t]!, index[t + 1]!, index[t + 2]!] : [t, t + 1, t + 2]
+    const [ax, az] = vert(a), [bx, bz] = vert(b), [cx, cz] = vert(c)
+    stack.push([ax, az, bx, bz, cx, cz])
+    while (stack.length) {
+      const [x0, z0, x1, z1, x2, z2] = stack.pop()!
+      const e0 = Math.hypot(x1 - x0, z1 - z0), e1 = Math.hypot(x2 - x1, z2 - z1), e2 = Math.hypot(x0 - x2, z0 - z2)
+      const longest = Math.max(e0, e1, e2)
+      if (longest <= maxEdge || out.length / 9 >= maxTriangles) { out.push(x0, 0, z0, x1, 0, z1, x2, 0, z2); continue }
+      if (longest === e0) { const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2; stack.push([x0, z0, mx, mz, x2, z2], [mx, mz, x1, z1, x2, z2]) }
+      else if (longest === e1) { const mx = (x1 + x2) / 2, mz = (z1 + z2) / 2; stack.push([x1, z1, mx, mz, x0, z0], [mx, mz, x2, z2, x0, z0]) }
+      else { const mx = (x2 + x0) / 2, mz = (z2 + z0) / 2; stack.push([x2, z2, mx, mz, x1, z1], [mx, mz, x0, z0, x1, z1]) }
+    }
+  }
+  return out
+}
 
 /** Split a polyline into `on`-long paint runs separated by `off`-long gaps (arc length). Pure. */
 export function dashRuns(pts: readonly XZ[], on: number, off: number): XZ[][] {
@@ -232,16 +304,18 @@ export function taxiIdentSegments(layout: AptLayout, toLocal: (lat: number, lon:
 interface Ribbons { pos: number[]; idx: number[] }
 const ribbon = (): Ribbons => ({ pos: [], idx: [] })
 
-function addRibbon(r: Ribbons, pts: readonly XZ[], width: number, y: number): void {
+function addRibbon(r: Ribbons, pts: readonly XZ[], width: number, y: number | GroundFn): void {
   const hw = width / 2
+  const yAt = typeof y === 'function' ? y : (): number => y
   for (let i = 0; i < pts.length - 1; i++) {
     const a = pts[i]!, b = pts[i + 1]!
     const dx = b.x - a.x, dz = b.z - a.z
     const len = Math.hypot(dx, dz)
     if (len < 1e-6) continue
     const nx = (-dz / len) * hw, nz = (dx / len) * hw
+    const ya = yAt(a.x, a.z), yb = yAt(b.x, b.z)
     const base = r.pos.length / 3
-    r.pos.push(a.x + nx, y, a.z + nz, a.x - nx, y, a.z - nz, b.x + nx, y, b.z + nz, b.x - nx, y, b.z - nz)
+    r.pos.push(a.x + nx, ya, a.z + nz, a.x - nx, ya, a.z - nz, b.x + nx, yb, b.z + nz, b.x - nx, yb, b.z - nz)
     r.idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3)
   }
 }
@@ -269,7 +343,14 @@ function pavementMaterial(surf: number): THREE.MeshStandardMaterial | null {
   const s = surfaceStyle(surf)
   if (!s) return null
   let m = pavementMaterials.get(surf)
-  if (!m) { m = ownMaterial(new THREE.MeshStandardMaterial({ color: s.color, roughness: s.roughness, envMapIntensity: 0.25, side: THREE.DoubleSide })); pavementMaterials.set(surf, m) }
+  if (!m) {
+    // Asphalt and concrete get the runway's procedural finish (grain, weathering, slab joints); turf, dirt and gravel stay plain.
+    const paved = surf === 1 || surf === 2 || (surf >= 20 && surf <= 38)
+    m = paved ? proceduralPavement(s.color, 'xz', isConcreteSurface(surf) ? 'concrete' : 'asphalt') : new THREE.MeshStandardMaterial({ color: s.color, roughness: s.roughness, envMapIntensity: 0.25 })
+    m.side = THREE.DoubleSide
+    m.userData.airportOwned = true
+    pavementMaterials.set(surf, m)
+  }
   return m
 }
 
@@ -282,7 +363,7 @@ export function buildAptMeshes(layout: AptLayout, toLocal: (lat: number, lon: nu
 }
 
 /** The pavement polygons, merged per surface (the expensive part: every polygon is triangulated). */
-export function buildAptPavement(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number): THREE.Mesh[] {
+export function buildAptPavement(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number, ground?: GroundFn): THREE.Mesh[] {
   const out: THREE.Mesh[] = []
   // ---- pavement, merged per surface
   const bySurface = new Map<number, THREE.BufferGeometry[]>()
@@ -293,9 +374,23 @@ export function buildAptPavement(layout: AptLayout, toLocal: (lat: number, lon: 
       const ring = (r: [number, number][]): THREE.Vector2[] => r.map(([lat, lon]) => { const q = toLocal(lat, lon); return new THREE.Vector2(q.x, q.z) })
       const shape = new THREE.Shape(ring(p.rings[0]!))
       for (const hole of p.rings.slice(1)) shape.holes.push(new THREE.Path(ring(hole)))
-      const geo = new THREE.ShapeGeometry(shape)
-      geo.rotateX(Math.PI / 2)
-      geo.translate(0, elevM + style.lift, 0)
+      const flat = new THREE.ShapeGeometry(shape)
+      flat.rotateX(Math.PI / 2)
+      let geo: THREE.BufferGeometry
+      if (ground) {
+        // Follow the ground: fine enough triangles, each vertex on the terrain surface plus the surface's own lift.
+        const tri = subdivideTriangles(flat.getAttribute('position').array, flat.index ? flat.index.array : null, PAVEMENT_MAX_EDGE_M)
+        for (let i = 0; i < tri.length; i += 3) tri[i + 1] = ground(tri[i]!, tri[i + 2]!) + style.lift + DRAPE_BIAS_M
+        // The shape's triangles face down once laid on the xz plane: swap two corners of each so the surface is lit from above.
+        for (let i = 0; i < tri.length; i += 9) for (let k = 0; k < 3; k++) { const t = tri[i + 3 + k]!; tri[i + 3 + k] = tri[i + 6 + k]!; tri[i + 6 + k] = t }
+        geo = new THREE.BufferGeometry()
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(tri, 3))
+        geo.computeVertexNormals()
+        flat.dispose()
+      } else {
+        geo = flat
+        geo.translate(0, elevM + style.lift, 0)
+      }
       const list = bySurface.get(p.surf) ?? []
       list.push(geo)
       bySurface.set(p.surf, list)
@@ -316,11 +411,13 @@ export function buildAptPavement(layout: AptLayout, toLocal: (lat: number, lon: 
 }
 
 /** The painted lines, merged per colour (+ one black border mesh). */
-export function buildAptPaint(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number): THREE.Mesh[] {
+export function buildAptPaint(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number, ground?: GroundFn): THREE.Mesh[] {
   const out: THREE.Mesh[] = []
   const paint = new Map<PaintColor, Ribbons>()
   const borders = ribbon()
-  const yPaint = elevM + 0.09, yBorder = elevM + 0.075
+  const yPaint: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.13 : elevM + 0.09
+  const yBorder: number | GroundFn = ground ? (x, z) => ground(x, z) + 0.11 : elevM + 0.075
+  const fine = (pts: XZ[]): XZ[] => (ground ? densify(pts, PAINT_MAX_SEG_M) : pts)
   for (const l of layout.lines) {
     const style = lineStyle(l.t)
     if (!style) continue
@@ -329,12 +426,12 @@ export function buildAptPaint(layout: AptLayout, toLocal: (lat: number, lon: num
     paint.set(style.color, r)
     const lanes = style.lanes
     const span = Math.max(...lanes.map(Math.abs)) * 2 + style.width
-    if (style.border) addRibbon(borders, pts, span + 0.3, yBorder)
+    if (style.border) addRibbon(borders, fine(pts), span + 0.3, yBorder)
     for (const lane of lanes) {
       const line = offsetLine(pts, lane)
       const dashed = style.dash && (!style.dashedLanes || style.dashedLanes.includes(lane))
-      if (dashed && style.dash) for (const run of dashRuns(line, style.dash[0], style.dash[1])) addRibbon(r, run, style.width, yPaint)
-      else addRibbon(r, line, style.width, yPaint)
+      if (dashed && style.dash) for (const run of dashRuns(line, style.dash[0], style.dash[1])) addRibbon(r, fine(run), style.width, yPaint)
+      else addRibbon(r, fine(line), style.width, yPaint)
     }
   }
   const b = toMesh(borders, paintMaterial('border', 0x16181a), 'aptLineBorders')
@@ -506,7 +603,7 @@ const SIGN_ATLAS = { cols: 8, rows: 32, cellW: 256, cellH: 64 }
 const SIGN_POST_M = 0.35
 
 /** Every sign as one textured quad batch (one draw call) on a post, painted into a shared atlas. */
-export function buildAptSigns(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number): THREE.Group | null {
+export function buildAptSigns(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number, ground?: GroundFn): THREE.Group | null {
   const ranked = layout.signs
     .map((s) => ({ s, p: toLocal(s.lat, s.lon), panels: parseSignText(s.text) }))
     .filter((x) => x.panels.length)
@@ -530,7 +627,8 @@ export function buildAptSigns(layout: AptLayout, toLocal: (lat: number, lon: num
     // The front faces approaching traffic: opposite the sign's heading.
     const H = (s.hdg * Math.PI) / 180
     const rx = Math.cos(H), rz = Math.sin(H)
-    const y0 = elevM + SIGN_POST_M, y1 = y0 + h
+    const base0 = ground ? ground(p.x, p.z) : elevM
+    const y0 = base0 + SIGN_POST_M, y1 = y0 + h
     const u0 = cell.x / canvas.width, u1 = (cell.x + paintW) / canvas.width
     const v0 = 1 - (cell.y + SIGN_ATLAS.cellH) / canvas.height, v1 = 1 - cell.y / canvas.height
     const base = pos.length / 3
@@ -538,7 +636,7 @@ export function buildAptSigns(layout: AptLayout, toLocal: (lat: number, lon: num
     uv.push(u0, v0, u1, v0, u1, v1, u0, v1)
     idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
     const post = new THREE.BoxGeometry(0.08, SIGN_POST_M, 0.08)
-    post.translate(p.x, elevM + SIGN_POST_M / 2, p.z)
+    post.translate(p.x, base0 + SIGN_POST_M / 2, p.z)
     posts.push(post)
   })
   const tex = new THREE.CanvasTexture(canvas)
@@ -591,13 +689,13 @@ export function samplePolyline(pts: readonly XZ[], spacing: number): XZ[] {
 const MAX_LIGHTS = 12_000
 
 /** The taxiway lights as one additive Points cloud (faded in at night by Airports.updateNight). */
-export function buildAptLights(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number): THREE.Points | null {
+export function buildAptLights(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number, ground?: GroundFn): THREE.Points | null {
   const pos: number[] = [], col: number[] = []
   for (const run of layout.lights) {
     const style = lightStyle(run.l)
     for (const p of samplePolyline(run.p.map(([lat, lon]) => toLocal(lat, lon)), style.spacingM)) {
       if (pos.length / 3 >= MAX_LIGHTS) break
-      pos.push(p.x, elevM + 0.18, p.z)
+      pos.push(p.x, (ground ? ground(p.x, p.z) : elevM) + 0.18, p.z)
       col.push(...style.color)
     }
   }
@@ -616,7 +714,7 @@ export function buildAptLights(layout: AptLayout, toLocal: (lat: number, lon: nu
 }
 
 /** Fetch and build X-Plane's layout for `icao`; true when it was applied. */
-export async function enhanceAirportWithXplane(group: THREE.Group, icao: string, refLat: number, refLon: number, elevM: number): Promise<boolean> {
+export async function enhanceAirportWithXplane(group: THREE.Group, icao: string, refLat: number, refLon: number, elevM: number, groundAt?: (lat: number, lon: number) => number): Promise<boolean> {
   let layout: AptLayout | null
   const t0 = performance.now()
   try {
@@ -639,15 +737,28 @@ export async function enhanceAirportWithXplane(group: THREE.Group, icao: string,
   group.add(built)
   const idle = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
   const alive = (): boolean => !group.userData.airportDisposed
-  built.add(...buildAptPavement(layout, toLocal, elevM))
+  // The ground under the airport, sampled once: pavement, paint, lights and signs follow it instead of one flat height.
+  let ground: GroundFn | undefined
+  if (groundAt) {
+    const b = { minX: 1e9, maxX: -1e9, minZ: 1e9, maxZ: -1e9 }
+    const grow = (r: [number, number][]): void => { for (const [lat, lon] of r) { const q = toLocal(lat, lon); b.minX = Math.min(b.minX, q.x); b.maxX = Math.max(b.maxX, q.x); b.minZ = Math.min(b.minZ, q.z); b.maxZ = Math.max(b.maxZ, q.z) } }
+    for (const p of layout.pav) grow(p.rings[0]!)
+    const clampB = (v: number): number => Math.min(Math.max(v, -9000), 9000)
+    if (b.minX <= b.maxX) {
+      const area = { minX: clampB(b.minX) - 20, maxX: clampB(b.maxX) + 20, minZ: clampB(b.minZ) - 20, maxZ: clampB(b.maxZ) + 20 }
+      ground = groundGrid(area, GROUND_GRID_M, (x, z) => groundAt(refLat - z / mLat, refLon + x / mLon))
+      await idle(); if (!alive()) return false
+    }
+  }
+  built.add(...buildAptPavement(layout, toLocal, elevM, ground))
   await idle(); if (!alive()) return false
-  built.add(...buildAptPaint(layout, toLocal, elevM))
+  built.add(...buildAptPaint(layout, toLocal, elevM, ground))
   await idle(); if (!alive()) return false
   group.userData.aptDisplaced = applyDisplacedThresholds(group, layout.rwy)
   group.userData.aptOverruns = applyRunwayOverruns(group, layout.rwy)
-  const lights = buildAptLights(layout, toLocal, elevM)
+  const lights = buildAptLights(layout, toLocal, elevM, ground)
   if (lights) { group.add(lights); group.userData.aptLights = lights }
-  const signs = buildAptSigns(layout, toLocal, elevM)
+  const signs = buildAptSigns(layout, toLocal, elevM, ground)
   if (signs) group.add(signs)
   await idle(); if (!alive()) return false
   group.userData.aptTiming = { fetchMs: Math.round(tFetched - t0), buildMs: Math.round(performance.now() - tFetched), pavements: layout.pav.length, lines: layout.lines.length }

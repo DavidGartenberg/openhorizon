@@ -6,7 +6,7 @@ vi.mock('../src/render/light-glow', () => ({ lightGlowTexture: () => ({ isTextur
 vi.mock('../src/world/airport-detail', async (importActual) => { const T = await import('three'); return { ...(await importActual<typeof import('../src/world/airport-detail')>()), buildRunwayMarkings: () => new T.Group() } })
 import * as THREE from 'three'
 import {
-  normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
+  groundGrid, densify, subdivideTriangles, normalizeApt, lineStyle, surfaceStyle, dashRuns, offsetLine, taxiIdentSegments, buildAptMeshes, buildAptPavement, lightStyle, samplePolyline, buildAptLights, type AptLayout, type XZ,
 } from '../src/world/apt-layout'
 
 const toLocal = (lat: number, lon: number): XZ => ({ x: lon * 100_000, z: -lat * 111_320 })
@@ -301,5 +301,51 @@ describe('runway surfaces', () => {
     const mk = (surf: number) => [{ w: 45, surf, ends: [{ id: '10L', dthr: 0, over: 0, mark: 3 }, { id: '28R', dthr: 0, over: 0, mark: 3 }] as never }]
     applyDisplacedThresholds(group, mk(2)); applyDisplacedThresholds(group, mk(1))
     expect(calls).toEqual([true, false])
+  })
+})
+
+describe('following the ground', () => {
+  it('a ground grid reproduces a slope (bilinear) and clamps outside its area', () => {
+    const g = groundGrid({ minX: 0, maxX: 100, minZ: 0, maxZ: 100 }, 10, (x, z) => 3 + 0.01 * x - 0.02 * z)
+    expect(g(35, 62)).toBeCloseTo(3 + 0.35 - 1.24, 4)
+    expect(g(-50, 20)).toBeCloseTo(3 - 0.4, 4); expect(g(500, 500)).toBeCloseTo(3 + 1 - 2, 4)
+  })
+  it('a ground grid widens its spacing instead of exceeding the sample budget', () => {
+    let calls = 0
+    groundGrid({ minX: 0, maxX: 20_000, minZ: 0, maxZ: 20_000 }, 20, () => { calls++; return 0 }, 10_000)
+    expect(calls).toBeLessThan(11_000)
+  })
+  it('densify adds points so no segment is longer than the limit and keeps the ends', () => {
+    const pts = densify([{ x: 0, z: 0 }, { x: 100, z: 0 }, { x: 100, z: 5 }], 14)
+    expect(pts[0]).toEqual({ x: 0, z: 0 }); expect(pts.at(-1)).toEqual({ x: 100, z: 5 })
+    for (let i = 1; i < pts.length; i++) expect(Math.hypot(pts[i]!.x - pts[i - 1]!.x, pts[i]!.z - pts[i - 1]!.z)).toBeLessThanOrEqual(14 + 1e-9)
+    expect(densify([], 10)).toEqual([]); expect(densify([{ x: 1, z: 2 }], 10)).toEqual([{ x: 1, z: 2 }])
+  })
+  it('subdividing triangles keeps their area, bounds every edge, and a small triangle is untouched', () => {
+    const tri = [0, 0, 0, 100, 0, 0, 0, 0, 60]                       // x, y, z per vertex
+    const out = subdivideTriangles(tri, null, 25)
+    expect(out.length % 9).toBe(0)
+    let area = 0, longest = 0
+    for (let i = 0; i < out.length; i += 9) {
+      const [x0, z0, x1, z1, x2, z2] = [out[i]!, out[i + 2]!, out[i + 3]!, out[i + 5]!, out[i + 6]!, out[i + 8]!]
+      area += Math.abs((x1 - x0) * (z2 - z0) - (x2 - x0) * (z1 - z0)) / 2
+      longest = Math.max(longest, Math.hypot(x1 - x0, z1 - z0), Math.hypot(x2 - x1, z2 - z1), Math.hypot(x0 - x2, z0 - z2))
+    }
+    expect(area).toBeCloseTo(3000, 3); expect(longest).toBeLessThanOrEqual(25 + 1e-9)
+    expect(subdivideTriangles([0, 0, 0, 5, 0, 0, 0, 0, 5], null, 25)).toEqual([0, 0, 0, 5, 0, 0, 0, 0, 5])
+  })
+  it('stops at the triangle budget rather than running away', () => {
+    expect(subdivideTriangles([0, 0, 0, 1e6, 0, 0, 0, 0, 1e6], null, 1, 500).length / 9).toBeLessThan(1500)
+  })
+  it('pavement built with a ground function sits on it (plus its lift) vertex by vertex', () => {
+    const ground = (x: number): number => 10 + 0.01 * x
+    const layout = normalizeApt({ pav: [{ surf: 1, rings: [[[0, 0], [0, 0.002], [0.001, 0.002], [0.001, 0]]] }] })!
+    const meshes = buildAptPavement(layout, toLocal, 0, (x) => ground(x))
+    const pos = meshes[0]!.geometry.getAttribute('position')
+    for (let i = 0; i < pos.count; i++) {
+      const y = pos.getY(i), x = pos.getX(i)
+      expect(y).toBeGreaterThan(ground(x)); expect(y - ground(x)).toBeLessThan(0.2)
+    }
+    expect(pos.count).toBeGreaterThan(6)                                         // subdivided
   })
 })
