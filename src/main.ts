@@ -374,8 +374,17 @@ function xpDatarefs(): (ref: string) => number {
     engineRunning: [captainSystems.engine1Running, captainSystems.engine2Running],
     autobrake: captainSystems.autobrake.setting,
     mcp: xpMcpInputs(),
+    // The three green gear lights: down and locked only (not while the gear is in transit).
+    gearLocked: Array.from({ length: 3 }, () => !aircraft.P.gearRetractable || (aircraft.gearDownCommanded && aircraft.gearPos >= 0.999)) as [boolean, boolean, boolean],
+    masterCaution: auralFireTest || cockpitInteraction.heldDeckControl === 'fireTest',
+    // The red A/P and A/T disconnect lights flash at 2 Hz while latched.
+    apDisconnect: auralLatches.wailerUntilS > performance.now() / 1000 && Math.floor(performance.now() / 250) % 2 === 0,
+    atDisconnect: autothrottle.disconnectLight && Math.floor(performance.now() / 250) % 2 === 0,
+    panelLight: xpNightLevel(),
   }, xpOverrides)
 }
+/** 0 in daylight … 1 at night: the panel backlights and lit textures glow as the sun goes down. */
+function xpNightLevel(): number { return 1 - Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1) }
 /** When each autopilot button was last pressed (performance.now()), for its pushed-in travel on the X-Plane MCP. */
 const apPressedAt: Record<string, number> = {}
 /** The mode control panel's state — one source for both flight decks' windows, lamps and switches. */
@@ -3160,7 +3169,7 @@ function advanceFrame(elapsed: number, now: number): void {
       // Every lever, wheel and needle in the X-Plane deck is posed from this airplane's real state.
       xpCockpit.pose(xpDatarefs())
       // The LIT maps (panel lighting) glow as the sun goes down.
-      xpCockpit.setLit(1 - Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1))
+      xpCockpit.setLit(xpNightLevel())
     }
   }
   for (const o of exteriorCabin) o.visible = cameraMode !== 'cockpit'

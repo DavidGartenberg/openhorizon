@@ -38,6 +38,14 @@ export interface XpCockpitInputs {
   autobrake: string
   /** The mode control panel: selected values, lit modes, switches. */
   mcp: XpMcpInputs
+  /** Nose, left and right main gear down and locked (the three green lights). */
+  gearLocked: [boolean, boolean, boolean]
+  masterCaution: boolean
+  /** The red A/P and A/T disconnect lights (latched after a disconnect). */
+  apDisconnect: boolean
+  atDisconnect: boolean
+  /** Panel backlighting, 0 (off, daylight) … 1 (full): how bright the lit panel textures glow. */
+  panelLight: number
 }
 
 /** The mode control panel as the autopilot has it right now. */
@@ -79,6 +87,7 @@ export function defaultXpInputs(): XpCockpitInputs {
     pitch: 0, roll: 0, yaw: 0, brakeLeft: 0, brakeRight: 0, parkingBrake: false, trim: 0, rudderTrim: 0,
     throttle: [0, 0], reverse: [0, 0], flapsHandleDeg: 0, flapsDeg: 0, gearHandleDown: true,
     speedbrake: 0, speedbrakeArmed: false, onGround: true, engineRunning: [true, true], autobrake: 'off', mcp: defaultXpMcp(),
+    gearLocked: [true, true, true], masterCaution: false, apDisconnect: false, atDisconnect: false, panelLight: 0,
   }
 }
 
@@ -148,6 +157,23 @@ export function makeXpDatarefReader(s: XpCockpitInputs, overrides: Record<string
       case 'sim/cockpit2/controls/gear_handle_animation': return gearHandleRatio(s.gearHandleDown)
       case 'laminar/B738/flt_ctrls/speedbrake_lever': return speedbrakeLeverRatio(s.speedbrake, s.speedbrakeArmed, s.onGround)
       case 'sim/cockpit2/switches/auto_brake_level': return AUTOBRAKE_INDEX[s.autobrake] ?? 1
+      // ---- lamps (each reads 1 when lit; the file gives its brightness)
+      case 'laminar/B738/annunciator/nose_gear_safe': return bit(s.gearLocked[0])
+      case 'laminar/B738/annunciator/left_gear_safe': return bit(s.gearLocked[1])
+      case 'laminar/B738/annunciator/right_gear_safe': return bit(s.gearLocked[2])
+      case 'laminar/B738/annunciator/master_caution_light': return bit(s.masterCaution)
+      case 'laminar/B738/annunciator/ap_disconnect1':
+      case 'laminar/B738/annunciator/ap_disconnect2': return bit(s.apDisconnect)
+      case 'laminar/B738/annunciator/at_fms_disconnect1':
+      case 'laminar/B738/annunciator/at_fms_disconnect2': return bit(s.atDisconnect)
+      case 'sim/flightmodel2/lights/generic_lights_brightness_ratio[125]': return bit(s.parkingBrake) // the parking brake light
+      // ---- backlighting and legends
+      case 'sim/cockpit2/electrical/panel_brightness_ratio[0]':
+      case 'sim/cockpit2/electrical/panel_brightness_ratio[1]':
+      case 'sim/cockpit2/electrical/panel_brightness_ratio[2]':
+      case 'sim/cockpit2/electrical/panel_brightness_ratio[3]': return clamp(s.panelLight, 0, 1)
+      case 'laminar/B738/brightness_level2': return 1                                           // instrument lights BRT, bus powered
+      case 'laminar/B738/audio/indicators/audio_selection_com1': return 1                      // COM 1 is the selected receiver
     }
     return mcpRef(s.mcp, ref)
   }

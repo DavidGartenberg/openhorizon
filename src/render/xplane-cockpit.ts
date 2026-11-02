@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { applyObj8Anim, applyObj8Visibility, loadObj8, type DatarefReader, type LoadedObj8 } from './xplane-obj8'
+import { applyObj8Anim, applyObj8Lights, applyObj8Visibility, loadObj8, type DatarefReader, type LightLevelGroup, type LoadedObj8 } from './xplane-obj8'
 import { disposeAircraftGeometry } from './local-aircraft'
 import { XpPanel } from './xplane-panel'
 
@@ -107,13 +107,14 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
       const u = url(path)
       const cdu = /FMS_screens/.test(path) && opts.cduTexture
         ? new THREE.MeshBasicMaterial({ map: opts.cduTexture, toneMapped: false }) : undefined
-      const part = await loadObj8(u, { textureBase: u.slice(0, u.lastIndexOf('/') + 1), textureCache, ...(cdu ? { cockpitMaterial: cdu } : {}) })
+      const part = await loadObj8(u, { textureBase: u.slice(0, u.lastIndexOf('/') + 1), textureCache, lightLevels: true, ...(cdu ? { cockpitMaterial: cdu } : {}) })
       signal?.throwIfAborted()
       if (!part.parsed.draws.length || !part.parsed.vertices.every(Number.isFinite)) throw new Error(`Invalid cockpit object ${path}`)
       if (part.parsed.albedo && !part.material.map) throw new Error(`Missing cockpit texture for ${path}`)
       const see = /glass|fuzz/i.test(path)
       if (see) { part.material.transparent = true; part.material.depthWrite = false }
       part.material.emissiveIntensity = 0
+      for (const l of part.lights) { l.material.transparent = part.material.transparent; l.material.depthWrite = part.material.depthWrite; l.material.emissiveIntensity = 0 }
       part.group.name = path.replace(/^objects\/|\.obj$/g, '')
       part.group.traverse((o) => { if (o instanceof THREE.Mesh) { o.castShadow = !see; o.receiveShadow = !see; o.frustumCulled = false } })
       parts.push(part); group.add(part.group)
@@ -132,6 +133,7 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
 
   // The panel mesh's own animation nodes are manipulator hit boxes (no geometry): never pose them.
   const animated = parts.filter((p) => p.group.name !== 'panel').flatMap((p) => p.animated)
+  const lamps: LightLevelGroup[] = parts.flatMap((p) => p.lights)
   const datarefs = [...new Set(parts.filter((p) => p.group.name !== 'panel').flatMap((p) => p.parsed.anims.flatMap((n) => n.specs.map((s) => s.dataref))))]
   const eye = eyeFromObj(model)
   return {
@@ -141,7 +143,7 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
       triangles: parts.reduce((n, p) => n + p.parsed.draws.filter((d) => d.lod === 0).reduce((m, d) => m + d.count / 3, 0), 0),
       datarefs, warnings: [...parts.flatMap((p) => p.warnings), ...panel.warnings],
     },
-    pose(read) { for (const node of animated) { applyObj8Anim(node, read); applyObj8Visibility(node, read) } },
+    pose(read) { for (const node of animated) { applyObj8Anim(node, read); applyObj8Visibility(node, read) } applyObj8Lights(lamps, read) },
     eyePoint: () => eye,
     setLit(level) {
       const v = THREE.MathUtils.clamp(level, 0, 1)

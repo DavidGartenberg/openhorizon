@@ -65,6 +65,10 @@ export interface AnimNode {
   specs: AnimSpec[]
 }
 
+/** ATTR_light_level: the brightness of the lit texture on the geometry that follows,
+ *  `(dataref − v1) / (v2 − v1)` clamped to 0…1, at `nits` (null when the file gives none). */
+export interface Obj8Light { v1: number; v2: number; dataref: string; nits: number | null }
+
 /** A maximal run of index-contiguous TRIS with no state change between. */
 export interface Obj8Draw {
   /** Offset into `indices`. */
@@ -77,6 +81,8 @@ export interface Obj8Draw {
   lod: number
   /** Emitted under ATTR_cockpit: X-Plane draws it with the panel texture. */
   cockpit: boolean
+  /** The ATTR_light_level in effect (a lamp, a backlight), when there is one. */
+  light?: Obj8Light
 }
 
 export interface ParsedObj8 {
@@ -105,6 +111,11 @@ export interface ParsedObj8 {
   pointCounts?: { tris: number; lines: number; lights: number; indices: number }
   /** Unknown commands, malformed lines, structural oddities (deduplicated). */
   warnings: string[]
+}
+
+function sameLight(a: Obj8Light | undefined, b: Obj8Light | null): boolean {
+  if (!a || !b) return !a && !b
+  return a.dataref === b.dataref && a.v1 === b.v1 && a.v2 === b.v2 && a.nits === b.nits
 }
 
 // ---------------------------------------------------------------- parse --
@@ -171,6 +182,7 @@ export function parseObj8(text: string): ParsedObj8 {
   let lastDraw: Obj8Draw | null = null
   let drawEnabled = true
   let cockpit = false
+  let light: Obj8Light | null = null
   let lodIndex = 0
   // Held in an object: it is assigned inside addSpec(), which TS's flow
   // analysis can't see, so a bare `let` would narrow to null at the read.
@@ -261,10 +273,10 @@ export function parseObj8(text: string): ParsedObj8 {
         const start = n(1)
         const count = n(2)
         if (bad || !drawEnabled) break
-        if (lastDraw && lastDraw.start + lastDraw.count === start && lastDraw.cockpit === cockpit) {
+        if (lastDraw && lastDraw.start + lastDraw.count === start && lastDraw.cockpit === cockpit && sameLight(lastDraw.light, light)) {
           lastDraw.count += count
         } else {
-          lastDraw = { start, count, animPath: stack.map((e) => e.id), lod: lodIndex, cockpit }
+          lastDraw = { start, count, animPath: stack.map((e) => e.id), lod: lodIndex, cockpit, ...(light ? { light } : {}) }
           draws.push(lastDraw)
         }
         for (const e of stack) nodeHasDraws[e.id] = true
@@ -306,6 +318,12 @@ export function parseObj8(text: string): ParsedObj8 {
       case 'ATTR_LOD':
         lods.push([n(1), n(2)])
         lodIndex = lods.length - 1
+        break
+      case 'ATTR_light_level':
+        light = t[3] ? { v1: n(1), v2: n(2), dataref: t[3], nits: t.length > 4 && Number.isFinite(Number(t[4])) ? Number(t[4]) : null } : null
+        break
+      case 'ATTR_light_level_reset':
+        light = null
         break
       case 'ATTR_draw_disable':
         drawEnabled = false
@@ -524,7 +542,33 @@ export function applyObj8Visibility(group: THREE.Object3D, read: DatarefReader):
 
 // ---------------------------------------------------------------- build --
 
+/** One lamp / backlight: a draw group whose lit texture glows by its own dataref. */
+export interface LightLevelGroup { material: THREE.MeshStandardMaterial; v1: number; v2: number; dataref: string; nits: number | null }
+
+/** `(value − v1) / (v2 − v1)` clamped to 0…1; a degenerate range is a switch at v1. */
+export function lightLevelValue(value: number, v1: number, v2: number): number {
+  if (!Number.isFinite(value)) return 0
+  if (v1 === v2) return value >= v1 ? 1 : 0
+  return Math.min(1, Math.max(0, (value - v1) / (v2 - v1)))
+}
+
+/** The reference brightness (nits) that the cockpit's ordinary lit glow stands for. */
+const LIT_REFERENCE_NITS = 500
+/** No lamp is allowed to glow more than this many times the reference (ACES + bloom would flare the screen). */
+const MAX_LIGHT_INTENSITY = 8
+
+/** Set every lamp's glow from the datarefs: level × brightness ÷ 500 nits. */
+export function applyObj8Lights(groups: readonly LightLevelGroup[], read: DatarefReader): void {
+  for (const g of groups) {
+    const level = lightLevelValue(read(g.dataref), g.v1, g.v2)
+    g.material.emissiveIntensity = Math.min(MAX_LIGHT_INTENSITY, (level * (g.nits ?? LIT_REFERENCE_NITS)) / LIT_REFERENCE_NITS)
+  }
+}
+
 export interface BuildObj8Options {
+  /** Give every distinct ATTR_light_level its own material so it can glow on its own dataref
+   *  (cockpits). Off by default: exteriors keep their single shared material. */
+  lightLevels?: boolean
   /** Which ATTR_LOD band to build (default 0 = nearest). Building every
    *  band would stack the LOD meshes on top of each other. */
   lod?: number
@@ -567,7 +611,7 @@ export function buildObj8(
   parsed: ParsedObj8,
   material: THREE.Material,
   opts: BuildObj8Options = {},
-): { group: THREE.Group; animated: THREE.Group[] } {
+): { group: THREE.Group; animated: THREE.Group[]; lights: LightLevelGroup[] } {
   const lod = opts.lod ?? 0
   validateObj8(parsed, lod)
   const root = new THREE.Group()
@@ -598,6 +642,19 @@ export function buildObj8(
 
   let propAlphaMaterial: THREE.Material | undefined
   let cockpitMaterial = opts.cockpitMaterial
+  const lightGroups = new Map<string, LightLevelGroup>()
+  const lightMaterial = (l: Obj8Light): THREE.Material => {
+    const key = `${l.dataref}|${l.v1}|${l.v2}|${l.nits}`
+    let g = lightGroups.get(key)
+    if (!g) {
+      const m = (material as THREE.MeshStandardMaterial).clone()
+      m.onBeforeCompile = material.onBeforeCompile
+      m.customProgramCacheKey = material.customProgramCacheKey
+      g = { material: m, v1: l.v1, v2: l.v2, dataref: l.dataref, nits: l.nits }
+      lightGroups.set(key, g)
+    }
+    return g.material
+  }
   for (const d of parsed.draws) {
     if (d.lod !== lod || d.count <= 0) continue
     const geo = new THREE.BufferGeometry()
@@ -620,7 +677,8 @@ export function buildObj8(
       propAlphaMaterial.transparent = true
       propAlphaMaterial.depthWrite = false
     }
-    const mesh = new THREE.Mesh(geo, d.cockpit ? cockpitMaterial! : propDisc ? propAlphaMaterial! : material)
+    const lit = opts.lightLevels && d.light && !d.cockpit && !propDisc ? lightMaterial(d.light) : null
+    const mesh = new THREE.Mesh(geo, d.cockpit ? cockpitMaterial! : propDisc ? propAlphaMaterial! : lit ?? material)
     mesh.name = `tris:${d.start}+${d.count}`
     const last = d.animPath[d.animPath.length - 1]
     ;(last === undefined ? root : animated[last]!).add(mesh)
@@ -629,7 +687,7 @@ export function buildObj8(
   // Static pose: every block evaluated at dataref value 0; hide/show is
   // recorded on userData but not applied (everything stays visible).
   for (const g of animated) applyObj8Anim(g, ZERO_DATAREFS)
-  return { group: root, animated }
+  return { group: root, animated, lights: [...lightGroups.values()] }
 }
 
 // ------------------------------------------------------------- textures --
@@ -757,12 +815,16 @@ export interface LoadObj8Options {
   textureCache?: Map<string, Promise<THREE.Texture | null>>
   /** Material for ATTR_cockpit* draws (X-Plane's panel / device screens), e.g. a live display. */
   cockpitMaterial?: THREE.Material
+  /** Lamps and backlights glow on their own datarefs (see BuildObj8Options.lightLevels). */
+  lightLevels?: boolean
 }
 
 export interface LoadedObj8 {
   group: THREE.Group
   /** One group per ANIM block, parse order; userData.anim holds the spec. */
   animated: THREE.Group[]
+  /** Lamps / backlights (empty unless loaded with lightLevels). */
+  lights: LightLevelGroup[]
   /** Texture file names referenced by the OBJ. */
   textures: string[]
   material: THREE.MeshStandardMaterial
@@ -791,6 +853,6 @@ export async function loadObj8(url: string, opts: LoadObj8Options): Promise<Load
 
   const material = makeObj8Material({ map, emissiveMap, normalMap, materialGlossMap, glossMap }, parsed)
   const name = url.split('?')[0]!.split('/').pop() || 'obj8'
-  const built = buildObj8(parsed, material, { name, ...(opts.lod !== undefined ? { lod: opts.lod } : {}), ...(opts.cockpitMaterial ? { cockpitMaterial: opts.cockpitMaterial } : {}) })
+  const built = buildObj8(parsed, material, { name, ...(opts.lod !== undefined ? { lod: opts.lod } : {}), ...(opts.cockpitMaterial ? { cockpitMaterial: opts.cockpitMaterial } : {}), ...(opts.lightLevels ? { lightLevels: true } : {}) })
   return { ...built, textures: parsed.textures, material, parsed, warnings }
 }
