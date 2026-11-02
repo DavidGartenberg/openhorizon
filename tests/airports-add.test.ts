@@ -48,4 +48,13 @@ describe('adding X-Plane-only airports to the database', () => {
     applyRunwayExtras(list, { KDB: [['9', '27', 0, 0, 40, -100.01, 40, -99.99, 30, 1, 0]] })
     expect(list[0]!.r[0]).toMatchObject({ s: 1, lt: 0 })
   })
+  it('hides the sea only near a field whose level area lies at or below sea level', () => {
+    const a = make()
+    const low = ap('LOW1', 36.46, -116.88); low.r[0]!.e1 = -200; low.r[0]!.e2 = -200; low.e = -200
+    const high = ap('HIGH', 40, -100); high.r[0]!.e1 = 1500; high.r[0]!.e2 = 1500; high.e = 1500
+    a.addAirports([low, high])
+    expect(a.belowSeaFieldNear(36.46, -116.88)).toBe(true)
+    expect(a.belowSeaFieldNear(36.46, -116.0)).toBe(false)         // 70 km away
+    expect(a.belowSeaFieldNear(40, -100)).toBe(false)
+  })
 })

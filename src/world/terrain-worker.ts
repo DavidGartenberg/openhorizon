@@ -117,7 +117,7 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
         const natural = h
         for (const rw of req.runways) {
           // An airport's level disk stops at the water's edge: it never raises the bay into land.
-          if (rw.disk && belowDatum) continue
+          if (rw.disk && belowDatum && rw.ha > 0) continue   // a field below sea level is land: its level area covers what the data calls sea
           h = flattenForRunway(h, lx, ly, rw.ax, rw.ay, rw.bx, rw.by, rw.ha, rw.hb, rw.halfW)
         }
         heights[j * G + i] = h

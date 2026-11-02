@@ -7,6 +7,7 @@ import { SKY_LOOKUP } from './atmosphere-shader'
  * Sea remains a flat visual surface: no bathymetry or water-landing dynamics. */
 export class Ocean {
   private readonly material: THREE.ShaderMaterial
+  private readonly mesh: THREE.Mesh
 
   constructor(scene: THREE.Scene, sky: THREE.Texture) {
     this.material = new THREE.ShaderMaterial({
@@ -100,7 +101,7 @@ export class Ocean {
         }
       `,
     })
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(800_000, 800_000), this.material)
+    const mesh = this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(800_000, 800_000), this.material)
     mesh.rotation.x = -Math.PI/2
     scene.add(mesh)
   }
@@ -109,6 +110,9 @@ export class Ocean {
     this.material.uniforms.uCloudDensity!.value = fog.density
     ;(this.material.uniforms.uCloudColor!.value as THREE.Color).copy(fog.color)
   }
+
+  /** Hide the sea (near an airport the elevation data puts below sea level, where the field would lie under it). */
+  setVisible(visible: boolean): void { this.mesh.visible = visible }
 
   update(timeSeconds: number, sunDir: THREE.Vector3, dayness: number, windMs: number,
     windTowardRad: number, worldOffsetE = 0, worldOffsetN = 0, fogDensity = 9e-6, sunTransmission = 1): void {

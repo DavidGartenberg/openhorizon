@@ -3493,6 +3493,7 @@ function advanceFrame(elapsed: number, now: number): void {
   const dayness = Math.min(Math.max((sky.elevationDeg + 6) / 16, 0), 1)
   // 13e: METAR surface wind drives the sea state; sun-position dusk factor
   // (peaks with the sun at the horizon) warms the cloud decks.
+  ocean.setVisible(!airports.belowSeaFieldNear(ll.lat, ll.lon))
   ocean.update(loop.simTime, sunDir, dayness, wind.steadyMs, wind.steadyTowardRad,
     worldShift.e, worldShift.n, tiles.fogDensity, sky.directTransmission)
   const dusk = Math.min(Math.max(1 - Math.abs(sky.elevationDeg) / 8, 0), 1)

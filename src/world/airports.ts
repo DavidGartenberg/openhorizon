@@ -11,7 +11,7 @@ import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount, papiMaterial, type PapiA
 import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
 import type { ParkedSource } from './parked-aircraft'
 import { enhanceAirportWithXplane, setAptNight, NIGHT_GLOW, sockDirection, sockDroop } from './apt-layout'
-import { airportFlatDisk, airportFieldElevationM, flattenEnds, applyRunwayExtras, applyAirportExtents, type RunwayExtras, type AirportExtents } from './airport-flatten'
+import { airportFlatDisk, airportFieldElevationM, FLAT_INNER_MARGIN_M, flattenEnds, applyRunwayExtras, applyAirportExtents, type RunwayExtras, type AirportExtents } from './airport-flatten'
 import { primaryRunway, planAirportFacilities, buildAirportFacilities, updateAirportServices, disposeAirportObject, mappedApronPlan, footprintObstacle, type SurfaceObstacle, type GroundPoint } from './airport-scenery'
 
 export interface RunwayData {
@@ -50,6 +50,8 @@ export interface AirportData {
 export const RUNWAY_STRIP_LIFT_M = 0.06
 /** How long to wait before asking again for the X-Plane-only airports after a failed request. */
 const XPLANE_ONLY_RETRY_MS = 30_000
+/** How far past a below-sea-level field's level area the sea stays hidden (m). */
+const BELOW_SEA_MARGIN_M = 1500
 const ASPHALT = pavementMaterial(0x484b4d, 'xy', 'runway')
 /** Concrete runways (X-Plane's surface codes 2 and 30–38) are paler than asphalt ones. */
 const CONCRETE_RUNWAY = pavementMaterial(0x8e908b, 'xy', 'runway')
@@ -197,6 +199,15 @@ export class Airports {
     return out
   }
 
+  /** True within a field's level area (and a margin) when the field lies at or below sea level: the sea is not drawn there. */
+  belowSeaFieldNear(lat: number, lon: number): boolean {
+    for (const ap of this.near(lat, lon, 12_000)) {
+      const disk = airportFlatDisk(ap)
+      if (disk && disk.elevM <= 0 && distanceM({ lat, lon }, { lat: disk.lat, lon: disk.lon }) < disk.halfWidthM + FLAT_INNER_MARGIN_M + BELOW_SEA_MARGIN_M) return true
+    }
+    return false
+  }
+
   /** Physics-side flattening — must match the worker's mesh flattening. */
   flattenElevation(terrainM: number, lat: number, lon: number): number {
     let h = terrainM
@@ -206,7 +217,7 @@ export class Airports {
         const mLat = 111_319.5
         const mLon = mLat * Math.cos((lat * Math.PI) / 180)
         const x = (disk.lon - lon) * mLon, y = (disk.lat - lat) * mLat
-        if (terrainM > 0) h = flattenForRunway(h, 0, 0, x, y, x, y, disk.elevM, disk.elevM, disk.halfWidthM) // open water stays water (as in the terrain worker)
+        if (terrainM > 0 || disk.elevM <= 0) h = flattenForRunway(h, 0, 0, x, y, x, y, disk.elevM, disk.elevM, disk.halfWidthM) // open water stays water (as in the terrain worker), except around a field below sea level
       }
       for (const r of ap.r) {
         // Work in a small local meter frame around the sample.
