@@ -178,3 +178,26 @@ describe('the land mask of a low airport', () => {
     expect(aptLandMasks([{ i: 'HIGH', la: 0, lo: 0, e: 5000 }], undefined)).toEqual({})
   })
 })
+
+describe('heliports: airports with helipads and no runway', () => {
+  const PADS = ['1     50 0 0 HHOS Hospital Heliport', '102 H1 40.0000000 -100.0000000 90.00 20.00 10.00 2 0 0 0.25 0', '102 H2 40.0010000 -100.0000000 0.00 1.00 1.00 2 0 0 0.25 0',
+    '1    200 0 0 HRIG [H] Troll A Platform', '102 H1 60.0000000 3.0000000 0.00 39.00 39.00 1 0 0 0.25 0', ''].join('\n')
+  it('reads the helipads of each airport (row 102)', () => {
+    const scan = scanAptRunways(write('pads.dat', PADS)) as Map<string, unknown[]> & { pads: Map<string, unknown[][]> }
+    expect(scan.pads.get('HHOS')).toEqual([['H1', 40, -100, 90, 20, 10, 2], ['H2', 40.001, -100, 0, 1, 1, 2]])
+    expect(scan.get('HHOS')).toEqual([])                                                      // no runway row
+  })
+  it('become airports of short pad-flagged "runways", leaving out tiny pads, rigs and airports already known', () => {
+    const pads = { HHOS: [['H1', 40, -100, 90, 20, 10, 2], ['H2', 40.001, -100, 0, 1, 1, 2]], HRIG: [['H1', 60, 3, 0, 39, 39, 1]], KOLD: [['H1', 41, -100, 0, 20, 20, 1]] }
+    const meta = { HHOS: { name: 'Hospital Heliport', elevFt: 50, code: 1 }, HRIG: { name: '[H] Troll A Platform', elevFt: 200, code: 1 }, KOLD: { name: 'Old', elevFt: 5, code: 1 } }
+    const out = aptOnlyAirports({}, meta, [{ i: 'KOLD', r: [] }], pads) as Array<Record<string, any>>
+    expect(out.map((a) => a.i)).toEqual(['HHOS'])
+    const a = out[0]!
+    expect(a).toMatchObject({ n: 'Hospital Heliport', e: 50, xo: true })
+    expect(a.r).toHaveLength(1)
+    expect(a.r[0]).toMatchObject({ li: 'H1', hi: 'H1', pad: true, s: 0, lt: 0, e1: 50 })
+    expect(a.r[0].l).toBeCloseTo(65.6, 0)                                                      // 20 m in feet
+    expect(a.r[0].lo2).toBeGreaterThan(a.r[0].lo1)                                             // heading 90: the pad's length runs east
+    expect(a.r[0].la1).toBeCloseTo(a.r[0].la2, 5)
+  })
+})

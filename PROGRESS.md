@@ -3211,3 +3211,9 @@ What changed, and what is real versus a recorded stand-in:
 
 - The ocean is no longer hidden for the whole scene when the camera is near a below-sea field; its shader discards fragments inside a circle around each such field (`Ocean.setHoles`, up to 8 nearest within 150 km), so the polder shows as land from far away and the surrounding sea stays sea, without a pop at a distance.
 - The lowland radius grows with the field's depth (`lowlandRadiusM`: 12 km plus 400 m per metre below sea level, up to 40 km), because a polder is a few km across but Death Valley or the Dead Sea basin tens of km. At KL06 the sea that showed on the far horizon of Death Valley is gone.
+
+### Heliports as airports (2026-11-02)
+
+- The runway scan table only held airports with runway rows (31,298 of 38,890); the rest are mostly heliports. The scan now reads helipads (row 102) too, and an airport with pads and no runway becomes a database-shaped entry whose "runways" are its pads (`pad: true`: levelled like a runway, but not drawn as a strip; X-Plane's layout paints the pad and its H, plus the windsock). 6,783 such airports (hospitals, rooftops, camps) join the 22,313 runway-bearing X-Plane-only airports; they are left off the ND / MFD lists like the others. Platforms, rigs, ships and barges (76 by name) are not added, as their decks stand over the sea.
+- Checked at HI38 (Queen's Medical Center, Honolulu): the H and a windsock at the pad. Rooftop pads in Los Angeles could not be judged here (those tiles are not cached).
+- Seaplane bases have no land runway and no pads, so they still have nothing to draw (X-Plane's water runways are not read).

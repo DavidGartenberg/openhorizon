@@ -26,6 +26,8 @@ export interface RunwayData {
   l: number // ft
   w: number
   s: number // 0 hard, 1 soft
+  /** A helipad of a heliport: short, drawn by X-Plane's layout (pavement and H), not as a runway strip. */
+  pad?: boolean
   lt: number
   /** Blast pad / overrun beyond the li (o1) and hi (o2) ends, metres (X-Plane's airport data); absent = none/unknown. */
   o1?: number
@@ -366,6 +368,7 @@ export class Airports {
     const runwayDetails: Array<{ li: string; hi: string; rl: RunwayLocal; detail: THREE.Group; setConcrete: (on: boolean) => void }> = []
     group.userData.runwayDetails = runwayDetails
     for (const r of ap.r) {
+      if (r.pad) continue
       const lenM = r.l * FT
       const widM = Math.max(r.w * FT, 8)
       const hdg = (bearingDeg({ lat: r.la1, lon: r.lo1 }, { lat: r.la2, lon: r.lo2 }) * Math.PI) / 180
