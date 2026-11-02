@@ -88,7 +88,7 @@ describe('dashes and offsets', () => {
 describe('the taxi network names real taxiways', () => {
   it('uses the midpoints of named taxiway edges only', () => {
     const l: AptLayout = {
-      icao: 'K', name: '', elevFt: 0, pav: [], lines: [], lights: [], ramps: [],
+      icao: 'K', name: '', elevFt: 0, pav: [], lines: [], signs: [], lights: [], ramps: [],
       taxi: {
         nodes: [{ id: 0, lat: 0, lon: 0, use: 'both', name: '' }, { id: 1, lat: 0, lon: 0.001, use: 'both', name: '' }],
         edges: [{ a: 0, b: 1, oneway: false, kind: 'taxiway_A', name: 'A' }, { a: 0, b: 1, oneway: false, kind: 'runway', name: '10L/28R' }, { a: 0, b: 1, oneway: false, kind: 'taxiway_B', name: '' }, { a: 0, b: 9, oneway: false, kind: 'taxiway_C', name: 'C' }],
@@ -114,7 +114,7 @@ describe('meshes', () => {
   it('pavement with a hole covers outer minus hole, merged per surface', () => {
     // toLocal: 1° lon = 100 km, 1° lat = 111.32 km  →  use tiny degrees
     const outer = square(0, 0, 0.001), hole = square(0.0003, 0.0003, 0.0002)
-    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], lights: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [outer, hole] }, { surf: 1, name: '', rings: [square(0.002, 0, 0.0005)] }, { surf: 15, name: '', rings: [square(0.003, 0, 0.001)] }] }
+    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], signs: [], lights: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [outer, hole] }, { surf: 1, name: '', rings: [square(0.002, 0, 0.0005)] }, { surf: 15, name: '', rings: [square(0.003, 0, 0.001)] }] }
     const g = buildAptMeshes(layout, toLocal, 10)
     const pav = g.children.filter((c) => c.name.startsWith('aptPavement')) as THREE.Mesh[]
     expect(pav).toHaveLength(1)                           // asphalt merged; the transparent surface draws nothing
@@ -124,7 +124,7 @@ describe('meshes', () => {
   })
   it('paints one mesh per colour and a border mesh only for bordered types', () => {
     const l = (t: number): AptLayout['lines'][number] => ({ t, p: [[0, 0], [0, 0.001]] })
-    const base: AptLayout = { icao: 'K', name: '', elevFt: 0, pav: [], lights: [], ramps: [], taxi: { nodes: [], edges: [] }, lines: [l(1), l(2), l(3), l(20)] }
+    const base: AptLayout = { icao: 'K', name: '', elevFt: 0, pav: [], lights: [], signs: [], ramps: [], taxi: { nodes: [], edges: [] }, lines: [l(1), l(2), l(3), l(20)] }
     const g = buildAptMeshes(base, toLocal, 0)
     expect(g.children.map((c) => c.name).sort()).toEqual(['aptPaint-white', 'aptPaint-yellow'])
     const g2 = buildAptMeshes({ ...base, lines: [l(51)] }, toLocal, 0)
@@ -134,7 +134,7 @@ describe('meshes', () => {
     expect(yellow.geometry.getAttribute('position').getY(0)).toBeGreaterThan(0.06)
   })
   it('a degenerate polygon is dropped without failing the airport', () => {
-    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], lights: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [[[0, 0], [0, 0], [0, 0]]] }, { surf: 2, name: '', rings: [square(0, 0, 0.001)] }] }
+    const layout: AptLayout = { icao: 'K', name: '', elevFt: 0, ramps: [], lines: [], signs: [], lights: [], taxi: { nodes: [], edges: [] }, pav: [{ surf: 1, name: '', rings: [[[0, 0], [0, 0], [0, 0]]] }, { surf: 2, name: '', rings: [square(0, 0, 0.001)] }] }
     const g = buildAptMeshes(layout, toLocal, 0)
     expect(g.children.some((c) => c.name === 'aptPavement2')).toBe(true)
   })
@@ -155,12 +155,53 @@ describe('taxiway lights', () => {
     expect(samplePolyline([], 4)).toEqual([])
   })
   it('builds one Points cloud, dark until the airport fades it in, capped', () => {
-    const l: AptLayout = { icao: 'K', name: '', elevFt: 0, pav: [], lines: [], ramps: [], taxi: { nodes: [], edges: [] }, lights: [{ l: 101, p: [[0, 0], [0, 0.001]] }, { l: 102, p: [[0, 0], [0.001, 0]] }] }
+    const l: AptLayout = { icao: 'K', name: '', elevFt: 0, pav: [], lines: [], ramps: [], taxi: { nodes: [], edges: [] }, signs: [], lights: [{ l: 101, p: [[0, 0], [0, 0.001]] }, { l: 102, p: [[0, 0], [0.001, 0]] }] }
     const pts = buildAptLights(l, toLocal, 3)!
     expect(pts.name).toBe('aptLights')
     expect((pts.material as THREE.PointsMaterial).opacity).toBe(0)
     expect(pts.geometry.getAttribute('position').count).toBeGreaterThan(5)
     expect(pts.geometry.getAttribute('position').getY(0)).toBeGreaterThan(3)
     expect(buildAptLights({ ...l, lights: [] }, toLocal, 0)).toBeNull()
+  })
+})
+
+import { parseSignText, signHeightM, signPanelWidth, layoutSignAtlas, normalizeApt as normalize } from '../src/world/apt-layout'
+
+describe('taxi signs', () => {
+  it('parses styles, text and arrows, one panel per "|"', () => {
+    expect(parseSignText('{@Y}{^l}B3|{@L}A')).toEqual([
+      { style: 'Y', items: [{ arrow: 'l' }, { text: 'B3' }] },
+      { style: 'L', items: [{ text: 'A' }] },
+    ])
+    expect(parseSignText('{@R}28L-10R')).toEqual([{ style: 'R', items: [{ text: '28L-10R' }] }])
+    expect(parseSignText('{@L}A{^r}|{@Y}B{^ld}')[1]!.items).toEqual([{ text: 'B' }, { arrow: 'ld' }])
+  })
+  it('a style change starts a new panel, as real signs combine location, mandatory and direction boards', () => {
+    expect(parseSignText('{@L}F2{@R}28L{@@,@L}F2')).toEqual([
+      { style: 'L', items: [{ text: 'F2' }] }, { style: 'R', items: [{ text: '28L' }] }, { style: 'L', items: [{ text: 'F2' }] },
+    ])
+    expect(parseSignText('{@Y}A|B')).toEqual([{ style: 'Y', items: [{ text: 'A' }] }, { style: 'Y', items: [{ text: 'B' }] }])
+  })
+  it('a sign with no style is a location sign; junk codes are ignored', () => {
+    expect(parseSignText('K')[0]!.style).toBe('L')
+    expect(parseSignText('{@Z}{^q}K')).toEqual([{ style: 'L', items: [{ text: 'K' }] }])
+    expect(parseSignText('')).toEqual([])
+  })
+  it('size 1…6 is the face height; width follows the content', () => {
+    expect(signHeightM(1)).toBeLessThan(signHeightM(3)); expect(signHeightM(3)).toBeLessThan(signHeightM(6))
+    expect(signHeightM(99)).toBe(signHeightM(6)); expect(signHeightM(0)).toBe(signHeightM(1))
+    const one = parseSignText('{@L}A')[0]!, longer = parseSignText('{@L}A12')[0]!, arrow = parseSignText('{@Y}{^l}A')[0]!
+    expect(signPanelWidth(longer, 1)).toBeGreaterThan(signPanelWidth(one, 1))
+    expect(signPanelWidth(arrow, 1)).toBeGreaterThan(signPanelWidth(one, 1))
+    expect(signPanelWidth(one, 2)).toBeCloseTo((signPanelWidth(one, 1) * signHeightM(2)) / signHeightM(1))
+  })
+  it('lays the signs on an atlas of fixed cells, in order, and says when it is full', () => {
+    const a = layoutSignAtlas(5, { cols: 2, cellW: 256, cellH: 64 })
+    expect(a.map((c) => [c.x, c.y])).toEqual([[0, 0], [256, 0], [0, 64], [256, 64], [0, 128]])
+    expect(layoutSignAtlas(10, { cols: 2, cellW: 256, cellH: 64, rows: 2 })).toHaveLength(4)
+  })
+  it('keeps the signs the airport lists (position, heading, text), dropping malformed ones', () => {
+    const l = normalize({ pav: [{ surf: 1, rings: [[[0, 0], [0, 1], [1, 1]]] }], signs: [{ lat: 1, lon: 2, hdg: 90, size: 2, text: '{@L}A' }, { lat: 'x' }, { lat: 1, lon: 2, hdg: 0, size: 1, text: '' }] })!
+    expect(l.signs).toEqual([{ lat: 1, lon: 2, hdg: 90, size: 2, text: '{@L}A' }])
   })
 })

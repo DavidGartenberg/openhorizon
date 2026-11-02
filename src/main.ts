@@ -3974,7 +3974,9 @@ Object.assign(window as unknown as Record<string, unknown>, {
     if (!g) return null
     const apt = g.getObjectByName('aptLayout')
     const first = apt?.children[0] as THREE.Mesh | undefined
-    return { children: g.children.map((c) => c.name || c.type), apt: apt ? apt.children.map((c) => c.name) : null, pos: g.position.toArray(), firstY: first ? (first.geometry.getAttribute('position').getY(0)) : null, applied: g.userData.aptApplied ? { aprons: g.userData.aptApplied.aprons.length, obstacles: g.userData.aptApplied.obstacles.length } : null }
+    const boards = g.getObjectByName('aptSignBoards') as THREE.Mesh | undefined
+    const bp = boards?.geometry.getAttribute('position')
+    return { signs: bp ? { count: bp.count / 4, first: [bp.getX(0), bp.getY(0), bp.getZ(0)].map((v) => Math.round(v * 10) / 10) } : null, children: g.children.map((c) => c.name || c.type), apt: apt ? apt.children.map((c) => c.name) : null, pos: g.position.toArray(), firstY: first ? (first.geometry.getAttribute('position').getY(0)) : null, applied: g.userData.aptApplied ? { aprons: g.userData.aptApplied.aprons.length, obstacles: g.userData.aptApplied.obstacles.length } : null }
   },
   /** Physics ground height (m) at a latitude/longitude, i.e. terrain + runway flattening (verification). */
   __ohGround: (lat: number, lon: number) => { const la = finiteOr(lat), lo = finiteOr(lon); if (la === null || lo === null) return null; const l = frame.toLocal(la, lo); return Math.round((aircraft.groundElevAt?.(l.n, l.e) ?? 0) * 100) / 100 },

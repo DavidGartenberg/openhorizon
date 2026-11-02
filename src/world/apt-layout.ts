@@ -24,6 +24,7 @@ export interface AptLights { l: number; p: [number, number][] }
 export interface AptPavement { surf: number; name: string; rings: [number, number][][] }
 export interface AptTaxiNode { id: number; lat: number; lon: number; use: string; name: string }
 export interface AptTaxiEdge { a: number; b: number; oneway: boolean; kind: string; name: string }
+export interface AptSign { lat: number; lon: number; hdg: number; size: number; text: string }
 export interface AptRamp { lat: number; lon: number; hdg: number; kind: string; cats: string[]; name: string }
 export interface AptLayout {
   icao: string
@@ -32,6 +33,7 @@ export interface AptLayout {
   pav: AptPavement[]
   lines: AptLine[]
   lights: AptLights[]
+  signs: AptSign[]
   ramps: AptRamp[]
   taxi: { nodes: AptTaxiNode[]; edges: AptTaxiEdge[] }
 }
@@ -63,6 +65,11 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     const p = pts(o?.p, 2)
     if (p && Number.isFinite(o.l)) lights.push({ l: Number(o.l), p })
   }
+  const signs: AptSign[] = arr(d.signs).slice(0, 2000).flatMap((r) => {
+    const o = r as Record<string, unknown>
+    const text = typeof o?.text === 'string' ? o.text.slice(0, 80) : ''
+    return Number.isFinite(o?.lat) && Number.isFinite(o?.lon) && text ? [{ lat: Number(o.lat), lon: Number(o.lon), hdg: Number(o.hdg) || 0, size: Number(o.size) || 1, text }] : []
+  })
   const ramps: AptRamp[] = arr(d.ramps).slice(0, 2000).flatMap((r) => {
     const o = r as Record<string, unknown>
     return Number.isFinite(o?.lat) && Number.isFinite(o?.lon) ? [{ lat: Number(o.lat), lon: Number(o.lon), hdg: Number(o.hdg) || 0, kind: String(o.kind ?? ''), cats: Array.isArray(o.cats) ? o.cats.map(String) : [], name: String(o.name ?? '').slice(0, 40) }] : []
@@ -77,7 +84,7 @@ export function normalizeApt(raw: unknown): AptLayout | null {
     return Number.isFinite(o?.a) && Number.isFinite(o?.b) ? [{ a: Number(o.a), b: Number(o.b), oneway: !!o.oneway, kind: String(o.kind ?? ''), name: String(o.name ?? '').slice(0, 12) }] : []
   })
   if (!pav.length && !lines.length) return null
-  return { icao: String(d.icao ?? ''), name: String(d.name ?? ''), elevFt: Number(d.elevFt) || 0, pav, lines, lights, ramps, taxi: { nodes, edges } }
+  return { icao: String(d.icao ?? ''), name: String(d.name ?? ''), elevFt: Number(d.elevFt) || 0, pav, lines, lights, signs, ramps, taxi: { nodes, edges } }
 }
 
 // ------------------------------------------------------------- surfaces --
@@ -316,6 +323,162 @@ export function buildAptMeshes(layout: AptLayout, toLocal: (lat: number, lon: nu
   return group
 }
 
+// ------------------------------------------------------------------ signs --
+
+export type SignStyle = 'L' | 'R' | 'Y' | 'B'
+export type SignItem = { text: string } | { arrow: string }
+export interface SignPanel { style: SignStyle; items: SignItem[] }
+
+const ARROWS = new Set(['l', 'lu', 'u', 'ru', 'r', 'rd', 'd', 'ld'])
+const STYLES = new Set(['L', 'R', 'Y', 'B'])
+
+/**
+ * apt.dat sign text. {@L} location, {@Y} direction, {@R} mandatory and {@B} distance start a new panel
+ * (a code list such as {@@,@L} applies each of its codes in turn); "|" starts a new panel in the same style;
+ * {^l} {^ru} … are arrows. Pure.
+ */
+export function parseSignText(text: string): SignPanel[] {
+  const panels: SignPanel[] = []
+  let style: SignStyle = 'L'
+  let items: SignItem[] = []
+  let buf = ''
+  const flushText = (): void => { if (buf) { items.push({ text: buf }); buf = '' } }
+  const endPanel = (): void => { flushText(); if (items.length) panels.push({ style, items }); items = [] }
+  for (const part of text.split(/(\{[^}]*\}|\|)/)) {
+    if (part === '|') { endPanel(); continue }
+    const code = /^\{(.*)\}$/.exec(part)
+    if (!code) { buf += part; continue }
+    for (const c of code[1]!.split(',')) {
+      if (c.startsWith('@') && STYLES.has(c.slice(1))) { endPanel(); style = c.slice(1) as SignStyle }
+      else if (c.startsWith('^') && ARROWS.has(c.slice(1))) { flushText(); items.push({ arrow: c.slice(1) }) }
+    }
+  }
+  endPanel()
+  return panels
+}
+
+/** Face height (m) of apt.dat sign size 1…6. */
+export function signHeightM(size: number): number {
+  const sizes = [0.4, 0.6, 0.8, 1.0, 1.2, 1.5]
+  return sizes[Math.min(6, Math.max(1, Math.round(size) || 1)) - 1]!
+}
+
+/** Width (m) of one panel: characters about 0.6 of the height wide, an arrow a full height, plus a margin. */
+export function signPanelWidth(panel: SignPanel, size: number): number {
+  const h = signHeightM(size)
+  const body = panel.items.reduce((w, it) => w + ('arrow' in it ? 1 : 0.62 * it.text.length), 0)
+  return h * (body + 0.5)
+}
+
+/** Cell origins (pixels) for `count` signs on an atlas of `cols` columns; as many as fit when `rows` is given. Pure. */
+export function layoutSignAtlas(count: number, o: { cols: number; cellW: number; cellH: number; rows?: number }): Array<{ x: number; y: number }> {
+  const n = o.rows ? Math.min(count, o.cols * o.rows) : count
+  return Array.from({ length: n }, (_, i) => ({ x: (i % o.cols) * o.cellW, y: Math.floor(i / o.cols) * o.cellH }))
+}
+
+const SIGN_COLORS: Record<SignStyle, { bg: string; fg: string; edge: string }> = {
+  L: { bg: '#101010', fg: '#f2c500', edge: '#f2c500' },
+  Y: { bg: '#f2c500', fg: '#111111', edge: '#111111' },
+  R: { bg: '#b3141c', fg: '#ffffff', edge: '#ffffff' },
+  B: { bg: '#101010', fg: '#ffffff', edge: '#ffffff' },
+}
+
+function drawArrow(c: CanvasRenderingContext2D, dir: string, cx: number, cy: number, s: number): void {
+  // 0° = up; angles clockwise: u 0, ru 45, r 90, rd 135, d 180, ld 225, l 270, lu 315
+  const deg = ({ u: 0, ru: 45, r: 90, rd: 135, d: 180, ld: 225, l: 270, lu: 315 } as Record<string, number>)[dir] ?? 0
+  c.save(); c.translate(cx, cy); c.rotate((deg * Math.PI) / 180)
+  c.beginPath(); c.moveTo(0, -s * 0.5); c.lineTo(s * 0.42, 0); c.lineTo(s * 0.16, 0); c.lineTo(s * 0.16, s * 0.5); c.lineTo(-s * 0.16, s * 0.5); c.lineTo(-s * 0.16, 0); c.lineTo(-s * 0.42, 0); c.closePath(); c.fill()
+  c.restore()
+}
+
+/** One sign (all its panels) painted into a w × h cell. */
+export function paintSign(c: CanvasRenderingContext2D, panels: SignPanel[], size: number, w: number, h: number): void {
+  const widths = panels.map((p) => signPanelWidth(p, size))
+  const total = widths.reduce((a, b) => a + b, 0) || 1
+  let x = 0
+  panels.forEach((panel, i) => {
+    const pw = (widths[i]! / total) * w
+    const col = SIGN_COLORS[panel.style]
+    c.fillStyle = col.bg; c.fillRect(x, 0, pw, h)
+    c.strokeStyle = col.edge; c.lineWidth = Math.max(2, h * 0.05); c.strokeRect(x + h * 0.06, h * 0.06, pw - h * 0.12, h * 0.88)
+    c.fillStyle = col.fg; c.textAlign = 'center'; c.textBaseline = 'middle'
+    const fontPx = h * 0.62
+    c.font = `800 ${fontPx}px system-ui, "Helvetica Neue", Arial, sans-serif`
+    const glyphs = panel.items.reduce((n, it) => n + ('arrow' in it ? 1 : 0.62 * it.text.length), 0) || 1
+    let gx = x + (pw - (glyphs / (glyphs + 0.5)) * pw) / 2
+    const unit = pw / (glyphs + 0.5)
+    for (const it of panel.items) {
+      if ('arrow' in it) { drawArrow(c, it.arrow, gx + unit / 2, h / 2, h * 0.62); gx += unit }
+      else { const tw = 0.62 * it.text.length * unit; c.fillText(it.text, gx + tw / 2, h / 2 + h * 0.03); gx += tw }
+    }
+    x += pw
+  })
+}
+
+const SIGN_ATLAS = { cols: 8, rows: 32, cellW: 256, cellH: 64 }
+const SIGN_POST_M = 0.35
+
+/** Every sign as one textured quad batch (one draw call) on a post, painted into a shared atlas. */
+export function buildAptSigns(layout: AptLayout, toLocal: (lat: number, lon: number) => XZ, elevM: number): THREE.Group | null {
+  const ranked = layout.signs
+    .map((s) => ({ s, p: toLocal(s.lat, s.lon), panels: parseSignText(s.text) }))
+    .filter((x) => x.panels.length)
+    .sort((a, b) => Math.hypot(a.p.x, a.p.z) - Math.hypot(b.p.x, b.p.z))
+  const cells = layoutSignAtlas(ranked.length, SIGN_ATLAS)
+  if (!cells.length) return null
+  const canvas = document.createElement('canvas')
+  canvas.width = SIGN_ATLAS.cols * SIGN_ATLAS.cellW
+  canvas.height = SIGN_ATLAS.rows * SIGN_ATLAS.cellH
+  const c = canvas.getContext('2d')!
+  const pos: number[] = [], uv: number[] = [], idx: number[] = []
+  const posts: THREE.BufferGeometry[] = []
+  cells.forEach((cell, i) => {
+    const { s, p, panels } = ranked[i]!
+    const h = signHeightM(s.size)
+    const w = panels.reduce((a, pn) => a + signPanelWidth(pn, s.size), 0)
+    const paintW = Math.min(SIGN_ATLAS.cellW, Math.round(SIGN_ATLAS.cellH * (w / h)))
+    c.save(); c.translate(cell.x, cell.y); c.beginPath(); c.rect(0, 0, paintW, SIGN_ATLAS.cellH); c.clip()
+    paintSign(c, panels, s.size, paintW, SIGN_ATLAS.cellH)
+    c.restore()
+    // The front faces approaching traffic: opposite the sign's heading.
+    const H = (s.hdg * Math.PI) / 180
+    const rx = Math.cos(H), rz = Math.sin(H)
+    const y0 = elevM + SIGN_POST_M, y1 = y0 + h
+    const u0 = cell.x / canvas.width, u1 = (cell.x + paintW) / canvas.width
+    const v0 = 1 - (cell.y + SIGN_ATLAS.cellH) / canvas.height, v1 = 1 - cell.y / canvas.height
+    const base = pos.length / 3
+    pos.push(p.x - (rx * w) / 2, y0, p.z - (rz * w) / 2, p.x + (rx * w) / 2, y0, p.z + (rz * w) / 2, p.x + (rx * w) / 2, y1, p.z + (rz * w) / 2, p.x - (rx * w) / 2, y1, p.z - (rz * w) / 2)
+    uv.push(u0, v0, u1, v0, u1, v1, u0, v1)
+    idx.push(base, base + 1, base + 2, base, base + 2, base + 3)
+    const post = new THREE.BoxGeometry(0.08, SIGN_POST_M, 0.08)
+    post.translate(p.x, elevM + SIGN_POST_M / 2, p.z)
+    posts.push(post)
+  })
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.colorSpace = THREE.SRGBColorSpace
+  tex.anisotropy = 8
+  tex.userData.airportOwned = true
+  const geo = new THREE.BufferGeometry()
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2))
+  geo.setIndex(idx)
+  const group = new THREE.Group()
+  group.name = 'aptSigns'
+  const boards = new THREE.Mesh(geo, ownMaterial(new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide })))
+  boards.name = 'aptSignBoards'
+  boards.frustumCulled = false
+  group.add(boards)
+  const merged = mergeGeometries(posts, false)
+  posts.forEach((g) => g.dispose())
+  if (merged) {
+    const m = new THREE.Mesh(merged, ownMaterial(new THREE.MeshStandardMaterial({ color: 0x3a3d40, roughness: 0.9 })))
+    m.name = 'aptSignPosts'
+    m.frustumCulled = false
+    group.add(m)
+  }
+  return group
+}
+
 // ---------------------------------------------------------------- lights --
 
 /** Colour and spacing (m) of a light-type code: 101 green centreline, 102 blue edge, the rest amber. */
@@ -385,6 +548,8 @@ export async function enhanceAirportWithXplane(group: THREE.Group, icao: string,
   group.add(built)
   const lights = buildAptLights(layout, toLocal, elevM)
   if (lights) { group.add(lights); group.userData.aptLights = lights }
+  const signs = buildAptSigns(layout, toLocal, elevM)
+  if (signs) group.add(signs)
 
   // The stand-in taxiway complex retires: X-Plane's pavement replaces it.
   const stale: THREE.Object3D[] = []

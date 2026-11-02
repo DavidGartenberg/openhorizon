@@ -153,3 +153,10 @@ describe.skipIf(!fs.existsSync(APT))('the real X-Plane apt.dat (KSFO)', () => {
     } finally { fs.closeSync(fd) }
   })
 })
+
+describe('signs keep their full text', () => {
+  it('multi-panel signs with arrows and styles come through whole', () => {
+    const a = parseAptAirport('1 5 0 0 K x\n20 37.5 -122.2 90.0 0 3 {@Y}{^l}B3|{@L}A\n')
+    expect(a.signs[0]).toMatchObject({ hdg: 90, size: 3, text: '{@Y}{^l}B3|{@L}A' })
+  })
+})
