@@ -129,9 +129,9 @@ export function surfaceStyle(surf: number): { color: number; lift: number; rough
   switch (surf) {
     case 1: return { color: 0x8c9094, lift: 0.030, roughness: 0.95 }  // asphalt
     case 2: return { color: 0xbebeb7, lift: 0.045, roughness: 0.9 }   // concrete
-    case 3: return { color: 0x3c5233, lift: 0.004, roughness: 1 }     // turf
-    case 4: return { color: 0x6a5a46, lift: 0.012, roughness: 1 }     // dirt
-    case 5: return { color: 0x7a7367, lift: 0.020, roughness: 1 }     // gravel
+    case 3: return { color: 0x607f43, lift: 0.004, roughness: 1 }     // turf
+    case 4: return { color: 0x8c7757, lift: 0.012, roughness: 1 }     // dirt
+    case 5: return { color: 0x9a9283, lift: 0.020, roughness: 1 }     // gravel
     case 12: return { color: 0x8a7e66, lift: 0.012, roughness: 1 }    // dry lakebed
     case 13: case 14: case 15: return null
     default:

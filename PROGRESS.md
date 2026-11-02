@@ -3136,3 +3136,7 @@ What changed, and what is real versus a recorded stand-in:
 ### Turf runways (2026-11-02)
 
 - Turf and other soft runway strips drew nearly black (a hole in the fields). They now use a mown-grass tone slightly paler than the imagery. Checked at 12K (Superior Muni, Nebraska), where X-Plane lists a 61 m wide turf strip beside the paved runway.
+
+### Dirt, gravel and turf surfaces (2026-11-02)
+
+- Dirt / gravel / turf taxiways and aprons from X-Plane drew nearly black. The geometry and material were right (checked with the new `__ohAptMesh` hook: colour, normals up); what made them black was the weather: with 7% direct sunlight (overcast) a dark plain material has almost no light, while the aerial imagery is baked bright. In clear weather they were brown / green. They are now paler (dirt `8c7757`, gravel `9a9283`, turf `607f43`) so they read in overcast too; checked at 12K (Superior Muni) in both overcast and clear METAR.

@@ -4039,6 +4039,14 @@ Object.assign(window as unknown as Record<string, unknown>, {
   /** Render-space x (east), z (south) of a latitude/longitude (verification). */
   __ohLocal: (lat: number, lon: number) => { const l = frame.toLocal(finiteOr(lat) ?? 0, finiteOr(lon) ?? 0); return [Math.round(l.e * 10) / 10, Math.round(-l.n * 10) / 10] },
   /** Show or hide one named part of an airport (verification A/B): __ohAptShow('KSFO', 'aptLayout', false). */
+  /** What one named part of an airport is made of: material colour / emissive / type and the mean vertex normal's y (verification). */
+  __ohAptMesh: (icao: string, name: string) => {
+    const o = airports.groupFor(icao)?.getObjectByName(name) as THREE.Mesh | undefined
+    if (!o?.geometry) return null
+    const m = o.material as THREE.MeshStandardMaterial
+    const n = o.geometry.getAttribute('normal'); let ny = 0; if (n) for (let i = 0; i < n.count; i++) ny += n.getY(i)
+    return { type: m.type, color: m.color?.getHexString(), emissive: m.emissive?.getHexString(), side: m.side, tris: o.geometry.getAttribute('position').count / 3, meanNy: n ? ny / n.count : null, shadow: o.receiveShadow, order: o.renderOrder }
+  },
   __ohAptShow: (icao: string, name: string, visible: boolean) => { const o = airports.groupFor(icao)?.getObjectByName(name); if (o) o.visible = !!visible; return !!o },
   /** Heights (m) at which a vertical ray down onto an airport's X-Plane pavement at a latitude/longitude hits each mesh, next to the terrain height there (verification). */
   __ohAptRay: (icao: string, lat: number, lon: number) => {
