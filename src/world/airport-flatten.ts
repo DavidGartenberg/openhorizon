@@ -23,6 +23,8 @@ export function airportFieldElevationM(ap: Pick<AirportData, 'r' | 'e'>): number
 
 /** The level area never grows past this radius (m), however far an airport's pavement reaches. */
 export const MAX_FLAT_RADIUS_M = 4500
+/** A field lower than this (m) lies below sea level: land the elevation data calls sea (0 m is often just an unknown elevation). */
+export const BELOW_SEA_FIELD_M = -0.5
 const EXTENT_MARGIN_M = 150
 
 /** Radius (m) of the level area around the airport reference: from its runways, and from the reach of its pavement when X-Plane's layout is known. */
