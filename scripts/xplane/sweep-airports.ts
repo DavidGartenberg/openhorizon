@@ -1,5 +1,5 @@
 /**
- * Builds X-Plane's layout (pavement, paint, lights, gate numbers, parked-airplane spots, taxiway names) for EVERY
+ * Builds X-Plane's layout (pavement, paint, lights, gate numbers, windsocks, PAPIs, parked-airplane spots, taxiway names) for EVERY
  * airport in the install's apt.dat in node, over a gently sloping ground, and reports exceptions, non-finite
  * vertices, slow builds (> 4 s) and very large ones (> 1.2 M triangles). About eight minutes.
  *
@@ -12,7 +12,7 @@ const noop: ProxyHandler<object> = { get: (_t, k) => (k === 'canvas' ? {} : () =
 ;(globalThis as unknown as { document: unknown }).document = { createElement: () => ({ width: 0, height: 0, getContext: () => new Proxy({}, noop), style: {} }) }
 // @ts-expect-error plain ES module without types (server code)
 import { aptAirport, loadAptIndex } from '../../server/apt.mjs'
-import { normalizeApt, buildAptPavement, buildAptPaint, buildAptLights, buildAptGateLabels, runwayRects, taxiIdentSegments } from '../../src/world/apt-layout'
+import { normalizeApt, buildAptPavement, buildAptPaint, buildAptLights, buildAptGateLabels, buildAptWindsocks, buildAptPapis, runwayRects, taxiIdentSegments } from '../../src/world/apt-layout'
 import { parkedAircraftFor } from '../../src/world/parked-aircraft'
 
 const cache = new URL('../../server/cache', import.meta.url).pathname
@@ -39,11 +39,13 @@ for (const icao of all) {
     const rects = runwayRects(layout.rwy, toLocal)
     const ground = (x: number, z: number) => 3 + 0.0004 * x - 0.0003 * z       // a gentle slope exercises the draping
     const meshes = [...buildAptPavement(layout, toLocal, 0, ground, rects), ...buildAptPaint(layout, toLocal, 0, ground)]
-    const extras = [buildAptLights(layout, toLocal, 0, ground), buildAptGateLabels(layout, toLocal, 0, ground)]
+    const extras = [buildAptLights(layout, toLocal, 0, ground), buildAptGateLabels(layout, toLocal, 0, ground), buildAptWindsocks(layout, toLocal, 0, ground)?.group ?? null, buildAptPapis(layout, toLocal, 0, ground)?.group ?? null]
     parkedAircraftFor(layout.ramps.map((r) => ({ ...toLocal(r.lat, r.lon), hdg: r.hdg, kind: r.kind, cats: r.cats, name: r.name })))
     taxiIdentSegments(layout, toLocal)
     let tris = 0
-    for (const m of [...meshes, ...extras.filter((e): e is THREE.Mesh => !!e && 'geometry' in e)]) {
+    const flat: THREE.Object3D[] = [...meshes]
+    for (const e of extras) if (e) e.traverse((o) => flat.push(o))
+    for (const m of flat.filter((o): o is THREE.Mesh => 'geometry' in o)) {
       const g = m.geometry as THREE.BufferGeometry
       const pos = g.getAttribute('position')
       const arr = pos.array as Float32Array
