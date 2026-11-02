@@ -44,9 +44,10 @@ Three more routes carry what the old OurAirports database gets wrong or lacks, a
 | --- | --- |
 | `GET /api/apt-runways.json` | per airport: overruns; X-Plane's runway ends / width / hard-soft / edge lights where they differ; runways the database lacks; runways X-Plane disproves (`[end, end, -1, -1]`) |
 | `GET /api/apt-extent.json` | the box that holds an airport's pavement (airports over ~1.5 km across) |
+| `GET /api/apt-land.json?lat&lon&r` | where low airports (up to 20 m) are certainly land, from their X-Plane pavement and runways: runs along 100 m rows; the client levels them only where the elevation data says sea (reclaimed land) |
 | `GET /api/apt-airports.json?lat&lon&r` | airports X-Plane has and the database lacks (22k, mostly small fields), drawn but kept off the ND / MFD lists |
 
-Fields below sea level are levelled over what the elevation data calls sea and the ocean is hidden around them.
+Fields below sea level keep the elevation data's negative heights as land within 12 km (polders, Death Valley) and the ocean is hidden around them; reclaimed land (VHHH, where the data says sea) is levelled from the land mask.
 
 ## How to look at it (verification recipes)
 
@@ -72,7 +73,7 @@ Fields below sea level are levelled over what the elevation data calls sea and t
 
 Recorded in `PROGRESS.md` (overnight shift): overhead switches are resting positions, the lower DU shows modelled
 readouts, one autopilot stands behind CMD A/B, and only the airliner exteriors take X-Plane liveries (two at a time).
-Airports: land the elevation data calls sea beyond a below-sea field's margin (Dutch polders, VHHH's reclaimed land)
-still shows as sea; terminal heights come from OpenStreetMap; heliports and seaplane bases are not drawn; the
+Airports: sea the elevation data puts beyond 13.5 km of a below-sea field (the Dutch coast) and reclaimed land of fields above 20 m is
+not handled; terminal heights come from OpenStreetMap; heliports and seaplane bases are not drawn; the
 shoreline where a level area meets the sea is stepped at the terrain's cell size; the parked airplanes are scenery
 (no label, no radar return).
