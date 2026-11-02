@@ -111,13 +111,14 @@ describe('stepAutoland state machine', () => {
 
   it('steps flaps one detent at a time, only inside the limit speed', () => {
     const s = makeAutolandState()
-    const fast = stepAutoland(s, dt, inputs({ iasKt: 200, flapIndex: 3 }), jet)
+    const f15 = B738.flapDetentsDeg.indexOf(15)
+    const fast = stepAutoland(s, dt, inputs({ iasKt: 200, flapIndex: f15 }), jet)
     expect(fast.flapIndex).toBeNull() // too fast for the next detent
     const s2 = makeAutolandState()
-    const ok = stepAutoland(s2, dt, inputs({ iasKt: 150, flapIndex: 3 }), jet)
-    expect(ok.flapIndex).toBe(4)
+    const ok = stepAutoland(s2, dt, inputs({ iasKt: 150, flapIndex: f15 }), jet)
+    expect(ok.flapIndex).toBe(f15 + 1)
     // and not again for several seconds
-    const again = stepAutoland(s2, dt, inputs({ iasKt: 150, flapIndex: 4 }), jet)
+    const again = stepAutoland(s2, dt, inputs({ iasKt: 150, flapIndex: f15 + 1 }), jet)
     expect(again.flapIndex).toBeNull()
   })
 

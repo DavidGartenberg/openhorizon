@@ -261,7 +261,7 @@ const FLEET: Record<string, {
 }> = {
   '172': { params: C172S, label: 'Cessna 172S', build: buildC172, final: { kias: 70, flapsIndex: 1, flapsDeg: 10 } },
   CUB: { params: J3CUB, label: 'Piper J-3 Cub', build: buildCub, final: { kias: 50, flapsIndex: 0, flapsDeg: 0 } },
-  '737': { params: B738, label: 'Boeing 737-800', build: buildB738, final: { kias: 140, flapsIndex: 5, flapsDeg: 30 } },
+  '737': { params: B738, label: 'Boeing 737-800', build: buildB738, final: { kias: 140, flapsIndex: B738.flapDetentsDeg.indexOf(30), flapsDeg: 30 } },
 }
 const fleetKey = ((): string => {
   try {

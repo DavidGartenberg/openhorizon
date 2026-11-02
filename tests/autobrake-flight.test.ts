@@ -12,7 +12,7 @@ function rollout(setting: AutobrakeSetting, speedKt: number, opts: { spoilers?: 
   ac.spawnOnGround(0, 0, 0)
   ac.engineRunning = true
   ac.controls.throttle = 1
-  ac.controls.flapsIndex = 2
+  ac.controls.flapsIndex = B738.flapDetentsDeg.indexOf(5)
   ac.controls.trim = 0.4
   const hold = (): void => {
     const d = ac.data

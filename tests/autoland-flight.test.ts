@@ -50,7 +50,7 @@ describe('autoland: Cessna 172 (5 nm final, flaps and speed managed by autoland)
 })
 
 describe('autoland: Boeing 737-800 (7 nm final, flaps 5 → landing flaps by autoland)', () => {
-  const base = { distNm: 7, kias: 160, flapsIndex: 3 }
+  const base = { distNm: 7, kias: 160, flapsIndex: B738.flapDetentsDeg.indexOf(15) }
   const lim: Limits = { vs: [-450, -40], along: [150, 900], xt: 9, hdg: 6, rolloutXt: 14 }
   it('calm', () => check(B738, { ...base }, lim))
   it('15 kt headwind', () => check(B738, { ...base, headwindKt: 15 }, lim))
@@ -67,7 +67,7 @@ describe('autoland: Boeing 737-800 (7 nm final, flaps 5 → landing flaps by aut
 
 describe('autoland: quality of a normal landing', () => {
   it('a calm 737 landing is a good one (sink, touchdown zone, centerline, pitch)', () => {
-    const r = flyLanding({ P: B738, distNm: 7, kias: 160, flapsIndex: 3 })
+    const r = flyLanding({ P: B738, distNm: 7, kias: 160, flapsIndex: B738.flapDetentsDeg.indexOf(15) })
     const td = r.touchdown!
     expect(td.vsFpm).toBeGreaterThan(-250)
     expect(td.vsFpm).toBeLessThan(-60)
