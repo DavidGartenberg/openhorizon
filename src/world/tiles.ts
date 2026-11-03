@@ -6,7 +6,7 @@ import {
   metersPerDegree, type LatLon,
 } from '../math/geo'
 import { cloudShadowUniforms, CLOUD_SHADOW_GLSL } from '../render/cloud-shadows'
-import { wetnessUniforms } from '../render/wetness'
+import { snowUniforms, wetnessUniforms } from '../render/wetness'
 import { TerrainCoverage, TERRAIN_COVERAGE_GLSL, sampleTerrainTriangles } from './terrain-coverage'
 import type { TileResponse } from './terrain-worker'
 
@@ -114,7 +114,7 @@ const TERRAIN_VERT = /* glsl */ `
 `
 const TERRAIN_FRAG = /* glsl */ `
   uniform vec3 uSunDir;
-  uniform float uDayness, uLowSun, uFogDensity, uHasImagery, uSunTransmission, uCloudDensity, uWet;
+  uniform float uDayness, uLowSun, uFogDensity, uHasImagery, uSunTransmission, uCloudDensity, uWet, uSnow;
   uniform vec3 uCloudColor;
   uniform sampler2D uImagery, uSky;
   uniform vec2 uWorldOffset;
@@ -189,6 +189,10 @@ const TERRAIN_FRAG = /* glsl */ `
     float wetLuma = dot(albedo, vec3(0.2126,0.7152,0.0722));
     albedo = mix(vec3(wetLuma), albedo, 1.0 + 0.3 * uWet);
     albedo *= 1.0 - 0.3 * uWet * (1.0 - 0.4 * imW);
+    // Snow lies on level and gently sloping ground, patchy at first and at its edges, and thins on steep faces.
+    float snowPatch = 0.78 + 0.44 * noise(ground * 0.011 + 5.1) + 0.2 * (noise(ground * 0.09) - 0.5);
+    float snowCover = clamp(uSnow * snowPatch * 1.15, 0.0, 1.0) * smoothstep(0.45, 0.86, nrm.y);
+    albedo = mix(albedo, vec3(0.80, 0.84, 0.90), snowCover * 0.94);
     float direct = mix(ndl,mix(1.0,ndl,0.4),imW);
     vec3 lit = albedo*(vec3(0.015)+vec3(0.35,0.43,0.53)*uDayness*(0.78+0.22*nrm.y)+
       sunTint*0.65*uDayness*direct*cloudShadowAt(vec3(vWXZ.x,vAltitude,vWXZ.y)));
@@ -260,6 +264,7 @@ export class TileManager {
         uSunTransmission: { value: 1 },
         ...cloudShadowUniforms,
         ...wetnessUniforms,
+        ...snowUniforms,
         uCloudDensity: { value: 0 },
         uCloudColor: { value: new THREE.Color(0xc8ccd2) },
         uFogDensity: { value: 9e-6 },

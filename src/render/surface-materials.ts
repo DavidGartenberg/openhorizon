@@ -1,13 +1,13 @@
 import * as THREE from 'three'
 import { patchAtmosphere } from './atmosphere-materials'
-import { wetnessUniforms } from './wetness'
+import { snowUniforms, wetnessUniforms } from './wetness'
 
 /** Pavement detail in geometry-local metres: survives floating-origin moves.
  * No texture requests or extra passes. Fine detail fades at its pixel footprint
  * instead of turning into a sparkling pattern at a grazing approach angle. */
 export function pavementMaterial(color: number, plane: 'xy' | 'xz', kind: 'asphalt' | 'concrete' | 'runway' = 'asphalt'): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({ color, roughness: 0.91, metalness: 0, envMapIntensity: 0.4 })
-  material.customProgramCacheKey = () => `pavement-v5-${plane}-${kind}`
+  material.customProgramCacheKey = () => `pavement-v6-${plane}-${kind}`
   material.onBeforeCompile = shader => {
     const runway = kind === 'runway'
     shader.vertexShader = `varying vec2 vPavement;
@@ -16,8 +16,8 @@ ${runway ? 'attribute vec2 runwayEnds; attribute vec2 runwayLat; varying vec2 vR
     shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
 vPavement = position.${plane};
 ${runway ? 'vRunwayEnds = runwayEnds; vRunwayLat = runwayLat;' : ''}`)
-    Object.assign(shader.uniforms, wetnessUniforms)
-    shader.fragmentShader = `uniform float uWet;
+    Object.assign(shader.uniforms, wetnessUniforms, snowUniforms)
+    shader.fragmentShader = `uniform float uWet, uSnow;
 varying vec2 vPavement;
 ${runway ? 'varying vec2 vRunwayEnds; varying vec2 vRunwayLat;' : ''}
 float pavementHash(vec2 p) {
@@ -101,7 +101,10 @@ pavementTone *= 1.0 + 0.16 * edgeBleach * (0.6 + 0.4 * pavementMottle);
 diffuseColor.rgb *= pavementTone;
 // Wet: damp everywhere, wetter in the low spots where water stands (broad basins from the same noise), darker and glossier.
 float wetPuddle = smoothstep(0.50, 0.64, pavementWeather * 0.55 + pavementMottle * 0.45);
-float wetAmount = uWet * (0.6 + 0.4 * wetPuddle);
+// Snow: runways are ploughed, but a dusting stays in the grain and at the edges, more on taxiways and aprons.
+float snowDust = uSnow * ${kind === 'runway' ? '0.28' : '0.6'} * (0.5 + 0.9 * pavementWeather) * (0.6 + 0.8 * pavementGrain);
+diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.82, 0.85, 0.9), clamp(snowDust, 0.0, 0.85));
+float wetAmount = uWet * (0.6 + 0.4 * wetPuddle) * (1.0 - clamp(uSnow * 1.4, 0.0, 1.0));
 diffuseColor.rgb *= mix(1.0, 0.56, wetAmount);`)
     shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
 roughnessFactor = clamp(roughnessFactor + (pavementGrain - 0.5) * 0.1 + (pavementMottle - 0.5) * 0.08, 0.72, 1.0);

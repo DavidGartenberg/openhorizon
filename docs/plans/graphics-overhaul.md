@@ -139,6 +139,12 @@ own noise; terrain goes darker and a little richer in colour, less so over a pho
 view dry and in rain: the runway shows sky-mirroring puddles and darker, wet-looking asphalt; dry is unchanged. There is no
 rain itself yet (no streaks, no windshield droplets); this is the surfaces only.
 
+Snow follows the same way (`snowFromWeather`, `SnowModel`): `SN` 0.9 (light 0.7, heavy 1), grains and pellets a little,
+settling over about 20 minutes of snowfall and melting over about 3 hours, so it is still there after the snow stops. Terrain
+whitens on level and gently sloping ground (patchy at first, thin on steep faces); pavement keeps a dusting in its grain
+(less on runways, which are ploughed); wet gloss is suppressed under snow. Checked at KSFO in `-SN OVC015`: snow-covered
+airfield with the ploughed taxiway lines still dark.
+
 ## Remaining realism limits
 
 This is a substantial renderer upgrade, not a claim that “10× realism” can be
