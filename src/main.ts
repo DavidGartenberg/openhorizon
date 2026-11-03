@@ -189,7 +189,9 @@ const trails = new Trails(scene, sky.radianceTexture)
 const surfaceWx = new SurfaceWeatherState()
 const precipitation = new Precipitation(scene)
 const _camVel = new THREE.Vector3(), _airVel = new THREE.Vector3()
+const _lastCamPos = new THREE.Vector3()
 let lastPrecipAt = performance.now()
+let camVelValid = false
 // Touchdown tyre smoke (plan step 8) at the main wheels.
 const tireSmoke = new TireSmoke(scene)
 let smokeWasOnGround = true
@@ -518,10 +520,17 @@ function updateWeatherEffects(dayness: number, sunDir: THREE.Vector3): void {
   // Heated windshields (jets, turboprops) stay clear; others frost with the airframe.
   WINDSCREEN_WEATHER.uIce.value = environment.iceProtectionFitted ? 0 : Math.min(1, environment.ice.thicknessMm / 4)
   // Falling rain / snow around the camera (plan step 6); wet snow falls as rain.
-  const gs = d.groundSpeedKt * KT, trk = (d.trackDeg * Math.PI) / 180
-  _camVel.set(gs * Math.sin(trk), d.verticalSpeedFpm * 0.00508, -gs * Math.cos(trk))
-  _airVel.set(aircraft.windNed.y, -aircraft.windNed.z, -aircraft.windNed.x)
+  // The CAMERA's velocity (orbit / free cameras do not move with the
+  // airplane); a floating-origin rebase jump (> 400 m/s) is ignored.
   const nowMs = performance.now()
+  const frameS = Math.max((nowMs - lastPrecipAt) / 1000, 1e-3)
+  if (camVelValid) {
+    _camVel.subVectors(camera.position, _lastCamPos).divideScalar(frameS)
+    if (_camVel.length() > 400) _camVel.set(0, 0, 0)
+  }
+  _lastCamPos.copy(camera.position)
+  camVelValid = true
+  _airVel.set(aircraft.windNed.y, -aircraft.windNed.z, -aircraft.windNed.x)
   const kind = inPrecip <= 0 ? 'none' : precip === 'snow' && oatC <= 1.5 ? 'snow' : 'rain'
   precipitation.update((nowMs - lastPrecipAt) / 1000, simT, camera, kind, inPrecip, _camVel, _airVel, 0.15 + 0.85 * dayness, cameraMode === 'cockpit', renderer.getPixelRatio(),
     // The 737's open cabin: the B738 barrel (r 1.88 m, axis 0.6 m, ±19.7 m).
