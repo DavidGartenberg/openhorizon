@@ -9,6 +9,39 @@ import type { CloudSlab } from '../sim/weather/clouds-model'
  * approximate compositing. Depth tests use the first density sample, not opaque-scene depth
  * integration: terrain intersecting a mass can occlude its interior imperfectly.
  */
+/** The cloud masses' density, shared by the visible clouds and the shadows they cast (cloud-shadows.ts), so a shadow
+ * has the shape of its cloud. Needs `uniform sampler3D uNoise` declared before it. */
+export const CLOUD_DENSITY_GLSL = /* glsl */ `
+  float cloudDensity(vec3 p, float seed, float coverage) {
+    // p is ellipsoid-local; all noise is object/world anchored, never screen UV.
+    // Shadow rays share precisely the visible bounded support. Macro noise
+    // may expand lobes, but may never leak density through the proxy box.
+    if (any(greaterThanEqual(abs(p), vec3(1.0)))) return 0.0;
+    float sideSupport = 1.0 - smoothstep(0.72, 1.0, length(p.xz));
+    float h = p.y * 0.5 + 0.5;
+    float base = smoothstep(0.0, 0.12, h);
+    float top = 1.0 - smoothstep(0.72, 1.0, h);
+    vec3 q = p * vec3(1.7, 1.35, 1.7) + seed * 23.7;
+    float macro = texture(uNoise, q * 0.055).r;
+    float detail = texture(uNoise, q * 0.25 + 0.37).r;
+    float fine = texture(uNoise, q * 0.71 + 0.13).r;
+    // Broad lobes carve a coherent rounded silhouette; finer erosion only
+    // affects the boundary, preserving substantial optically thick interiors.
+    float envelope = 1.0 - dot(p.xz, p.xz) - pow(max(p.y, 0.0), 2.0) * 0.65;
+    float structure = envelope;
+    if (coverage < 0.6) {
+      float billowA = 1.0 - length((p - vec3(-0.32, 0.04, 0.1)) / vec3(0.62, 0.96, 0.64));
+      float billowB = 1.0 - length((p - vec3(0.3, 0.22, -0.14)) / vec3(0.54, 0.77, 0.64));
+      float billowC = 1.0 - length((p - vec3(0.15, -0.2, 0.37)) / vec3(0.69, 0.67, 0.49));
+      structure = max(max(billowA, billowB), billowC) * 1.8;
+    }
+    float body = structure + (macro - 0.5) * 1.2 - 0.08;
+    // A second, finer octave (zero-mean) frays the boundary into smaller billows.
+    float d = smoothstep(0.0, 0.36, body - (1.0 - detail) * 0.16 + (fine - 0.5) * 0.12);
+    return d * base * top * sideSupport * (0.65 + macro * 0.65);
+  }
+`
+
 const VERT = /* glsl */ `
   attribute vec3 offset;
   attribute vec3 radii;
@@ -40,34 +73,8 @@ const FRAG = /* glsl */ `
   varying vec3 vRadii;
   varying float vSeed;
 
-  float density(vec3 p) {
-    // p is ellipsoid-local; all noise is object/world anchored, never screen UV.
-    // Shadow rays share precisely the visible bounded support. Macro noise
-    // may expand lobes, but may never leak density through the proxy box.
-    if (any(greaterThanEqual(abs(p), vec3(1.0)))) return 0.0;
-    float sideSupport = 1.0 - smoothstep(0.72, 1.0, length(p.xz));
-    float h = p.y * 0.5 + 0.5;
-    float base = smoothstep(0.0, 0.12, h);
-    float top = 1.0 - smoothstep(0.72, 1.0, h);
-    vec3 q = p * vec3(1.7, 1.35, 1.7) + vSeed * 23.7;
-    float macro = texture(uNoise, q * 0.055).r;
-    float detail = texture(uNoise, q * 0.25 + 0.37).r;
-    float fine = texture(uNoise, q * 0.71 + 0.13).r;
-    // Broad lobes carve a coherent rounded silhouette; finer erosion only
-    // affects the boundary, preserving substantial optically thick interiors.
-    float envelope = 1.0 - dot(p.xz, p.xz) - pow(max(p.y, 0.0), 2.0) * 0.65;
-    float structure = envelope;
-    if (uCoverage < 0.6) {
-      float billowA = 1.0 - length((p - vec3(-0.32, 0.04, 0.1)) / vec3(0.62, 0.96, 0.64));
-      float billowB = 1.0 - length((p - vec3(0.3, 0.22, -0.14)) / vec3(0.54, 0.77, 0.64));
-      float billowC = 1.0 - length((p - vec3(0.15, -0.2, 0.37)) / vec3(0.69, 0.67, 0.49));
-      structure = max(max(billowA, billowB), billowC) * 1.8;
-    }
-    float body = structure + (macro - 0.5) * 1.2 - 0.08;
-    // A second, finer octave (zero-mean) frays the boundary into smaller billows.
-    float d = smoothstep(0.0, 0.36, body - (1.0 - detail) * 0.16 + (fine - 0.5) * 0.12);
-    return d * base * top * sideSupport * (0.65 + macro * 0.65);
-  }
+  ${CLOUD_DENSITY_GLSL}
+  float density(vec3 p) { return cloudDensity(p, vSeed, uCoverage); }
 
   void main() {
     vec3 ray = normalize(vPosition - cameraPosition);
@@ -255,8 +262,62 @@ export class Clouds {
   private lastCellX = Infinity
   private lastCellZ = Infinity
   private noise = makeNoise()
+  private hidden = false
   private lastSortPosition = new THREE.Vector3(Infinity, Infinity, Infinity)
+  /** Bumped whenever cloud masses are rebuilt or refilled: the cloud-shadow map redraws when it changes. */
+  version = 0
   constructor(private readonly scene: THREE.Scene) {}
+
+  get noiseTexture(): THREE.Data3DTexture { return this.noise }
+
+  /** Hide or show the drawn clouds without touching their shadows (inspection of the ground under them). */
+  setVisible(visible: boolean): boolean {
+    this.hidden = !visible
+    for (const l of this.layers) l.mesh.visible = visible
+    return visible
+  }
+
+  /** The instanced masses of each layer, for the shadow pass (same attribute objects the visible clouds use). */
+  shadowLayers(): { geometry: THREE.InstancedBufferGeometry; coverage: number; baseM: number }[] {
+    return this.layers.map((l) => ({ geometry: l.mesh.geometry as THREE.InstancedBufferGeometry, coverage: COVERAGE[l.slab.cover] ?? 0.5, baseM: l.slab.baseMslFt * 0.3048 }))
+  }
+
+  /** Fraction of direct sunlight reaching a render-frame position through the cloud masses (1 = none in the way):
+   * the same density and extinction as the shader, eight samples along each mass the sun ray crosses. */
+  sunTransmissionAt(pos: THREE.Vector3, sunDir: THREE.Vector3): number {
+    const data = this.noise.image.data as Uint8Array
+    const len = Math.hypot(sunDir.x, Math.max(sunDir.y, 0.08), sunDir.z)
+    const sx = sunDir.x / len, sy = Math.max(sunDir.y, 0.08) / len, sz = sunDir.z / len
+    let optical = 0
+    for (const layer of this.layers) {
+      if (pos.y >= layer.slab.topMslFt * 0.3048) continue
+      const geometry = layer.mesh.geometry as THREE.InstancedBufferGeometry
+      const centers = geometry.getAttribute('offset'), radii = geometry.getAttribute('radii'), seeds = geometry.getAttribute('seed')
+      const cover = COVERAGE[layer.slab.cover] ?? 0.5
+      const extinction = 0.0042 + (0.007 - 0.0042) * cover
+      for (let i = 0; i < geometry.instanceCount; i++) {
+        const rx = radii.getX(i), ry = radii.getY(i), rz = radii.getZ(i)
+        const ox = (pos.x - centers.getX(i)) / rx, oy = (pos.y - centers.getY(i)) / ry, oz = (pos.z - centers.getZ(i)) / rz
+        const dx = sx / rx, dy = sy / ry, dz = sz / rz
+        // Ray against the unit box, in world metres along the sun ray.
+        let near = 0, far = Infinity
+        for (const [o, d] of [[ox, dx], [oy, dy], [oz, dz]] as const) {
+          if (Math.abs(d) < 1e-12) { if (Math.abs(o) >= 1) { far = -1; break } continue }
+          const a = (-1 - o) / d, b = (1 - o) / d
+          near = Math.max(near, Math.min(a, b)); far = Math.min(far, Math.max(a, b))
+        }
+        if (!(far > near)) continue
+        const step = (far - near) / 8
+        let sum = 0
+        for (let k = 0; k < 8; k++) {
+          const t = near + (k + 0.5) * step
+          sum += localDensity(data, ox + dx * t, oy + dy * t, oz + dz * t, seeds.getX(i), cover)
+        }
+        optical += sum * step * extinction
+      }
+    }
+    return Math.exp(-optical)
+  }
 
   /** Local cloud extinction in inverse metres at a render-frame position.
    * Call after update() / rebase so the queried and rendered anchors agree.
@@ -338,6 +399,7 @@ export class Clouds {
     const mesh = new THREE.Mesh(geo, material)
     mesh.frustumCulled = false
     mesh.userData.dirty = true
+    mesh.visible = !this.hidden
     this.scene.add(mesh)
     return { mesh, material, slab }
   }
@@ -377,12 +439,14 @@ export class Clouds {
     geo.instanceCount = instances.length
     offsets.needsUpdate = radii.needsUpdate = seeds.needsUpdate = true
     l.mesh.userData.dirty = false
+    this.version++
   }
   onRebase(): void {
     this.lastCellX = Infinity
     for (const l of this.layers) l.mesh.userData.dirty = true
   }
   private dispose(): void {
+    this.version++
     for (const l of this.layers) {
       this.scene.remove(l.mesh)
       l.mesh.geometry.dispose()

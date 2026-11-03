@@ -5,6 +5,7 @@ import { parseMetar } from './sim/weather/metar'
 import { blendWeather, type StationWeather, type BlendedWeather } from './sim/weather/weather'
 import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-model'
 import { Clouds } from './render/clouds'
+import { CloudShadows, cloudShadowUniforms, installCloudShadowMaterials } from './render/cloud-shadows'
 import { NexradField } from './world/nexrad'
 import { CommsBus, isAudible, type Transmission } from './sim/atc/comms'
 import { AiPatternPilot } from './sim/traffic/ai-pilot'
@@ -142,11 +143,11 @@ const FX_KEY = 'oh-fx'
 function loadFrameMode(): FrameMode {
   try { const v = localStorage.getItem(FRAME_MODE_KEY); return isFrameMode(v) ? v : 'uncapped' } catch { return 'uncapped' }
 }
-function loadFx(): { ao: boolean; lens: boolean } {
+function loadFx(): { ao: boolean; lens: boolean; cloudShadows: boolean } {
   try {
-    const j = JSON.parse(localStorage.getItem(FX_KEY) ?? 'null') as { ao?: unknown; lens?: unknown } | null
-    return { ao: j?.ao !== false, lens: j?.lens !== false }
-  } catch { return { ao: true, lens: true } }
+    const j = JSON.parse(localStorage.getItem(FX_KEY) ?? 'null') as { ao?: unknown; lens?: unknown; cloudShadows?: unknown } | null
+    return { ao: j?.ao !== false, lens: j?.lens !== false, cloudShadows: j?.cloudShadows !== false }
+  } catch { return { ao: true, lens: true, cloudShadows: true } }
 }
 const initialFx = loadFx()
 let lensStrength = initialFx.lens ? 1 : 0
@@ -208,6 +209,9 @@ const MMO_BY_TYPE: Record<string, number> = {
 const sky = new SkyDome(scene)
 const ocean = new Ocean(scene, sky.radianceTexture)
 const clouds = new Clouds(scene)
+installCloudShadowMaterials()
+const cloudShadows = new CloudShadows()
+cloudShadows.enabled = initialFx.cloudShadows
 const hud = new Hud()
 const instruments = new InstrumentOverlay()
 let instrumentsOn = true
@@ -3577,12 +3581,15 @@ function advanceFrame(elapsed: number, now: number): void {
   // (peaks with the sun at the horizon) warms the cloud decks.
   ocean.setHoles(airports.belowSeaFields(ll.lat, ll.lon, 150_000).slice(0, OCEAN_HOLES).map((f) => { const q = frame.toLocal(f.lat, f.lon); return { x: q.e, z: -q.n, r: f.radiusM } }))
   ocean.update(loop.simTime, sunDir, dayness, wind.steadyMs, wind.steadyTowardRad,
-    worldShift.e, worldShift.n, tiles.fogDensity, sky.directTransmission)
+    worldShift.e, worldShift.n, tiles.fogDensity, sky.coverTransmission)
   const dusk = Math.min(Math.max(1 - Math.abs(sky.elevationDeg) / 8, 0), 1)
   const lowSunT = Math.min(1, Math.max(0, 1 - sky.elevationDeg / 25))
   tiles.setWorldOffset(worldShift.e, worldShift.n)
-  tiles.setLight(sunDir, dayness, lowSunT * lowSunT * (3 - 2 * lowSunT), sky.directTransmission)
+  tiles.setLight(sunDir, dayness, lowSunT * lowSunT * (3 - 2 * lowSunT), sky.coverTransmission)
   clouds.update(wxSlabs, camera.position, worldShift.e, worldShift.n, dayness, sunDir, dusk)
+  // Cloud shadows: the ground, pavement and buildings are shaded where a cloud is between them and the sun; the sun light itself takes the
+  // transmission at the aircraft (or the cockpit eye), so a plane above the clouds stays in full sun.
+  sky.setSunTransmission(cloudShadows.update(renderer, clouds, sunDir, camera.position, cameraMode === 'cockpit' ? camera.position : mesh.group.position, sky.coverTransmission))
   // 13c night lights: airport layer + aircraft exterior lights.
   const night = Math.min(Math.max(1 - dayness * 1.6, 0), 1)
   airports.updateNight(loop.simTime, night)
@@ -3916,6 +3923,9 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohFrame: (mode?: FrameMode) => { if (isFrameMode(mode)) graphicsActions.frameMode(mode); return { mode: framePacer.currentMode, lens: lensStrength, ao: postStrength.ao } },
   /** Cockpit interior flat-fill scale (verification A/B): 1 = original uniform glow. */
   __ohFill: (scale: number) => { const v = finiteOr(scale); if (v !== null) setInteriorFillScale(v) },
+  __ohCloudShadowMap: () => cloudShadows.stats(renderer),
+  __ohCloudsVisible: (on: boolean) => clouds.setVisible(on),
+  __ohCloudShadows: (on?: boolean) => { if (typeof on === 'boolean') cloudShadows.enabled = on; return cloudShadows.enabled },
   __ohPost: (o?: { enabled?: boolean; bloom?: number; rays?: number; vignette?: number; ao?: number }) => {
     if (o?.enabled !== undefined) postFx.enabled = !!o.enabled
     for (const k of ['bloom', 'rays', 'vignette', 'ao'] as const) { const v = finiteOr(o?.[k]); if (v !== null) postStrength[k] = v }
@@ -3969,6 +3979,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     detailedImagery: tiles.debugImagery().detailed,
     cloudFogDensity: cloudFog.density,
     directTransmission: sky.directTransmission,
+    cloudShadows: { on: cloudShadows.enabled, strength: cloudShadowUniforms.uCloudShadowStrength.value, light: cloudShadowUniforms.uCloudShadowLight.value, base: cloudShadowUniforms.uCloudShadowBase.value },
     fogDensity: tiles.fogDensity,
     reversedDepth: renderer.capabilities.reversedDepthBuffer,
     pixelRatio: renderer.getPixelRatio(),
@@ -4294,6 +4305,7 @@ const graphicsActions: GraphicsActions = {
   effects: fx => {
     postStrength.ao = fx.ao ? 0.8 : 0
     lensStrength = fx.lens ? 1 : 0
+    cloudShadows.enabled = fx.cloudShadows
     try { localStorage.setItem(FX_KEY, JSON.stringify(fx)) } catch { /* storage unavailable */ }
   },
   clearInput: () => input.clearHeld(),
@@ -4329,7 +4341,7 @@ const graphicsActions: GraphicsActions = {
     wxDesc = `MANUAL ${mode.toUpperCase()} · 300@8 10SM`
   },
 }
-const graphicsPanel = new GraphicsPanel(renderer, graphicsActions, { frameMode: framePacer.currentMode, ao: postStrength.ao > 0, lens: lensStrength > 0 })
+const graphicsPanel = new GraphicsPanel(renderer, graphicsActions, { frameMode: framePacer.currentMode, ao: postStrength.ao > 0, lens: lensStrength > 0, cloudShadows: cloudShadows.enabled })
 
 new LoadingPanel(FLEET_ACTIVE.params, {
   current: currentLoading,

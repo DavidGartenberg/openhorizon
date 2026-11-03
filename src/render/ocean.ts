@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { seaState } from '../sim/weather/sea-state'
 import { SKY_LOOKUP } from './atmosphere-shader'
+import { cloudShadowUniforms, CLOUD_SHADOW_GLSL } from './cloud-shadows'
 
 /** Wind-driven deep-water wave spectrum with filtered normals, dielectric
  * Fresnel and the same HDR atmosphere used by the sky and aircraft reflections.
@@ -20,6 +21,7 @@ export class Ocean {
         uWhitecap: { value: 0 }, uWind: { value: new THREE.Vector2(1, 0) },
         uWorldOffset: { value: new THREE.Vector2() }, uFogDensity: { value: 9e-6 },
         uSunTransmission: { value: 1 },
+        ...cloudShadowUniforms,
         uCloudDensity: { value: 0 }, uCloudColor: { value: new THREE.Color(0xc8ccd2) },
         uHoles: { value: Array.from({ length: OCEAN_HOLES }, () => new THREE.Vector3(0, 0, -1)) },
       },
@@ -43,6 +45,7 @@ export class Ocean {
         varying vec3 vWorldPos;
         varying float vCloudDepth;
         ${SKY_LOOKUP}
+        ${CLOUD_SHADOW_GLSL}
         void main() {
           // Land below sea level (a polder, Death Valley) is a hole in the sea: x, z and radius of each.
           for (int h = 0; h < ${OCEAN_HOLES}; h++) {
@@ -90,7 +93,7 @@ export class Ocean {
           float f = 0.0204+0.9796*pow(1.0-vh,5.0);
           float spec = min(20.0, distribution*geometry*f/(4.0*nv+0.001));
           float low = 1.0-smoothstep(0.0,0.4,l.y);
-          color += vec3(1.0,1.0-0.35*low,1.0-0.65*low)*spec*3.2*uDayness*uSunTransmission;
+          color += vec3(1.0,1.0-0.35*low,1.0-0.65*low)*spec*3.2*uDayness*cloudShadowAt(vWorldPos);
           float crest = smoothstep(0.24,0.5,length(slope));
           float breakup = 0.5+0.5*sin(dot(p,vec2(0.37,0.61))+uTime*0.8);
           float foam = uWhitecap*crest*breakup*exp(-footprint*0.2);

@@ -5,6 +5,7 @@ import {
   lonToTileX, latToTileY, tileXToLon, tileYToLat, toNedMeters, fromNedMeters,
   metersPerDegree, type LatLon,
 } from '../math/geo'
+import { cloudShadowUniforms, CLOUD_SHADOW_GLSL } from '../render/cloud-shadows'
 import { TerrainCoverage, TERRAIN_COVERAGE_GLSL, sampleTerrainTriangles } from './terrain-coverage'
 import type { TileResponse } from './terrain-worker'
 
@@ -121,6 +122,7 @@ const TERRAIN_FRAG = /* glsl */ `
   varying vec2 vUv, vWXZ;
   ${SKY_LOOKUP}
   ${TERRAIN_COVERAGE_GLSL}
+  ${CLOUD_SHADOW_GLSL}
   float hash(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx)*0.1031);
     p3 += dot(p3,p3.yzx+33.33);
@@ -153,7 +155,7 @@ const TERRAIN_FRAG = /* glsl */ `
     albedo *= 1.0+(detail-0.5)*0.16*nearDetail;
     float direct = mix(ndl,mix(1.0,ndl,0.4),imW);
     vec3 lit = albedo*(vec3(0.015)+vec3(0.35,0.43,0.53)*uDayness+
-      sunTint*0.65*uDayness*direct*uSunTransmission);
+      sunTint*0.65*uDayness*direct*cloudShadowAt(vec3(vWXZ.x,vAltitude,vWXZ.y)));
     float night = clamp(1.0-uDayness*1.6,0.0,1.0);
     if (night>0.001 && vUrban>0.001) {
       float h = hash(floor(ground/12.0));
@@ -220,6 +222,7 @@ export class TileManager {
         uDayness: { value: 1 },
         uLowSun: { value: 0 },
         uSunTransmission: { value: 1 },
+        ...cloudShadowUniforms,
         uCloudDensity: { value: 0 },
         uCloudColor: { value: new THREE.Color(0xc8ccd2) },
         uFogDensity: { value: 9e-6 },

@@ -54,7 +54,17 @@ export class SkyDome {
   readonly sunDir = new THREE.Vector3(0, 1, 0)
   elevationDeg = 0
   private cloudCover = 0
-  get directTransmission(): number { return Math.exp(-this.cloudCover * 2.7) }
+  private measuredTransmission: number | null = null
+  private sunDayness = 0
+  /** Direct sun at the shadow target: the measured cloud transmission when cloud-shadows.ts supplies one, else dimming by cloud cover. */
+  get directTransmission(): number { return this.measuredTransmission ?? this.coverTransmission }
+  /** The old uniform dimming by cloud cover alone: what is applied where no cloud shadow is drawn. */
+  get coverTransmission(): number { return Math.exp(-this.cloudCover * 2.7) }
+  /** Sun light scale from the cloud masses between the shadow target and the sun (null: back to cloud cover). */
+  setSunTransmission(t: number | null): void {
+    this.measuredTransmission = t
+    this.sunLight.intensity = 3.2 * this.sunDayness * this.directTransmission
+  }
   setCloudCover(cover: number): void { this.cloudCover = Math.max(0, Math.min(1, cover)) }
   private readonly lookup = new THREE.WebGLRenderTarget(512, 256, {
     type: THREE.HalfFloatType, depthBuffer: false,
@@ -186,6 +196,7 @@ export class SkyDome {
     this.sunLight.target.position.copy(this.shadowTarget)
     const dayness = THREE.MathUtils.smoothstep(angles.elevationDeg, -4, 10)
     const low = 1-THREE.MathUtils.smoothstep(angles.elevationDeg, 0, 25)
+    this.sunDayness = dayness
     this.sunLight.intensity = 3.2*dayness*this.directTransmission
     this.sunLight.color.setRGB(1, 1-0.35*low, 1-0.65*low)
     this.hemiLight.intensity = 0.025+(0.45+0.15*this.cloudCover)*dayness

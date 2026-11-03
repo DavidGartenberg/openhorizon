@@ -83,16 +83,39 @@ Validation on September 8, 2026:
   These are development-browser measurements, not universal hardware targets or
   final-release benchmarks. Inside thick cloud and dense airports cost more.
 
+## Cloud shadows (2026-11-03)
+
+`src/render/cloud-shadows.ts`. Each cloud mass is drawn into a 1,024² top-down transmittance map covering 32 km around
+the camera: for every ground point the sun ray is marched through the mass with the same density function the visible
+clouds use (`CLOUD_DENSITY_GLSL`, shared with `clouds.ts`), so a shadow has the shape of its cloud and is displaced along
+the sun ray; overlapping masses multiply. The terrain shader, the ocean's sun glint and every built-in lit material
+(pavement, buildings, aircraft: one `onBeforeCompile` default, `patchCloudShadow`) multiply their directional light by the
+map value at the point where their own sun ray crosses sea level. The map is exact below the lowest cloud base; above it
+surfaces take the transmission at the aircraft (computed on the CPU with the same density, `Clouds.sunTransmissionAt`), so
+a plane above the clouds stays in full sun while the ground below it is dappled. The scene's sun light itself now follows
+that measured transmission instead of a uniform dimming by cloud cover (an aircraft inside a dense mass is nearly
+unlit; one in a gap is in full sun). The map is redrawn when the camera moves a texel (31 m), the sun moves, or the masses
+are refilled. "Cloud shadows" in View & graphics switches it (saved with the other effects); `__ohCloudShadows`,
+`__ohCloudShadowMap` (what the map holds, with a sketch) and `__ohCloudsVisible` are the inspection hooks.
+
+Limits: the field of clouds reaches 14 km, so below about 12° of sun elevation a cloud's shadow falls beyond the cloud
+field and the map is faded out (uniform dimming again); the sea takes the shadow only in its sun glint (it has no diffuse
+term); the CPU density lacks the shader's finest noise octave (a few per cent in a mass's rim).
+
+Checked in the browser (separate origin) with scattered cloud over San Francisco: the map agrees with the CPU transmission
+at a 5 × 5 grid of ground points (0.27/0.25, 0.19/0.22, 0.41/0.36 …), a soft-edged shadow lies across the city blocks with
+the switch on and not with it off, and runway, aircraft, cockpit and terrain still render with no shader errors.
+
 ## Remaining realism limits
 
 This is a substantial renderer upgrade, not a claim that “10× realism” can be
 measured or that the simulator is fully photorealistic. Aircraft/cockpit and much
 of the scenery remain procedural, and satellite source quality/coverage vary.
 Clouds use approximate single scattering, transparent mass sorting and first-hit
-scene depth; the local FogExp2 immersion model is an approximation. Cloud cover
-attenuates sunlight globally rather than casting spatial shadows on the ground.
+scene depth; the local FogExp2 immersion model is an approximation. Cloud
+shadows are the cloud masses' own (see below); beyond 16 km of the camera, with the sun below about 12° or
+with the switch off, cloud cover dims the sunlight uniformly as before.
 The sea has a flat geometric surface with spectral-style normal waves and sky
 reflections, without bathymetry, coastal foam or reflected scene/cloud geometry.
 The existing moon/star model is approximate. Higher quality photographic models,
-scenery assets, depth-aware cloud composition and spatial cloud shadows remain
-valuable future work. Physics accuracy is a separate subsequent phase.
+scenery assets and depth-aware cloud composition remain valuable future work. Physics accuracy is a separate subsequent phase.

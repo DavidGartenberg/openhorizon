@@ -1,11 +1,12 @@
 import * as THREE from 'three'
+import { patchCloudShadow } from './cloud-shadows'
 
 /** Pavement detail in geometry-local metres: survives floating-origin moves.
  * No texture requests or extra passes. Fine detail fades at its pixel footprint
  * instead of turning into a sparkling pattern at a grazing approach angle. */
 export function pavementMaterial(color: number, plane: 'xy' | 'xz', kind: 'asphalt' | 'concrete' | 'runway' = 'asphalt'): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({ color, roughness: 0.91, metalness: 0, envMapIntensity: 0.4 })
-  material.customProgramCacheKey = () => `pavement-v2-${plane}-${kind}`
+  material.customProgramCacheKey = () => `pavement-v3-${plane}-${kind}`
   material.onBeforeCompile = shader => {
     const runway = kind === 'runway'
     shader.vertexShader = `varying vec2 vPavement;
@@ -108,6 +109,7 @@ float pavementDet = dot(pavementDx, pavementR1);
 float pavementHeight = pavementGrain * 0.0007;
 normal = normalize(abs(pavementDet) * normal - sign(pavementDet) *
   (dFdx(pavementHeight) * pavementR1 + dFdy(pavementHeight) * pavementR2) + normal * 1e-10);`)
+    patchCloudShadow(shader)
   }
   return material
 }
