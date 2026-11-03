@@ -128,6 +128,17 @@ patch their own). Nothing within 20 m is touched, so the cockpit and the player'
 the one the terrain uses (from the weather's visibility). Checked at KSFO at 6 SM: runways and taxiways that stood out dark
 and crisp to the horizon now dissolve into the haze like the ground. `__ohAerial(on)` switches it for comparison.
 
+## Wet ground (2026-11-03)
+
+`src/render/wetness.ts`. The METAR's present weather (`-RA`, `TSRA`, `BR`, `FG` ...) sets how wet the ground is, 0..1: heavy rain
+soaks it, rain and showers 0.85, light rain 0.62, fog 0.5, mist 0.3, snow melting 0.35, rain in the vicinity 40 % of that.
+Wetting takes about two simulated minutes and drying about fifteen; a new place or a set weather starts at its target (it
+was already raining when you got there). One shared uniform feeds the shaders: pavement goes darker and glossier with the sky
+reflected in it (roughness down, indirect specular up), with puddles standing in broad low spots drawn from the pavement's
+own noise; terrain goes darker and a little richer in colour, less so over a photograph. Checked at KSFO with the same
+view dry and in rain: the runway shows sky-mirroring puddles and darker, wet-looking asphalt; dry is unchanged. There is no
+rain itself yet (no streaks, no windshield droplets); this is the surfaces only.
+
 ## Remaining realism limits
 
 This is a substantial renderer upgrade, not a claim that “10× realism” can be

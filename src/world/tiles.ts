@@ -6,6 +6,7 @@ import {
   metersPerDegree, type LatLon,
 } from '../math/geo'
 import { cloudShadowUniforms, CLOUD_SHADOW_GLSL } from '../render/cloud-shadows'
+import { wetnessUniforms } from '../render/wetness'
 import { TerrainCoverage, TERRAIN_COVERAGE_GLSL, sampleTerrainTriangles } from './terrain-coverage'
 import type { TileResponse } from './terrain-worker'
 
@@ -113,7 +114,7 @@ const TERRAIN_VERT = /* glsl */ `
 `
 const TERRAIN_FRAG = /* glsl */ `
   uniform vec3 uSunDir;
-  uniform float uDayness, uLowSun, uFogDensity, uHasImagery, uSunTransmission, uCloudDensity;
+  uniform float uDayness, uLowSun, uFogDensity, uHasImagery, uSunTransmission, uCloudDensity, uWet;
   uniform vec3 uCloudColor;
   uniform sampler2D uImagery, uSky;
   uniform vec2 uWorldOffset;
@@ -184,6 +185,10 @@ const TERRAIN_FRAG = /* glsl */ `
     // pixel footprint, keeping low passes detailed and distant hills stable.
     albedo *= mix(0.82+0.36*macro,1.0,imW*0.9);
     albedo *= 1.0+(detail-0.5)*0.16*nearDetail;
+    // Rain-soaked ground is darker and a little richer in colour (less so over a photograph, which was taken in whatever weather it was).
+    float wetLuma = dot(albedo, vec3(0.2126,0.7152,0.0722));
+    albedo = mix(vec3(wetLuma), albedo, 1.0 + 0.3 * uWet);
+    albedo *= 1.0 - 0.3 * uWet * (1.0 - 0.4 * imW);
     float direct = mix(ndl,mix(1.0,ndl,0.4),imW);
     vec3 lit = albedo*(vec3(0.015)+vec3(0.35,0.43,0.53)*uDayness*(0.78+0.22*nrm.y)+
       sunTint*0.65*uDayness*direct*cloudShadowAt(vec3(vWXZ.x,vAltitude,vWXZ.y)));
@@ -254,6 +259,7 @@ export class TileManager {
         uLowSun: { value: 0 },
         uSunTransmission: { value: 1 },
         ...cloudShadowUniforms,
+        ...wetnessUniforms,
         uCloudDensity: { value: 0 },
         uCloudColor: { value: new THREE.Color(0xc8ccd2) },
         uFogDensity: { value: 9e-6 },

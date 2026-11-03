@@ -7,6 +7,7 @@ import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-
 import { Clouds } from './render/clouds'
 import { CloudShadows, cloudShadowUniforms } from './render/cloud-shadows'
 import { aerialUniforms, installAtmosphereMaterials } from './render/atmosphere-materials'
+import { WetnessModel, wetnessFromWeather, wetnessUniforms } from './render/wetness'
 import { NexradField } from './world/nexrad'
 import { CommsBus, isAudible, type Transmission } from './sim/atc/comms'
 import { AiPatternPilot } from './sim/traffic/ai-pilot'
@@ -213,6 +214,9 @@ const clouds = new Clouds(scene)
 installAtmosphereMaterials()
 aerialUniforms.uAerialSky.value = sky.radianceTexture
 let aerialPerspective = true
+const wetness = new WetnessModel()
+/** True until the first weather arrives at a place: it was already raining (or not) when we got there, so wetness starts at its target. */
+let wetnessPending = true
 const cloudShadows = new CloudShadows()
 cloudShadows.enabled = initialFx.cloudShadows
 const hud = new Hud()
@@ -2541,6 +2545,8 @@ function updateRadar(lat: number, lon: number, now: number): void {
 function applyBlendedWeather(b: BlendedWeather | null): void {
   wxBlended = b
   if (!b) {
+    wetness.setTarget(0)
+    wetnessPending = true
     // No usable stations here (e.g. just teleported, region refetch still in
     // flight): neutral conditions, empty readout — never leave the previous
     // region's weather applied at the new position (§1).
@@ -2555,6 +2561,8 @@ function applyBlendedWeather(b: BlendedWeather | null): void {
     return
   }
   wxSlabs = cloudSlabs(b.clouds, b.stationElevFt)
+  wetness.setTarget(wetnessFromWeather(b.weather))
+  if (wetnessPending) { wetness.snap(); wetnessPending = false }
   wind.setSteady(b.windDirDeg, b.windKt, b.gustKt)
   wind.intensity = Math.min(Math.max((b.gustKt - b.windKt) / 8, 0), 2)
   aircraft.isaTempOffsetC = b.isaTempOffsetC
@@ -3589,6 +3597,7 @@ function advanceFrame(elapsed: number, now: number): void {
   const lowSunT = Math.min(1, Math.max(0, 1 - sky.elevationDeg / 25))
   tiles.setWorldOffset(worldShift.e, worldShift.n)
   aerialUniforms.uAerialDensity.value = aerialPerspective ? tiles.fogDensity : 0
+  wetness.update(loop.simTime)
   tiles.setLight(sunDir, dayness, lowSunT * lowSunT * (3 - 2 * lowSunT), sky.coverTransmission)
   clouds.update(wxSlabs, camera.position, worldShift.e, worldShift.n, dayness, sunDir, dusk)
   // Cloud shadows: the ground, pavement and buildings are shaded where a cloud is between them and the sun; the sun light itself takes the
@@ -3984,6 +3993,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     detailedImagery: tiles.debugImagery().detailed,
     cloudFogDensity: cloudFog.density,
     directTransmission: sky.directTransmission,
+    wet: wetnessUniforms.uWet.value,
     cloudShadows: { on: cloudShadows.enabled, strength: cloudShadowUniforms.uCloudShadowStrength.value, light: cloudShadowUniforms.uCloudShadowLight.value, base: cloudShadowUniforms.uCloudShadowBase.value },
     fogDensity: tiles.fogDensity,
     reversedDepth: renderer.capabilities.reversedDepthBuffer,
@@ -4271,6 +4281,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     const elevFt = (aircraft.groundElevAt?.(aircraft.posNed.x, aircraft.posNed.y) ?? 0) / 0.3048
     wxStations = [{ metar: parseMetar(raw), lat: ll.lat, lon: ll.lon, elevFt }]
     applyBlendedWeather(blendWeather(wxStations, ll.lat, ll.lon))
+    wetness.snap()
   },
   __ohLiveWx: (on: boolean) => {
     liveWeatherOn = on

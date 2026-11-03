@@ -3290,3 +3290,8 @@ See `docs/atc-radio.md`. What changed:
 
 - Terrain, sea and clouds were hazed; lit materials (airport pavement, terminals, aircraft) were not, so far taxiways and runways stayed crisp and dark to the horizon against the fading ground. New `src/render/atmosphere-materials.ts`: the terrain shader's formula (height-integrated density, sky radiance toward the view direction, linear light before tone mapping) for every built-in lit material, through the same compile hook as the cloud shadows (`patchAtmosphere`), nothing within 20 m.
 - Checked in the browser at KSFO (6 SM and 10 SM), off versus on: the pavement and distant buildings now fade like the ground. 4 new tests (patch order, shared uniforms, formula, hook), typecheck clean, 2,372 tests pass (only the other lane's `tests/dg800-*` fail). Switch for comparison: `__ohAerial(on)`.
+
+### Shaders: wet ground from the METAR's present weather (2026-11-03)
+
+- New `src/render/wetness.ts`: present weather (`-RA`, `RA`, `+RA`, `TSRA`, `FG`, `BR`, snow, vicinity) → wetness 0..1, wetting in about 2 simulated minutes and drying in about 15, snapping to the target when weather first arrives at a place or is set. One shared uniform drives the pavement (darker, glossier, sky reflections, puddles in broad low spots from its own noise) and the terrain (darker, richer colour, less over photos). Dry is unchanged (uniform 0).
+- Checked in the browser at KSFO, the same view dry and in `RA BKN012`: sky-mirroring puddles and wet asphalt on the runway. 5 new tests (grading, vicinity, rates, clamping), typecheck clean. Honest limit: surfaces only, no rain streaks or windshield droplets yet.
