@@ -134,18 +134,49 @@ const TERRAIN_FRAG = /* glsl */ `
     return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),
       mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
   }
+  // Ground relief in metres, from the wavelengths a pixel can still resolve (each octave fades out as its wavelength
+  // approaches the pixel footprint, so distant ground goes smooth instead of shimmering). Slopes are ~equal per octave.
+  float terrainRelief(vec2 g, float footprint, float amplitude) {
+    float h = 0.0;
+    float freq = 0.045;
+    for (int i = 0; i < 5; i++) {
+      float fade = 1.0 - smoothstep(0.3, 0.75, footprint * freq);
+      h += (noise(g * freq + float(i) * 7.3) - 0.5) * (amplitude / freq) * fade;
+      freq *= 2.6;
+    }
+    return h;
+  }
   void main() {
     if (coveredByReadyTerrain(vUv)) discard;
     vec2 ground = vWXZ + uWorldOffset;
-    float ndl = max(dot(normalize(vNormal),normalize(uSunDir)),0.0);
+    float footprint = max(length(dFdx(ground)),length(dFdy(ground)));
+    vec3 worldP = vec3(vWXZ.x, vAltitude, vWXZ.y);
+    vec3 baseN = normalize(vNormal);
+    vec4 tex = texture2D(uImagery,vUv);
+    float imW = uHasImagery*tex.a*(1.0-smoothstep(38000.0,46000.0,vDist));
+    // Surface-gradient bump (no tangents needed): the relief tilts the normal, so the sun finds small slopes. A photo already
+    // carries its own shading, so over imagery only a little is added.
+    // Ground that is exactly level (an airfield's pad, a polder) is graded, not natural: it gets a fraction of the relief.
+    float graded = smoothstep(0.9995, 0.99999, baseN.y);
+    float relief = terrainRelief(ground, footprint, mix(0.30, 0.12, imW) * mix(1.0, 0.25, graded));
+    vec3 dpx = dFdx(worldP), dpy = dFdy(worldP);
+    vec3 r1 = cross(dpy, baseN), r2 = cross(baseN, dpx);
+    float det = dot(dpx, r1);
+    vec3 nrm = normalize(abs(det) * baseN - sign(det) * (dFdx(relief) * r1 + dFdy(relief) * r2) + baseN * 1e-9);
+    float ndl = max(dot(nrm,normalize(uSunDir)),0.0);
     vec3 sunTint = vec3(1.0,1.0-0.35*uLowSun,1.0-0.65*uLowSun);
     // Vertex palette is authored as display RGB; imagery is tagged sRGB
     // on upload and is decoded by the texture sampler into linear light.
     vec3 albedo = pow(max(vColor,vec3(0)),vec3(2.2));
-    vec4 tex = texture2D(uImagery,vUv);
-    float imW = uHasImagery*tex.a*(1.0-smoothstep(38000.0,46000.0,vDist));
+    // Steep ground sheds its cover: rock and bare soil, only where there is no photograph to say otherwise.
+    float steep = smoothstep(0.28, 0.62, 1.0 - baseN.y) * (1.0 - imW);
+    vec3 rock = vec3(0.30,0.27,0.24) * (0.75 + 0.5 * noise(ground * 0.05)) * (0.8 + 0.4 * noise(ground * 0.31));
+    albedo = mix(albedo, rock, steep * 0.75);
+    // Broad colour drift (fields, scrub, forest patches) at two scales, warm to cool, so flat ground is not one tone.
+    float drift = noise(ground * 0.0045 + 3.7) - 0.5;
+    float drift2 = noise(ground * 0.0012 + 11.3) - 0.5;
+    albedo *= vec3(1.0 + 0.16 * drift + 0.10 * drift2, 1.0 + 0.05 * drift, 1.0 - 0.18 * drift - 0.10 * drift2) * (1.0 - 0.1 * imW);
     albedo = mix(albedo,tex.rgb,imW);
-    float footprint = max(length(dFdx(ground)),length(dFdy(ground)));
     float macro = noise(ground*0.018);
     float detail = noise(ground*0.7);
     float nearDetail = (1.0-smoothstep(1.0,5.0,footprint));
@@ -154,7 +185,7 @@ const TERRAIN_FRAG = /* glsl */ `
     albedo *= mix(0.82+0.36*macro,1.0,imW*0.9);
     albedo *= 1.0+(detail-0.5)*0.16*nearDetail;
     float direct = mix(ndl,mix(1.0,ndl,0.4),imW);
-    vec3 lit = albedo*(vec3(0.015)+vec3(0.35,0.43,0.53)*uDayness+
+    vec3 lit = albedo*(vec3(0.015)+vec3(0.35,0.43,0.53)*uDayness*(0.78+0.22*nrm.y)+
       sunTint*0.65*uDayness*direct*cloudShadowAt(vec3(vWXZ.x,vAltitude,vWXZ.y)));
     float night = clamp(1.0-uDayness*1.6,0.0,1.0);
     if (night>0.001 && vUrban>0.001) {

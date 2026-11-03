@@ -106,6 +106,17 @@ Checked in the browser (separate origin) with scattered cloud over San Francisco
 at a 5 × 5 grid of ground points (0.27/0.25, 0.19/0.22, 0.41/0.36 …), a soft-edged shadow lies across the city blocks with
 the switch on and not with it off, and runway, aircraft, cockpit and terrain still render with no shader errors.
 
+## Land shading (2026-11-03)
+
+The terrain shader (`TERRAIN_FRAG` in `src/world/tiles.ts`) now relights the ground instead of tinting it. Five octaves of
+procedural relief (wavelengths from 22 m down to 0.5 m, each fading out as it nears the pixel footprint, so distant ground
+goes smooth instead of shimmering) tilt the surface normal through a surface-gradient bump (no tangents), so the sun finds
+small slopes and low sun rakes the ground; over satellite photographs only 40 % of that is added, since a photo carries its
+own shading, and exactly level ground (an airfield's graded pad) gets a quarter of it. Steep ground sheds its cover where
+there is no photograph (rock and bare soil by slope), broad warm/cool colour drift at 220 m and 800 m scales breaks up
+flat ground, and the sky fill follows the tilted normal. Checked in the browser at KSFO with imagery off and on; it is a
+look, not a measurement (a recogniser cannot judge terrain either), and the amplitudes were set by eye.
+
 ## Remaining realism limits
 
 This is a substantial renderer upgrade, not a claim that “10× realism” can be
