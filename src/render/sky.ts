@@ -77,6 +77,17 @@ export class SkyDome {
   private readonly shadowTarget = new THREE.Vector3()
   private shadowHalf = 120
 
+  /** Shadow-map resolution by graphics quality (1024 / 2048 / 4096 texels). */
+  setShadowQuality(quality: 'performance' | 'high' | 'ultra'): void {
+    const size = quality === 'performance' ? 1024 : quality === 'ultra' ? 4096 : 2048
+    const shadow = this.sunLight.shadow
+    if (shadow.mapSize.x === size) return
+    shadow.mapSize.set(size, size)
+    // Reallocated on the next render at the new size.
+    shadow.map?.dispose()
+    shadow.map = null
+  }
+
   /** Spend shadow texels on the selected airframe, not an empty 240m box. */
   setShadowSize(spanM: number): void {
     this.shadowHalf = THREE.MathUtils.clamp(spanM*1.4, 24, 120)

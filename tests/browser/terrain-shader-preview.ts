@@ -129,6 +129,7 @@ const material = new THREE.ShaderMaterial({
     uCoverageRows: { value: new Array(65).fill(0) },
     uWetness: { value: Number(params.get('wet') ?? 0) },
     uSnowCover: { value: Number(params.get('snowcover') ?? 0) },
+    uQuality: { value: Number(params.get('quality') ?? 1) },
   },
   vertexShader: TERRAIN_VERT,
   fragmentShader: TERRAIN_FRAG,

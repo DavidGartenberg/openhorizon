@@ -34,6 +34,8 @@ export const TERRAIN_FRAG = /* glsl */ `
   uniform float uDayness, uLowSun, uFogDensity, uHasImagery, uSunTransmission, uCloudDensity;
   // Surface weather (0..1): rain-wet ground and fresh snow cover.
   uniform float uWetness, uSnowCover;
+  // Shader tier: 0 = performance (3 detail octaves, no micro-relief), 1 = full.
+  uniform float uQuality;
   uniform vec3 uCloudColor;
   uniform sampler2D uImagery, uSky;
   uniform vec2 uWorldOffset;
@@ -62,9 +64,10 @@ export const TERRAIN_FRAG = /* glsl */ `
     const mat2 R = mat2(0.8,-0.6,0.6,0.8);
     float f = f0, a = 0.5, s = 0.0;
     vec2 q = p;
+    int octaves = uQuality > 0.5 ? 5 : 3;
     for (int i = 0; i < 5; i++) {
       float w = 1.0-smoothstep(0.25,0.6,fp*f);
-      if (w <= 0.0) break;
+      if (w <= 0.0 || i >= octaves) break;
       s += a*w*(noise(q*f)-0.5);
       q = R*q+vec2(31.7,17.3);
       f *= 2.03;
@@ -128,13 +131,17 @@ export const TERRAIN_FRAG = /* glsl */ `
       snow = max(snow,settle);
     }
     float wet = uWetness*(1.0-snow);
+    // Vegetation soaks water up; rock, bare soil and built-up ground keep a
+    // visible film (greenness of the albedo is the vegetation proxy).
+    float vegetation = clamp((albedo.g-albedo.r)*8.0,0.0,1.0);
+    float film = wet*(1.0-0.8*vegetation);
     albedo *= 1.0-0.32*wet;
     // ---- fine grain + procedural micro-relief (near field only) ------------
     float grain = fbmBL(ground,footprint,1.0/2.2);
     albedo *= 1.0+grain*0.62;
     float bumpFade = 1.0-smoothstep(2.5,9.0,footprint);
     vec3 N = N0;
-    if (bumpFade > 0.0) {
+    if (bumpFade > 0.0 && uQuality > 0.5) {
       float relief = mix(0.5,2.3,rock)*(1.0-snow*0.7)*mix(1.0,0.4,imW);
       const float e = 0.45;
       float h0 = fbmBL(ground,footprint,1.0/26.0);
@@ -158,13 +165,15 @@ export const TERRAIN_FRAG = /* glsl */ `
     lit += sunTint*glint*0.22*uDayness*uSunTransmission;
     // Wet ground: a water film reflects the sky at grazing angles (Fresnel,
     // n = 1.33) and gives a tight sun glint — the wet-road look.
-    if (wet > 0.0) {
+    if (film > 0.0) {
       float nv = clamp(dot(N0,V),0.0,1.0);
       float fres = 0.02+0.98*pow(1.0-nv,5.0);
       vec3 refl = reflect(-V,N0);
       refl.y = max(refl.y,0.02);
-      lit += skyRadiance(uSky,refl)*fres*wet*0.55;
-      lit += sunTint*pow(max(dot(N0,Hh),0.0),160.0)*wet*0.9*uDayness*uSunTransmission;
+      // Unresolved relief inside a distant pixel blurs the sheen out.
+      float sharp = 1.0-smoothstep(1.5,25.0,footprint);
+      lit += skyRadiance(uSky,refl)*fres*film*(0.12+0.18*sharp);
+      lit += sunTint*pow(max(dot(N0,Hh),0.0),220.0)*film*0.15*sharp*uDayness*uSunTransmission;
     }
     float night = clamp(1.0-uDayness*1.6,0.0,1.0);
     if (night>0.001 && vUrban>0.001) {

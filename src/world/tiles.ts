@@ -126,6 +126,7 @@ export class TileManager {
         uHasImagery: { value: 0 },
         uWetness: { value: 0 },
         uSnowCover: { value: 0 },
+        uQuality: { value: 1 },
       },
       vertexShader: TERRAIN_VERT,
       fragmentShader: TERRAIN_FRAG,
@@ -138,6 +139,10 @@ export class TileManager {
   }
 
   setSky(texture: THREE.Texture): void { this.material.uniforms.uSky!.value = texture }
+  /** Terrain shader tier: false = performance (cheaper detail, no micro-relief). */
+  setShaderQuality(full: boolean): void {
+    this.material.uniforms.uQuality!.value = full ? 1 : 0
+  }
   /** Surface weather 0..1 (shared uniform objects reach every tile clone). */
   setSurfaceWeather(wetness: number, snowCover: number): void {
     this.material.uniforms.uWetness!.value = wetness

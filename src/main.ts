@@ -3,6 +3,7 @@ import { Aircraft } from './sim/aircraft'
 import { WindModel } from './sim/wind'
 import { Environment, type EnvironmentEvent } from './sim/environment'
 import { Trails, contrailStrength, vaporStrength } from './render/contrails'
+import { AdaptiveResolution } from './render/adaptive-resolution'
 import { WINDSCREEN_WEATHER } from './render/windscreen'
 import { PAVEMENT_WETNESS } from './render/surface-materials'
 import { SurfaceWeatherState, precipIntensity } from './sim/weather/surface-state'
@@ -154,6 +155,19 @@ const MMO_BY_TYPE: Record<string, number> = {
 }
 const sky = new SkyDome(scene)
 const ocean = new Ocean(scene, sky.radianceTexture)
+// Dynamic resolution (render/adaptive-resolution.ts) under the quality
+// setting's pixel-ratio cap: holds the frame-rate target by trading pixels.
+const adaptiveRes = new AdaptiveResolution()
+let pixelCap = Math.min(window.devicePixelRatio, 1.5)
+function applyPixelRatio(): void {
+  renderer.setPixelRatio(pixelCap * adaptiveRes.scale)
+  renderer.setSize(window.innerWidth, window.innerHeight)
+}
+try {
+  const fr = localStorage.getItem('oh-frame-rate')
+  if (fr === '0') adaptiveRes.enabled = false
+  else if (fr === '30') adaptiveRes.targetMs = 1000 / 30
+} catch { /* private mode */ }
 // Contrails / wingtip vapour ribbons and the ground's wetness + snow cover.
 const trails = new Trails(scene, sky.radianceTexture)
 const surfaceWx = new SurfaceWeatherState()
@@ -3341,6 +3355,7 @@ function safeAdvance(elapsed: number, now: number): void {
 }
 function frame_(now: number): void {
   lastRafAt = now
+  if (adaptiveRes.sample(now - lastFrame, now) !== null) applyPixelRatio()
   const elapsed = (now - lastFrame) / 1000
   lastFrame = now
   safeAdvance(elapsed, now)
@@ -3761,7 +3776,22 @@ void distanceM
 const graphicsPanel = new GraphicsPanel(renderer, {
   clearInput: () => input.clearHeld(),
   mapLayer: source => applyImagerySource(source, true),
-  quality: mode => { clouds.setQuality(mode); tiles.setDetailEnabled(mode !== 'performance') },
+  quality: mode => {
+    clouds.setQuality(mode)
+    tiles.setDetailEnabled(mode !== 'performance')
+    tiles.setShaderQuality(mode !== 'performance')
+    sky.setShadowQuality(mode)
+    pixelCap = Math.min(window.devicePixelRatio, mode === 'performance' ? 1 : mode === 'ultra' ? 2 : 1.5)
+    applyPixelRatio()
+  },
+  frameRate: fps => {
+    adaptiveRes.enabled = fps !== 0
+    if (fps !== 0) adaptiveRes.targetMs = 1000 / fps
+    else adaptiveRes.reset()
+    applyPixelRatio()
+    try { localStorage.setItem('oh-frame-rate', String(fps)) } catch { /* private mode */ }
+    toast(fps === 0 ? 'FIXED RESOLUTION' : `DYNAMIC RESOLUTION · ${fps} FPS TARGET`)
+  },
   camera: mode => { cameraMode = mode },
   lighting: mode => {
     const ll = frame.fromLocal(aircraft.posNed.x,aircraft.posNed.y)

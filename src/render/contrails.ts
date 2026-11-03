@@ -211,11 +211,16 @@ export class Trails {
         if (t.lengthSq() < 1e-6) t.set(0, 0, 1)
         toCam.subVectors(camPos, c)
         side.crossVectors(t, toCam).normalize()
-        const width = e.kind === 'contrail' ? 2.2 + 1.3 * Math.sqrt(Math.max(age, 0)) : 0.35 + 1.2 * Math.max(age, 0)
+        const trueWidth = e.kind === 'contrail' ? 3 + 2.5 * Math.sqrt(Math.max(age, 0)) : 0.35 + 1.2 * Math.max(age, 0)
+        // Never narrower than ~1.5 px: a sub-pixel ribbon aliases into dots.
+        // Widen it and fade it in proportion so its brightness is conserved.
+        const minWidth = toCam.length() * 0.0016
+        const width = Math.max(trueWidth, minWidth)
+        const coverage = trueWidth / width
         // Fade in just behind the source, out with age; trail ends taper.
         const fadeIn = e.kind === 'contrail' ? Math.min(1, age / 0.6) : Math.min(1, age / 0.08)
         const fadeOut = Math.max(0, 1 - age / life)
-        const alpha = (e.kind === 'contrail' ? 0.75 : 0.5) * fadeIn * fadeOut * fadeOut * e.str[k]!
+        const alpha = (e.kind === 'contrail' ? 0.75 : 0.5) * fadeIn * fadeOut * fadeOut * e.str[k]! * coverage
         side.multiplyScalar(width / 2)
         this.pos.set([c.x - side.x, c.y - side.y, c.z - side.z, c.x + side.x, c.y + side.y, c.z + side.z], v * 3)
         this.attr.set([-1, alpha, 1, alpha], v * 2)

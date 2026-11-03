@@ -9,6 +9,8 @@ export interface GraphicsActions {
   weather(mode: 'live' | 'clear' | 'scattered' | 'overcast' | 'rain' | 'snow' | 'storm'): void
   /** Photo/map layer draped on the terrain. */
   mapLayer(source: ImagerySource): void
+  /** Dynamic resolution: target frame rate, or 0 = fixed resolution. */
+  frameRate(targetFps: 0 | 30 | 60): void
 }
 
 /** Small flight-view controls; labels describe visible choices, not GPU internals. */
@@ -46,6 +48,7 @@ export class GraphicsPanel {
     panel.innerHTML = `<summary>View & graphics</summary><div class="controls">
       <label>Camera<select aria-label="Camera view"><option value="chase">Chase</option><option value="cockpit">Cockpit</option><option value="orbit">Orbit</option><option value="free">Free camera</option></select></label>
       <label>Quality<select aria-label="Graphics quality"><option value="1">Performance</option><option value="1.5" selected>High</option><option value="2">Ultra</option></select></label>
+      <label>Frame rate<select aria-label="Frame rate"><option value="60" selected>Auto (60 fps)</option><option value="30">Auto (30 fps)</option><option value="0">Fixed resolution</option></select></label>
       <label>Exposure<input aria-label="Exposure" type="range" min="0.4" max="1.2" step="0.05" value="0.8"></label>
       <label>Map layer<select aria-label="Map layer">${IMAGERY_SOURCES.map(s => `<option value="${s.id}">${s.label}</option>`).join('')}</select></label>
       <span class="hint" data-map-hint hidden>Google layers need GOOGLE_MAPS_API_KEY on the server.</span>
@@ -60,11 +63,10 @@ export class GraphicsPanel {
     this.view = panel.querySelector<HTMLSelectElement>('[aria-label="Camera view"]')!
     this.view.onchange = () => actions.camera(this.view.value as Parameters<GraphicsActions['camera']>[0])
     const quality = panel.querySelector<HTMLSelectElement>('[aria-label="Graphics quality"]')!
-    quality.onchange = () => {
-      actions.quality(quality.value === '1' ? 'performance' : quality.value === '2' ? 'ultra' : 'high')
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio,Number(quality.value)))
-      renderer.setSize(window.innerWidth,window.innerHeight)
-    }
+    // The quality action owns the pixel-ratio cap (dynamic resolution scales below it).
+    quality.onchange = () => actions.quality(quality.value === '1' ? 'performance' : quality.value === '2' ? 'ultra' : 'high')
+    const frameRate = panel.querySelector<HTMLSelectElement>('[aria-label="Frame rate"]')!
+    frameRate.onchange = () => actions.frameRate(Number(frameRate.value) as 0 | 30 | 60)
     panel.querySelector<HTMLInputElement>('[aria-label="Exposure"]')!.oninput = e => {
       renderer.toneMappingExposure = Number((e.target as HTMLInputElement).value)
     }
