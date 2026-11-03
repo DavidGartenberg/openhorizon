@@ -11,6 +11,8 @@ import { AdaptiveResolution } from './render/adaptive-resolution'
 import { Precipitation } from './render/precipitation'
 import { LightningScheduler } from './sim/weather/lightning'
 import { LightningBolt } from './render/lightning-bolt'
+import { TireSmoke } from './render/tire-smoke'
+import { touchdownSmoke } from './sim/touchdown'
 import { WINDSCREEN_WEATHER } from './render/windscreen'
 import { PAVEMENT_WETNESS } from './render/surface-materials'
 import { SurfaceWeatherState, precipIntensity } from './sim/weather/surface-state'
@@ -181,6 +183,10 @@ const surfaceWx = new SurfaceWeatherState()
 const precipitation = new Precipitation(scene)
 const _camVel = new THREE.Vector3(), _airVel = new THREE.Vector3()
 let lastPrecipAt = performance.now()
+// Touchdown tyre smoke (plan step 8) at the main wheels.
+const tireSmoke = new TireSmoke(scene)
+let smokeWasOnGround = true
+const _wheelL = new THREE.Vector3(), _wheelR = new THREE.Vector3()
 const clouds = new Clouds(scene)
 const hud = new Hud()
 const loop = new FixedTimestepLoop(120)
@@ -469,6 +475,17 @@ function updateWeatherEffects(dayness: number, sunDir: THREE.Vector3): void {
   const kind = inPrecip <= 0 ? 'none' : precip === 'snow' && oatC <= 1.5 ? 'snow' : 'rain'
   precipitation.update((nowMs - lastPrecipAt) / 1000, simT, camera, kind, inPrecip, _camVel, _airVel, 0.15 + 0.85 * dayness, cameraMode === 'cockpit', renderer.getPixelRatio())
   lastPrecipAt = nowMs
+  // Tyre smoke on touchdown: emit at the main-wheel contact points.
+  const smoke = touchdownSmoke(smokeWasOnGround, d.onGround, d.groundSpeedKt * KT, -d.verticalSpeedFpm * 0.00508)
+  smokeWasOnGround = d.onGround
+  if (smoke > 0) {
+    const gl = aircraft.P.gear.mainL, gr = aircraft.P.gear.mainR
+    mesh.group.updateMatrixWorld()
+    _wheelL.set(gl.y, -gl.z, -gl.x).applyMatrix4(mesh.group.matrixWorld)
+    _wheelR.set(gr.y, -gr.z, -gr.x).applyMatrix4(mesh.group.matrixWorld)
+    tireSmoke.emit([_wheelL, _wheelR], smoke, nowMs)
+  }
+  tireSmoke.update(nowMs, camera, _airVel, 0.15 + 0.85 * dayness)
   // Contrails: Schmidt–Appleman; long-lived near a cloud layer (moist air).
   const powered = aircraft.engineRunning && (aircraft.P.jet ? true : d.rpm > 1500)
   const contrail = powered && !d.onGround ? contrailStrength(oatC, air.pressurePa) : 0

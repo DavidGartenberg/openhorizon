@@ -34,7 +34,11 @@ const arg = (name) => {
   const i = process.argv.indexOf(name)
   return i >= 0 ? process.argv[i + 1] : undefined
 }
-const BOOT_MS = Number(arg('--boot-ms') ?? 30_000)
+const BOOT_MS = Number(arg('--boot-ms') ?? 90_000)
+/** After the spawn shows on the HUD, let a few frames render (software GL is slow). */
+const SETTLE_MS = Number(arg('--settle-ms') ?? 20_000)
+/** Optional directory to save each scenario's screenshot (debugging). */
+const SHOTS = arg('--shots')
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -100,15 +104,24 @@ function viewStats(png) {
   return { mean, std: Math.sqrt(Math.max(sum2 / n - mean * mean, 0)) }
 }
 
-async function scenario(browser, url, name, setup) {
+async function scenario(browser, url, name, setup, readyText) {
   const page = await browser.newPage({ viewport: { width: 960, height: 540 } })
   const errors = []
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`))
   if (setup) await setup(page)
   await page.goto(url, { waitUntil: 'load' })
-  await page.waitForTimeout(BOOT_MS)
+  // Wait for the spawn to show on the HUD, then for frames to render after it.
+  const ready = await page.waitForFunction((t) => (document.getElementById('hud')?.textContent ?? '').includes(t), readyText, { timeout: BOOT_MS, polling: 1000 }).then(() => true, () => false)
+  if (!ready) errors.push(`HUD never showed "${readyText}" within ${BOOT_MS / 1000} s`)
+  await page.waitForTimeout(SETTLE_MS)
   const hud = await page.evaluate(() => document.getElementById('hud')?.textContent ?? '')
-  const stats = viewStats(decodePng(await page.screenshot({ type: 'png' })))
+  const shot = await page.screenshot({ type: 'png' })
+  if (SHOTS) {
+    const { writeFileSync, mkdirSync } = await import('node:fs')
+    mkdirSync(SHOTS, { recursive: true })
+    writeFileSync(`${SHOTS}/${name.replace(/[^a-z0-9]+/gi, '-')}.png`, shot)
+  }
+  const stats = viewStats(decodePng(shot))
   await page.close()
   const problems = [...errors]
   if (stats.mean < 12) problems.push(`3D view is black (mean luminance ${stats.mean.toFixed(1)})`)
@@ -131,9 +144,8 @@ if (!url) {
 const browser = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] })
 let failed = false
 try {
-  const a = await scenario(browser, url, 'normal boot')
-  const b = await scenario(browser, url, 'airport data unavailable', (page) => page.route('**/api/airports.json', (r) => r.fulfill({ status: 503, body: 'unavailable' })))
-  if (!b.hud.includes('NO AIRPORT DATA')) { b.problems.push('aircraft was not parked by the no-airport fallback'); console.log('    aircraft was not parked by the no-airport fallback') }
+  const a = await scenario(browser, url, 'normal boot', null, 'KHAF')
+  const b = await scenario(browser, url, 'airport data unavailable', (page) => page.route('**/api/airports.json', (r) => r.fulfill({ status: 503, body: 'unavailable' })), 'NO AIRPORT DATA')
   failed = a.problems.length > 0 || b.problems.length > 0
 } finally {
   await browser.close()
