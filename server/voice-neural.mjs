@@ -11,6 +11,7 @@
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 
 const SCRIPT = fileURLToPath(new URL('./voice-neural.swift', import.meta.url))
@@ -103,5 +104,30 @@ export function createNeuralHelper(options = {}) {
       return reply
     },
     close() { stop(); givenUp = true },
+  }
+}
+
+/**
+ * Render with a voice that sometimes stops early. The older Premium engine (Aman, Tara) now and then ends a render before the
+ * end of the text when another voice has just spoken, and nothing in the audio stream says so: the same call comes out 7.41 s
+ * one time and 5.6 s the next. A complete render repeats to a hundredth of a second and a cut one lands anywhere, so takes are
+ * rendered until two agree (the longest if none do) and that one becomes `out`. Same contract as `helper.speak`.
+ */
+export async function speakAgreed(helper, job, out, signal, { maxTakes = 4, toleranceS = 0.05 } = {}) {
+  const takes = []
+  try {
+    for (let i = 0; i < maxTakes; i++) {
+      const file = `${out}.take${i}.wav`
+      const reply = await helper.speak(job, file, signal)
+      const take = { file, seconds: Number(reply.seconds) || 0 }
+      const twin = takes.find((t) => Math.abs(t.seconds - take.seconds) <= toleranceS)
+      takes.push(take)
+      if (twin) { await fsp.rename(twin.file, out); return { ...reply, seconds: twin.seconds, takes: takes.length, agreed: true } }
+    }
+    const longest = takes.reduce((a, b) => (b.seconds > a.seconds ? b : a))
+    await fsp.rename(longest.file, out)
+    return { ok: true, seconds: longest.seconds, takes: takes.length, agreed: false }
+  } finally {
+    await Promise.all(takes.map((t) => fsp.rm(t.file, { force: true })))
   }
 }

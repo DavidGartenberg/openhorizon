@@ -160,4 +160,16 @@ describe('neural voices on the speech route',()=>{
   const fg=new Set<string|undefined>();for(let i=0;i<24;i++)fg.add(await voiceOf(false,i))
   expect([...fg].every(v=>v!=='com.apple.siri.natural.Nora'&&v!=='com.apple.ttsbundle.gryphon-neural_Simone_en-US_premium')).toBe(true)
  })
+ it('renders a voice that sometimes stops early until two takes agree',async()=>{
+  // Find a background speaker the cast gives Aman, then cut its first take short.
+  let speaker=''
+  for(let i=0;i<200&&!speaker;i++){const heard:any[]=[];const n={enabled:true,warm(){},voices:async()=>VOICES,speak:async(spec:any,out:string)=>{heard.push(spec);await fs.copyFile(fixture,out);return {ok:true,seconds:2}}}
+   await speakWith(make(n),{text:'ready to taxi',role:'pilot',speaker:`AIC${i}`,ambient:true});if(heard[0]?.voice==='com.apple.voice.Aman.premium')speaker=`AIC${i}`}
+  expect(speaker).not.toBe('')
+  const lengths=[1.2,2.0,2.0];const heard:any[]=[]
+  const neural={enabled:true,warm(){},voices:async()=>VOICES,speak:async(spec:any,out:string)=>{await fs.copyFile(fixture,out);return {ok:true,seconds:lengths[heard.push(spec)-1]}}}
+  const res=await speakWith(make(neural),{text:'ready to taxi',role:'pilot',speaker,ambient:true})
+  expect(res.statusCode).toBe(200)
+  expect(heard).toHaveLength(3)
+ })
 })

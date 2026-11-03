@@ -6,7 +6,7 @@ import os from 'node:os'
 import {fileURLToPath} from 'node:url'
 import {execFile} from 'node:child_process'
 import {castVoice,parseSayVoices,parseSayVoiceList,betterVoices} from './voice-cast.mjs'
-import {createNeuralHelper} from './voice-neural.mjs'
+import {createNeuralHelper,speakAgreed} from './voice-neural.mjs'
 
 const MAX_WAV = 44 + 16000 * 2 * 20 + 4096
 function failure(status,message) { return Object.assign(new Error(message),{status}) }
@@ -103,7 +103,7 @@ export function createVoiceService(options={}) {
     let rendered=false
     if(cast.engine==='neural'){
       // The neural voices are the most human on the radio; if one cannot be had the transmission still goes out, in a built-in voice.
-      try{await neural.speak({voice:cast.voice,rate:cast.rate,pitch:cast.pitch,text:neuralSpeech(text)},audio,signal);rendered=true}
+      try{const job={voice:cast.voice,rate:cast.rate,pitch:cast.pitch,text:neuralSpeech(text)};await(cast.verify?speakAgreed(neural,job,audio,signal):neural.speak(job,audio,signal));rendered=true}
       catch(error){if(signal.aborted)throw error;cast=castVoice({...castArgs,neural:[]})}
     }
     if(!rendered){

@@ -20,6 +20,14 @@ func emit(_ object: [String: Any]) {
   if let data = try? JSONSerialization.data(withJSONObject: object), let text = String(data: data, encoding: .utf8) { print(text) }
 }
 
+/// OPENHORIZON_VOICE_DEBUG=1 traces every job on stderr (the speech server discards it): how each render ended and why.
+let debugging = ProcessInfo.processInfo.environment["OPENHORIZON_VOICE_DEBUG"] != nil
+let started = Date()
+func debug(_ message: @autoclosure () -> String) {
+  guard debugging else { return }
+  FileHandle.standardError.write(Data((String(format: "[%7.2f] ", Date().timeIntervalSince(started)) + message() + "\n").utf8))
+}
+
 let targetRate = 16_000.0
 let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: targetRate, channels: 1, interleaved: false)!
 let fileSettings: [String: Any] = [
@@ -37,9 +45,9 @@ func listVoices() -> [[String: Any]] {
 /// voices also send one between chunks of a long utterance (about every ten seconds of speech, followed by
 /// more audio half a second later), so an empty buffer alone is not the end: the delegate's didFinish is.
 final class SpeechEnd: NSObject, AVSpeechSynthesizerDelegate {
-  var onEnd: () -> Void = {}
-  func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) { onEnd() }
-  func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) { onEnd() }
+  var onEnd: (String) -> Void = { _ in }
+  func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) { onEnd("didFinish") }
+  func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) { onEnd("didCancel") }
 }
 
 /// The job in progress: the synthesizer and its delegate (held weakly by the synthesizer) must stay alive until the last buffer has arrived.
@@ -64,6 +72,7 @@ func speak(_ request: [String: Any], done: @escaping ([String: Any]) -> Void) {
   utterance.preUtteranceDelay = 0
   utterance.postUtteranceDelay = 0
 
+  debug("job start voice=\((request["voice"] as? String) ?? "default") rate=\((request["rate"] as? Double) ?? -1) chars=\(text.count)")
   let synth = AVSpeechSynthesizer()
   let end = SpeechEnd()
   synth.delegate = end
@@ -81,19 +90,21 @@ func speak(_ request: [String: Any], done: @escaping ([String: Any]) -> Void) {
     file = nil          // closes the file: the WAV header is written now
     DispatchQueue.main.async { current = nil; done(result) }
   }
-  func conclude() {
+  func conclude(_ why: String) {
+    debug("conclude (\(why)) frames=\(frames) = \(String(format: "%.2f", Double(frames) / targetRate))s audioBuffers=\(audioBuffers)")
     finish(frames > 0 ? ["ok": true, "seconds": Double(frames) / targetRate] : ["ok": false, "error": "no audio"])
   }
   /// Conclude unless more audio arrives within `seconds`. The fallback for a voice whose delegate or closing buffer never comes.
-  func settle(after seconds: Double) {
+  func settle(after seconds: Double, _ why: String) {
     let seen = audioBuffers
-    io.asyncAfter(deadline: .now() + seconds) { if audioBuffers == seen { conclude() } }
+    io.asyncAfter(deadline: .now() + seconds) { if audioBuffers == seen { conclude(why) } }
   }
 
-  end.onEnd = {
+  end.onEnd = { what in
     io.async {
       delegateEnded = true
-      if sawEmpty { conclude() } else { settle(after: 0.5) }
+      debug("\(what) sawEmpty=\(sawEmpty) audioBuffers=\(audioBuffers)")
+      if sawEmpty { conclude("delegate and closing buffer") } else { settle(after: 0.5, "no more audio 0.5 s after the delegate") }
     }
   }
   synth.write(utterance) { buffer in
@@ -102,7 +113,8 @@ func speak(_ request: [String: Any], done: @escaping ([String: Any]) -> Void) {
       if finished { return }
       if pcm.frameLength == 0 {
         sawEmpty = true
-        if delegateEnded { conclude() } else { settle(after: 4) }
+        debug("empty buffer after \(audioBuffers) audio buffers, delegateEnded=\(delegateEnded)")
+        if delegateEnded { conclude("closing buffer after the delegate") } else { settle(after: 4, "no more audio 4 s after an empty buffer") }
         return
       }
       sawEmpty = false
@@ -131,7 +143,7 @@ func speak(_ request: [String: Any], done: @escaping ([String: Any]) -> Void) {
       }
     }
   }
-  DispatchQueue.main.asyncAfter(deadline: .now() + 40) { io.async { finish(["ok": false, "error": "timeout"]) } }
+  DispatchQueue.main.asyncAfter(deadline: .now() + 40) { io.async { debug("timeout"); finish(["ok": false, "error": "timeout"]) } }
 }
 
 DispatchQueue.global().async {

@@ -166,12 +166,12 @@ describe('the neural voices (Siri natural, Premium), when the Mac has them', () 
     expect(nc('atis', 'EGLL ATIS', { style: 'icao' }).voice).toBe(GB)
   })
 
-  it('keep foreground pilots off the controllers\' American voices, give airline crews their accent, and let background traffic use anything', () => {
+  it('keep foreground pilots off the controllers\' American voices and the unsteady ones, give airline crews their accent, and let background traffic use anything', () => {
     const fg = new Set(Array.from({ length: 50 }, (_, i) => nc('pilot', `Skyhawk ${i}AB`).voice))
     expect(fg.has(NORA) || fg.has(SIMONE)).toBe(false)
-    expect(fg.size).toBeGreaterThanOrEqual(3)
+    expect([...fg].sort()).toEqual([GB, RIYA].sort())                                    // the steady ones: Aman and Tara can cut a line short
     expect(nc('pilot', 'BAW2KP').voice).toBe(GB)
-    expect([RIYA, AMAN, TARA]).toContain(nc('pilot', 'AIC101').voice)
+    expect(nc('pilot', 'AIC101').voice).toBe(RIYA)
     const bg = Array.from({ length: 80 }, (_, i) => castVoice({ role: 'pilot', speaker: `Cirrus ${i}XY`, neural, ambient: true }) as { engine: string; voice: string })
     expect(bg.some((c) => c.engine === 'neural' && [NORA, SIMONE].includes(c.voice))).toBe(true)
     expect(bg.some((c) => c.engine === 'say')).toBe(true)                               // and the built-in voices fill out the crowd
@@ -202,6 +202,15 @@ describe('the neural voices (Siri natural, Premium), when the Mac has them', () 
     expect(neuralRateFor(by(AMAN), 165)).toBe(0.4)
     expect(neuralRateFor(by(AMAN), 120)).toBe(0.2)
     expect(neuralRateFor(undefined, 150)).toBe(0.5)
+  })
+
+  it('mark the voices that sometimes stop early, so their lines are checked', () => {
+    expect((describeNeural(neural) as Array<{ id: string; unsteady: boolean }>).filter((v) => v.unsteady).map((v) => v.id).sort()).toEqual([AMAN, TARA].sort())
+    const casts = Array.from({ length: 80 }, (_, i) => castVoice({ role: 'pilot', speaker: `Air India ${i}`, neural, ambient: true }) as { engine: string; voice: string; verify?: boolean })
+    const unsteady = casts.filter((c) => c.voice === AMAN || c.voice === TARA)
+    expect(unsteady.length).toBeGreaterThan(0)
+    expect(unsteady.every((c) => c.verify === true)).toBe(true)
+    expect(casts.filter((c) => c.engine === 'neural' && c.voice !== AMAN && c.voice !== TARA).every((c) => c.verify === undefined)).toBe(true)
   })
 
   it('fall back to the built-in cast with no neural voices', () => {

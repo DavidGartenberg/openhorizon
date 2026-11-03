@@ -1,8 +1,11 @@
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error plain ES module without types (server code)
-import { createNeuralHelper } from '../server/voice-neural.mjs'
+import { createNeuralHelper, speakAgreed } from '../server/voice-neural.mjs'
 
 const VOICES = [
   { id: 'com.apple.siri.natural.Nora', name: 'Voice 4', language: 'en-US', quality: 2 },
@@ -98,5 +101,54 @@ describe('the neural voices\' helper', () => {
     const { spawn } = fakeHelper(standard, { silent: true })
     const helper = createNeuralHelper({ enabled: true, spawn, startTimeoutMs: 30 })
     expect(await helper.voices()).toEqual([])
+  })
+})
+
+describe('rendering with a voice that sometimes stops early', () => {
+  /** A helper whose takes come out the given lengths in turn, each file saying which take it was. */
+  const takesOf = (lengths: number[], failAt = -1) => {
+    const outs: string[] = []
+    return {
+      outs,
+      speak: async (_job: unknown, out: string) => {
+        if (outs.length === failAt) throw new Error('helper died')
+        const seconds = lengths[outs.length]!
+        outs.push(out)
+        fs.writeFileSync(out, `take ${outs.length}`)
+        return { ok: true, seconds }
+      },
+    }
+  }
+  const dir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'agreed-'))
+
+  it('renders until two takes agree, keeps one of them, and leaves no other files', async () => {
+    const d = dir(), out = path.join(d, 'audio.wav')
+    const helper = takesOf([5.6, 7.41, 7.42])
+    const r = await speakAgreed(helper, { voice: 'v', text: 't' }, out)
+    expect(r).toMatchObject({ ok: true, takes: 3, agreed: true })
+    expect(r.seconds).toBeCloseTo(7.41)
+    expect(fs.readFileSync(out, 'utf8')).toBe('take 2')
+    expect(fs.readdirSync(d)).toEqual(['audio.wav'])
+  })
+
+  it('stops after two takes when the first two agree', async () => {
+    const d = dir(), out = path.join(d, 'audio.wav')
+    const helper = takesOf([7.41, 7.41, 1])
+    expect(await speakAgreed(helper, {}, out)).toMatchObject({ takes: 2, agreed: true })
+    expect(helper.outs).toHaveLength(2)
+  })
+
+  it('keeps the longest take when no two agree', async () => {
+    const d = dir(), out = path.join(d, 'audio.wav')
+    const r = await speakAgreed(takesOf([5.6, 6.9, 7.41, 4.4]), {}, out)
+    expect(r).toMatchObject({ agreed: false, takes: 4, seconds: 7.41 })
+    expect(fs.readFileSync(out, 'utf8')).toBe('take 3')
+    expect(fs.readdirSync(d)).toEqual(['audio.wav'])
+  })
+
+  it('fails like a single render would, without leaving takes behind', async () => {
+    const d = dir(), out = path.join(d, 'audio.wav')
+    await expect(speakAgreed(takesOf([5.6, 7.4], 1), {}, out)).rejects.toThrow('helper died')
+    expect(fs.readdirSync(d)).toEqual([])
   })
 })

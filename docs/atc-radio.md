@@ -76,8 +76,16 @@ nothing in a short test phrase to show it. The helper now ends a render on the s
 timed fallbacks for a voice that never sends one), and `scripts/voice/check-neural.mjs` renders a 45-word ATIS in every
 neural voice and flags any whose audio is too short or whose last words are not heard.
 
-Who gets which (`server/voice-cast.mjs`): Tower and Ground of a field take the two American voices, its other facilities
-the rest, so a field's controllers all differ; the ATIS takes the first American voice; the player's and the AI pattern
+Two of the voices, Aman and Tara (the older Premium engine), have a second fault the stream does not reveal: now and then
+a render simply stops early, about a third of the time after another voice or a pause, by anything up to two seconds (the
+same call measured 7.41 s, 6.2 s and 5.3 s). Nora, Simone, Riya and the British voice never did in the same tests. So Aman
+and Tara are kept to background traffic, where a line is rendered until two takes agree in length (`speakAgreed` in
+`server/voice-neural.mjs`); the controllers, the ATIS and everyone the player talks with use the four steady voices. That
+leaves the foreground with no male neural voice, the price of never cutting a call short. `OPENHORIZON_VOICE_DEBUG=1`
+makes the helper trace every render on stderr.
+
+Who gets which (`server/voice-cast.mjs`, steady voices only outside background traffic): Tower and Ground of a field take
+the two American voices, its other facilities the rest, so a field's controllers all differ; the ATIS takes the first American voice; the player's and the AI pattern
 pilots' voices come from the others, so a pilot is never the controller answering; airline crews take a neural voice of
 their airline's accent when there is one (British Airways → the British voice); background traffic uses everything, the
 neural voices counted twice against the built-in ones. The Siri natural voices ignore pitch, so only Simone and Aman are

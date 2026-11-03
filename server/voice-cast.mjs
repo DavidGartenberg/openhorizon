@@ -110,15 +110,16 @@ function installedOnly(names, installed) {
 
 /**
  * The neural voices (Siri natural, Premium; see voice-neural.mjs) a Mac may have, by identifier. `pitchable`: the voice honours a pitch
- * multiplier (the Siri natural ones do not). `curve`: which measured pace curve it follows. Others are cast by their language.
+ * multiplier (the Siri natural ones do not). `curve`: which measured pace curve it follows. `unsteady`: the voice sometimes ends a
+ * render early (see speakAgreed in voice-neural.mjs), so its lines are rendered until two takes agree. Others are cast by their language.
  */
 const NEURAL_FACTS = [
   [/siri\.natural\.Nora/i, { accent: 'US', gender: 'F' }],
   [/neural_Simone_en-US/i, { accent: 'US', gender: 'F', pitchable: true }],
   [/siri\.natural\.en-GB/i, { accent: 'GB', gender: 'F' }],
   [/siri\.natural\.Riya/i, { accent: 'IN', gender: 'F' }],
-  [/voice\.Aman\.premium/i, { accent: 'IN', gender: 'M', pitchable: true, curve: 'premium' }],
-  [/voice\.Tara\.premium/i, { accent: 'IN', gender: 'F', curve: 'premium' }],
+  [/voice\.Aman\.premium/i, { accent: 'IN', gender: 'M', pitchable: true, curve: 'premium', unsteady: true }],
+  [/voice\.Tara\.premium/i, { accent: 'IN', gender: 'F', curve: 'premium', unsteady: true }],
 ]
 
 /** AVSpeechUtterance.rate → words per minute (a standard 31-word transmission), measured through the helper. */
@@ -133,7 +134,7 @@ const LANGUAGE_ACCENTS = { 'en-US': 'US', 'en-CA': 'US', 'en-GB': 'GB', 'en-AU':
 export function describeNeural(list) {
   return (Array.isArray(list) ? list : []).map((v) => {
     const facts = NEURAL_FACTS.find(([rx]) => rx.test(v.id))?.[1]
-    return { id: v.id, name: v.name, accent: facts?.accent ?? LANGUAGE_ACCENTS[String(v.language).replace('_', '-')] ?? 'US', gender: facts?.gender ?? '?', pitchable: !!facts?.pitchable, curve: facts?.curve ?? 'siri' }
+    return { id: v.id, name: v.name, accent: facts?.accent ?? LANGUAGE_ACCENTS[String(v.language).replace('_', '-')] ?? 'US', gender: facts?.gender ?? '?', pitchable: !!facts?.pitchable, curve: facts?.curve ?? 'siri', unsteady: !!facts?.unsteady }
   })
 }
 
@@ -162,10 +163,13 @@ export function castVoice({ role = 'warning', speaker = '', style = 'faa', insta
   const withBetter = (accents, base, exclusive = false) => { const mine = better.filter((v) => !accents || accents.includes(v.accent)).map((v) => v.name); return exclusive && mine.length ? mine : mine.length >= 3 ? mine : [...mine, ...base] }
 
   // ---- neural voices, when the Mac has them (and the helper is running): the most human sound on the radio ----
-  const nv = describeNeural(neural)
+  // A voice that sometimes ends a render early (unsteady) is kept to background traffic, where its lines are rendered until two takes
+  // agree and a rare cut line costs nothing; the controllers, the ATIS and everyone the player talks with use the steady ones.
+  const allNeural = describeNeural(neural)
+  const nv = allNeural.filter((v) => !v.unsteady)
   const asNeural = (v, wpm) => {
     const delta = v.pitchable ? ((((h >> 7) % 17) - 8) / 100) : 0                  // ±8 %, only on voices that honour pitch
-    return { engine: 'neural', voice: v.id, rate: neuralRateFor(v, wpm), ...(delta ? { pitch: +(1 + delta).toFixed(2) } : {}) }
+    return { engine: 'neural', voice: v.id, rate: neuralRateFor(v, wpm), ...(delta ? { pitch: +(1 + delta).toFixed(2) } : {}), ...(v.unsteady ? { verify: true } : {}) }
   }
   if (nv.length && role !== 'copilot' && role !== 'warning') {
     const us = nv.filter((v) => v.accent === 'US'), rest = nv.filter((v) => v.accent !== 'US')
@@ -181,10 +185,10 @@ export function castVoice({ role = 'warning', speaker = '', style = 'faa', insta
     if (role === 'pilot') {
       const airline = AIRLINE_VOICES.find(([rx]) => rx.test(name))
       const accent = airline ? ({ Daniel: 'GB', Moira: 'IE', Karen: 'AU', Tessa: 'ZA', Rishi: 'IN' }[airline[1][0]] ?? null) : null
-      const match = accent ? nv.filter((v) => v.accent === accent) : []
+      const match = accent ? (ambient ? allNeural : nv).filter((v) => v.accent === accent) : []
       // An airline crew with a neural voice of its accent sounds like it; others share the rest. The player's exchange keeps the American pair for the
       // controllers, so a pilot is not the voice of the controller answering; background traffic may use any.
-      const pool = match.length ? match : ambient ? nv : (rest.length ? rest : nv)
+      const pool = match.length ? match : ambient ? allNeural : (rest.length ? rest : nv)
       const base = installedOnly(POOLS.pilot, installed) ?? []
       // Background traffic is mostly neural (each neural voice counted twice against the built-in ones).
       const mixed = ambient && !match.length ? [...pool, ...pool].map((v) => ({ neural: v })).concat(base.map((b) => ({ say: b }))) : pool.map((v) => ({ neural: v }))
