@@ -94,7 +94,7 @@ import { kgToGal, TANK_CAPACITY_GAL } from './sim/systems/fuel'
 import { Input } from './input/input'
 import { EngineSound } from './audio/engine-sound'
 import { Hud } from './ui/hud'
-import { GraphicsPanel } from './ui/graphics-panel'
+import { GraphicsPanel, type RealismKey } from './ui/graphics-panel'
 import { MapAttribution } from './ui/map-attribution'
 import { IMAGERY_SOURCES, googleStyle, imageryBasePath, isGoogleSource, parseImagerySource, resolveImagerySource, viewBounds, type ImagerySource } from './world/imagery-source'
 import { LoadingPanel } from './ui/loading-panel'
@@ -405,13 +405,29 @@ function stepEnvironment(dt: number): void {
   if (events.length) onEnvironmentEvents(events)
   flightEvents.noteIce(environment.ice.thicknessMm)
 }
-// Persisted physics-mod toggles (THERMALS / WAKE / ICING / DAMAGE OFF).
+/** One switch for each physics mod: commands, the Realism panel and saved
+ *  settings all go through here (plan step 14). */
+function setRealism(key: RealismKey, on: boolean, persist = true): void {
+  if (key === 'thermals') { environment.toggles.thermals = on; environment.toggles.ridge = on }
+  if (key === 'wake') environment.toggles.wake = on
+  if (key === 'icing') environment.toggles.icing = on
+  if (key === 'damage') environment.structure.failuresEnabled = on
+  if (key === 'contamination') environment.toggles.contamination = on
+  if (persist) try { localStorage.setItem(`oh-env-${key}`, on ? 'ON' : 'OFF') } catch { /* private mode */ }
+  onRealismChanged?.()
+}
+function realismState(): Record<RealismKey, boolean> {
+  return {
+    thermals: environment.toggles.thermals, wake: environment.toggles.wake, icing: environment.toggles.icing,
+    damage: environment.structure.failuresEnabled, contamination: environment.toggles.contamination,
+  }
+}
+let onRealismChanged: (() => void) | null = null
+// Persisted physics-mod switches.
 try {
-  const off = (k: string): boolean => localStorage.getItem(`oh-env-${k}`) === 'OFF'
-  if (off('thermals')) { environment.toggles.thermals = false; environment.toggles.ridge = false }
-  if (off('wake')) environment.toggles.wake = false
-  if (off('icing')) environment.toggles.icing = false
-  if (off('damage')) environment.structure.failuresEnabled = false
+  for (const k of ['thermals', 'wake', 'icing', 'damage', 'contamination'] as RealismKey[]) {
+    if (localStorage.getItem(`oh-env-${k}`) === 'OFF') setRealism(k, false, false)
+  }
 } catch { /* private mode */ }
 // Turbulence sources beyond the gust spread (plan step 12): storms and lee
 // rotor, re-evaluated once a second from the weather and terrain upwind.
@@ -1083,13 +1099,8 @@ function handleSearch(query: string): void {
     toast(`MICROBURST ${((Number(parts[1]) > 0 ? Number(parts[1]) * 1852 : 3000) / 1852).toFixed(1)} NM AHEAD`)
     return
   }
-  if ((parts[0] === 'THERMALS' || parts[0] === 'WAKE' || parts[0] === 'ICING' || parts[0] === 'DAMAGE') && (parts[1] === 'ON' || parts[1] === 'OFF')) {
-    const on = parts[1] === 'ON'
-    if (parts[0] === 'THERMALS') { environment.toggles.thermals = on; environment.toggles.ridge = on }
-    if (parts[0] === 'WAKE') environment.toggles.wake = on
-    if (parts[0] === 'ICING') environment.toggles.icing = on
-    if (parts[0] === 'DAMAGE') environment.structure.failuresEnabled = on
-    try { localStorage.setItem(`oh-env-${parts[0].toLowerCase()}`, parts[1]) } catch { /* private mode */ }
+  if ((parts[0] === 'THERMALS' || parts[0] === 'WAKE' || parts[0] === 'ICING' || parts[0] === 'DAMAGE' || parts[0] === 'CONTAMINATION') && (parts[1] === 'ON' || parts[1] === 'OFF')) {
+    setRealism(parts[0].toLowerCase() as RealismKey, parts[1] === 'ON')
     toast(`${parts[0]} ${parts[1]}`)
     return
   }
@@ -3986,6 +3997,7 @@ void distanceM
 const graphicsPanel = new GraphicsPanel(renderer, {
   clearInput: () => input.clearHeld(),
   mapLayer: source => applyImagerySource(source, true),
+  realism: (key, on) => { setRealism(key, on); toast(`${key.toUpperCase()} ${on ? 'ON' : 'OFF'}`) },
   quality: mode => {
     clouds.setQuality(mode)
     tiles.setDetailEnabled(mode !== 'performance')
@@ -4044,6 +4056,8 @@ const graphicsPanel = new GraphicsPanel(renderer, {
 })
 
 onMapLayerChanged = (src, available) => graphicsPanel.setMapLayer(src, available)
+onRealismChanged = () => graphicsPanel.setRealism(realismState())
+graphicsPanel.setRealism(realismState())
 graphicsPanel.setMapLayer(imagerySource, googleImageryAvailable)
 
 new LoadingPanel(FLEET_ACTIVE.params, {

@@ -11,6 +11,17 @@ export interface GraphicsActions {
   mapLayer(source: ImagerySource): void
   /** Dynamic resolution: target frame rate, or 0 = fixed resolution. */
   frameRate(targetFps: 0 | 30 | 60): void
+  /** Physics-mod switches (sim/environment). */
+  realism(key: RealismKey, on: boolean): void
+}
+
+export type RealismKey = 'thermals' | 'wake' | 'icing' | 'damage' | 'contamination'
+export const REALISM_LABELS: Record<RealismKey, string> = {
+  thermals: 'Thermals & ridge lift',
+  wake: 'Wake turbulence',
+  icing: 'Airframe icing',
+  damage: 'Structural damage',
+  contamination: 'Runway contamination',
 }
 
 /** Small flight-view controls; labels describe visible choices, not GPU internals. */
@@ -40,6 +51,7 @@ export class GraphicsPanel {
       #graphics-panel select:focus-visible{outline:2px solid #a9dbe5;outline-offset:2px;}
       #graphics-panel output{display:block;color:#9eafb9;font:10px/1.5 ui-monospace,monospace;margin-top:12px;}
       #graphics-panel .hint{display:block;color:#9eafb9;font-size:10.5px;margin-top:4px;}
+      #graphics-panel h3{margin:14px 0 0;font-size:11px;font-weight:600;letter-spacing:.06em;color:#9eafb9;text-transform:uppercase;}
       @media(max-height:500px){#graphics-panel{bottom:6px;right:6px}.controls{max-height:280px;overflow:auto}}
     `
     document.head.appendChild(style)
@@ -55,6 +67,8 @@ export class GraphicsPanel {
       <label>Weather<select aria-label="Weather"><option value="live">Live weather</option><option value="clear">Clear</option><option value="scattered">Scattered</option><option value="overcast">Overcast</option><option value="rain">Rain</option><option value="snow">Snow</option><option value="storm">Thunderstorm</option></select></label>
       <div class="time"><button type="button" data-light="day">Daylight</button><button type="button" data-light="sunset">Sunset</button><button type="button" data-light="night">Night</button></div>
       <label>Flight overlay<input aria-label="Flight overlay" type="checkbox" checked></label>
+      <h3>Realism</h3>
+      ${(Object.keys(REALISM_LABELS) as RealismKey[]).map(k => `<label>${REALISM_LABELS[k]}<input type="checkbox" data-realism="${k}" checked></label>`).join('')}
       <output aria-label="Rendering statistics"></output>
     </div>`
     // Let native controls consume keys without also flying the airplane.
@@ -85,8 +99,18 @@ export class GraphicsPanel {
       const labels = document.getElementById('traffic-labels')
       if (labels) labels.style.display = display
     }
+    panel.querySelectorAll<HTMLInputElement>('[data-realism]').forEach(box => {
+      box.onchange = () => actions.realism(box.dataset.realism as RealismKey, box.checked)
+    })
     this.stats = panel.querySelector('output')!
     document.body.appendChild(panel)
+  }
+
+  /** Reflect the physics-mod switches (commands and saved settings). */
+  setRealism(state: Record<RealismKey, boolean>): void {
+    document.querySelectorAll<HTMLInputElement>('#graphics-panel [data-realism]').forEach(box => {
+      box.checked = state[box.dataset.realism as RealismKey] ?? true
+    })
   }
 
   /** Reflect the active layer; Google options are disabled without a key. */
