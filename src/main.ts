@@ -14,6 +14,7 @@ import { LightningScheduler } from './sim/weather/lightning'
 import { LightningBolt } from './render/lightning-bolt'
 import { TireSmoke } from './render/tire-smoke'
 import { touchdownSmoke } from './sim/touchdown'
+import { FlightEventLog, environmentDebrief } from './sim/flight-events'
 import { WINDSCREEN_WEATHER } from './render/windscreen'
 import { PAVEMENT_WETNESS } from './render/surface-materials'
 import { SurfaceWeatherState, precipIntensity } from './sim/weather/surface-state'
@@ -400,6 +401,7 @@ function stepEnvironment(dt: number): void {
     windN: wind.steadyNorthMs, windE: wind.steadyEastMs, turbulenceRollGust: wind.rollGustRate,
   }, aircraft.windNed, aircraft.env)
   if (events.length) onEnvironmentEvents(events)
+  flightEvents.noteIce(environment.ice.thicknessMm)
 }
 // Persisted physics-mod toggles (THERMALS / WAKE / ICING / DAMAGE OFF).
 try {
@@ -409,8 +411,13 @@ try {
   if (off('icing')) environment.toggles.icing = false
   if (off('damage')) environment.structure.failuresEnabled = false
 } catch { /* private mode */ }
+// What the environment did to this flight, for the debrief (plan step 10).
+const flightEvents = new FlightEventLog()
 function onEnvironmentEvents(events: EnvironmentEvent[]): void {
-  for (const ev of events) toast(ev.text)
+  for (const ev of events) {
+    toast(ev.text)
+    flightEvents.add(loop.simTime, ev.kind, ev.text)
+  }
 }
 /** Rough in-flight mass from span for wake strength (737 ≈ 70 t, 777 ≈ 330 t,
  *  A380 ≈ 560 t, CRJ ≈ 18 t, light singles ≈ 1.1 t). */
@@ -1697,6 +1704,8 @@ let debriefUntil = 0
 interface LogEntry {
   date: string; from: string; to: string; durationMin: number
   touchdownFpm: number; grade: string
+  /** Environment events this flight (overstress, windshear, icing, …). */
+  events?: string[]
 }
 let logbook: LogEntry[] = []
 try {
@@ -1746,6 +1755,8 @@ function updateRecorder(ll: { lat: number; lon: number }): void {
     // nearest TOWERED airport and logged 'KSFO' for a KHAF departure).
     flightFrom = airports.near(ll.lat, ll.lon, 5000)[0]?.i ?? spawnDesc.split(' ')[0] ?? '?'
     debriefLine = ''
+    flightEvents.reset()
+    environment.structure.resetExtremes()
   }
   if (!lastOnGround && d.onGround && flightStartSimS !== null && !aircraft.crashed) {
     const near = nearestRunwayRef(ll.lat, ll.lon, aircraft.data.headingDeg)
@@ -1757,10 +1768,13 @@ function updateRecorder(ll: { lat: number; lon: number }): void {
         debriefLine =
           `LANDED ${near.icao}: ${Math.round(-a.touchdownVsFpm)} fpm (${a.grade}) · ` +
           `${Math.round(a.pastThresholdM)} m past thr · ${side}${Math.abs(a.centerlineOffsetM).toFixed(0)} m of CL`
+        const envClause = environmentDebrief(flightEvents, environment.structure.maxG, environment.structure.minG)
+        if (envClause) debriefLine += ` · ${envClause}`
         logbook.push({
           date: new Date().toISOString().slice(0, 10), from: flightFrom, to: near.icao,
           durationMin: Math.max(Math.round((loop.simTime - flightStartSimS) / 60), 1),
           touchdownFpm: Math.round(a.touchdownVsFpm), grade: a.grade,
+          ...(flightEvents.kinds().length ? { events: flightEvents.kinds() } : {}),
         })
         if (challengeActive) {
           const score = challengeScore(a)

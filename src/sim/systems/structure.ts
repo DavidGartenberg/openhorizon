@@ -97,6 +97,12 @@ export class StructureMonitor {
     return event
   }
 
+  /** New flight: forget the g extremes, keep any damage. */
+  resetExtremes(): void {
+    this.maxG = 1
+    this.minG = 1
+  }
+
   reset(): void {
     this.maxG = 1
     this.minG = 1
