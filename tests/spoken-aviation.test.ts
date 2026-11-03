@@ -186,6 +186,7 @@ describe('ICAO phraseology outside North America', () => {
   it('chooses the style from the airport', () => {
     for (const id of ['KSFO', 'PHNL', 'PANC', 'CYYZ', 'TJSJ', 'MMMX']) expect(styleForAirport(id)).toBe('faa')
     for (const id of ['EGLL', 'LFPG', 'YSSY', 'RJTT', 'OMDB', 'SBGR']) expect(styleForAirport(id)).toBe('icao')
+    expect(styleForAirport('')).toBe('faa')
   })
   it('leaves the FAA style alone', () => {
     expect(toSpokenAviation('runway 35, wind 350 at 15')).toBe('runway three five, wind three five zero at one five')

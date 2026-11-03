@@ -19,7 +19,8 @@ export type PhraseStyle = 'faa' | 'icao'
 
 /** ICAO ident → the phraseology its controllers use: North America (K, P, C, TJ, TI) speaks FAA style. */
 export function styleForAirport(icao: string): PhraseStyle {
-  return /^(K|P[A-Z]|C[A-Z]|TJ|TI|MM)/i.test(icao) ? 'faa' : 'icao'
+  // No field (a transmission finishing after the facility was left) keeps the default, US phraseology.
+  return !icao || /^(K|P[A-Z]|C[A-Z]|TJ|TI|MM)/i.test(icao) ? 'faa' : 'icao'
 }
 
 /**
