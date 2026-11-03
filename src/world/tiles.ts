@@ -6,6 +6,7 @@ import {
 } from '../math/geo'
 import { TerrainCoverage, sampleTerrainTriangles } from './terrain-coverage'
 import { TERRAIN_VERT, TERRAIN_FRAG } from './terrain-shader'
+import { lodIndices, chooseStride, distanceToBox, type LodStride } from './terrain-lod'
 import type { TileResponse } from './terrain-worker'
 
 /** Floating-origin world frame (§4.3): NED meters around a movable anchor. */
@@ -54,9 +55,8 @@ interface Tile {
   requestId: number
   baseMat?: THREE.ShaderMaterial
   coverage?: TerrainCoverage
-  /** Coarse rings: the full triangle list, compacted into the drawn index
-   *  buffer on every coverage refresh (cullCovered). */
-  indexSrc?: Uint16Array | Uint32Array
+  /** Mesh level of detail (terrain-lod.ts): index stride over the grid. */
+  stride: LodStride
   coverageTexture?: THREE.DataTexture
   z: number
   latC: number
@@ -129,7 +129,6 @@ export class TileManager {
         uHasImagery: { value: 0 },
         uWetness: { value: 0 },
         uSnowCover: { value: 0 },
-        uQuality: { value: 1 },
         // Cloud shadows (render/cloud-shadows.ts); off until a map is set.
         uCloudShadow: { value: white },
         uCloudShadowRect: { value: new THREE.Vector4(0, 0, 1, 1) },
@@ -146,9 +145,67 @@ export class TileManager {
   }
 
   setSky(texture: THREE.Texture): void { this.material.uniforms.uSky!.value = texture }
-  /** Terrain shader tier: false = performance (cheaper detail, no micro-relief). */
+  /** Terrain shader tier: false = the lite program (compiled without the
+   *  fBm detail: TERRAIN_LITE). Switching recompiles once per tier. */
   setShaderQuality(full: boolean): void {
-    this.material.uniforms.uQuality!.value = full ? 1 : 0
+    if (this.liteShader === !full) return
+    this.liteShader = !full
+    for (const t of this.tiles.values()) for (const m of [t.baseMat, t.imMat]) if (m) this.applyTier(m)
+  }
+  get shaderLite(): boolean { return this.liteShader }
+  private liteShader = false
+  /** Mesh level of detail (terrain-lod.ts); off only for A/B benchmarks. */
+  setLod(on: boolean): void {
+    if (this.lodOn === on) return
+    this.lodOn = on
+    for (const t of this.tiles.values()) {
+      if (!t.mesh) continue
+      t.stride = on ? this.strideFor(t) : 1
+      this.applyIndex(t)
+    }
+  }
+  /** Largest projected grid cell (px) a coarser level may produce. */
+  setLodTarget(px: number): void { this.lodTargetPx = px }
+  get lodTarget(): number { return this.lodTargetPx }
+  private lodOn = true
+  private lodTargetPx = 8
+  private readonly lodCam = new THREE.Vector3(0, 1e9, 0)
+  private lodPxPerRad = 0
+  /** Per frame, before rendering: re-pick every tile's level for this
+   *  camera. pxPerRad: render-target pixels per radian of view
+   *  (drawing-buffer height × zoom / (2 tan(fov/2))). */
+  updateLod(camPos: THREE.Vector3, pxPerRad: number): void {
+    this.lodCam.copy(camPos)
+    this.lodPxPerRad = pxPerRad
+    if (!this.lodOn) return
+    for (const t of this.tiles.values()) {
+      if (t.state !== 'ready' || !t.mesh) continue
+      const s = this.strideFor(t)
+      if (s !== t.stride) { t.stride = s; this.applyIndex(t) }
+    }
+  }
+  /** Triangles drawn per level across the ready tiles (diagnostics). */
+  lodStats(): Record<number, number> {
+    const out: Record<number, number> = {}
+    for (const t of this.tiles.values()) if (t.mesh) out[t.stride] = (out[t.stride] ?? 0) + 1
+    return out
+  }
+  private strideFor(t: Tile): LodStride {
+    const mesh = t.mesh, box = mesh?.geometry.boundingBox, G = t.gridSize
+    if (!mesh || !box || !G || !(this.lodPxPerRad > 0)) return 1
+    const hx = box.max.x * mesh.scale.x, hz = box.max.z * mesh.scale.z
+    const cy = (box.min.y + box.max.y) / 2, hy = (box.max.y - box.min.y) / 2
+    const c = this.lodCam
+    const d = distanceToBox(c.x, c.y, c.z, mesh.position.x, cy, mesh.position.z, hx, hy, hz)
+    return chooseStride((2 * Math.max(hx, hz)) / (G - 1), d, this.lodPxPerRad, this.lodTargetPx, t.stride)
+  }
+  private applyTier(m: THREE.ShaderMaterial): THREE.ShaderMaterial {
+    const has = 'TERRAIN_LITE' in m.defines
+    if (has === this.liteShader) return m
+    if (this.liteShader) m.defines.TERRAIN_LITE = ''
+    else delete m.defines.TERRAIN_LITE
+    m.needsUpdate = true
+    return m
   }
   /** Cloud-shadow darkness map over the terrain (render-frame rect). */
   setCloudShadows(texture: THREE.Texture, rect: THREE.Vector4, on: number): void {
@@ -270,6 +327,7 @@ export class TileManager {
       key, requestId: ++this.nextRequestId, z: ring.z, latC, lonC, latN, latS, lonW, lonE,
       sizeEastM: (lonE - lonW) * m.east,
       sizeNorthM: (latN - latS) * m.north,
+      stride: 1,
       state: 'loading',
       lastWanted: this.stamp,
     }
@@ -337,11 +395,8 @@ export class TileManager {
     geo.setAttribute('uv', new THREE.BufferAttribute(resp.uvs, 2))
     geo.setAttribute('urban', new THREE.BufferAttribute(resp.urban, 1))
     geo.setIndex(new THREE.BufferAttribute(resp.indices, 1))
+    geo.computeBoundingBox()
     tile.coverage = new TerrainCoverage(tile.key)
-    // Only tiles finer tiles can cover need the culling source copy.
-    if (tile.coverage.size > 1) {
-      tile.indexSrc = resp.positions.length / 3 <= 65_536 ? Uint16Array.from(resp.indices) : resp.indices.slice()
-    }
     tile.coverageTexture = new THREE.DataTexture(tile.coverage.cells, tile.coverage.size, tile.coverage.size, THREE.RedFormat)
     tile.coverageTexture.minFilter = tile.coverageTexture.magFilter = THREE.NearestFilter
     tile.coverageTexture.generateMipmaps = false
@@ -356,6 +411,7 @@ export class TileManager {
       },
       vertexShader: TERRAIN_VERT, fragmentShader: TERRAIN_FRAG,
     })
+    this.applyTier(tile.baseMat)
     const mesh = new THREE.Mesh(geo, tile.baseMat)
     mesh.userData.terrainKey = tile.key
     mesh.frustumCulled = true
@@ -366,6 +422,10 @@ export class TileManager {
     tile.gridSize = resp.gridSize
     tile.state = 'ready'
     this.placeTile(tile)
+    // Start at the level the current view wants. Coarse tiles (which finer
+    // ones can cover) get their list from the coverage refresh just below.
+    tile.stride = this.lodOn ? this.strideFor(tile) : 1
+    if (tile.stride !== 1 && tile.coverage.size <= 1) this.applyIndex(tile)
     this.scene.add(mesh)
     this.refreshCoverage(tile)
     this.queueImagery(tile)
@@ -583,6 +643,7 @@ export class TileManager {
               vertexShader: TERRAIN_VERT,
               fragmentShader: TERRAIN_FRAG,
             })
+            this.applyTier(t.imMat)
             t.mesh.material = t.imMat
           }
           if (t) t.imQueued = false
@@ -661,51 +722,52 @@ export class TileManager {
         changed.latS < tile.latS || changed.latN > tile.latN)) continue
       tile.coverage.rebuild(ready)
       tile.coverageTexture.needsUpdate = true
-      this.cullCovered(tile)
+      // The finest ring has nothing finer to cover it.
+      if (tile.coverage.size > 1) this.applyIndex(tile)
     }
   }
 
-  /** Leave out of the draw every triangle that the coverage test would
-   *  discard whole: it lies inside cells that ready finer tiles already
-   *  draw. Exact (partially covered triangles stay, and the shader keeps
-   *  discarding pixel by pixel), but coarse rings no longer transform and
-   *  rasterize the ground under the finer ones: near the ground that was
-   *  every pixel once per ring. */
   /** Coverage culling on/off (benchmark A/B in one scene; default on). */
   setCoverageCulling(on: boolean): void {
     this.coverageCulling = on
-    for (const tile of this.tiles.values()) this.cullCovered(tile)
+    for (const tile of this.tiles.values()) this.applyIndex(tile)
   }
   private coverageCulling = true
 
-  private cullCovered(tile: Tile): void {
-    const geo = tile.mesh?.geometry, src = tile.indexSrc, cov = tile.coverage
-    if (!geo || !src || !cov) return
-    if (!this.coverageCulling) {
-      const index = geo.getIndex()
-      if (!index) return
-      ;(index.array as Uint32Array).set(src)
-      geo.setDrawRange(0, src.length)
-      index.needsUpdate = true
-      return
-    }
-    const index = geo.getIndex()
-    const uv = geo.getAttribute('uv')?.array as ArrayLike<number> | undefined
-    if (!index || !uv) return
+  /** Upload the tile's triangle list: its level of detail, less every
+   *  triangle the coverage test would discard whole because it lies inside
+   *  cells that ready finer tiles already draw. Exact (partly covered
+   *  triangles stay, and the shader keeps discarding pixel by pixel), but
+   *  coarse rings no longer transform and rasterize the ground under the
+   *  finer ones: near the ground that was every pixel once per ring. */
+  private applyIndex(tile: Tile): void {
+    const geo = tile.mesh?.geometry, G = tile.gridSize, cov = tile.coverage
+    const index = geo?.getIndex()
+    if (!geo || !G || !index) return
+    const src = lodIndices(G, this.lodOn ? tile.stride : 1)
     const dst = index.array as Uint32Array
+    const uv = geo.getAttribute('uv')?.array as ArrayLike<number> | undefined
     let k = 0
-    for (let t = 0; t + 2 < src.length; t += 3) {
-      const a = src[t]!, b = src[t + 1]!, c = src[t + 2]!
-      const ua = uv[a * 2]!, ub = uv[b * 2]!, uc = uv[c * 2]!
-      const va = uv[a * 2 + 1]!, vb = uv[b * 2 + 1]!, vc = uv[c * 2 + 1]!
-      const u0 = Math.min(ua, ub, uc), u1 = Math.max(ua, ub, uc)
-      // North fraction = 1 − v (the shader's convention).
-      const n0 = 1 - Math.max(va, vb, vc), n1 = 1 - Math.min(va, vb, vc)
-      if (cov.coversBox(u0, u1, n0, n1)) continue
-      dst[k++] = a; dst[k++] = b; dst[k++] = c
+    if (this.coverageCulling && cov && cov.size > 1 && uv) {
+      for (let t = 0; t + 2 < src.length; t += 3) {
+        const a = src[t]!, b = src[t + 1]!, c = src[t + 2]!
+        const ua = uv[a * 2]!, ub = uv[b * 2]!, uc = uv[c * 2]!
+        const va = uv[a * 2 + 1]!, vb = uv[b * 2 + 1]!, vc = uv[c * 2 + 1]!
+        const u0 = Math.min(ua, ub, uc), u1 = Math.max(ua, ub, uc)
+        // North fraction = 1 − v (the shader's convention).
+        const n0 = 1 - Math.max(va, vb, vc), n1 = 1 - Math.min(va, vb, vc)
+        if (cov.coversBox(u0, u1, n0, n1)) continue
+        dst[k++] = a; dst[k++] = b; dst[k++] = c
+      }
+    } else {
+      dst.set(src)
+      k = src.length
     }
-    if (k === geo.drawRange.count && k === dst.length) return
     geo.setDrawRange(0, k)
+    if (k === 0) return // nothing drawn: nothing to upload
+    // Upload only the part in use (a coarse level is a fraction of it).
+    index.clearUpdateRanges()
+    index.addUpdateRange(0, k)
     index.needsUpdate = true
   }
 

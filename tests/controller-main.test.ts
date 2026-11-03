@@ -62,14 +62,16 @@ import {createCaptainSystems,stepCaptainSystems} from '../src/sim/captain-system
 import {makeFuelState,stepFuel,negativeGToleranceS} from '../src/sim/systems/fuel'
 import {Aircraft} from '../src/sim/aircraft'
 import {B738} from '../src/sim/aircraft/b738'
+import {deadSideOf} from '../src/sim/systems/engine-out'
 it('first real systems tick reads fresh fuel metadata before Captain engine state',()=>{
  const aircraft=new Aircraft(B738);aircraft.posNed.z=-1000;aircraft.velBody.x=100
  const fuelState=makeFuelState(100,100)
  const start=Math.min(source.indexOf('      captainSystems=stepCaptainSystems'),source.indexOf('      stepFuel(fuelState, dt,'))
  const end=source.indexOf('      stepEngineStart(engineStartState, dt,',start)
- const ctx={aircraft,fuelState,stepFuel,negativeGToleranceS,toast:()=>{},stepCaptainSystems,createCaptainSystems,systemsControls:{masterBattery:true,fuelSelector:'BOTH',boostPumpOn:false}}
+ const ctx={aircraft,fuelState,stepFuel,negativeGToleranceS,toast:()=>{},stepCaptainSystems,createCaptainSystems,deadSideOf,systemsControls:{masterBattery:true,fuelSelector:'BOTH',boostPumpOn:false}}
  const code=ts.transpileModule(`let captainSystems=createCaptainSystems(),captainCommands={},pilotBrake=0,dt=.02,negGCutAnnounced=false;${source.slice(start,end)};return captainSystems`,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText
  const state=new Function(...Object.keys(ctx),code)(...Object.values(ctx))
  expect(fuelState.fuelFlowing).toBe(true)
  expect(state.enginePowerFraction).toBe(1)
+ expect(aircraft.engineDeadSide).toBe(0) // both groups running: no asymmetry
 })

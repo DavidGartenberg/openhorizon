@@ -95,5 +95,7 @@ describe('terrain shader math (JS mirror of the GLSL)', () => {
     expect(TERRAIN_FRAG).toContain('fbmBLgrad(ground,footprint,1.0/26.0)')
     expect(TERRAIN_FRAG).not.toContain('float hx = fbmBL')
     expect(TERRAIN_FRAG).toMatch(/needRock = slope > 0\.005 \|\| vAltitude > 2350\.0/)
+    // The lite tier is a separate program with the fBm code compiled out.
+    expect(TERRAIN_FRAG).toMatch(/#ifndef TERRAIN_LITE\s+float fbmBL/)
   })
 })

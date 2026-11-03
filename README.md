@@ -64,7 +64,7 @@ Beyond the POH-validated flight model, the sim models the air and the airframe. 
 
 See [docs/shaders-and-physics.md](docs/shaders-and-physics.md) for every shader and physics model, where it lives and the test that checks it. Switch the models in **View & graphics → Realism** or with typed commands. Type `HELP` in the command box (`/`) for the full list. The landing debrief reports what the environment did on the flight (max g, overstress, windshear, ice, hydroplaning). Saves keep the airframe's condition.
 
-**Performance**: **Frame rate** (Auto 60 / Auto 30 / Fixed) holds a frame-rate target by scaling resolution below the Quality setting. Quality also sets the terrain shader tier and shadow-map size. Far airport buildings and AI traffic drop out by distance, and coarse terrain rings skip the ground under finer ones (12% faster frames in a same-scene A/B). `PERF` shows per-section frame timing. `npm run bench` measures GPU-synchronised frame times on a fixed scene, attributes them by scene category, and runs same-scene A/B variants.
+**Performance**: **Frame rate** (Auto 60 / Auto 30 / Fixed) holds a frame-rate target by scaling resolution below the Quality setting; a machine too slow even at the lowest resolution gets the lite terrain tier as well. Quality also sets the terrain shader tier and shadow-map size. Terrain tiles draw coarser meshes where their triangles would be only a pixel or two across (1.48× the frame rate in a same-scene A/B, with indistinguishable renders), coarse terrain rings skip the ground under finer ones (1.13×), and far airport buildings and AI traffic drop out by distance. `PERF` shows per-section frame timing. `npm run bench` measures GPU-synchronised frame times on a fixed scene, attributes them by scene category, and runs same-scene A/B variants.
 
 ## Scripts
 
@@ -75,7 +75,7 @@ See [docs/shaders-and-physics.md](docs/shaders-and-physics.md) for every shader 
 | `npm test` | Full Vitest test suite |
 | `npm run validate` | POH/fleet validation harness (physics accuracy gate) |
 | `npm run smoke` | Headless browser smoke test: boot, and boot with the airport list unavailable; fails on page errors or a black 3D view (needs Playwright + Chromium) |
-| `npm run bench` | Headless frame-time benchmark: GPU-synchronised frame times on a fixed scene, cost by scene category, same-scene A/B variants (`--ab nocull`) (needs Playwright + Chromium) |
+| `npm run bench` | Headless frame-time benchmark: GPU-synchronised frame times on a fixed scene, cost by scene category, same-scene A/B variants (`--ab nolod`, `--ab nocull`) (needs Playwright + Chromium) |
 
 ## Architecture
 

@@ -30,6 +30,8 @@ import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-
 import { Clouds } from './render/clouds'
 import { CloudShadowMap } from './render/cloud-shadows'
 import { rainbowStrength } from './render/rainbow'
+import { haloStrength, auroraStrength } from './render/sky-optics'
+import { applyAirframeWeather, makeAirframeWeatherUniforms, stepAirframeSnow, stepAirframeWet } from './render/airframe-weather'
 import { NexradField } from './world/nexrad'
 import { CommsBus, isAudible, type Transmission } from './sim/atc/comms'
 import { AiPatternPilot } from './sim/traffic/ai-pilot'
@@ -113,6 +115,8 @@ import { ControllerPanel } from './ui/controller-panel'
 import { ControllerRuntime } from './input/controller-runtime'
 import { armSpeedbrake, cycleSpeedbrake } from './input/speedbrake-control'
 import { createCaptainSystems, stepCaptainSystems, type CaptainSystemsInput } from './sim/captain-systems'
+import { deadSideOf } from './sim/systems/engine-out'
+import { metronomeStepS, rafIntervalMs } from './sim/frame-clock'
 import { makeFuelState, stepFuel, type FuelSelector, negativeGToleranceS } from './sim/systems/fuel'
 import { applyLoading, defaultLoading, loadingFromSnapshot, preferenceFor, setPreference, type LoadingSelection, type MassUnit } from './sim/loading'
 import { PitotStaticSystem } from './sim/systems/pitot'
@@ -180,6 +184,15 @@ let pixelCap = Math.min(window.devicePixelRatio, 1.5)
 function applyPixelRatio(): void {
   renderer.setPixelRatio(pixelCap * adaptiveRes.scale)
   renderer.setSize(window.innerWidth, window.innerHeight)
+}
+let qualityMode: 'performance' | 'high' | 'ultra' = 'high'
+/** The terrain's tier: its lite program and coarser mesh detail under the
+ *  Performance preset, or once dynamic resolution has run out of room even
+ *  at its floor (render/adaptive-resolution.ts). */
+function applyTerrainTier(): void {
+  const lite = qualityMode === 'performance' || adaptiveRes.lite
+  tiles.setShaderQuality(!lite)
+  tiles.setLodTarget(lite ? 12 : 8)
 }
 try {
   const fr = localStorage.getItem('oh-frame-rate')
@@ -327,7 +340,8 @@ aircraft.groundElevAt = (n, e) => {
   return airports.flattenElevation(tiles.elevationAt(ll.lat, ll.lon), ll.lat, ll.lon)
 }
 const mesh = FLEET_ACTIVE.build()
-void upgradePlayerAircraft(mesh, fleetKey)
+// The local model swaps in later: give it the airframe weather too.
+void upgradePlayerAircraft(mesh, fleetKey).then(() => { applyAirframeWeather(mesh.group, AIRFRAME_WEATHER, cockpit.group) })
 // N1: aircraft menu (M or N) — selection respawns via the FLY path.
 const planeMenu = new PlaneMenu((key) => {
   try { localStorage.setItem('oh-aircraft', key) } catch { /* private mode */ }
@@ -367,6 +381,15 @@ const engineCount = DECK_PROFILE?.engines ?? COCKPIT_PROFILE.ga?.engines ?? 1
 // Exhausts and wingtips (swept jet wings carry their tips well aft).
 trails.setEmitters(Trails.layoutFor(FLEET_ACTIVE.params.spanM, engineCount, aircraft.P.jet ? 0.17 * FLEET_ACTIVE.params.spanM : 0))
 const cockpit = buildCockpit(mesh.group, COCKPIT_PROFILE, FLEET_ACTIVE.params.flapDetentsDeg, { speedbrake: !!FLEET_ACTIVE.params.spoilers })
+// Weather on the airframe (render/airframe-weather.ts): rime on the surfaces
+// facing the airflow, snow settling on a parked airplane, rain-wet paint.
+// Exterior only: the flight deck and cabin stay dry.
+const AIRFRAME_WEATHER = makeAirframeWeatherUniforms()
+applyAirframeWeather(mesh.group, AIRFRAME_WEATHER, cockpit.group)
+let airframeSnow = 0, airframeWet = 0
+/** __ohAirframeWx: fixed values for inspection (screenshots, QA). */
+let airframeWxOverride: { ice?: number; snow?: number; wet?: number } | null = null
+const _awQuat = new THREE.Quaternion()
 // Exteriors previously cast onto runways but never received their own
 // shadows. Light aircraft now get a tightly fitted shadow map as well.
 mesh.group.traverse(o => {
@@ -394,6 +417,13 @@ function envSurfaceTempC(): number | undefined {
   if (!wxBlended) return undefined
   return isa(wxBlended.stationElevFt * FT).temperatureK - 273.15 + wxBlended.isaTempOffsetC
 }
+/** Top of the deck rain falls from (m MSL): the highest broken-or-thicker
+ *  layer, else the highest layer; undefined with no cloud reported. */
+function rainTopMslM(): number | undefined {
+  const decks = wxSlabs.filter((s) => s.cover === 'BKN' || s.cover === 'OVC' || s.cover === 'VV')
+  const top = (decks.length ? decks : wxSlabs).reduce((m, s) => Math.max(m, s.topMslFt), -Infinity)
+  return Number.isFinite(top) ? top * FT : undefined
+}
 function stepEnvironment(dt: number): void {
   const d = aircraft.data
   const n = aircraft.posNed.x, e = aircraft.posNed.y
@@ -406,6 +436,7 @@ function stepEnvironment(dt: number): void {
     flapsDeg: aircraft.flapsDeg, rollRate: aircraft.rates.x,
     oatC: isa(Math.max(altM, 0)).temperatureK - 273.15 + aircraft.isaTempOffsetC,
     inCloud: inCloudFactor(wxSlabs, d.altitudeFt), weather: wxBlended?.weather ?? [],
+    rainTopM: rainTopMslM(),
     surfaceTempC: envSurfaceTempC(), sunElevDeg: sky.elevationDeg,
     cloudCover: wxSlabs.reduce((c, s) => Math.max(c, ENV_COVER[s.cover] ?? 0), 0),
     overWater: Math.abs(elev) <= 0.2, groundElevAt: aircraft.groundElevAt,
@@ -545,6 +576,18 @@ function updateWeatherEffects(dayness: number, sunDir: THREE.Vector3): void {
   // Rainbow: rain in the air with the sun out (not behind an overcast) and
   // low enough (< 42°) for the bow to stand above the horizon.
   sky.setRainbow(rainbowStrength(kind === 'rain' ? inPrecip : 0, sky.elevationDeg, sky.directTransmission))
+  // 22° halo and sun dogs in thin cirrostratus; aurora on active nights at
+  // high latitude (render/sky-optics.ts).
+  sky.setHalo(haloStrength(wxSlabs, sky.elevationDeg, sky.directTransmission))
+  sky.setAurora(auroraStrength(frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y).lat, new Date(baseDate.getTime() + (simT + scrubSeconds) * 1000)))
+  // The airframe's own weather, on sim time (a paused sim builds no snow).
+  airframeSnow = stepAirframeSnow(airframeSnow, dtS, kind === 'snow' ? inPrecip : 0, d.groundSpeedKt * KT, oatC)
+  airframeWet = stepAirframeWet(airframeWet, dtS, kind === 'rain' ? inPrecip : 0)
+  AIRFRAME_WEATHER.uAwSnow.value = airframeWxOverride?.snow ?? airframeSnow
+  AIRFRAME_WEATHER.uAwWet.value = airframeWxOverride?.wet ?? airframeWet
+  AIRFRAME_WEATHER.uAwIce.value = airframeWxOverride?.ice ?? Math.min(1, environment.ice.thicknessMm / 6)
+  // Body +x (the nose) is the mesh's −z.
+  AIRFRAME_WEATHER.uAwFwd.value.set(0, 0, -1).applyQuaternion(mesh.group.getWorldQuaternion(_awQuat))
   // Tyre smoke on touchdown: emit at the main-wheel contact points.
   const smoke = touchdownSmoke(smokeWasOnGround, d.onGround, d.groundSpeedKt * KT, -d.verticalSpeedFpm * 0.00508)
   smokeWasOnGround = d.onGround
@@ -592,6 +635,7 @@ function environmentHud(): string {
   const bits: string[] = []
   if (st.runway !== 'dry') bits.push(`RWY ${st.runway.toUpperCase()}${st.hydroplaning ? ' HYDROPLANING' : ''}`)
   if (st.iceMm >= 0.3) bits.push(`ICE ${st.iceMm.toFixed(1)}MM`)
+  if (st.rainMmH >= 20 && !aircraft.data.onGround) bits.push('HEAVY RAIN')
   const lift = st.updraftMs + st.ridgeMs
   if (Math.abs(lift) >= 0.5) bits.push(`${lift > 0 ? 'LIFT +' : 'SINK '}${lift.toFixed(1)} M/S`)
   if (environment.structure.overstressed) bits.push('OVERSTRESSED')
@@ -785,6 +829,7 @@ function resetSystemsState(): void {
   controllerRuntime.reset()
   keyboardReverse = hardwareReverseOwned = false
   aircraft.jetPowerFactor = 1
+  aircraft.engineDeadSide = 0
   failures.alternatorFailed = false
   failures.icingConditions = false
   failures.staticBlocked = false
@@ -916,7 +961,7 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
     const kcas = aircraft.P.pitotCal ? kcasFromKias(fin.kias, fin.flapsDeg, aircraft.P.pitotCal) : fin.kias
     const tas = kcas * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
     const gearCd = aircraft.P.gearRetractable ? aircraft.P.gearRetractable.dCdExtended : 0
-    const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg: fin.flapsDeg, gammaRad: -0.052, params: aircraft.P, extraCd: gearCd, isaTempOffsetC: aircraft.isaTempOffsetC })
+    const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg: fin.flapsDeg, gammaRad: -0.052, params: aircraft.P, extraCd: gearCd, isaTempOffsetC: aircraft.isaTempOffsetC, humidity: aircraft.humidity })
     if (aircraft.P.flaperons) { aircraft.spoilerCmd = 0; aircraft.spoilerPos = 0; aircraft.spoilerArmed = false }
     aircraft.resetFlaps(fin.flapsIndex)
     aircraft.gearDownCommanded = true
@@ -1060,7 +1105,7 @@ function loadSnapshot(): boolean {
     const flapsDeg = aircraft.flapsDeg
     aircraft.fuelKg = snapshotLoading.leftKg + snapshotLoading.rightKg // before trim: mass affects the solve
     const tas = kcasFromKias(Math.max(snap.kias, 55), flapsDeg, aircraft.P.pitotCal) * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
-    const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg, gammaRad: 0, params: aircraft.P, isaTempOffsetC: aircraft.isaTempOffsetC })
+    const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg, gammaRad: 0, params: aircraft.P, isaTempOffsetC: aircraft.isaTempOffsetC, humidity: aircraft.humidity })
     aircraft.applyTrimState(tas, t.alphaRad, altM, (snap.hdgDeg * Math.PI) / 180, t.gammaRad, t.elevatorRad, t.throttle, t.rpm)
     setTrimAirbrake(t.airbrake)
     parkingBrake = false
@@ -2618,6 +2663,7 @@ function applyBlendedWeather(b: BlendedWeather | null): void {
     wxDesc = ''
     wxSlabs = []
     aircraft.isaTempOffsetC = 0
+    aircraft.humidity = null
     qnhInHg = 29.92
     wind.setSteady(0, 0)
     wind.intensity = 0
@@ -2631,6 +2677,9 @@ function applyBlendedWeather(b: BlendedWeather | null): void {
   gustIntensity = Math.min(Math.max((b.gustKt - b.windKt) / 8, 0), 2)
   wind.intensity = gustIntensity
   aircraft.isaTempOffsetC = b.isaTempOffsetC
+  // Humid air (weather/humidity.ts): the nearest report's dew point.
+  const dewC = nearestMetar()?.dewpointC
+  aircraft.humidity = dewC === undefined ? null : { dewPointC: dewC, stationPressurePa: isa(b.stationElevFt * FT).pressurePa }
   qnhInHg = b.qnhInHg
   appliedWxVisM = (b.visibilitySm >= 10 ? 45 : b.visibilitySm) * 1609
   tiles.setVisibilityM(appliedWxVisM)
@@ -3111,7 +3160,11 @@ function advanceFrame(elapsed: number, now: number): void {
         onGround:aircraft.data.onGround,groundSpeedKt:aircraft.data.groundSpeedKt,
         throttle:aircraft.controls.throttle,manualBrake:pilotBrake,...captainCommands,
       },dt)
-      if(aircraft.P.jet){aircraft.jetPowerFactor=captainSystems.enginePowerFraction;aircraft.engineRunning=captainSystems.enginePowerFraction>0}
+      if(aircraft.P.jet){
+        aircraft.jetPowerFactor=captainSystems.enginePowerFraction
+        aircraft.engineRunning=captainSystems.enginePowerFraction>0
+        aircraft.engineDeadSide=deadSideOf(captainSystems.engine1Running,captainSystems.engine2Running)
+      }
       stepEngineStart(engineStartState, dt, {
         masterBattery: systemsControls.masterBattery,
         starterEngaged: systemsControls.starterEngaged,
@@ -3562,6 +3615,9 @@ function advanceFrame(elapsed: number, now: number): void {
   cloudFog.color.setHex(dayness > 0.4 ? 0xc8ccd2 : 0x14161a)
   tiles.setCloudFog(cloudFog)
   ocean.setCloudFog(cloudFog)
+  // Terrain mesh level of detail for this view and render size
+  // (world/terrain-lod.ts): distant tiles stop drawing sub-pixel triangles.
+  tiles.updateLod(camera.position, (renderer.domElement.height * camera.zoom) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)))
 
   profiler.mark('scene')
   hud.update(
@@ -3635,8 +3691,14 @@ let benchHold = false
 function frame_(now: number): void {
   if (benchHold) { requestAnimationFrame(frame_); return }
   lastRafAt = now
-  if (adaptiveRes.sample(now - lastFrame, now) !== null) applyPixelRatio()
-  const elapsed = (now - lastFrame) / 1000
+  const intervalMs = rafIntervalMs(now, lastFrame)
+  const wasLite = adaptiveRes.lite
+  if (adaptiveRes.sample(intervalMs, now) !== null) applyPixelRatio()
+  if (adaptiveRes.lite !== wasLite) {
+    applyTerrainTier()
+    console.info(`[openhorizon] dynamic quality: terrain ${adaptiveRes.lite ? 'lite tier (over budget at the resolution floor)' : 'full tier'}`)
+  }
+  const elapsed = intervalMs / 1000
   lastFrame = now
   safeAdvance(elapsed, now)
   requestAnimationFrame(frame_)
@@ -3647,13 +3709,13 @@ function frame_(now: number): void {
 // after 5 min hidden. Worker clocks are exempt, so a metronome worker
 // ticks the same idle-stepper instead. Elapsed is clamped to 1 s per
 // tick: background runs near-real-time and RESUMES after an OS sleep
-// rather than fast-forwarding the gap.
+// rather than fast-forwarding the gap. Hidden pages only: rAF drives a
+// visible one however slowly (sim/frame-clock.ts).
 const metronome = new Worker(new URL('./metronome-worker.ts', import.meta.url), { type: 'module' })
 metronome.onmessage = () => {
   const now = performance.now()
-  if (now - lastRafAt < 400) return
-  const elapsed = Math.min((now - lastFrame) / 1000, 1)
-  if (elapsed < 0.2) return
+  const elapsed = metronomeStepS(now, lastRafAt, lastFrame, document.visibilityState === 'visible')
+  if (elapsed === null) return
   lastFrame = now
   safeAdvance(elapsed, now)
 }
@@ -3859,6 +3921,9 @@ Object.assign(window as unknown as Record<string, unknown>, {
     fogDensity: tiles.fogDensity,
     reversedDepth: renderer.capabilities.reversedDepthBuffer,
     pixelRatio: renderer.getPixelRatio(),
+    renderScale: adaptiveRes.scale,
+    terrainTier: tiles.shaderLite ? 'lite' : 'full',
+    terrainLod: { target: tiles.lodTarget, levels: tiles.lodStats() },
     exposure: renderer.toneMappingExposure,
     width: renderer.domElement.width,
     height: renderer.domElement.height,
@@ -3884,6 +3949,19 @@ Object.assign(window as unknown as Record<string, unknown>, {
     ...(designator ? { info: typeInfo(designator), parsed: parseDesc(typeInfo(designator).desc) } : {}),
   }),
   __ohTiles: (probeKey?: string) => tiles.debugImagery(probeKey),
+  /** Airframe weather (render/airframe-weather.ts): pin ice/snow/wet
+   *  (0..1) for inspection, or pass null to return to the weather. */
+  __ohAirframeWx: (o?: { ice?: number; snow?: number; wet?: number } | null) => {
+    if (o !== undefined) airframeWxOverride = o
+    return { ice: AIRFRAME_WEATHER.uAwIce.value, snow: AIRFRAME_WEATHER.uAwSnow.value, wet: AIRFRAME_WEATHER.uAwWet.value, override: airframeWxOverride }
+  },
+  /** Terrain mesh LOD (world/terrain-lod.ts): toggle it or set its pixel
+   *  target (A/B screenshots), and read how many tiles sit on each level. */
+  __ohLod: (on?: boolean, targetPx?: number) => {
+    if (on !== undefined) tiles.setLod(on)
+    if (targetPx !== undefined) tiles.setLodTarget(targetPx)
+    return { target: tiles.lodTarget, levels: tiles.lodStats() }
+  },
   __ohReplay: () => {
     const p = buildReplayPlots(recorder.samples, 240)
     return {
@@ -3961,6 +4039,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
     // 'nocull' measures the terrain without coverage culling (same scene);
     // 'finefirst' draws fine rings before coarse ones (renderOrder 20 − z).
     if (hide.includes('nocull')) tiles.setCoverageCulling(false)
+    // 'nolod' draws every tile at full mesh resolution (same scene).
+    if (hide.includes('nolod')) tiles.setLod(false)
     const orders: Array<[THREE.Object3D, number]> = []
     if (hide.includes('finefirst')) for (const top of scene.children) {
       if (!top.userData.terrainKey) continue
@@ -3999,6 +4079,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     } finally {
       renderer.render = origRender
       if (hide.includes('nocull')) tiles.setCoverageCulling(true)
+      if (hide.includes('nolod')) tiles.setLod(true)
       for (const [o, r] of orders) o.renderOrder = r
       for (const o of hidden) o.visible = true
       renderer.shadowMap.enabled = shadowsWere
@@ -4135,6 +4216,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
     wxSlabs = []
     wxBlended = null
     aircraft.isaTempOffsetC = 0
+    aircraft.humidity = null
     wind.setSteady(dirDeg, kt)
   },
   __ohWx: () => ({
@@ -4197,9 +4279,10 @@ const graphicsPanel = new GraphicsPanel(renderer, {
   mapLayer: source => applyImagerySource(source, true),
   realism: (key, on) => { setRealism(key, on); toast(`${key.toUpperCase()} ${on ? 'ON' : 'OFF'}`) },
   quality: mode => {
+    qualityMode = mode
     clouds.setQuality(mode)
     tiles.setDetailEnabled(mode !== 'performance')
-    tiles.setShaderQuality(mode !== 'performance')
+    applyTerrainTier()
     sky.setShadowQuality(mode)
     pixelCap = Math.min(window.devicePixelRatio, mode === 'performance' ? 1 : mode === 'ultra' ? 2 : 1.5)
     applyPixelRatio()
@@ -4209,6 +4292,7 @@ const graphicsPanel = new GraphicsPanel(renderer, {
     if (fps !== 0) adaptiveRes.targetMs = 1000 / fps
     else adaptiveRes.reset()
     applyPixelRatio()
+    applyTerrainTier()
     try { localStorage.setItem('oh-frame-rate', String(fps)) } catch { /* private mode */ }
     toast(fps === 0 ? 'FIXED RESOLUTION' : `DYNAMIC RESOLUTION · ${fps} FPS TARGET`)
   },

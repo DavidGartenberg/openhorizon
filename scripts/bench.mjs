@@ -15,6 +15,7 @@
  *   npm run bench -- --json out.json           # also write the results
  *   npm run bench -- --cats terrain,terrain:z11,shadows   # attribute only these
  *   npm run bench -- --ab nocull               # same-scene A/B: coverage culling off
+ *   npm run bench -- --ab nolod                # same-scene A/B: terrain mesh LOD off
  */
 import { createRequire } from 'node:module'
 import net from 'node:net'

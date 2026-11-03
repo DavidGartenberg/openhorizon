@@ -1,7 +1,8 @@
 /** Captain controls, independent of DOM/hardware. Engine starts and brake
  * demands are deliberately simplified, not aircraft-specific certified logic.
- * The two masters control equal engine groups; physics retains shared N1 and
- * aggregate thrust, with no asymmetric engine-out yaw or separate fuel tanks. */
+ * The two masters control equal engine groups (left, right); physics keeps
+ * shared N1, aggregate thrust and one fuel pool, and a group out yaws the
+ * airframe toward its side (systems/engine-out.ts). */
 export type IgnitionMode = 'crank' | 'norm' | 'start'
 export type AutobrakeMode = 'off' | 'low' | 'medium' | 'max' | 'rto'
 

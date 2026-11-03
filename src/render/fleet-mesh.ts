@@ -18,6 +18,8 @@ import { profiledPanelGeometry } from './aircraft-components'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
 
 const SHARED_MAT = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.62, metalness: 0.12 })
+// Every traffic silhouette shares it: no per-airframe shader patches (weather).
+SHARED_MAT.userData.sharedMaterial = true
 
 const WHITE = new THREE.Color(0xe8eaee)
 const GREY = new THREE.Color(0x9aa0a8)

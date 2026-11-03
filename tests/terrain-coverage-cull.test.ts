@@ -8,28 +8,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as THREE from 'three'
 import { TileManager, WorldFrame } from '../src/world/tiles'
-import { tileGridUv } from '../src/math/geo'
+import { lodIndices } from '../src/world/terrain-lod'
+import { gridResponse } from './fixtures/terrain-tile'
 
 class WorkerStub { onmessage: unknown; postMessage = vi.fn(); terminate = vi.fn() }
 const ring = (z: number) => ({ z, radiusM: 10000, grid: 2, skirt: 10, depthBiasM: 0 })
-
-function gridResponse(t: any, G: number, h: number) {
-  const positions = new Float32Array(G * G * 3), uvs = new Float32Array(G * G * 2)
-  for (let j = 0; j < G; j++) for (let i = 0; i < G; i++) {
-    const k = j * G + i
-    positions[k * 3] = (i / (G - 1) - 0.5) * t.sizeEastM
-    positions[k * 3 + 1] = h
-    positions[k * 3 + 2] = (j / (G - 1) - 0.5) * t.sizeNorthM
-    const [u, v] = tileGridUv(i, j, G)
-    uvs[k * 2] = u; uvs[k * 2 + 1] = v
-  }
-  const quads: number[] = []
-  for (let j = 0; j < G - 1; j++) for (let i = 0; i < G - 1; i++) {
-    const a = j * G + i, b = a + 1, d = a + G, e = d + 1
-    quads.push(a, d, b, b, d, e)
-  }
-  return { key: t.key, requestId: t.requestId, positions, normals: new Float32Array(G * G * 3), colors: new Float32Array(G * G * 3), uvs, urban: new Float32Array(G * G), indices: new Uint32Array(quads), heights: new Float32Array(G * G).fill(h), gridSize: G }
-}
 
 beforeEach(() => vi.stubGlobal('Worker', WorkerStub))
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -55,7 +38,7 @@ describe('terrain coverage culling', () => {
 
     // Exactness: every dropped triangle is covered at every point.
     const uv = geo.getAttribute('uv').array as Float32Array
-    const src = coarse.indexSrc as Uint16Array
+    const src = lodIndices(17, 1)
     const drawn = new Set<string>()
     const idx = geo.getIndex()!.array as Uint32Array
     for (let t = 0; t < kept; t += 3) drawn.add(`${idx[t]},${idx[t + 1]},${idx[t + 2]}`)
@@ -75,13 +58,13 @@ describe('terrain coverage culling', () => {
 
     // Evict the fine tile: the coarse ground is whole again.
     coarse.lastWanted = 2; fine.lastWanted = 0; internal.stamp = 2
-    for (let i = 0; i < 340; i++) internal.tiles.set(`dummy${i}`, { ...coarse, key: `dummy${i}`, mesh: undefined, lastWanted: 2, indexSrc: undefined })
+    for (let i = 0; i < 340; i++) internal.tiles.set(`dummy${i}`, { ...coarse, key: `dummy${i}`, mesh: undefined, lastWanted: 2 })
     internal.evict(0, 0)
     expect(internal.tiles.has(fine.key)).toBe(false)
     expect(geo.drawRange.count).toBe(all)
   })
 
-  it('fine (z13) tiles keep no culling copy: nothing can cover them', () => {
+  it('a coverage refresh leaves fine (z13) tiles alone: nothing can cover them', () => {
     const scene = new THREE.Scene(), frame = new WorldFrame({ lat: 37.5092, lon: -122.4959 })
     const m = new TileManager(scene, frame, () => [])
     m.setImagery(false)
@@ -89,6 +72,10 @@ describe('terrain coverage culling', () => {
     internal.want(ring(13), 1309, 3174)
     const t = internal.tiles.get('13/1309/3174')
     internal.onTileBuilt(gridResponse(t, 5, 0))
-    expect(t.indexSrc).toBeUndefined()
+    const index = t.mesh.geometry.getIndex()
+    const version = index.version
+    internal.refreshCoverage()
+    expect(index.version).toBe(version)
+    expect(t.mesh.geometry.drawRange.count).toBeGreaterThanOrEqual(index.count)
   })
 })

@@ -13,6 +13,8 @@ import { makeTurbofanState, stepTurbofan, windmillDragN, type TurbofanState } fr
 import { computeGear, makeGearOutput, type GearInput } from './gear'
 import { isa, casFromTas, kiasFromKcas, G, KT, FT, R_AIR, type AirState } from './atmosphere'
 import { gyroscopicMoment } from './prop-effects'
+import { engineOutYawNm } from './systems/engine-out'
+import { vapourFraction, type SurfaceHumidity } from './weather/humidity'
 import { BrakeThermal, brakeSpecFor } from './systems/brakes'
 import {
   v3, q4, v3set, v3copy, v3cross, qrotate, qrotateInv, qintegrate, qfromEuler,
@@ -165,11 +167,19 @@ export class Aircraft {
   /** Fraction of jet engine groups running, set by Captain systems. Shared
    * N1 remains an approximation: no independent spool or asymmetric yaw. */
   jetPowerFactor = 1
+  /** The side whose engine group is out (−1 left, +1 right, 0 none): the
+   *  unbalanced thrust and the dead fan's drag yaw toward it
+   *  (systems/engine-out.ts). */
+  engineDeadSide: -1 | 0 | 1 = 0
 
   /** Intake power multiplier from the carb-ice model (Phase 11b), set by
    *  the systems layer each frame. 1 (default) = clear venturi — injected
    *  engines and all existing callers see identical behavior. */
   intakePowerFactor = 1
+  /** Water vapour from the nearest surface report (null: dry air). Humid
+   *  air is lighter, and the vapour takes a piston engine's oxygen
+   *  (weather/humidity.ts). */
+  humidity: SurfaceHumidity | null = null
 
   /** groundElevAt with a finite guard: a flaky terrain sample (NaN tile
    *  decode) must never reach aero (AGL/ground effect) or gear math —
@@ -310,6 +320,14 @@ export class Aircraft {
     if (this.isaTempOffsetC !== 0) {
       this.air.temperatureK += this.isaTempOffsetC
       this.air.densityKgM3 = this.air.pressurePa / (R_AIR * this.air.temperatureK)
+      // Mach (jet thrust and drag rise) follows the real temperature, as trim does.
+      this.air.speedOfSoundMs = Math.sqrt(1.4 * R_AIR * this.air.temperatureK)
+    }
+    let humidPower = 1
+    if (this.humidity) {
+      const f = vapourFraction(this.humidity, this.air.pressurePa, this.air.temperatureK)
+      this.air.densityKgM3 *= 1 - 0.378 * f
+      humidPower = 1 - f
     }
     const rho = this.air.densityKgM3
 
@@ -371,6 +389,7 @@ export class Aircraft {
     // C172S args exist for external callers/tests — if the 6-DOF relied on
     // the default, every fleet member would silently fly a C172 (§1).
     let mach = 0
+    let engineOutYaw = 0
     if (this.P.jet && this.jetState) {
       // Jet path: turbofan drives the shared `prop` output struct so the
       // force assembly / fuel / data plumbing below is powerplant-agnostic.
@@ -388,7 +407,16 @@ export class Aircraft {
         this.prop.thrustN *= 1 - this.reversePos * (1 + this.P.reversers.effectiveness)
       }
       // Dead groups drag in either reverser position; never reverse drag into thrust.
-      this.prop.thrustN -= windmillDragN(rho, vAir, this.P.jet) * (running ? 1 - powerFactor : 1)
+      const liveThrustN = this.prop.thrustN
+      const deadDragN = windmillDragN(rho, vAir, this.P.jet) * (running ? 1 - powerFactor : 1)
+      this.prop.thrustN -= deadDragN
+      // One side's group out: the live thrust no longer balanced across the
+      // centreline (a twin's whole live engine; a quad's opposite pair) and
+      // the dead fans' drag yaw the nose toward the dead side.
+      if (this.engineDeadSide !== 0 && running && powerFactor < 1) {
+        const unbalanced = (liveThrustN * Math.min(powerFactor, 1 - powerFactor)) / powerFactor
+        engineOutYaw = engineOutYawNm(this.engineDeadSide, unbalanced, deadDragN, this.P.spanM, this.P.jet.engines)
+      }
       this.prop.torqueNm = 0
       this.prop.fuelFlowKgS = this.jetState.fuelFlowKgS * powerFactor
       this.prop.shaftPowerW = Math.max(this.jetState.thrustN * powerFactor * vAir, 0)
@@ -398,7 +426,7 @@ export class Aircraft {
       stepPropulsion(
         this.prop, dt, c.throttle, c.mixture, rho,
         Math.max(this.vAirBody.x, 0), this.fuelKg > 0.5 && this.engineRunning,
-        this.P, this.intakePowerFactor,
+        this.P, this.intakePowerFactor * humidPower,
       )
     }
     this.fuelKg = Math.max(this.fuelKg - this.prop.fuelFlowKgS * dt, 0)
@@ -450,6 +478,7 @@ export class Aircraft {
     v3copy(this.force, this.aeroOut.force)
     this.force.x += this.prop.thrustN
     v3copy(this.moment, this.aeroOut.moment)
+    this.moment.z += engineOutYaw
     // Propeller gyroscopics (prop-effects.ts): H × Ω on the airframe.
     if (!this.P.jet && this.P.propDiameterM > 0 && this.prop.omegaRadS > 0) {
       gyroscopicMoment(this.P.rotInertiaKgM2, this.prop.omegaRadS, this.rates.y, this.rates.z, this.gyro)

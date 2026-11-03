@@ -173,8 +173,9 @@ export function stepPropulsion(
       : 0
 }
 
-/** Steady-state RPM for throttle/speed/density (bisection on torque balance). */
-export function equilibriumRpm(throttle: number, vAxialMs: number, rho: number, P: AircraftParams = C172S): number {
+/** Steady-state RPM for throttle/speed/density (bisection on torque balance).
+ *  powerFactor scales the engine's torque as stepPropulsion's intake factor does. */
+export function equilibriumRpm(throttle: number, vAxialMs: number, rho: number, P: AircraftParams = C172S, powerFactor = 1): number {
   const D = P.propDiameterM
   let lo = 300
   // Governed props can never balance above redline (the governor coarsens
@@ -184,7 +185,7 @@ export function equilibriumRpm(throttle: number, vAxialMs: number, rho: number, 
     const rpm = (lo + hi) / 2
     const n = rpm / 60
     const J = Math.max(vAxialMs, 0) / Math.max(n * D, 0.1)
-    const qEngine = engineBrakeTorque(throttle, rpm, rho, P)
+    const qEngine = engineBrakeTorque(throttle, rpm, rho, P) * powerFactor
     const qProp = (propCp(J, P.propCpTable) / (2 * Math.PI)) * rho * n * n * D ** 5
     if (qEngine - qProp > 0) lo = rpm
     else hi = rpm

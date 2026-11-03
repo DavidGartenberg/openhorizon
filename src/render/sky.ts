@@ -22,6 +22,9 @@ const FRAG = /* glsl */ `
   uniform mat3 uEquatorial;
   uniform float uTime;
   uniform float uRainbow;
+  // Ice-crystal optics in thin high cloud (0..1), and aurora activity (0..1).
+  uniform float uHalo;
+  uniform float uAurora;
   varying vec3 vDir;
   ${SKY_LOOKUP}
   float hash(vec3 p) {
@@ -115,6 +118,65 @@ const FRAG = /* glsl */ `
       color = color * (1.0 - 0.22 * alexander * uRainbow * horizonFade) +
         (bow * 0.55 * skyLum + vec3(0.06) * inside * skyLum) * uRainbow * horizonFade;
     }
+    // ---- 22° halo and sun dogs: hexagonal ice plates in thin cirrostratus.
+    // The ring's inner edge is sharp and red; the parhelia sit at the sun's
+    // elevation, 22°/cos(elevation) to either side, red toward the sun.
+    if (uHalo > 0.001 && day > 0.01) {
+      vec3 sd = normalize(uSunDir);
+      float th = degrees(acos(clamp(dot(dir, sd), -1.0, 1.0)));
+      float ring = exp(-pow((th - 22.3) / 0.55, 2.0)) * step(21.6, th) + 0.35 * exp(-pow((th - 23.5) / 2.2, 2.0)) * step(22.0, th);
+      vec3 haloCol = mix(vec3(1.0, 0.62, 0.45), vec3(0.85, 0.9, 1.0), smoothstep(21.9, 23.6, th));
+      float sunEl = asin(clamp(sd.y, -1.0, 1.0));
+      float el = asin(clamp(dir.y, -1.0, 1.0));
+      float dAz = degrees(atan(dir.x, -dir.z) - atan(sd.x, -sd.z));
+      dAz = mod(dAz + 180.0, 360.0) - 180.0;
+      float D = 22.3 / max(cos(sunEl), 0.4);
+      float off = abs(abs(dAz) - D);
+      float dog = exp(-pow(off / 0.7, 2.0)) * exp(-pow(degrees(el - sunEl) / 0.9, 2.0));
+      dog += 0.25 * exp(-pow(degrees(el - sunEl) / 0.6, 2.0)) * smoothstep(D + 8.0, D, abs(dAz)) * step(D, abs(dAz)); // tails
+      vec3 dogCol = mix(vec3(1.0, 0.55, 0.38), vec3(0.95, 0.97, 1.0), smoothstep(-0.4, 1.4, abs(dAz) - D));
+      float lowSun = 1.0 - smoothstep(45.0, 60.0, degrees(sunEl));
+      vec3 skyLumH = vec3(dot(color, vec3(0.2126, 0.7152, 0.0722)));
+      color += (haloCol * ring * 0.45 + dogCol * dog * 1.3 * lowSun) * skyLumH * uHalo;
+    }
+    // ---- meteors: a deterministic shower of shooting stars, one every
+    // ~40 s on average, each a 0.6 s streak along a great circle.
+    if (night > 0.5 && dir.y > 0.0) {
+      float slot = floor(uTime / 7.0);
+      float age = (uTime - slot * 7.0) / 0.6;
+      if (hash(vec3(slot, 3.7, 1.1)) > 0.82 && age < 1.0) {
+        float a0 = hash(vec3(slot, 1.0, 2.0)) * 6.2832, e0 = radians(35.0 + 45.0 * hash(vec3(slot, 4.0, 5.0)));
+        vec3 S = vec3(sin(a0) * cos(e0), sin(e0), -cos(a0) * cos(e0));
+        float a1 = a0 + (hash(vec3(slot, 7.0, 8.0)) - 0.5) * 0.9, e1 = e0 - radians(8.0 + 14.0 * hash(vec3(slot, 9.0, 1.0)));
+        vec3 E = vec3(sin(a1) * cos(e1), sin(e1), -cos(a1) * cos(e1));
+        vec3 Nrm = normalize(cross(S, E));
+        float dist = abs(dot(dir, Nrm));
+        vec3 inPlane = normalize(dir - Nrm * dot(dir, Nrm));
+        float span = acos(clamp(dot(S, E), -1.0, 1.0));
+        float pos = atan(dot(cross(S, inPlane), Nrm), dot(S, inPlane)) / span; // 0 at S, 1 at E
+        float head = age, tail = max(age - 0.4, 0.0);
+        float along = smoothstep(tail, head, pos) * step(pos, head);
+        float width = 0.0009 + 0.0006 * along;
+        float streak = along * (1.0 - smoothstep(width * 0.3, width, dist)) * (1.0 - smoothstep(0.7, 1.0, age));
+        color += vec3(0.9, 0.95, 1.0) * streak * 1.8 * night;
+      }
+    }
+    // ---- aurora: curtains toward the magnetic pole at high latitude,
+    // green (557.7 nm oxygen) at the foot, violet-red higher up, with fine
+    // vertical rays drifting slowly along the arc.
+    if (uAurora > 0.001 && night > 0.3 && dir.y > 0.0) {
+      float azN = atan(dir.x, -dir.z); // 0 = north
+      float el = degrees(asin(clamp(dir.y, -1.0, 1.0)));
+      float facing = smoothstep(1.6, 0.4, abs(azN)); // the poleward sky
+      float foot = 14.0 + 7.0 * sin(azN * 2.3 + uTime * 0.021) + 4.0 * sin(azN * 5.1 - uTime * 0.034);
+      float h = el - foot;
+      float curtain = smoothstep(-2.0, 0.5, h) * exp(-max(h, 0.0) / 16.0);
+      float rays = 0.55 + 0.45 * vnoise(vec3(azN * 70.0 + uTime * 0.12, uTime * 0.05, 1.3));
+      rays *= 0.7 + 0.3 * vnoise(vec3(azN * 9.0 - uTime * 0.03, 2.0, 7.0));
+      vec3 green = vec3(0.12, 0.95, 0.42), violet = vec3(0.55, 0.22, 0.85);
+      vec3 auroraCol = mix(green, violet, smoothstep(6.0, 30.0, h));
+      color += auroraCol * curtain * rays * facing * 0.06 * uAurora * night;
+    }
     gl_FragColor = vec4(color, 1.0);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
@@ -187,7 +249,7 @@ export class SkyDome {
       uniforms: {
         uSky: { value: this.lookup.texture }, uSunDir: { value: this.sunDir },
         uMoonDir: { value: this.moonDir }, uEquatorial: { value: this.equatorial },
-        uTime: { value: 0 }, uRainbow: { value: 0 },
+        uTime: { value: 0 }, uRainbow: { value: 0 }, uHalo: { value: 0 }, uAurora: { value: 0 },
       },
       vertexShader: VERT, fragmentShader: FRAG,
       side: THREE.BackSide, depthWrite: false,
@@ -237,6 +299,14 @@ export class SkyDome {
     }
   }
 
+  /** 22° halo and sun dogs, 0..1 (thin high ice cloud with the sun out). */
+  setHalo(strength: number): void {
+    this.material.uniforms.uHalo!.value = Math.max(0, Math.min(1, strength))
+  }
+  /** Aurora activity, 0..1 (high latitudes at night). */
+  setAurora(strength: number): void {
+    this.material.uniforms.uAurora!.value = Math.max(0, Math.min(1, strength))
+  }
   /** Rainbow strength 0..1 (rain falling with the sun out, below 42°). */
   setRainbow(strength: number): void {
     this.material.uniforms.uRainbow!.value = Math.max(0, Math.min(1, strength))

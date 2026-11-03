@@ -10,6 +10,7 @@ import * as THREE from 'three'
 import { SkyDome } from '../../src/render/sky'
 import { TERRAIN_VERT, TERRAIN_FRAG } from '../../src/world/terrain-shader'
 import { rasterCloudShadows, SHADOW_MAP_PX, SHADOW_HALF_M } from '../../src/render/cloud-shadows'
+import { ORIGINAL_TERRAIN_VERT, ORIGINAL_TERRAIN_FRAG } from './terrain-shader-original'
 
 const params = new URLSearchParams(location.search)
 const view = params.get('view') ?? 'far'
@@ -131,14 +132,17 @@ const material = new THREE.ShaderMaterial({
     uCoverageRows: { value: new Array(65).fill(0) },
     uWetness: { value: Number(params.get('wet') ?? 0) },
     uSnowCover: { value: Number(params.get('snowcover') ?? 0) },
-    uQuality: { value: Number(params.get('quality') ?? 1) },
     // ?clouds=1: a deterministic field of cumulus shadows (render/cloud-shadows.ts).
     uCloudShadow: { value: white },
     uCloudShadowRect: { value: new THREE.Vector4(-14000, -14000, 1 / 28000, 1 / 28000) },
     uCloudShadowOn: { value: params.get('clouds') === '1' ? 1 : 0 },
   },
-  vertexShader: TERRAIN_VERT,
-  fragmentShader: params.get('count') === '1' ? countingShader(TERRAIN_FRAG) : TERRAIN_FRAG,
+  // ?quality=0: the lite program (TERRAIN_LITE); ?shader=original: the
+  // branch-base program, for cost A/B; ?strip=a,b: cost bisection (strip()).
+  defines: params.get('quality') === '0' ? { TERRAIN_LITE: '' } : {},
+  vertexShader: params.get('shader') === 'original' ? ORIGINAL_TERRAIN_VERT : TERRAIN_VERT,
+  fragmentShader: params.get('shader') === 'original' ? ORIGINAL_TERRAIN_FRAG
+    : params.get('count') === '1' ? countingShader(TERRAIN_FRAG) : strip(TERRAIN_FRAG, params.get('strip') ?? ''),
 })
 
 /** Cloud-shadow map for ?clouds=1: a lattice of cumulus masses at 1,500 m,
@@ -157,6 +161,21 @@ function cloudShadowTexture(sunNow: THREE.Vector3): THREE.DataTexture {
   t.magFilter = t.minFilter = THREE.LinearFilter
   t.needsUpdate = true
   return t
+}
+
+/** Cost bisection: remove named parts of the program (measurement only). */
+function strip(src: string, parts: string): string {
+  let out = src
+  const cut = (re: RegExp, by = ''): void => { out = out.replace(re, by) }
+  for (const p of parts.split(',').filter(Boolean)) {
+    if (p === 'snowcover') cut(/if \(uSnowCover > 0\.0\) \{[\s\S]*?snow = max\(snow,settle\);\n    \}/)
+    if (p === 'rock') cut(/albedo = mix\(albedo,toLinear\(rockCol\),rock\);/)
+    if (p === 'grain') cut(/albedo \*= 1\.0\+grain\*0\.62;/)
+    if (p === 'haze') cut(/lit = mix\(lit,haze,fog\);/)
+    if (p === 'cloudfog') cut(/gl_FragColor\.rgb = mix\(gl_FragColor\.rgb, linearToOutputTexel[\s\S]*?uCloudDensity\)\);/)
+    if (p === 'early') { cut(/if \(coveredByReadyTerrain\(vUv\)\) discard;/); out = out.replace('void main() {', 'void main() {\n    if (coveredByReadyTerrain(vUv)) discard;') }
+  }
+  return out
 }
 
 /** ?count=1: instrument the real program to output, per pixel, how many
@@ -181,6 +200,9 @@ const when: Record<string, string> = {
 // ?date=ISO overrides the view's time (night sky, rainbows); ?rainbow=0..1.
 const date = new Date(params.get('date') ?? when[view] ?? when.far!)
 sky.setRainbow(Number(params.get('rainbow') ?? 0))
+// ?halo=0..1: 22° halo + sun dogs; ?aurora=0..1 (render/sky-optics.ts).
+sky.setHalo(Number(params.get('halo') ?? 0))
+sky.setAurora(Number(params.get('aurora') ?? 0))
 const sunDir = sky.update(date, 37.5, -122.0)
 const elev = sky.elevationDeg
 material.uniforms.uSunDir!.value.copy(sunDir)
@@ -192,8 +214,10 @@ if (view === 'near') { camera.position.set(-300, 900, 700); camera.lookAt(500, 7
 else if (view === 'snow') { camera.position.set(0, 2600, 3200); camera.lookAt(0, 2300, -3000) }
 else if (view === 'dusk') { camera.position.set(0, 1600, 5200); camera.lookAt(0, 900, -3000) }
 else { camera.position.set(0, 1700, 6200); camera.lookAt(0, 800, -3000) }
-// ?look=azimuthDeg,elevationDeg aims the camera (compass bearing, up +).
-const look = params.get('look')?.split(',').map(Number)
+// ?look=azimuthDeg,elevationDeg aims the camera (compass bearing, up +);
+// ?look=sun aims it at the sun (halos and sun dogs).
+const look = params.get('look') === 'sun' ? undefined : params.get('look')?.split(',').map(Number)
+if (params.get('look') === 'sun') camera.lookAt(camera.position.clone().add(sunDir))
 if (params.get('fov')) { camera.fov = Number(params.get('fov')); camera.updateProjectionMatrix() }
 if (look && look.length === 2) {
   const az = (look[0]! * Math.PI) / 180, el = (look[1]! * Math.PI) / 180

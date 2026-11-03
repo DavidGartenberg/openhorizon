@@ -6,6 +6,7 @@
  */
 import { terrariumDecode, flattenForRunway, tileGridUv } from '../math/geo'
 import { classifyNlcdPixel } from './nlcd-palette'
+import { lodIndices, lodEdgeDeviation } from './terrain-lod'
 
 export interface TileRequest {
   key: string
@@ -184,13 +185,15 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
         uvs[idx * 2 + 1] = v
       }
     }
-    // Skirts: duplicate edge verts, dropped down.
+    // Skirts: duplicate edge verts, dropped down. Deep enough for the gap
+    // between two neighbours drawn at different levels of detail
+    // (terrain-lod.ts): twice the worst edge deviation of a coarse level.
+    const skirtDepthM = req.skirtDepthM + 2 * lodEdgeDeviation((i, j) => positions[(j * G + i) * 3 + 1]!, G)
     let sv = G * G
     const edge = (i: number, j: number) => j * G + i
-    const skirtIdx: number[] = []
     const pushSkirt = (src: number) => {
       positions[sv * 3] = positions[src * 3]!
-      positions[sv * 3 + 1] = positions[src * 3 + 1]! - req.skirtDepthM
+      positions[sv * 3 + 1] = positions[src * 3 + 1]! - skirtDepthM
       positions[sv * 3 + 2] = positions[src * 3 + 2]!
       normals[sv * 3] = normals[src * 3]!
       normals[sv * 3 + 1] = normals[src * 3 + 1]!
@@ -201,40 +204,18 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
       uvs[sv * 2] = uvs[src * 2]!
       uvs[sv * 2 + 1] = uvs[src * 2 + 1]!
       urban[sv] = urban[src]!
-      skirtIdx.push(sv)
       return sv++
     }
-
-    const quads: number[] = []
-    for (let j = 0; j < G - 1; j++) {
-      for (let i = 0; i < G - 1; i++) {
-        const a = edge(i, j)
-        const b = edge(i + 1, j)
-        const d = edge(i, j + 1)
-        const e = edge(i + 1, j + 1)
-        quads.push(a, d, b, b, d, e)
-      }
-    }
-    // Skirt quads along each edge.
-    const addSkirtEdge = (cells: number[]) => {
-      let prevTop = cells[0]!
-      let prevBot = pushSkirt(prevTop)
-      for (let k = 1; k < cells.length; k++) {
-        const top = cells[k]!
-        const bot = pushSkirt(top)
-        quads.push(prevTop, prevBot, top, top, prevBot, bot)
-        prevTop = top
-        prevBot = bot
-      }
-    }
-    addSkirtEdge(Array.from({ length: G }, (_, i) => edge(i, 0)))
-    addSkirtEdge(Array.from({ length: G }, (_, i) => edge(G - 1 - i, G - 1)))
-    addSkirtEdge(Array.from({ length: G }, (_, j) => edge(0, G - 1 - j)))
-    addSkirtEdge(Array.from({ length: G }, (_, j) => edge(G - 1, j)))
-    void skirtIdx
+    // One skirt vertex under each edge vertex, edge by edge in the order
+    // the index lists walk them (terrain-lod.ts lodIndices).
+    for (let i = 0; i < G; i++) pushSkirt(edge(i, 0)) // north, west → east
+    for (let i = 0; i < G; i++) pushSkirt(edge(G - 1 - i, G - 1)) // south, east → west
+    for (let j = 0; j < G; j++) pushSkirt(edge(0, G - 1 - j)) // west, south → north
+    for (let j = 0; j < G; j++) pushSkirt(edge(G - 1, j)) // east, north → south
     void vertsPerRow
 
-    const indices = new Uint32Array(quads)
+    // Full-resolution triangles; the coarser levels index the same vertices.
+    const indices = lodIndices(G, 1).slice()
     const resp: TileResponse = {
       key: req.key,
       requestId: req.requestId,

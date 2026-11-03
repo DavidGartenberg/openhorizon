@@ -59,6 +59,8 @@ const polished = aircraftMetal(0xb8c2cc, .25)
 const fanMetal = new THREE.MeshStandardMaterial({ color: 0x64717c, roughness: .4, metalness: .8, side: THREE.DoubleSide })
 const liner = new THREE.MeshStandardMaterial({ color: 0x303a42, roughness: .78, metalness: .35, side: THREE.DoubleSide })
 const exhaustMetal = new THREE.MeshStandardMaterial({ color: 0x3c4147, roughness: .57, metalness: .7, side: THREE.DoubleSide })
+// Shared by every engine built: per-airframe shader patches (weather) leave them alone.
+for (const m of [fanMetal, liner, exhaustMetal]) m.userData.sharedMaterial = true
 const tireMaterial = aircraftRubber()
 
 function axialShell(points: [number, number][], radius: number, length: number, material: THREE.Material): THREE.Mesh {

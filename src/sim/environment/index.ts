@@ -19,6 +19,7 @@ import { Microburst, WindshearDetector } from './microburst'
 import { WakeField } from './wake'
 import { runwayConditionFromWeather, surfaceFriction, tirePressurePsiFor, type RunwayCondition } from './runway-surface'
 import { AirframeIce, precipitationFromWeather } from '../systems/airframe-ice'
+import { heavyRainPenalty, rainRateMmH } from '../weather/heavy-rain'
 import { StructureMonitor } from '../systems/structure'
 
 export interface EnvironmentState {
@@ -42,6 +43,9 @@ export interface EnvironmentState {
   inCloud: number
   /** METAR present-weather groups in effect. */
   weather: readonly string[]
+  /** Top (m MSL) of the cloud deck the rain falls from: rain wets the
+   *  airframe at or below it. Undefined: below 3,000 m above ground. */
+  rainTopM?: number
   /** Surface temperature (°C) for runway state; undefined = unknown. */
   surfaceTempC?: number
   sunElevDeg: number
@@ -106,6 +110,8 @@ export class Environment {
     wakeRollRate: 0,
     wakeVerticalMs: 0,
     iceMm: 0,
+    /** Rain on the airframe (mm/h; weather/heavy-rain.ts). */
+    rainMmH: 0,
     /** Supercooled water present: an unprotected airframe would be icing. */
     icingConditions: false,
     runway: 'dry' as RunwayCondition,
@@ -280,6 +286,14 @@ export class Environment {
       hooks.clMaxFactor = 1
     }
     this.status.iceMm = this.ice.thicknessMm
+    // ---- heavy rain: water films and drop impacts on the wing cost a few
+    // per cent of CLmax and add drag in a downpour (weather/heavy-rain.ts)
+    const inRain = s.rainTopM === undefined ? s.aglM < 3000 : s.altM <= s.rainTopM
+    const rainMmH = inRain ? rainRateMmH(s.weather) : 0
+    const rain = heavyRainPenalty(rainMmH)
+    hooks.clMaxFactor *= rain.clMaxFactor
+    hooks.iceCdInc += rain.dCd
+    this.status.rainMmH = rainMmH
     // ---- runway contamination ----
     if (T.contamination) {
       const cond = runwayConditionFromWeather(s.weather, s.surfaceTempC)

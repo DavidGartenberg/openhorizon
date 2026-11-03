@@ -12,6 +12,7 @@ import { computeAero, makeAeroOutput, type AeroInput } from './aero'
 import { propCt, propCp, engineBrakeTorque, equilibriumRpm, governedThrustN } from './propulsion'
 import { thrustAvailableN } from './turbofan'
 import { isa, G } from './atmosphere'
+import { vapourFraction, type SurfaceHumidity } from './weather/humidity'
 
 export interface TrimResult {
   converged: boolean
@@ -46,6 +47,8 @@ export interface TrimSpec {
   /** Live ISA temperature offset, °C (9B): a hot/cold-day final spawn was
    *  trimmed for the standard atmosphere and arrived mistrimmed. */
   isaTempOffsetC?: number
+  /** Water vapour in the air (aircraft.humidity): lighter, humid air. */
+  humidity?: SurfaceHumidity | null
 }
 
 interface Propelled {
@@ -69,12 +72,13 @@ function jetAt(throttle: number, tasMs: number, rho: number, aMs: number, P: Air
   }
 }
 
-function propAt(throttle: number, vAxial: number, rho: number, P: AircraftParams): Propelled {
+/** pf: engine power factor (humid air's lost charge), as stepPropulsion's intake factor. */
+function propAt(throttle: number, vAxial: number, rho: number, P: AircraftParams, pf = 1): Propelled {
   const D = P.propDiameterM
   if (P.propGoverned) {
     // Governor holds redline; thrust from the shared governed model.
     const omegaRef = (P.redlineRpm * Math.PI) / 30
-    const qE = Math.max(engineBrakeTorque(throttle, P.redlineRpm, rho, P), 0)
+    const qE = Math.max(engineBrakeTorque(throttle, P.redlineRpm, rho, P) * pf, 0)
     const powerW = qE * omegaRef
     return {
       thrustN: governedThrustN(powerW, vAxial, rho, D, P.redlineRpm, P.propEtaScale ?? 1),
@@ -83,13 +87,13 @@ function propAt(throttle: number, vAxial: number, rho: number, P: AircraftParams
       powerW,
     }
   }
-  const rpm = equilibriumRpm(throttle, vAxial, rho, P)
+  const rpm = equilibriumRpm(throttle, vAxial, rho, P, pf)
   const n = rpm / 60
   const J = Math.max(vAxial, 0) / Math.max(n * D, 0.1)
   const thrust = propCt(J, P.propCtTable) * rho * n * n * D ** 4
   const torque = Math.max((propCp(J, P.propCpTable) / (2 * Math.PI)) * rho * n * n * D ** 5, 0)
   const omega = (rpm * Math.PI) / 30
-  const qEng = Math.max(engineBrakeTorque(throttle, rpm, rho, P), 0)
+  const qEng = Math.max(engineBrakeTorque(throttle, rpm, rho, P) * pf, 0)
   return { thrustN: thrust, torqueNm: torque, rpm, powerW: qEng * omega }
 }
 
@@ -116,11 +120,15 @@ function residuals(
     air.densityKgM3 = air.pressurePa / (R_AIR_TRIM * air.temperatureK)
     air.speedOfSoundMs = Math.sqrt(1.4 * R_AIR_TRIM * air.temperatureK)
   }
+  // Humid air, as Aircraft.step: lighter, and a piston engine's charge
+  // loses the vapour's share.
+  const vapour = s.humidity ? vapourFraction(s.humidity, air.pressurePa, air.temperatureK) : 0
+  air.densityKgM3 *= 1 - 0.378 * vapour
   const rho = air.densityKgM3
   const W = s.massKg * G
   const prop = P.jet
     ? jetAt(throttle, s.tasMs, rho, air.speedOfSoundMs, P)
-    : propAt(throttle, s.tasMs * Math.cos(alpha), rho, P)
+    : propAt(throttle, s.tasMs * Math.cos(alpha), rho, P, 1 - vapour)
 
   const ai: AeroInput = {
     rho, vAir: s.tasMs, alpha, beta: 0, alphaDot: 0, p: 0, q: 0, r: 0,

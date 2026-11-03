@@ -34,8 +34,13 @@ export const TERRAIN_FRAG = /* glsl */ `
   uniform float uDayness, uLowSun, uFogDensity, uHasImagery, uSunTransmission, uCloudDensity;
   // Surface weather (0..1): rain-wet ground and fresh snow cover.
   uniform float uWetness, uSnowCover;
-  // Shader tier: 0 = performance (3 detail octaves, no micro-relief), 1 = full.
-  uniform float uQuality;
+  // Shader tier, chosen at COMPILE time: define TERRAIN_LITE for the
+  // performance tier, a lite program costing about what the original
+  // two-lookup shader did (no fBm loops, slope-only rock, a plain snow line,
+  // no micro-relief). A uniform branch would not do: software rasterisers
+  // run both sides of it, masked. The dynamic-quality controller selects
+  // the lite program when even the lowest render scale misses the budget.
+
   uniform vec3 uCloudColor;
   uniform sampler2D uImagery, uSky;
   // Cloud shadows: darkness map (r) over a render-frame rect (minX, minZ, 1/w, 1/d).
@@ -64,11 +69,12 @@ export const TERRAIN_FRAG = /* glsl */ `
   // fades out as its wavelength approaches the pixel size, so distant
   // terrain stays stable instead of shimmering and near terrain keeps
   // all of its fine structure. Octaves are rotated to hide the lattice.
+  #ifndef TERRAIN_LITE
   float fbmBL(vec2 p, float fp, float f0) {
     const mat2 R = mat2(0.8,-0.6,0.6,0.8);
     float f = f0, a = 0.5, s = 0.0;
     vec2 q = p;
-    int octaves = uQuality > 0.5 ? 5 : 3;
+    const int octaves = 5;
     for (int i = 0; i < 5; i++) {
       float w = 1.0-smoothstep(0.25,0.6,fp*f);
       if (w <= 0.0 || i >= octaves) break;
@@ -96,7 +102,7 @@ export const TERRAIN_FRAG = /* glsl */ `
     vec2 g = vec2(0.0);
     vec2 q = p;
     mat2 J = mat2(1.0);
-    int octaves = uQuality > 0.5 ? 5 : 3;
+    const int octaves = 5;
     for (int i = 0; i < 5; i++) {
       float w = 1.0-smoothstep(0.25,0.6,fp*f);
       if (w <= 0.0 || i >= octaves) break;
@@ -109,6 +115,7 @@ export const TERRAIN_FRAG = /* glsl */ `
     }
     return g;
   }
+  #endif
   vec3 toLinear(vec3 c) { return pow(max(c,vec3(0)),vec3(2.2)); }
   void main() {
     vec2 ground = vWXZ + uWorldOffset;
@@ -130,8 +137,13 @@ export const TERRAIN_FRAG = /* glsl */ `
     float slope = 1.0-N0.y;                       // 0 flat .. 1 vertical
     float proc = 1.0-imW*0.85;                    // photos keep their own rock/snow
     // ---- broad biome variation (suppressed on photos) ----------------------
+    #ifdef TERRAIN_LITE
+    float macro = noise(ground*0.0024);
+    float regional = 0.0;
+    #else
     float macro = clamp(0.5+1.6*fbmBL(ground,footprint,1.0/900.0),0.0,1.0);
     float regional = fbmBL(ground+vec2(713.0,-291.0),footprint,1.0/2600.0);
+    #endif
     albedo *= mix(0.82+0.36*macro,1.0,imW*0.9);
     albedo = mix(albedo,albedo*vec3(1.06,1.0,0.88),clamp(regional*2.0+0.5,0.0,1.0)*0.5*proc);
     // ---- cliffs: slope-driven rock with altitude strata --------------------
@@ -139,16 +151,25 @@ export const TERRAIN_FRAG = /* glsl */ `
     // possible snow line (>= 2,598 m - 246 m of noise) neither rock nor snow
     // can appear whatever the noise: skip both noise fields there. The
     // output is identical; flat ground saves ten noise lookups a pixel.
+    float rockNoise = 0.0;
+    #ifndef TERRAIN_LITE
     bool needRock = slope > 0.005 || vAltitude > 2350.0;
-    float rockNoise = needRock ? fbmBL(ground,footprint,1.0/70.0) : 0.0;
+    if (needRock) rockNoise = fbmBL(ground,footprint,1.0/70.0);
+    #endif
     float rock = smoothstep(0.17,0.34,slope+rockNoise*0.34)*proc;
     // Strata: wavy, noise-warped beds (~22 m) rather than ruled stripes, faded
     // out before they become sub-pixel and kept low-contrast so cliffs read as
     // layered stone, not zebra.
-    float fa = 1.0-smoothstep(0.35,1.6,altRate);
+    float fa = 1.0, strata = 0.0;
+    #ifndef TERRAIN_LITE
+    fa = 1.0-smoothstep(0.35,1.6,altRate);
     float band = vAltitude*0.045+rockNoise*5.0+regional*9.0;
-    float strata = (0.5+0.5*sin(band*6.2831853))*fa;
-    float scree = needRock ? fbmBL(ground,footprint,1.0/9.0) : 0.0;
+    strata = (0.5+0.5*sin(band*6.2831853))*fa;
+    #endif
+    float scree = 0.0;
+    #ifndef TERRAIN_LITE
+    if (needRock) scree = fbmBL(ground,footprint,1.0/9.0);
+    #endif
     vec3 rockCool = vec3(0.40,0.385,0.37), rockWarm = vec3(0.60,0.50,0.40);
     vec3 rockCol = mix(rockCool,rockWarm,clamp(0.5+regional*1.8,0.0,1.0));
     rockCol *= 0.86+0.2*strata*fa+0.1*(1.0-fa)+scree*0.45;
@@ -162,7 +183,11 @@ export const TERRAIN_FRAG = /* glsl */ `
     // ---- weather: fresh snow settles on all but the steeps (patchy while
     // it builds up); rain darkens and glosses whatever is not snow ----------
     if (uSnowCover > 0.0) {
+      #ifdef TERRAIN_LITE
+      float patches = noise(ground*0.022)-0.5;
+      #else
       float patches = fbmBL(ground+vec2(-417.0,233.0),footprint,1.0/45.0);
+      #endif
       float settle = uSnowCover*(1.0-smoothstep(0.30,0.55,slope+scree*0.15))
         *smoothstep(-0.05,0.25,patches+uSnowCover*0.6-0.25);
       settle = clamp(settle,0.0,1.0);
@@ -176,25 +201,33 @@ export const TERRAIN_FRAG = /* glsl */ `
     float film = wet*(1.0-0.8*vegetation);
     albedo *= 1.0-0.32*wet;
     // ---- fine grain + procedural micro-relief (near field only) ------------
+    #ifdef TERRAIN_LITE
+    float grain = (noise(ground*0.7)-0.5)*0.26*(1.0-smoothstep(1.0,5.0,footprint));
+    #else
     float grain = fbmBL(ground,footprint,1.0/2.2);
+    #endif
     albedo *= 1.0+grain*0.62;
     float bumpFade = 1.0-smoothstep(2.5,9.0,footprint);
     vec3 N = N0;
-    if (bumpFade > 0.0 && uQuality > 0.5) {
+    #ifndef TERRAIN_LITE
+    if (bumpFade > 0.0) {
       float relief = mix(0.5,2.3,rock)*(1.0-snow*0.7)*mix(1.0,0.4,imW);
       vec2 g = fbmBLgrad(ground,footprint,1.0/26.0)*relief*bumpFade;
       N = normalize(N0-vec3(g.x,0.0,g.y));
     }
+    #endif
     float ndl = max(dot(N,L),0.0);
     float direct = mix(ndl,mix(1.0,ndl,0.4),imW);
     // Cloud shadows: the sun-projected footprints of the clouds overhead,
     // faded out toward the edge of the map.
     float cloudShade = 1.0;
+    #ifndef TERRAIN_LITE
     if (uCloudShadowOn > 0.0) {
       vec2 suv = (vWXZ - uCloudShadowRect.xy) * uCloudShadowRect.zw;
       float edgeFade = smoothstep(0.0, 0.08, min(min(suv.x, suv.y), min(1.0-suv.x, 1.0-suv.y)));
       cloudShade = 1.0 - uCloudShadowOn * edgeFade * texture2D(uCloudShadow, suv).r;
     }
+    #endif
     direct *= cloudShade;
     // Hemispheric ambient: slopes turned from the sky see less of it and
     // pick up a warm ground bounce instead; photos already carry baked AO.
@@ -204,6 +237,7 @@ export const TERRAIN_FRAG = /* glsl */ `
     vec3 lit = albedo*(vec3(0.015)+skyAmb+bounce+
       sunTint*0.65*uDayness*direct*uSunTransmission);
     // Snow glints toward the sun.
+    #ifndef TERRAIN_LITE
     vec3 Hh = normalize(L+V);
     float glint = pow(max(dot(N,Hh),0.0),56.0)*snow*ndl*cloudShade;
     lit += sunTint*glint*0.22*uDayness*uSunTransmission;
@@ -219,6 +253,7 @@ export const TERRAIN_FRAG = /* glsl */ `
       lit += skyRadiance(uSky,refl)*fres*film*(0.12+0.18*sharp);
       lit += sunTint*pow(max(dot(N0,Hh),0.0),220.0)*film*0.15*sharp*uDayness*uSunTransmission*cloudShade;
     }
+    #endif
     float night = clamp(1.0-uDayness*1.6,0.0,1.0);
     if (night>0.001 && vUrban>0.001) {
       float h = hash(floor(ground/12.0));
