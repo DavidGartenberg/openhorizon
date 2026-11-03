@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { contactInstruction, fieldName, isAddressedTo, readbackFor, readbackText, speakerRole, taxiInstruction, windPhrase } from '../../src/sim/atc/phraseology'
+import { contactInstruction, fieldName, isAddressedTo, readbackFor, readbackText, speakerRole, taxiInstruction, trafficCall, windPhrase } from '../../src/sim/atc/phraseology'
 
 describe('who is talking', () => {
   it('tells facilities, ATIS broadcasts and aircraft apart', () => {
@@ -59,5 +59,28 @@ describe('readbacks', () => {
     expect(isAddressedTo({ to: 'N77GA', text: 'anything' }, 'N77GA')).toBe(true)
     expect(isAddressedTo({ to: 'N42PK', text: 'N77GA, hello' }, 'N77GA')).toBe(false)
     expect(isAddressedTo({ text: 'N77GA, hello' }, 'N77GA')).toBe(true)
+  })
+})
+
+describe('traffic advisories', () => {
+  const own = { lat: 37.4, lon: -122.1, trackDeg: 0, altFt: 2500 }
+  const at = (dnNm: number, deNm: number, extra: Partial<typeof own> = {}) => ({
+    lat: own.lat + (dnNm * 1852) / 111_320, lon: own.lon + (deNm * 1852) / (111_320 * Math.cos((own.lat * Math.PI) / 180)), trackDeg: 180, altFt: 2500, ...extra,
+  })
+  it('gives the clock position, distance, direction of flight, type and altitude', () => {
+    expect(trafficCall(own, at(2, 0), 'Cherokee')).toBe("traffic, 12 o'clock, 2 miles, southbound, Cherokee, altitude 2,500")
+    expect(trafficCall(own, at(0, 2, { trackDeg: 270 }), 'Cirrus')).toBe("traffic, 3 o'clock, 2 miles, westbound, Cirrus, altitude 2,500")
+    expect(trafficCall(own, at(-1.5, -0.2, { trackDeg: 45, altFt: 2840 }))).toBe("traffic, 6 o'clock, 2 miles, northeastbound, altitude 2,800")
+  })
+  it('measures the clock from the aircraft track, and says one mile in the singular', () => {
+    expect(trafficCall({ ...own, trackDeg: 90 }, at(1, 0), 'Skyhawk')).toBe("traffic, 9 o'clock, 1 mile, southbound, Skyhawk, altitude 2,500")
+    expect(trafficCall({ ...own, trackDeg: 180 }, at(0.4, 0))!.startsWith("traffic, 6 o'clock, 1 mile")).toBe(true)
+    expect(trafficCall({ ...own, trackDeg: 315 }, at(2, -2))!.startsWith("traffic, 12 o'clock")).toBe(true)
+  })
+  it('stays silent about traffic that is far away or well above or below', () => {
+    expect(trafficCall(own, at(4, 0))).toBeNull()
+    expect(trafficCall(own, at(2, 0, { altFt: 4200 }))).toBeNull()
+    expect(trafficCall(own, at(2, 0, { altFt: 900 }))).toBeNull()
+    expect(trafficCall(own, at(3.1, 0))).toBeNull()
   })
 })

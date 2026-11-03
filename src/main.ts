@@ -33,8 +33,8 @@ import { FlightRecorder, analyzeLanding, type RunwayRef } from './sim/recorder'
 import { buildAtis } from './sim/atc/atis'
 import { TowerController, pilotPhrase, type PilotRequestKind, type TrafficView } from './sim/atc/tower'
 import { GroundController } from './sim/atc/ground'
-import { speakerRole, readbackText, fieldName, windPhrase } from './sim/atc/phraseology'
-import { radioCallsign } from './sim/atc/callsign'
+import { speakerRole, readbackText, fieldName, windPhrase, trafficCall } from './sim/atc/phraseology'
+import { radioCallsign, parseCallsign } from './sim/atc/callsign'
 import { AmbientRadio } from './sim/atc/ambient'
 import { trim } from './sim/trim'
 import { FT, KT, isa, kcasFromKias, indicatedAltitudeFt } from './sim/atmosphere'
@@ -1937,6 +1937,9 @@ function updateSafety(now: number): void {
 let lastAtcScanAt = -Infinity
 let lastTowerTickAt = -Infinity
 let lastAmbientAt = -Infinity
+let lastTrafficCallAt = -Infinity
+let lastAnyTrafficCall = -Infinity
+const lastTrafficCall = new Map<string, number>()
 /** When the player last keyed the radio (ms): background chatter keeps quiet around their exchange. */
 let lastPlayerTxAt = -Infinity
 function hashSeed(text: string): number { let h = 0; for (const c of text) h = (Math.imul(h, 31) + c.charCodeAt(0)) | 0; return Math.abs(h) }
@@ -2330,6 +2333,27 @@ function scanAtc(lat: number, lon: number, now: number): void {
     if (isAudible(activeAtc.atisF, radios.com1.activeMhz) && atisPlayedFor !== key) {
       atisPlayedFor = key
       comms.transmit({ freqMhz: activeAtc.atisF, from: `${activeAtc.ident} ATIS`, text: activeAtc.atis.text, atSimS: loop.simTime })
+    }
+    // Traffic calls: the tower points out the pattern aircraft that are close to the player and near their altitude.
+    if (now - lastTrafficCallAt > 2000) {
+      lastTrafficCallAt = now
+      const d = aircraft.data
+      if (!d.onGround && d.aglFt > 50 && isAudible(activeAtc.twrF, radios.com1.activeMhz) && loop.simTime - lastAnyTrafficCall >= 25) {
+        const ll = frame.fromLocal(aircraft.posNed.x, aircraft.posNed.y)
+        for (const sh of aiShips) {
+          const p = sh.pilot.plane, key = sh.pilot.callsign
+          if (p.altFt < sh.elevFt + 50 || loop.simTime - (lastTrafficCall.get(key) ?? -Infinity) < 90) continue
+          const text = trafficCall(
+            { lat: ll.lat, lon: ll.lon, trackDeg: d.trackDeg, altFt: d.altitudeFt },
+            { lat: p.lat, lon: p.lon, trackDeg: p.headingDeg, altFt: p.altFt },
+            parseCallsign(key)?.type ?? '',
+          )
+          if (!text) continue
+          lastTrafficCall.set(key, loop.simTime); lastAnyTrafficCall = loop.simTime
+          comms.transmit({ freqMhz: activeAtc.twrF, from: activeAtc.names.tower, text: `${CALLSIGN}, ${text}`, atSimS: loop.simTime, to: CALLSIGN })
+          break
+        }
+      }
     }
     if (now - lastAmbientAt > 1500) {
       lastAmbientAt = now

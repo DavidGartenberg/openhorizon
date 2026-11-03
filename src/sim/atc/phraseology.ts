@@ -76,3 +76,30 @@ export function readbackText(t: Pick<Transmission, 'kind' | 'args'>, callsign: s
 export function isAddressedTo(t: Pick<Transmission, 'to' | 'text'>, callsign: string): boolean {
   return t.to === callsign || (t.to === undefined && t.text.startsWith(`${callsign},`))
 }
+
+// ---------------------------------------------------------------- traffic advisories
+
+export interface TrafficPosition { lat: number; lon: number; trackDeg: number; altFt: number }
+
+/** A target closer than this (nm) and within this height (ft) of the aircraft is called as traffic. */
+export const TRAFFIC_CALL_NM = 3
+export const TRAFFIC_CALL_ALT_FT = 1500
+
+const BOUND = ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest']
+
+/**
+ * The controller's traffic advisory: "traffic, 11 o'clock, 2 miles, southbound, Cherokee, altitude 2,500". Null when the target is too
+ * far or too far above or below to matter. `type` is what a pilot would call it ("Cherokee"); empty is left out.
+ */
+export function trafficCall(own: TrafficPosition, target: TrafficPosition, type = ''): string | null {
+  const mLat = 111_320
+  const dn = (target.lat - own.lat) * mLat, de = (target.lon - own.lon) * mLat * Math.cos((own.lat * Math.PI) / 180)
+  const nm = Math.hypot(dn, de) / 1852
+  if (!(nm <= TRAFFIC_CALL_NM) || Math.abs(target.altFt - own.altFt) > TRAFFIC_CALL_ALT_FT) return null
+  const bearing = ((Math.atan2(de, dn) * 180) / Math.PI + 360) % 360
+  const clock = Math.round((((bearing - own.trackDeg + 360) % 360)) / 30) % 12 || 12
+  const miles = Math.max(1, Math.round(nm))
+  const bound = BOUND[Math.round((((target.trackDeg % 360) + 360) % 360) / 45) % 8]!
+  const alt = Math.round(target.altFt / 100) * 100
+  return `traffic, ${clock} o'clock, ${miles} ${miles === 1 ? 'mile' : 'miles'}, ${bound}bound, ${type ? `${type}, ` : ''}altitude ${alt.toLocaleString('en-US')}`
+}

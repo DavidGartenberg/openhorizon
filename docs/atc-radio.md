@@ -14,6 +14,10 @@ How the simulator's radio talks. Speech input (push to talk, Whisper) is in
   ("Palo Alto Ground, Skyhawk one two three Alpha Bravo, at the ramp with information Bravo, request
   taxi for departure"); a call you speak into the microphone is not repeated at you. The AI pattern pilots
   do the same with the tower and read back every instruction addressed to them, callsign last.
+- **Traffic calls.** While you are airborne on the tower frequency, the controller points out the pattern
+  aircraft that are within three miles and 1,500 feet of you: "Skyhawk one two three Alpha Bravo, traffic,
+  eleven o'clock, two miles, southbound, Cherokee, altitude two thousand five hundred" (clock position from your
+  track; at most one call per aircraft every 90 seconds and one overall every 25).
 - **Callsigns** say their type word and shorten once an exchange is under way ("Skyhawk three Alpha
   Bravo"); airline flight numbers are grouped ("United twenty two sixty two") and never shortened.
 - **Background traffic.** Tune the ground, approach or departure frequency of a towered field and other
