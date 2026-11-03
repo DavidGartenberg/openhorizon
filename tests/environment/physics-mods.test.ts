@@ -363,4 +363,12 @@ describe('environment orchestration', () => {
     const pull = new Environment(C172S)
     expect(pull.step(state({ loadFactorG: 4.5 }), v3(), hooks()).map(e => e.kind)).toContain('overstress')
   })
+
+  it('never judges gear contact as a wing load (spawning into the ground broke the wings)', () => {
+    const env = new Environment(C172S)
+    const h = hooks()
+    for (let i = 0; i < 60; i++) expect(env.step(state({ onGround: true, aglM: 0, loadFactorG: 40 }), v3(), h)).toEqual([])
+    expect(env.structure.overstressed).toBe(false)
+    expect(h.wingFailure).toBe(0)
+  })
 })

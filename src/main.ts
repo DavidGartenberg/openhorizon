@@ -2,12 +2,13 @@ import { FixedTimestepLoop, type SimRate } from './sim/loop'
 import { Aircraft } from './sim/aircraft'
 import { WindModel } from './sim/wind'
 import { Environment, type EnvironmentEvent } from './sim/environment'
-import { chooseFallbackSpawn } from './sim/spawn-fallback'
+import { chooseFallbackSpawn, needsRepark } from './sim/spawn-fallback'
 import { safetyHazard } from './audio/safety-hazard'
 import { TeVario } from './sim/vario'
 import { VarioSound } from './audio/vario-sound'
 import { Trails, contrailStrength, vaporStrength } from './render/contrails'
 import { AdaptiveResolution } from './render/adaptive-resolution'
+import { Precipitation } from './render/precipitation'
 import { WINDSCREEN_WEATHER } from './render/windscreen'
 import { PAVEMENT_WETNESS } from './render/surface-materials'
 import { SurfaceWeatherState, precipIntensity } from './sim/weather/surface-state'
@@ -175,6 +176,9 @@ try {
 // Contrails / wingtip vapour ribbons and the ground's wetness + snow cover.
 const trails = new Trails(scene, sky.radianceTexture)
 const surfaceWx = new SurfaceWeatherState()
+const precipitation = new Precipitation(scene)
+const _camVel = new THREE.Vector3(), _airVel = new THREE.Vector3()
+let lastPrecipAt = performance.now()
 const clouds = new Clouds(scene)
 const hud = new Hud()
 const loop = new FixedTimestepLoop(120)
@@ -455,6 +459,14 @@ function updateWeatherEffects(dayness: number, sunDir: THREE.Vector3): void {
   WINDSCREEN_WEATHER.uLight.value = 0.15 + 0.85 * dayness
   // Heated windshields (jets, turboprops) stay clear; others frost with the airframe.
   WINDSCREEN_WEATHER.uIce.value = environment.protectedAirframe ? 0 : Math.min(1, environment.ice.thicknessMm / 4)
+  // Falling rain / snow around the camera (plan step 6); wet snow falls as rain.
+  const gs = d.groundSpeedKt * KT, trk = (d.trackDeg * Math.PI) / 180
+  _camVel.set(gs * Math.sin(trk), d.verticalSpeedFpm * 0.00508, -gs * Math.cos(trk))
+  _airVel.set(aircraft.windNed.y, -aircraft.windNed.z, -aircraft.windNed.x)
+  const nowMs = performance.now()
+  const kind = inPrecip <= 0 ? 'none' : precip === 'snow' && oatC <= 1.5 ? 'snow' : 'rain'
+  precipitation.update((nowMs - lastPrecipAt) / 1000, simT, camera, kind, inPrecip, _camVel, _airVel, 0.15 + 0.85 * dayness, cameraMode === 'cockpit', renderer.getPixelRatio())
+  lastPrecipAt = nowMs
   // Contrails: Schmidt–Appleman; long-lived near a cloud layer (moist air).
   const powered = aircraft.engineRunning && (aircraft.P.jet ? true : d.rpm > 1500)
   const contrail = powered && !d.onGround ? contrailStrength(oatC, air.pressurePa) : 0
@@ -760,6 +772,8 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
   aircraft.crashed = false
   resetSystemsState()
   resetFlightSafety()
+  // A new flight: no ice, intact structure, no old wakes or microbursts.
+  environment.reset()
   // 9A: an airborne respawn used to LOG A LANDING — the teleport
   // discontinuity read as a touchdown and fabricated a logbook entry
   // (and challenge best). The recorder starts clean with the flight.
@@ -3413,15 +3427,33 @@ metronome.onmessage = () => {
  *  sim/spawn-fallback.ts) instead of staying at sea level under the ground. */
 function spawnWithoutAirports(reason: string): void {
   const startedAt = performance.now()
+  const park = (elevM: number): void => {
+    aircraft.crashed = false
+    aircraft.spawnOnGround(0, 0, (300 * Math.PI) / 180, elevM)
+  }
   const attempt = (): void => {
     if (spawnDesc !== 'boot') return // a real spawn happened meanwhile
     const ll = frame.fromLocal(0, 0)
-    const choice = chooseFallbackSpawn(tiles.hasElevationAt(ll.lat, ll.lon), tiles.elevationAt(ll.lat, ll.lon), performance.now() - startedAt)
+    const choice = chooseFallbackSpawn(tiles.hasElevationAt(ll.lat, ll.lon, 13), tiles.hasElevationAt(ll.lat, ll.lon), tiles.elevationAt(ll.lat, ll.lon), performance.now() - startedAt)
     if (choice.kind === 'wait') { setTimeout(attempt, 500); return }
-    aircraft.crashed = false
-    aircraft.spawnOnGround(0, 0, (300 * Math.PI) / 180, choice.kind === 'terrain' ? choice.elevM : 0)
+    let parked = choice.kind === 'terrain' ? choice.elevM : 0
+    park(parked)
+    environment.reset()
+    setDaytimeAt(frame.fromLocal(0, 0).lon) // same default clock as an airport spawn
     spawnDesc = 'NO AIRPORT DATA'
     toast(`AIRPORT DATA UNAVAILABLE (${reason}) — PARKED ON ${choice.kind === 'terrain' ? 'TERRAIN' : 'SEA LEVEL'}`)
+    // Finer tiles may still arrive: keep the parked airplane on the drawn surface.
+    const until = performance.now() + 60_000
+    const watch = (): void => {
+      if (spawnDesc !== 'NO AIRPORT DATA' || performance.now() > until) return
+      const ground = aircraft.groundElevAt?.(0, 0) ?? parked
+      if (needsRepark(parked, ground, aircraft.data.groundSpeedKt, Math.hypot(aircraft.posNed.x, aircraft.posNed.y))) {
+        parked = ground
+        park(parked)
+      }
+      setTimeout(watch, 1000)
+    }
+    setTimeout(watch, 1000)
   }
   attempt()
 }

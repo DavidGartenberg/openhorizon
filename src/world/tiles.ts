@@ -656,9 +656,11 @@ export class TileManager {
     return !tile.coverage?.covered(u, v)
   }
 
-  /** Whether any loaded tile covers lat/lon (elevationAt returns 0 otherwise). */
-  hasElevationAt(lat: number, lon: number): boolean {
+  /** Whether a loaded tile of at least `minZoom` covers lat/lon
+   *  (elevationAt returns 0 otherwise). */
+  hasElevationAt(lat: number, lon: number, minZoom = 0): boolean {
     for (const ring of RINGS) {
+      if (ring.z < minZoom) continue
       const tile = this.tiles.get(`${ring.z}/${Math.floor(lonToTileX(lon, ring.z))}/${Math.floor(latToTileY(lat, ring.z))}`)
       if (tile?.state === 'ready' && tile.heights && tile.gridSize) return true
     }

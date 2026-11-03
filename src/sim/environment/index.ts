@@ -237,8 +237,9 @@ export class Environment {
       this.status.runway = 'dry'
       this.status.hydroplaning = false
     }
-    // ---- structure ----
-    if (T.structure) {
+    // ---- structure (wing loads: airborne only — gear contact, including a
+    // spawn or teleport into the ground, is not a wing load) ----
+    if (T.structure && !s.onGround) {
       const ev = this.structure.step(s.dt, s.loadFactorG, s.flapsDeg, s.rollRate)
       const lim = this.structure.limitsFor(s.flapsDeg)
       if (ev === 'overstress') events.push({ kind: 'overstress', text: `OVERSTRESS ${s.loadFactorG.toFixed(1)} G (LIMIT ${s.loadFactorG > 0 ? lim.pos.toFixed(1) : lim.neg.toFixed(1)})` })
