@@ -42,7 +42,8 @@ const POOLS = {
   // Controllers everywhere else: a mix of English accents.
   atcIcao: ['Daniel', 'Moira', 'Karen', 'Tessa', 'Rishi', 'Grandpa (English (US))'],
   // Private and corporate pilots, and airline crews without a particular accent.
-  pilot: ['Eddy (English (US))', 'Reed (English (US))', 'Flo (English (US))', 'Grandpa (English (US))', 'Shelley (English (US))', 'Rishi', 'Grandma (English (US))', 'Karen'],
+  // The clearer built-in voices first (measured): the Eloquence ones (Eddy, Grandpa, Shelley …) only fill out the crowd and supply American male voices.
+  pilot: ['Daniel', 'Karen', 'Eddy (English (US))', 'Moira', 'Grandpa (English (US))', 'Tessa', 'Shelley (English (US))', 'Rishi'],
 }
 
 /** Airline crews' accents: ICAO designator → voices. */
@@ -107,18 +108,91 @@ function installedOnly(names, installed) {
   return ok.length ? ok : null
 }
 
+/**
+ * The neural voices (Siri natural, Premium; see voice-neural.mjs) a Mac may have, by identifier. `pitchable`: the voice honours a pitch
+ * multiplier (the Siri natural ones do not). `curve`: which measured pace curve it follows. Others are cast by their language.
+ */
+const NEURAL_FACTS = [
+  [/siri\.natural\.Nora/i, { accent: 'US', gender: 'F' }],
+  [/neural_Simone_en-US/i, { accent: 'US', gender: 'F', pitchable: true }],
+  [/siri\.natural\.en-GB/i, { accent: 'GB', gender: 'F' }],
+  [/siri\.natural\.Riya/i, { accent: 'IN', gender: 'F' }],
+  [/voice\.Aman\.premium/i, { accent: 'IN', gender: 'M', pitchable: true, curve: 'premium' }],
+  [/voice\.Tara\.premium/i, { accent: 'IN', gender: 'F', curve: 'premium' }],
+]
+
+/** AVSpeechUtterance.rate → words per minute (a standard 31-word transmission), measured through the helper. */
+const NEURAL_RATE_POINTS = {
+  siri: [[0.44, 140], [0.48, 147], [0.5, 150], [0.52, 166], [0.54, 186], [0.56, 204], [0.58, 220], [0.6, 240], [0.62, 257], [0.65, 283]],
+  premium: [[0.2, 133], [0.25, 142], [0.3, 146], [0.35, 156], [0.4, 165], [0.44, 171], [0.5, 181], [0.52, 202], [0.54, 225], [0.56, 248], [0.6, 290]],
+}
+
+const LANGUAGE_ACCENTS = { 'en-US': 'US', 'en-CA': 'US', 'en-GB': 'GB', 'en-AU': 'AU', 'en-NZ': 'AU', 'en-IE': 'IE', 'en-ZA': 'ZA', 'en-IN': 'IN' }
+
+/** [{ id, name, language, quality }] from the helper → the voices with what is known of them. */
+export function describeNeural(list) {
+  return (Array.isArray(list) ? list : []).map((v) => {
+    const facts = NEURAL_FACTS.find(([rx]) => rx.test(v.id))?.[1]
+    return { id: v.id, name: v.name, accent: facts?.accent ?? LANGUAGE_ACCENTS[String(v.language).replace('_', '-')] ?? 'US', gender: facts?.gender ?? '?', pitchable: !!facts?.pitchable, curve: facts?.curve ?? 'siri' }
+  })
+}
+
+/** Words per minute → the utterance rate (0–1) that gives that voice that pace, interpolated along its measured curve. */
+export function neuralRateFor(voice, wpm) {
+  const pts = NEURAL_RATE_POINTS[voice?.curve ?? 'siri'] ?? NEURAL_RATE_POINTS.siri
+  if (wpm <= pts[0][1]) return pts[0][0]
+  for (let k = 1; k < pts.length; k++) {
+    const [r0, w0] = pts[k - 1], [r1, w1] = pts[k]
+    if (wpm <= w1) return +(r0 + ((wpm - w0) / (w1 - w0)) * (r1 - r0)).toFixed(3)
+  }
+  return pts[pts.length - 1][0]
+}
+
 /** The voice, say rate and pitch note for one speaker. Deterministic: the same inputs always give the same cast. */
-export function castVoice({ role = 'warning', speaker = '', style = 'faa', installed, better = [], rates } = {}) {
+export function castVoice({ role = 'warning', speaker = '', style = 'faa', installed, better = [], rates, neural = [], ambient = false } = {}) {
   const name = String(speaker)
   const h = hashOf(name)
   const paced = (key) => { const [lo, hi] = PACE[key]; return lo + (h % (hi - lo + 1)) }
   const result = (voice, wpm, shiftable = true, spread = 3) => {
     const facts = VOICE_FACTS[voice]
     const delta = shiftable && facts?.midi ? (((h >> 5) % (2 * spread + 1)) - spread) : 0
-    return { voice, rate: sayRateFor(voice, wpm, rates), ...(delta ? { pbas: facts.midi + delta } : {}) }
+    return { engine: 'say', voice, rate: sayRateFor(voice, wpm, rates), ...(delta ? { pbas: facts.midi + delta } : {}) }
   }
   // Premium / Enhanced voices of the right accent are preferred: all of them when there are enough to tell speakers apart, else alongside the built-in ones.
   const withBetter = (accents, base, exclusive = false) => { const mine = better.filter((v) => !accents || accents.includes(v.accent)).map((v) => v.name); return exclusive && mine.length ? mine : mine.length >= 3 ? mine : [...mine, ...base] }
+
+  // ---- neural voices, when the Mac has them (and the helper is running): the most human sound on the radio ----
+  const nv = describeNeural(neural)
+  const asNeural = (v, wpm) => {
+    const delta = v.pitchable ? ((((h >> 7) % 17) - 8) / 100) : 0                  // ±8 %, only on voices that honour pitch
+    return { engine: 'neural', voice: v.id, rate: neuralRateFor(v, wpm), ...(delta ? { pitch: +(1 + delta).toFixed(2) } : {}) }
+  }
+  if (nv.length && role !== 'copilot' && role !== 'warning') {
+    const us = nv.filter((v) => v.accent === 'US'), rest = nv.filter((v) => v.accent !== 'US')
+    if (role === 'atis') return asNeural((style === 'icao' ? rest.find((v) => v.accent === 'GB') : us[0]) ?? nv[0], PACE.atis[0])
+    if (role === 'atc') {
+      const kind = Math.max(KINDS.findIndex((k) => new RegExp(`\\b${k}\\b`, 'i').test(name)), 0)
+      const field = hashOf(name.replace(new RegExp(`\\b(${KINDS.join('|')})\\b`, 'ig'), '').trim().toLowerCase())
+      // Tower and Ground take the two American voices; the other facilities of the field take the rest, so a field's controllers differ.
+      const pool = style === 'icao' ? [...rest, ...us] : kind <= 1 && us.length ? us : rest.length ? rest : us
+      const at = style === 'icao' || kind > 1 ? field + kind : field + kind
+      return asNeural(pool[at % pool.length], paced('atc'))
+    }
+    if (role === 'pilot') {
+      const airline = AIRLINE_VOICES.find(([rx]) => rx.test(name))
+      const accent = airline ? ({ Daniel: 'GB', Moira: 'IE', Karen: 'AU', Tessa: 'ZA', Rishi: 'IN' }[airline[1][0]] ?? null) : null
+      const match = accent ? nv.filter((v) => v.accent === accent) : []
+      // An airline crew with a neural voice of its accent sounds like it; others share the rest. The player's exchange keeps the American pair for the
+      // controllers, so a pilot is not the voice of the controller answering; background traffic may use any.
+      const pool = match.length ? match : ambient ? nv : (rest.length ? rest : nv)
+      const base = installedOnly(POOLS.pilot, installed) ?? []
+      // Background traffic is mostly neural (each neural voice counted twice against the built-in ones).
+      const mixed = ambient && !match.length ? [...pool, ...pool].map((v) => ({ neural: v })).concat(base.map((b) => ({ say: b }))) : pool.map((v) => ({ neural: v }))
+      const choice = mixed[h % mixed.length]
+      if (choice.neural) return asNeural(choice.neural, paced('pilot'))
+      return result(choice.say, paced('pilot'))
+    }
+  }
 
   if (role === 'copilot') return { voice: 'Rocko (English (US))', rate: 178 }
   if (role === 'atis') {

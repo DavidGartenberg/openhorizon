@@ -73,7 +73,7 @@ describe('casting on the speech route',()=>{
    {text:'Palo Alto information Bravo. wind two seven zero at eight.',role:'atis',speaker:'KPAO ATIS'},
    {text:'Cleared for takeoff',role:'pilot',speaker:'BAW2KP',style:'icao'},
   ])
-  expect(voice(seen[0]!)).not.toBe(voice(seen[1]!))
+  expect(new Set(seen.map(voice)).size).toBeGreaterThanOrEqual(3)           // four speakers, at least three different voices
   expect(voice(seen[2]!)).toBe('Samantha')
   expect(voice(seen[3]!)).toBe('Daniel')
   for(const a of seen)expect(rate(a)).toBeGreaterThan(90)
@@ -103,5 +103,61 @@ describe('Premium voices on the speech route',()=>{
   expect(['Zoe (Premium)','Evan (Enhanced)','Nathan (Enhanced)']).toContain(seen[0]![seen[0]!.indexOf('-v')+1])
   await new Promise(r=>setTimeout(r,20))
   expect(measured.sort()).toEqual(['Evan (Enhanced)','Nathan (Enhanced)','Zoe (Premium)'])
+ })
+})
+
+describe('neural voices on the speech route',()=>{
+ const VOICES=[
+  {id:'com.apple.siri.natural.Nora',name:'Voice 4',language:'en-US',quality:2},{id:'com.apple.ttsbundle.gryphon-neural_Simone_en-US_premium',name:'Voice 2',language:'en-US',quality:2},
+  {id:'com.apple.siri.natural.en-GB-C',name:'Voice 3',language:'en-GB',quality:2},{id:'com.apple.voice.Aman.premium',name:'Aman',language:'en-IN',quality:2},
+ ]
+ const make=(neural:any,sayCalls:string[][]=[])=>createVoiceService({whisper:'/fake/whisper',model:'/fake/model',say:'/fake/say',available:async()=>true,neural,
+  run:async(_f:string,args:string[])=>{sayCalls.push(args);await fs.copyFile(fixture,args[args.indexOf('-o')+1]!)}})
+ const speakWith=(svc:any,body:object)=>request(svc,'/api/voice/speak',Buffer.from(JSON.stringify(body)),{type:'application/json'})
+
+ it('renders controllers and other aircraft through the neural helper and never touches say',async()=>{
+  const heard:any[]=[];const sayCalls:string[][]=[]
+  const neural={enabled:true,warm(){},voices:async()=>VOICES,speak:async(spec:any,out:string)=>{heard.push(spec);await fs.copyFile(fixture,out);return {ok:true}}}
+  const svc=make(neural,sayCalls)
+  const res=await speakWith(svc,{text:'Skyhawk three Alpha Bravo, [[pbas 90]] cleared for takeoff',role:'atc',speaker:'Palo Alto Tower'})
+  expect(res.statusCode).toBe(200);expect(validateWav(res.body).duration).toBeGreaterThan(1)
+  await speakWith(svc,{text:'cleared for takeoff',role:'pilot',speaker:'BAW2KP',style:'icao'})
+  expect(sayCalls).toHaveLength(0)
+  expect(['com.apple.siri.natural.Nora','com.apple.ttsbundle.gryphon-neural_Simone_en-US_premium']).toContain(heard[0].voice)
+  expect(heard[0].text).toBe('Skyhawk three Alpha Bravo, cleared for takeoff')           // no speech commands reach a neural voice
+  expect(heard[0].rate).toBeGreaterThan(0.45);expect(heard[0].rate).toBeLessThan(0.65)
+  expect(heard[1].voice).toBe('com.apple.siri.natural.en-GB-C')                          // a British airline, a British voice
+ })
+
+ it('keeps the first officer and the cockpit warnings on the built-in voices',async()=>{
+  const heard:any[]=[];const sayCalls:string[][]=[]
+  const neural={enabled:true,warm(){},voices:async()=>VOICES,speak:async(spec:any,out:string)=>{heard.push(spec);await fs.copyFile(fixture,out);return {ok:true}}}
+  const svc=make(neural,sayCalls)
+  await speakWith(svc,{text:'rotate',role:'copilot',speaker:'first-officer'});await speakWith(svc,{text:'pull up'})
+  expect(heard).toHaveLength(0);expect(sayCalls).toHaveLength(2)
+ })
+
+ it('falls back to a built-in voice when the neural helper fails, so a transmission is never lost',async()=>{
+  const sayCalls:string[][]=[]
+  const neural={enabled:true,warm(){},voices:async()=>VOICES,speak:async()=>{throw new Error('helper died')}}
+  const res=await speakWith(make(neural,sayCalls),{text:'cleared to land',role:'atc',speaker:'Palo Alto Ground'})
+  expect(res.statusCode).toBe(200);expect(sayCalls).toHaveLength(1)
+  expect(sayCalls[0]![sayCalls[0]!.indexOf('-v')+1]).not.toMatch(/siri|neural|premium/i)
+ })
+
+ it('uses a built-in voice when there are no neural ones, and tells the page whether the helper is on',async()=>{
+  const sayCalls:string[][]=[]
+  const off={enabled:false,warm(){},voices:async()=>[],speak:async()=>{throw new Error('off')}}
+  const svc=make(off,sayCalls)
+  await speakWith(svc,{text:'taxi',role:'atc',speaker:'Palo Alto Ground'})
+  expect(sayCalls).toHaveLength(1)
+  expect(JSON.parse((await request(svc,'/api/voice/status',undefined,{method:'GET'})).body)).toMatchObject({synthesis:true,neural:false})
+  expect(JSON.parse((await request(make({...off,enabled:true}),'/api/voice/status',undefined,{method:'GET'})).body).neural).toBe(true)
+ })
+
+ it('hands background traffic the whole cast, and the foreground only the voices a controller does not use',async()=>{
+  const voiceOf=async(ambient:boolean,i:number)=>{const heard:any[]=[];const neural={enabled:true,warm(){},voices:async()=>VOICES,speak:async(spec:any,out:string)=>{heard.push(spec);await fs.copyFile(fixture,out);return {ok:true}}};const svc=make(neural);await speakWith(svc,{text:'ready',role:'pilot',speaker:`Cirrus ${i}XY`,ambient});return heard[0]?.voice as string|undefined}
+  const fg=new Set<string|undefined>();for(let i=0;i<24;i++)fg.add(await voiceOf(false,i))
+  expect([...fg].every(v=>v!=='com.apple.siri.natural.Nora'&&v!=='com.apple.ttsbundle.gryphon-neural_Simone_en-US_premium')).toBe(true)
  })
 })

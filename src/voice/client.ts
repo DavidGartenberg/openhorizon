@@ -11,7 +11,7 @@ export class LocalVoiceClient {
    *  said before (or rendered ahead of its turn) plays with no server round trip. */
   private readonly clips=new Map<string,Blob>()
   private static readonly CLIP_MAX=64
-  private clipKey(message:SpeechMessage,text:string):string{return `${voiceRoleFor(message)}|${message.style??''}|${message.speaker??''}|${text}`}
+  private clipKey(message:SpeechMessage,text:string):string{return `${voiceRoleFor(message)}|${message.style??''}|${message.ambient?'bg':''}|${message.speaker??''}|${text}`}
   private spoken(message:SpeechMessage):string{return message.spoken??toSpokenAviation(message.text,{style:message.style})}
   private remember(key:string,blob:Blob):void{
     this.clips.delete(key);this.clips.set(key,blob)
@@ -49,7 +49,7 @@ export class LocalVoiceClient {
       if(priority==='warm'&&this.clips.has(key))return undefined
       // A 429 means the service is busy with something else (a transcription); wait a beat and try again.
       for(let attempt=0;;attempt++){
-        const response=await fetch('/api/voice/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,role:voiceRoleFor(message),speaker:message.speaker,style:message.style}),signal})
+        const response=await fetch('/api/voice/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,role:voiceRoleFor(message),speaker:message.speaker,style:message.style,ambient:message.ambient===true}),signal})
         if(response.status===429&&attempt<8&&!signal.aborted){await new Promise(r=>setTimeout(r,250*(attempt+1)));continue}
         if(!response.ok)throw await responseError(response)
         const raw=await response.blob();if(raw.size<44)throw new Error('Local speech returned empty audio')

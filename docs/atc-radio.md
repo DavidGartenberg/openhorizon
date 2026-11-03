@@ -57,31 +57,44 @@ last moment.
 
 ## The voices
 
-macOS `say` voices only; nothing leaves the computer. `server/voice-cast.mjs` knows each voice's accent,
-gender, natural pitch, intelligibility and pace curve:
+**Neural voices, when the Mac has them.** macOS keeps its best voices (the Siri natural voices and the Premium neural
+voices) away from `say` and from any unsigned program, but Apple's own `swift` interpreter can reach them. The speech
+server therefore runs `server/voice-neural.swift` as a long-lived helper (`server/voice-neural.mjs` manages it: started
+on first use or when the page asks for the voice status, restarted if it dies, given up on if it keeps dying) and renders
+transmissions through it: about a second per line once warm, to the same mono 16 kHz WAV `say` produces. On the
+development Mac that is six voices: Nora and Simone (American), one British, Riya, Tara and Aman (Indian English; Aman is
+the only male). Transcribed back by whisper.cpp they come out almost word-perfect ("Skyhawk 123 Alpha Bravo, Runway 31,
+cleared for takeoff, wind 270 at Niner."). If the helper is missing, a voice is absent, or a render fails, the line is
+spoken by a built-in voice instead and the radio never goes quiet.
+
+Who gets which (`server/voice-cast.mjs`): Tower and Ground of a field take the two American voices, its other facilities
+the rest, so a field's controllers all differ; the ATIS takes the first American voice; the player's and the AI pattern
+pilots' voices come from the others, so a pilot is never the controller answering; airline crews take a neural voice of
+their airline's accent when there is one (British Airways → the British voice); background traffic uses everything, the
+neural voices counted twice against the built-in ones. The Siri natural voices ignore pitch, so only Simone and Aman are
+varied (±8 %); pace comes from each voice's own measured curve. The first officer and the cockpit warnings keep their
+own built-in voices.
+
+**Built-in voices (`say`)** fill the cast where there are no neural ones (other Macs) and the background crowd:
 
 - **Intelligibility** is measured, not guessed: `scripts/voice/audit-voices.mjs` speaks twelve radio
   transmissions in each installed voice and transcribes them with the same local whisper.cpp used for
   speech input. On the development Mac (rate 190): Samantha 88.5 %, Daniel 88.0 %, Karen 87.1 %,
-  Moira 84.7 %, Sandy 84.2 %, Grandpa 82.3 %, Tessa 81.3 %, Rocko 80.4 % … Reed 73.7 %, Eddy 73.2 %.
-  The weakest voices, which also drop the "h" of "hold short", are kept to pilots. A recogniser is
-  not a listener: the audit says whether words survive, not how human a voice sounds.
-- **Pace** is per voice: `scripts/voice/calibrate-rates.mjs` measures words per minute at several `say -r`
-  rates (voices differ widely and several do not slow down below 150), and the cast interpolates
-  each voice's own curve. Controllers run about 168–190 words per minute, pilots 148–172, the ATIS 150.
-- **Pitch** moves up to three semitones around each voice's own (`[[pbas]]`), which turns about ten voices
-  into dozens of people. Voices with no measured pitch are never shifted.
-- **Better voices are used automatically.** Download Premium or Enhanced English voices in System Settings →
-  Accessibility → Spoken Content → System Voice → Manage Voices (Zoe, Ava, Evan, Nathan, Oliver, Serena, Matilda …)
-  and restart the dev server: any installed English voice with "(Premium)" or "(Enhanced)" in its name is cast
-  ahead of the built-in ones (controllers and the ATIS from the American ones, airline crews from the one matching
-  their airline's accent), and its pace is measured once, in the background. Nothing in this repo was tested
-  against such a voice (none is installed on the development Mac): the selection is covered by tests with fake
-  voice lists, so give it a listen.
-- `scripts/voice/rehearse.ts` runs a short scenario through the real controllers, AI pilots and
-  background traffic, speaks it with the real cast and reads it back: who said what, in which voice, at
-  what pace, and how much was understood (82 % of the words on the development Mac, with the base English
-  model; place names such as "Palo Alto" are where the recogniser trips).
+  Moira 84.7 %, Sandy 84.2 %, Grandpa 82.3 %, Tessa 81.3 %, Rocko 80.4 % … Reed 73.7 %, Eddy 73.2 %. The weakest
+  voices (the Eloquence ones, which also drop the "h" of "hold short") are kept to the background crowd.
+- **Pace** is per voice: `scripts/voice/calibrate-rates.mjs` measures words per minute at several `say -r` rates (voices differ
+  widely and several do not slow down below 150), and the cast interpolates each voice's own curve. Controllers run about
+  168–190 words per minute, pilots 148–172, the ATIS 150.
+- **Pitch** moves up to three semitones around each voice's own (`[[pbas]]`). Voices with no measured pitch are never shifted.
+- **Premium or Enhanced voices that `say` can see** (System Settings → Accessibility → Spoken Content → System Voice →
+  Manage Voices) are used automatically as well, ahead of the built-in ones, with their pace measured once in the
+  background; covered by tests with fake voice lists only, since none of that kind is installed here.
+
+**Checking it.** `scripts/voice/rehearse.ts` runs a short scenario through the real controllers, AI pilots and background
+traffic, renders it through the speech server's own function (cast, neural helper, fallback) and reads it back: who said
+what, in which voice (● = neural), at what pace, and how much was understood. 85 % of the words on the development Mac with
+the base English model; the misses are mostly place names such as "Palo Alto" and the built-in background voices. A
+recogniser is not a listener: it says whether the words survive, not how human a voice sounds.
 
 ## Settings
 
@@ -91,8 +104,9 @@ gender, natural pitch, intelligibility and pace curve:
 
 ## Limits
 
-- Voices are the Mac's own synthesizer: clear, not indistinguishable from people. Only a listening check
-  can judge that; the recogniser audit cannot. Premium voices would help most (and are picked up on their own).
+- The neural voices need macOS with `/usr/bin/swift` (the Xcode command line tools) and the Siri / Premium voices downloaded;
+  without them the built-in voices speak and are clearly synthetic. Nobody has listened to either: a recogniser cannot judge
+  how human a voice sounds.
 - Background traffic is radio-only: the aircraft that talk are not drawn. The visible ones are the AI
   pattern pilots on the tower frequency.
 - Live ADS-B traffic is not addressed by the controllers.

@@ -23,7 +23,7 @@ import { AmbientRadio } from '../../src/sim/atc/ambient'
 import { speakerRole } from '../../src/sim/atc/phraseology'
 import { CallsignBook, toSpokenAviation, type PhraseStyle } from '../../src/audio/spoken-aviation'
 // @ts-expect-error plain ES modules (server code and the audit script)
-import { castVoice } from '../../server/voice-cast.mjs'
+import { createVoiceService } from '../../server/voice.mjs'
 // @ts-expect-error plain ES module
 import { wordAccuracy } from './audit-voices.mjs'
 
@@ -60,25 +60,29 @@ const ambient = new AmbientRadio({
 for (let s = 0; s < 600; s += 2) for (const t of ambient.tick(s, s < 300 ? 121.7 : 124.0, false)) bus.transmit(t)
 
 // ---- say it and listen ----
+// Rendered by the speech server's own function, so this is what the simulator would play: the cast, the neural voices when the Mac has
+// them (through the helper), the built-in ones otherwise.
+const service = createVoiceService() as { render: (job: object, file: string, signal: AbortSignal) => Promise<{ engine: string; voice: string; rate: number; pbas?: number; pitch?: number }>; close: () => void }
 const book = new CallsignBook()
 const picks = [...log.slice(0, 9), ...log.filter((t) => t.ambient).slice(0, MAX_LINES)].slice(0, MAX_LINES)
 let total = 0, heardTotal = 0
-console.log(`${'speaker'.padEnd(20)} ${'voice'.padEnd(24)} pitch  wpm  heard`)
+const friendly = (voice: string): string => voice.replace(/^com\.apple\./, '').replace(/^(siri\.natural\.|ttsbundle\.|voice\.)/, '').replace(/_en-US_premium|\.premium/, '')
+console.log(`${'speaker'.padEnd(20)} ${'voice'.padEnd(26)} wpm  heard`)
 for (const [i, t] of picks.entries()) {
   const spoken = toSpokenAviation(t.text, { style, callsigns: book, nowMs: i * 8000 })
-  const role = speakerRole(t.from)
-  const cast = castVoice({ role, speaker: t.from, style }) as { voice: string; rate: number; pbas?: number }
   const wav = path.join(tmp, `${i}.wav`)
-  const words = cast.pbas ? `[[pbas ${cast.pbas}]] ${spoken}` : spoken
-  execFileSync('/usr/bin/say', ['-v', cast.voice, '-r', String(cast.rate), '--file-format=WAVE', '--data-format=LEI16@16000', '-o', wav, '--', words])
+  const cast = await service.render({ text: spoken, role: speakerRole(t.from), speaker: t.from, style, ambient: t.ambient === true }, wav, new AbortController().signal)
   const seconds = (fs.statSync(wav).size - 44) / 32000
   const heard = execFileSync('/opt/homebrew/bin/whisper-cli', ['-m', model, '-f', wav, '-nt', '-np', '-t', '4', '-ng', '-l', 'en'], { encoding: 'utf8', env: { ...process.env, GGML_METAL_DEVICES: '0' }, stdio: ['ignore', 'pipe', 'ignore'] }).trim().replace(/\s+/g, ' ')
   const acc = wordAccuracy(spoken, heard) as number
   const n = spoken.split(/\s+/).length
   total += n; heardTotal += n * acc
-  console.log(`${t.from.slice(0, 19).padEnd(20)} ${cast.voice.slice(0, 23).padEnd(24)} ${String(cast.pbas ?? '-').padEnd(5)} ${String(Math.round((n / seconds) * 60)).padEnd(4)} ${(acc * 100).toFixed(0).padStart(3)}%  ${spoken}`)
-  if (acc < 0.7) console.log(`${' '.repeat(56)}heard: ${heard}`)
+  const name = `${cast.engine === 'neural' ? '● ' : ''}${friendly(cast.voice)}`
+  console.log(`${t.from.slice(0, 19).padEnd(20)} ${name.slice(0, 25).padEnd(26)} ${String(Math.round((n / seconds) * 60)).padEnd(4)} ${(acc * 100).toFixed(0).padStart(3)}%  ${spoken}`)
+  if (acc < 0.7) console.log(`${' '.repeat(52)}heard: ${heard}`)
   fs.rmSync(wav)
 }
-console.log(`\nword accuracy over ${picks.length} transmissions: ${((heardTotal / total) * 100).toFixed(1)}%`)
+console.log(`\nword accuracy over ${picks.length} transmissions: ${((heardTotal / total) * 100).toFixed(1)}%   (● = neural voice)`)
+service.close()
 fs.rmSync(tmp, { recursive: true, force: true })
+process.exit(0)
