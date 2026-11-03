@@ -8,9 +8,8 @@ export class LocalVoiceClient {
   async refresh():Promise<LocalVoiceStatus>{const response=await fetch('/api/voice/status',{signal:AbortSignal.timeout(5000)});if(!response.ok)throw await responseError(response);this.status=await response.json();return this.status}
   async transcribe(audio:Blob,signal:AbortSignal):Promise<string>{const response=await fetch('/api/voice/transcribe',{method:'POST',headers:{'Content-Type':'audio/wav'},body:audio,signal});if(!response.ok)throw await responseError(response);const result=await response.json();if(typeof result.text!=='string')throw new Error('Invalid local transcript');return result.text}
   /** Synthesized + radio-filtered clips by role/speaker/spoken text, so a phrase
-   *  said before (or warmed ahead of time) plays with no server round trip. */
+   *  said before (or rendered ahead of its turn) plays with no server round trip. */
   private readonly clips=new Map<string,Blob>()
-  private inFlight=0
   private static readonly CLIP_MAX=64
   private clipKey(message:SpeechMessage,text:string):string{return `${voiceRoleFor(message)}|${message.style??''}|${message.speaker??''}|${text}`}
   private spoken(message:SpeechMessage):string{return message.spoken??toSpokenAviation(message.text,{style:message.style})}
@@ -18,43 +17,67 @@ export class LocalVoiceClient {
     this.clips.delete(key);this.clips.set(key,blob)
     if(this.clips.size>LocalVoiceClient.CLIP_MAX)this.clips.delete(this.clips.keys().next().value as string)
   }
-  private async synthesize(message:SpeechMessage,text:string,signal:AbortSignal):Promise<Blob>{
-    this.inFlight++
+  /** The local synthesizer does one job at a time. Speech that is due now goes ahead of rendering done in advance, and nothing ever
+   *  collides with itself (a collision used to cost a transmission after four tries). */
+  private running=false
+  private readonly liveQueue:Array<()=>void>=[]
+  private readonly warmQueue:Array<()=>void>=[]
+  private next():void{
+    if(this.running)return
+    const grant=this.liveQueue.shift()??this.warmQueue.shift()
+    if(grant){this.running=true;grant()}
+  }
+  private acquire(priority:'live'|'warm',signal:AbortSignal):Promise<()=>void>{
+    return new Promise((resolve,reject)=>{
+      const aborted=()=>new DOMException('Speech cancelled','AbortError')
+      if(signal.aborted){reject(aborted());return}
+      const queue=priority==='live'?this.liveQueue:this.warmQueue
+      const grant=()=>{
+        if(signal.aborted){this.running=false;this.next();reject(aborted());return}
+        resolve(()=>{this.running=false;this.next()})
+      }
+      queue.push(grant)
+      signal.addEventListener('abort',()=>{const at=queue.indexOf(grant);if(at>=0){queue.splice(at,1);reject(aborted())}},{once:true})
+      this.next()
+    })
+  }
+  private async synthesize(message:SpeechMessage,text:string,signal:AbortSignal,priority:'live'|'warm'='live'):Promise<Blob|undefined>{
+    const release=await this.acquire(priority,signal)
     try{
-      // The local synthesizer takes one request at a time; a 429 just means
-      // another phrase is still being rendered, so wait a beat and try again.
+      // Rendered ahead while it waited its turn: nothing left to do.
+      const key=this.clipKey(message,text)
+      if(priority==='warm'&&this.clips.has(key))return undefined
+      // A 429 means the service is busy with something else (a transcription); wait a beat and try again.
       for(let attempt=0;;attempt++){
         const response=await fetch('/api/voice/speak',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,role:voiceRoleFor(message),speaker:message.speaker,style:message.style}),signal})
-        if(response.status===429&&attempt<3&&!signal.aborted){await new Promise(r=>setTimeout(r,250*(attempt+1)));continue}
+        if(response.status===429&&attempt<8&&!signal.aborted){await new Promise(r=>setTimeout(r,250*(attempt+1)));continue}
         if(!response.ok)throw await responseError(response)
         const raw=await response.blob();if(raw.size<44)throw new Error('Local speech returned empty audio')
-        return await applyRadioFilter(raw,voiceRoleFor(message),message.speaker)
+        const clip=await applyRadioFilter(raw,voiceRoleFor(message),message.speaker)
+        // Kept before the synthesizer is handed on, so a copy waiting for the same phrase finds it.
+        this.remember(key,clip)
+        return clip
       }
-    }finally{this.inFlight--}
+    }finally{release()}
   }
   async resolveSpeech(message:SpeechMessage,signal:AbortSignal):Promise<{url:string;release():void}|undefined>{
     if(!this.status.synthesis)return undefined
     const text=this.spoken(message),key=this.clipKey(message,text)
     let blob=this.clips.get(key)
     if(blob)this.remember(key,blob)
-    else{blob=await this.synthesize(message,text,signal);this.remember(key,blob)}
+    else{blob=await this.synthesize(message,text,signal,'live');if(!blob)throw new Error('Local speech produced no audio');this.remember(key,blob)}
     const url=URL.createObjectURL(blob);return {url,release:()=>URL.revokeObjectURL(url)}
   }
-  private warming:Promise<void>=Promise.resolve()
-  /** Render one queued message in the background, after any other being rendered; the clip is kept for when its turn comes. */
-  prepare(message:SpeechMessage):void{
-    this.warming=this.warming.then(()=>this.prewarm([message],new AbortController().signal)).catch(()=>{})
-  }
-  /** Render phrases ahead of need, one at a time and only while no live phrase
-   *  is being rendered. Failures are ignored: warming is an optimization. */
+  /** Render one queued message in the background; the clip is kept for when its turn comes. */
+  prepare(message:SpeechMessage):void{void this.prewarm([message],new AbortController().signal)}
+  /** Render phrases ahead of need, in order and behind anything due now. Failures are ignored: warming is an optimization. */
   async prewarm(messages:readonly SpeechMessage[],signal:AbortSignal):Promise<void>{
     if(!this.status.synthesis)return
     for(const message of messages){
       if(signal.aborted)return
       const text=this.spoken(message),key=this.clipKey(message,text)
       if(this.clips.has(key))continue
-      while(this.inFlight>0&&!signal.aborted)await new Promise(r=>setTimeout(r,200))
-      try{this.remember(key,await this.synthesize(message,text,signal))}catch{/* warming is best-effort */}
+      try{const blob=await this.synthesize(message,text,signal,'warm');if(blob)this.remember(key,blob)}catch{/* warming is best-effort */}
     }
   }
 }

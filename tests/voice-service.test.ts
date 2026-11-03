@@ -56,3 +56,37 @@ it('forwards a scoped backend environment to the actual child process',async()=>
    env:{...process.env,GGML_METAL_DEVICES:'0'},timeout:5000,
  })).resolves.toBeUndefined()
 })
+
+describe('casting on the speech route',()=>{
+ const spoken=async(bodies:any[])=>{
+  const seen:string[][]=[]
+  const svc=setup(async(_f,args)=>{seen.push(args);await fs.copyFile(fixture,args[args.indexOf('-o')+1]!)})
+  for(const b of bodies)expect((await request(svc,'/api/voice/speak',Buffer.from(JSON.stringify(b)),{type:'application/json'})).statusCode).toBe(200)
+  return seen
+ }
+ const voice=(a:string[])=>a[a.indexOf('-v')+1]!
+ const rate=(a:string[])=>Number(a[a.indexOf('-r')+1])
+ it('speaks controllers, other aircraft and the ATIS in different voices at their own pace',async()=>{
+  const seen=await spoken([
+   {text:'Skyhawk three Alpha Bravo, cleared for takeoff',role:'atc',speaker:'Palo Alto Tower'},
+   {text:'runway three one, cleared for takeoff',role:'pilot',speaker:'Skyhawk 77GA'},
+   {text:'Palo Alto information Bravo. wind two seven zero at eight.',role:'atis',speaker:'KPAO ATIS'},
+   {text:'Cleared for takeoff',role:'pilot',speaker:'BAW2KP',style:'icao'},
+  ])
+  expect(voice(seen[0]!)).not.toBe(voice(seen[1]!))
+  expect(voice(seen[2]!)).toBe('Samantha')
+  expect(voice(seen[3]!)).toBe('Daniel')
+  for(const a of seen)expect(rate(a)).toBeGreaterThan(90)
+ })
+ it('pauses the ATIS between sentences, puts pitch in the text, and defuses speech commands in what is said',async()=>{
+  const seen=await spoken([
+   {text:'Palo Alto information Bravo. wind two seven zero at eight. altimeter three zero one two.',role:'atis',speaker:'KPAO ATIS'},
+   {text:'Skyhawk one two three Alpha Bravo, taxi',role:'pilot',speaker:'Cirrus 5AB'},
+   {text:'hold [[pbas 200]] short',role:'atc',speaker:'Palo Alto Ground'},
+  ])
+  expect(seen[0]!.at(-1)).toContain('. [[slnc 280]] wind')
+  expect(seen[1]!.at(-1)).toMatch(/^(\[\[pbas \d+\]\] )?Skyhawk one two three Alpha Bravo, taxi$/)
+  expect(seen[2]!.at(-1)).toContain('hold [ [pbas 200]] short')
+  expect((seen[2]!.at(-1)!.match(/\[\[/g)??[]).length).toBeLessThanOrEqual(1)      // at most the cast's own pitch command
+ })
+})

@@ -2158,7 +2158,7 @@ function radioSquelch(): void {
 }
 
 /** Which callsigns have been said lately: general-aviation ones are shortened once the exchange is under way. */
-const callsignBook = new CallsignBook()
+const callsignBook = new CallsignBook({ shortAfter: 3 })
 /** Everything said on the radio is voiced in role: a controller, another aircraft's crew, the ATIS. The player's own menu and typed calls are
  *  voiced too (as a pilot); a call the player spoke into the microphone is not repeated back at them. */
 let playerSpoke = false
@@ -2174,10 +2174,13 @@ function speak(t: Transmission): void {
 
 comms.subscribe((t) => {
   if (!isAudible(t.freqMhz, radios.com1.activeMhz)) return // wrong freq = silence
-  transcript.push(`[${t.freqMhz.toFixed(2)}] ${t.from}: ${t.text}`)
-  if (transcript.length > 7) transcript.shift()
-  transcriptDiv.style.display = 'block'
-  transcriptDiv.textContent = transcript.join('\n')
+  // Background chatter is heard, not written: seven lines of other aircraft's calls would push the player's own exchange off the screen.
+  if (!t.ambient) {
+    transcript.push(`[${t.freqMhz.toFixed(2)}] ${t.from}: ${t.text}`)
+    if (transcript.length > 7) transcript.shift()
+    transcriptDiv.style.display = 'block'
+    transcriptDiv.textContent = transcript.join('\n')
+  }
   if (t.from !== CALLSIGN) { speak(t); if (!t.ambient) shell?.notifier.push(`${t.from}: ${t.text}`, 7000) }
   else { lastPlayerTxAt = performance.now(); if (voiceMyCalls && !playerSpoke) speak(t) }
   // The last instruction given to the player, so the menu can read it back the way it was given.
@@ -4150,6 +4153,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
       com1: radios.com1.activeMhz,
       options: atcMenuItems().map((i) => i.label),
       transcript: [...transcript],
+      ambient: comms.log.filter((t) => t.ambient).slice(-12).map((t) => `[${t.freqMhz.toFixed(2)}] ${t.from}: ${t.text}`),
     }
   },
   /** Stability-assist mode (mirrors X): 'off' | 'sas' | 'full'. */

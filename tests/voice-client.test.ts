@@ -73,3 +73,47 @@ it('retries once the synthesizer reports busy instead of dropping the phrase',as
   expect(speech?.url).toBe('blob:r');expect(calls).toBe(2)
   create.mockRestore();revoke.mockRestore()
 })
+
+const tick=()=>new Promise(r=>setTimeout(r,5))
+
+it('renders one clip at a time, speech that is due now ahead of rendering done in advance',async()=>{
+  const order:string[]=[];const gates:Array<()=>void>=[]
+  vi.stubGlobal('fetch',vi.fn(async(_url:string,options:any)=>{order.push(JSON.parse(options.body).text);await new Promise<void>(r=>gates.push(r));return new Response(new Blob([new Uint8Array(64)]))}))
+  vi.spyOn(URL,'createObjectURL').mockReturnValue('blob:x');vi.spyOn(URL,'revokeObjectURL').mockImplementation(()=>{})
+  const client=new LocalVoiceClient();client.status.synthesis=true
+  const signal=new AbortController().signal
+  const m=(text:string)=>({text,priority:0,speaker:'N1',role:'pilot' as const})
+  void client.prewarm([m('warm one')],signal);void client.prewarm([m('warm two')],signal)
+  const live=client.resolveSpeech(m('live now'),signal)
+  await tick();expect(order).toEqual(['warm one'])                    // one at a time
+  gates[0]!();await tick();expect(order).toEqual(['warm one','live now'])   // the live one jumped the queue
+  gates[1]!();await live;await tick()
+  expect(order).toEqual(['warm one','live now','warm two']);gates[2]!()
+})
+
+it('waits out a busy synthesizer for as long as a transmission is worth, not four tries',async()=>{
+  let calls=0
+  vi.useFakeTimers()
+  try{
+    vi.stubGlobal('fetch',vi.fn(async()=>++calls<=6?new Response('{"error":"busy"}',{status:429}):new Response(new Blob([new Uint8Array(64)]))))
+    vi.spyOn(URL,'createObjectURL').mockReturnValue('blob:x')
+    const client=new LocalVoiceClient();client.status.synthesis=true
+    const speech=client.resolveSpeech({text:'Tower reply',priority:0},new AbortController().signal)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect((await speech)?.url).toBe('blob:x');expect(calls).toBe(7)
+  }finally{vi.useRealTimers()}
+})
+
+it('skips rendering ahead of a clip that was rendered meanwhile, and lets a cancelled wait go without holding the synthesizer',async()=>{
+  let calls=0;const gates:Array<()=>void>=[]
+  vi.stubGlobal('fetch',vi.fn(async()=>{calls++;await new Promise<void>(r=>gates.push(r));return new Response(new Blob([new Uint8Array(64)]))}))
+  vi.spyOn(URL,'createObjectURL').mockReturnValue('blob:x');vi.spyOn(URL,'revokeObjectURL').mockImplementation(()=>{})
+  const client=new LocalVoiceClient();client.status.synthesis=true
+  const message={text:'same phrase',priority:0,speaker:'N2',role:'atc' as const}
+  const first=client.resolveSpeech(message,new AbortController().signal)           // renders now
+  void client.prewarm([message],new AbortController().signal)                       // queued for the same phrase
+  const gone=new AbortController();const waiting=client.resolveSpeech({text:'never needed',priority:0},gone.signal)
+  gone.abort();await expect(waiting).rejects.toThrow()
+  await tick();gates[0]!();await first;await tick()
+  expect(calls).toBe(1)                                                              // the queued copy found the clip already there
+})

@@ -97,8 +97,9 @@ export function createVoiceService(options={}) {
       const audio=path.join(dir,'audio.wav'),output=path.join(dir,'result')
       if(synth){
         stage='synthesis-process'
-        const pick=pickVoice(typeof role==='string'?role:'warning',typeof speaker==='string'?speaker.slice(0,64):'',style==='icao'?'icao':'faa',await installed())
-        const words=plainSpeech(text)
+        const pick={...pickVoice(typeof role==='string'?role:'warning',typeof speaker==='string'?speaker.slice(0,64):'',style==='icao'?'icao':'faa',await installed()),role}
+        // The ATIS reads item by item: a beat between sentences, as a recording does.
+        const words=pick.role==='atis'?plainSpeech(text).replace(/\.\s+/g,'. [[slnc 280]] '):plainSpeech(text)
         // Pitch is a speech command in the text itself: a few semitones either way makes one voice several people.
         const say1=(voice,pbas)=>run(say,['-v',voice,'-r',String(pick.rate),'--file-format=WAVE','--data-format=LEI16@16000','-o',audio,'--',pbas?`[[pbas ${pbas}]] ${words}`:words],{signal:cancel.signal,timeout:30000})
         // A voice the user's Mac does not have must not silence the radio.
