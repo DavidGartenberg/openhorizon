@@ -81,7 +81,9 @@ a render simply stops early, about a third of the time after another voice or a 
 same call measured 7.41 s, 6.2 s and 5.3 s). Nora, Simone, Riya and the British voice never did in the same tests. So Aman
 and Tara are kept to background traffic, where a line is rendered until two takes agree in length (`speakAgreed` in
 `server/voice-neural.mjs`); the controllers, the ATIS and everyone the player talks with use the four steady voices. That
-leaves the foreground with no male neural voice, the price of never cutting a call short. `OPENHORIZON_VOICE_DEBUG=1`
+leaves the foreground with no male neural voice, the price of never cutting a call short. Agreement is not proof: two cut
+takes can agree (once in about eighteen background lines in testing; ten of ten transcribed complete in the last run), so
+a background line is very rarely still short. `OPENHORIZON_VOICE_DEBUG=1`
 makes the helper trace every render on stderr.
 
 Who gets which (`server/voice-cast.mjs`, steady voices only outside background traffic): Tower and Ground of a field take

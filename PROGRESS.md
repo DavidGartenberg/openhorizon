@@ -3300,3 +3300,8 @@ See `docs/atc-radio.md`. What changed:
 
 - `GroundCondition` generalises the wetness smoothing; `SnowModel`/`snowFromWeather`: `SN` 0.9 (light 0.7, heavy 1), grains/pellets 0.35, vicinity 40 %, settling in ~20 min of snowfall and melting in ~3 h. Terrain whitens on level and gentle slopes (patchy), pavement keeps a dusting (less on runways), wet gloss is suppressed under snow.
 - Checked at KSFO in `-SN OVC015`: snow-covered airfield with dark ploughed taxiway lines. 2 new tests (grading, rates), typecheck clean, tests pass except the other lane's `tests/dg800-*`.
+
+### ATC voices: correction to the agreed-takes claim (2026-11-03)
+
+- The earlier entry said agreed takes were "7 of 8 complete": that was a length check, not a transcript. Checked properly (whisper reads the last words of each result): Tara after Nora, ten rounds, 10 of 10 complete in two takes each. In the earlier length-only run one round had two cut takes that agreed (6.33 s). So agreement can lock onto a cut line, about 1 in 18 across both runs, only for background lines (the voices Aman and Tara never speak to the player). Documented in `docs/atc-radio.md`.
+- Still true, and not fixable from here: nobody has listened to the voices; the transcript evidence says the words survive, not that they sound human. Two listening samples were sent to the user.
