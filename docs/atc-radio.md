@@ -61,11 +61,20 @@ last moment.
 voices) away from `say` and from any unsigned program, but Apple's own `swift` interpreter can reach them. The speech
 server therefore runs `server/voice-neural.swift` as a long-lived helper (`server/voice-neural.mjs` manages it: started
 on first use or when the page asks for the voice status, restarted if it dies, given up on if it keeps dying) and renders
-transmissions through it: about a second per line once warm, to the same mono 16 kHz WAV `say` produces. On the
-development Mac that is six voices: Nora and Simone (American), one British, Riya, Tara and Aman (Indian English; Aman is
-the only male). Transcribed back by whisper.cpp they come out almost word-perfect ("Skyhawk 123 Alpha Bravo, Runway 31,
-cleared for takeoff, wind 270 at Niner."). If the helper is missing, a voice is absent, or a render fails, the line is
-spoken by a built-in voice instead and the radio never goes quiet.
+transmissions through it: a second or two for a short call and somewhat under half its own length for a long one (the first
+play of the 18-second ATIS takes around eight seconds; the browser keeps what it has rendered), to the same mono 16 kHz
+WAV `say` produces. On the development Mac that is six voices: Nora and Simone (American), one British, Riya, Tara and
+Aman (Indian English; Aman is the only male). Transcribed back by whisper.cpp most calls come out word-perfect
+("Skyhawk 123 Alpha Bravo, Runway 31, cleared for takeoff, wind 270 at Niner."); the ICAO digit words ("tree", "fife",
+"niner") are harder for a recogniser, about 80–90 % of the long ATIS. If the helper is missing, a voice is absent, or a
+render fails, the line is spoken by a built-in voice instead and the radio never goes quiet.
+
+A long transmission has to be rendered to its end. Some of these voices send an empty audio buffer between chunks of a
+long utterance (after about ten seconds of speech, with more audio half a second later), and a helper that took the first
+empty buffer for the end of the speech cut every neural voice off at roughly ten seconds, half the ATIS gone, with
+nothing in a short test phrase to show it. The helper now ends a render on the synthesizer's own "finished" report (with
+timed fallbacks for a voice that never sends one), and `scripts/voice/check-neural.mjs` renders a 45-word ATIS in every
+neural voice and flags any whose audio is too short or whose last words are not heard.
 
 Who gets which (`server/voice-cast.mjs`): Tower and Ground of a field take the two American voices, its other facilities
 the rest, so a field's controllers all differ; the ATIS takes the first American voice; the player's and the AI pattern
@@ -92,9 +101,10 @@ own built-in voices.
 
 **Checking it.** `scripts/voice/rehearse.ts` runs a short scenario through the real controllers, AI pilots and background
 traffic, renders it through the speech server's own function (cast, neural helper, fallback) and reads it back: who said
-what, in which voice (● = neural), at what pace, and how much was understood. 85 % of the words on the development Mac with
-the base English model; the misses are mostly place names such as "Palo Alto" and the built-in background voices. A
-recogniser is not a listener: it says whether the words survive, not how human a voice sounds.
+what, in which voice (● = neural), at what pace, and how much was understood. 87 % of the words in the FAA-style scenario
+and 88 % in the ICAO one on the development Mac with the base English model; the misses are mostly place names such as
+"Palo Alto", the ICAO digit words and the built-in background voices. A recogniser is not a listener: it says whether the
+words survive, not how human a voice sounds.
 
 ## Settings
 
@@ -113,4 +123,4 @@ recogniser is not a listener: it says whether the words survive, not how human a
 - Facility and place names are said as the synthesizer reads them; there is no pronunciation lexicon
   (respellings were tried and changed nothing a recogniser could confirm).
 - Taxi routes come from the field's OpenStreetMap taxiway names where known, otherwise "taxi to runway N".
-- The ATIS plays once when tuned, not on a loop.
+- The ATIS plays once when tuned, not on a loop, and the first time it is rendered a few seconds pass before it is heard.
