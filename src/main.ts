@@ -8,6 +8,7 @@ import { TeVario } from './sim/vario'
 import { VarioSound } from './audio/vario-sound'
 import { Trails, contrailStrength, vaporStrength } from './render/contrails'
 import { AdaptiveResolution } from './render/adaptive-resolution'
+import { FrameProfiler } from './render/frame-profiler'
 import { CABIN } from './render/cabin-737'
 import { Precipitation } from './render/precipitation'
 import { LightningScheduler } from './sim/weather/lightning'
@@ -1113,6 +1114,10 @@ function handleSearch(query: string): void {
     if (!environment.iceProtectionFitted) { toast('NO ICE PROTECTION FITTED'); return }
     environment.antiIce = parts[1].toLowerCase() as 'on' | 'off' | 'auto'
     toast(`ANTI-ICE ${parts[1]}`)
+    return
+  }
+  if (parts[0] === 'PERF') {
+    perfOverlay.style.display = perfOverlay.style.display === 'none' ? 'block' : 'none'
     return
   }
   if (parts[0] === 'ENV') {
@@ -2882,11 +2887,19 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
   })
 }
 
+// Per-section main-thread timing (plan step 16): __ohProfile() and PERF.
+const profiler = new FrameProfiler()
+const perfOverlay = document.createElement('pre')
+perfOverlay.style.cssText = 'position:fixed;right:12px;top:200px;z-index:25;margin:0;padding:8px 10px;font:11px/1.4 ui-monospace,monospace;color:#d6e4ea;background:rgba(10,16,22,.82);border-radius:8px;pointer-events:none;display:none'
+document.body.appendChild(perfOverlay)
+let lastPerfOverlayAt = 0
 function advanceFrame(elapsed: number, now: number): void {
   const perfT0 = performance.now()
+  profiler.start(perfT0)
   updateControllers()
   handleDiscreteKeys()
   pollControls(elapsed)
+  profiler.mark('input')
   voicePtt?.checkContext()
   voicePtt?.poll('gamepad', physicalPttState())
   if (ctlOverride) Object.assign(aircraft.controls, ctlOverride)
@@ -3092,6 +3105,7 @@ function advanceFrame(elapsed: number, now: number): void {
     remaining -= chunk
   }
 
+  profiler.mark('physics')
   rebaseIfNeeded()
   const pos = aircraft.posNed
   const ll = frame.fromLocal(pos.x, pos.y)
@@ -3100,6 +3114,7 @@ function advanceFrame(elapsed: number, now: number): void {
   feedWakeGenerators()
   updateTurbulenceSources()
   trackRunwayUses()
+  profiler.mark('tiles+env')
   if (isGlider) {
     if (engineSound.unlocked) varioSound.unlock()
     varioSound.muted = engineSound.muted
@@ -3139,6 +3154,7 @@ function advanceFrame(elapsed: number, now: number): void {
   scanAtc(ll.lat, ll.lon, now)
   updateSafety(now)
   updateRecorder(ll)
+  profiler.mark('world')
   if (atcMenuOpen) renderAtcMenu()
   for (const { pilot: p, mesh: m } of aiShips) {
     // 15c: AI steps with SIM dt — wall-dt made time-accel leave the
@@ -3432,6 +3448,7 @@ function advanceFrame(elapsed: number, now: number): void {
 
   if (cockpit.deck737 && cameraMode === 'cockpit') update737Deck(d, tunedNav, ll, pitotReadings.iasKt, indicatedAltitudeFt(pitotReadings.altFt, baroSetInHg, qnhInHg), pitotReadings.vsiFpm)
   const simDate = new Date(baseDate.getTime() + (loop.simTime + scrubSeconds) * 1000)
+  profiler.mark('aircraft+cockpit')
   sky.setShadowTarget(mesh.group.position)
   shadowCatcher.update(
     mesh.group.position.x,
@@ -3481,6 +3498,7 @@ function advanceFrame(elapsed: number, now: number): void {
   tiles.setCloudFog(cloudFog)
   ocean.setCloudFog(cloudFog)
 
+  profiler.mark('scene')
   hud.update(
     {
       simDate,
@@ -3517,7 +3535,13 @@ function advanceFrame(elapsed: number, now: number): void {
     loop.ticks,
   )
 
+  profiler.mark('hud')
   renderer.render(scene, camera)
+  profiler.mark('render')
+  if (perfOverlay.style.display !== 'none' && now - lastPerfOverlayAt > 500) {
+    lastPerfOverlayAt = now
+    perfOverlay.textContent = `${profiler.totalMs().toFixed(1)} ms main thread\n` + profiler.report().map((r) => `${r.section.padEnd(18)}${r.ms.toFixed(2).padStart(7)}`).join('\n')
+  }
   graphicsPanel.update(now, cameraMode, performance.now()-perfT0, renderer)
   input.endFrame()
   perfRing[perfIdx] = performance.now() - perfT0
@@ -3850,6 +3874,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohMags: (pos: 'off' | 'both') => {
     systemsControls.magneto = pos
   },
+  __ohProfile: () => ({ totalMs: profiler.totalMs(), sections: profiler.report() }),
   __ohSave: () => { saveSnapshot(); try { return localStorage.getItem('oh-save') } catch { return null } },
   __ohLoad: () => loadSnapshot(),
   __ohLoading: (selection?: LoadingSelection) => selection
