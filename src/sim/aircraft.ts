@@ -229,17 +229,41 @@ export class Aircraft {
   }
 
   /** Place the aircraft on the ground at rest, heading ψ (rad). A tricycle
-   *  sits at the tuned C172 attitude (bit-exact legacy path); a taildragger
-   *  rests three-point at the pitch where mains and tailwheel touch
-   *  together: tanθ = (z_main − z_tail)/(x_main − x_tail) in body frame. */
+   *  sits at its static equilibrium on the struts; a taildragger rests
+   *  three-point at the pitch where mains and tailwheel touch together:
+   *  tanθ = (z_main − z_tail)/(x_main − x_tail) in body frame. */
   spawnOnGround(north: number, east: number, headingRad: number, groundElevM = 0): void {
     const tail = this.P.gear.tail
+    const nose = this.P.gear.nose
     let pitch = 0.03
     let cgHeightM = this.P.gear.mainL.z - 0.07
     if (tail) {
       const main = this.P.gear.mainL
       pitch = Math.atan2(main.z - tail.z, main.x - tail.x)
       cgHeightM = main.z * Math.cos(pitch) - main.x * Math.sin(pitch) - 0.05
+    } else if (nose && nose.x > this.P.gear.mainL.x) {
+      // Static equilibrium: leg loads from the moment balance about the CG,
+      // compressions from the spring rates, then the attitude and height
+      // that put each wheel at its compression. The old fixed 0.03 rad left
+      // the C172 1.7° nose-up of its −1° rest attitude: every ground spawn
+      // began with a 3° nod onto the nose wheel.
+      const main = this.P.gear.mainL, mainR = this.P.gear.mainR
+      const w = this.massKg * G
+      // −A·sinθ + B·cosθ = dNose − dMain, with A = x_n − x_m, B = z_n − z_m.
+      const A = nose.x - main.x, B = nose.z - main.z
+      let dMain = 0
+      pitch = 0
+      // The loads depend on the attitude: the CG sits ~1 m above the wheels,
+      // so a nose-down attitude moves both contacts aft and loads the nose
+      // more. A few fixed-point passes settle it (gain ≪ 1).
+      for (let it = 0; it < 8; it++) {
+        const c = Math.cos(pitch), sn = Math.sin(pitch)
+        const armN = nose.x * c + nose.z * sn, armM = main.x * c + main.z * sn
+        const dNose = (w * (-armM / (armN - armM))) / nose.k
+        dMain = (w * (armN / (armN - armM))) / (main.k + mainR.k)
+        pitch = Math.atan2(B, A) - Math.asin(Math.min(Math.max((dNose - dMain) / Math.hypot(A, B), -1), 1))
+      }
+      cgHeightM = main.z * Math.cos(pitch) - main.x * Math.sin(pitch) - dMain
     }
     qfromEuler(this.quat, headingRad, pitch, 0)
     v3set(this.posNed, north, east, -(groundElevM + cgHeightM))
