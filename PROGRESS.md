@@ -3037,3 +3037,20 @@ Headless sweeps over the whole fleet (final spawns, ground spawns, parked in win
   - A C172 dips 3.4° nose-down in a full-power brake hold, which is the braking couple on the nose strut.
   - Fuzzing 32 types with random inputs, wind and turbulence found no non-finite states.
 - **Harness note**: `__ohStep(n)` reads input and runs the assist once per call. Large steps with SAS on are therefore sample-and-hold control, and they make any airplane misbehave. Use assist off (hands-off), or small steps, for dynamics checks.
+
+## More shaders and physics mods
+- **Physics**:
+  - **Boundary-layer wind**: a log law below 10 m, the gradient wind aloft and Ekman veer. An approach into a 25 kt headwind speeds up 8 kt over the ground and sags 2–3 kt in airspeed near the ground: the wind-gradient effect.
+  - **Mountain lee waves** (λ = 2πU/N) downwind of the dominant upwind ridge.
+  - **Propeller gyroscopic precession** (H × Ω). The in-flight test fails with the term disabled.
+  - **Brake heating and fade**. One maximum-braking C172 stop stays under 300 °C; three back-to-back stops lengthen the stop by more than 10%.
+
+  All are inert in calm air or with cold brakes, and POH and roster validation are unchanged.
+- **Shaders**:
+  - **Cloud shadows** projected along the sun from the actual cloud masses.
+  - **Rainbows**: primary and secondary bows with Alexander's band.
+  - **A real night sky**: the Moon's place and phase from the Almanac series, checked against the January 2024 new, quarter and full moons. Stars sit on the turning celestial sphere and are drawn at least a pixel wide (they first aliased away), with the Milky Way along the galactic plane.
+  - **Volumetric landing-light beams** in precipitation and fog at night.
+
+  Each was verified in renders (`docs/images/sky-and-lights.jpg`); see `docs/shaders-and-physics.md`.
+

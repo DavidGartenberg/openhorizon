@@ -231,6 +231,8 @@ interface LayerField { mesh: THREE.Mesh; material: THREE.ShaderMaterial; slab: C
 export interface CumulusVolume { x: number; y: number; z: number; rx: number; ry: number; rz: number; seed: number }
 
 export class Clouds {
+  /** Bumped whenever cloud instances move or change (cloud shadows rebuild). */
+  version = 0
   private layers: LayerField[] = []
   private layersKey = ''
   private quality: 'performance' | 'high' | 'ultra' = 'high'
@@ -243,9 +245,20 @@ export class Clouds {
   constructor(private readonly scene: THREE.Scene) {}
 
   /** Replace the thermal-cumulus set (sorted far → near for compositing). */
+  /** Every visible cloud mass (render-frame centre and radii, m). */
+  forEachCloud(fn: (x: number, y: number, z: number, rx: number, ry: number, rz: number) => void): void {
+    for (const layer of this.cumulus ? [...this.layers, this.cumulus] : this.layers) {
+      if (!layer.mesh.visible) continue
+      const g = layer.mesh.geometry as THREE.InstancedBufferGeometry
+      const c = g.getAttribute('offset'), r = g.getAttribute('radii')
+      for (let i = 0; i < g.instanceCount; i++) fn(c.getX(i), c.getY(i), c.getZ(i), r.getX(i), r.getY(i), r.getZ(i))
+    }
+  }
+
   setCumulus(volumes: CumulusVolume[], cameraPos: THREE.Vector3): void {
     if (volumes.length === 0) {
       if (this.cumulus) (this.cumulus.mesh.geometry as THREE.InstancedBufferGeometry).instanceCount = 0
+      this.version++
       return
     }
     const minBase = Math.min(...volumes.map((v) => v.y - v.ry)), maxTop = Math.max(...volumes.map((v) => v.y + v.ry))
@@ -269,6 +282,7 @@ export class Clouds {
     })
     geo.instanceCount = sorted.length
     offsets.needsUpdate = radii.needsUpdate = seeds.needsUpdate = true
+    this.version++
   }
 
   /** Local cloud extinction in inverse metres at a render-frame position.
@@ -318,6 +332,7 @@ export class Clouds {
     if (cellX !== this.lastCellX || cellZ !== this.lastCellZ ||
       this.lastSortPosition.distanceToSquared(cameraPos) > 250 ** 2 || this.layers.some(l => l.mesh.userData.dirty)) {
       for (const l of this.layers) this.fillLayer(l, cellX, cellZ, worldOffsetE, worldOffsetN, cameraPos)
+      this.version++
       this.lastCellX = cellX
       this.lastCellZ = cellZ
       this.lastSortPosition.copy(cameraPos)

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { sunPosition, sunDirectionENU } from '../math/solar'
+import { equatorialMatrix, moonDirection } from '../math/lunar'
 import { SKY_INTEGRATION, SKY_LOOKUP } from './atmosphere-shader'
 
 const VERT = /* glsl */ `
@@ -14,12 +15,33 @@ const VERT = /* glsl */ `
 const FRAG = /* glsl */ `
   uniform sampler2D uSky;
   uniform vec3 uSunDir;
+  // Night sky (math/lunar.ts): the Moon's direction, the render→equatorial
+  // rotation (stars turn about the celestial pole), a clock for twinkling,
+  // and the rainbow's strength (rain with the sun out behind the viewer).
+  uniform vec3 uMoonDir;
+  uniform mat3 uEquatorial;
+  uniform float uTime;
+  uniform float uRainbow;
   varying vec3 vDir;
   ${SKY_LOOKUP}
   float hash(vec3 p) {
     p = fract(p * 443.8975);
     p += dot(p, p.yzx + 19.19);
     return fract((p.x + p.y) * p.z);
+  }
+  float vnoise(vec3 p) {
+    vec3 i = floor(p), f = fract(p);
+    f = f*f*(3.0-2.0*f);
+    return mix(mix(mix(hash(i), hash(i+vec3(1,0,0)), f.x), mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)), f.x), f.y),
+               mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)), f.x), mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)), f.x), f.y), f.z);
+  }
+  // Spectral colour (approximate) across a rainbow band: t = 0 violet → 1 red.
+  vec3 spectrum(float t) {
+    vec3 c = vec3(
+      smoothstep(0.45, 0.85, t) + 0.35*(1.0-smoothstep(0.0, 0.18, t)),
+      smoothstep(0.15, 0.5, t) * (1.0 - smoothstep(0.62, 0.92, t)),
+      1.0 - smoothstep(0.2, 0.52, t));
+    return c * smoothstep(0.0, 0.12, t) * (1.0 - smoothstep(0.88, 1.0, t));
   }
   void main() {
     vec3 dir = normalize(vDir);
@@ -32,15 +54,66 @@ const FRAG = /* glsl */ `
     color += vec3(18.0, 16.0-8.0*low, 13.0-10.0*low) * day *
       smoothstep(0.999989-edge, 0.999989+edge, mu);
     float night = 1.0 - smoothstep(-0.12, 0.02, uSunDir.y);
+    // ---- the Moon: a sphere lit by the real sun (phase and terminator
+    // orientation follow), faint earthshine on the dark limb; pale by day.
+    vec3 m = normalize(uMoonDir);
+    float mm = dot(dir, m);
+    if (mm > 0.99996 && m.y > -0.02) {
+      vec3 off = (dir - m * mm) / 0.00454; // offset in moon radii
+      float r2 = dot(off, off);
+      if (r2 < 1.0) {
+        vec3 n = off - m * sqrt(1.0 - r2);
+        float lit = max(dot(n, normalize(uSunDir)), 0.0);
+        float rim = smoothstep(1.0, 0.92, r2);
+        vec3 albedo = vec3(0.47, 0.47, 0.5) * (0.85 + 0.3 * vnoise(off * 3.0 + 7.0));
+        vec3 moon = albedo * (lit * 1.1 + 0.012) * rim;
+        color += moon * mix(0.35, 1.0, night);
+      }
+    }
     if (dir.y > 0.0 && night > 0.01) {
-      vec3 cell = floor(dir*420.0);
+      vec3 eq = uEquatorial * dir;
+      // Extinction toward the horizon (more air), and twinkling that grows there.
+      float airmass = 1.0 / max(dir.y + 0.025, 0.05);
+      float ext = exp(-0.12 * (airmass - 1.0));
+      // ---- stars: fixed on the celestial sphere, a realistic spread of
+      // magnitudes (few bright, many faint) and colour temperatures. Each is
+      // drawn at least a pixel wide (fwidth), so none alias away.
+      vec3 g = eq * 300.0;
+      vec3 cell = floor(g);
       float h = hash(cell);
-      vec3 point = fract(dir*420.0)-0.5;
-      float star = (1.0-smoothstep(0.05, 0.4, length(point))) * step(0.997, h);
-      color += vec3(0.6, 0.72, 1.0)*star*night;
-      // Retained approximation: permanent full moon at the solar antipode.
-      float moon = smoothstep(0.999985-edge, 0.99999+edge, dot(dir, -uSunDir));
-      color += vec3(0.45, 0.48, 0.55)*moon*night;
+      if (h > 0.9935) {
+        vec3 point = fract(g) - 0.5 - 0.3 * (vec3(hash(cell + 3.1), hash(cell + 5.7), hash(cell + 9.3)) - 0.5);
+        float mag = pow((h - 0.9935) / 0.0065, 5.0); // brightness: heavy-tailed
+        float pix = max(max(fwidth(g.x), fwidth(g.y)), fwidth(g.z));
+        float rad = max(mix(0.04, 0.12, mag), 0.75 * pix);
+        float core = 1.0 - smoothstep(rad * 0.35, rad, length(point));
+        float tint = hash(cell + 1.7);
+        vec3 starCol = mix(vec3(0.62, 0.75, 1.0), vec3(1.0, 0.78, 0.55), smoothstep(0.35, 0.95, tint));
+        float twinkle = 1.0 + (0.18 + 0.5 * (1.0 - dir.y)) * sin(uTime * (9.0 + 13.0 * hash(cell + 4.4)) + h * 60.0);
+        color += starCol * core * (0.05 + 1.6 * mag) * twinkle * ext * night;
+      }
+      // ---- the Milky Way: the galactic plane (pole RA 192.86°, Dec 27.13°),
+      // brightest toward the centre in Sagittarius, mottled by dust lanes.
+      vec3 gnp = vec3(-0.8676, -0.1981, 0.4560);
+      vec3 gc = vec3(-0.0549, -0.8734, -0.4838);
+      float b = asin(clamp(dot(eq, gnp), -1.0, 1.0));
+      float band = exp(-pow(b / 0.16, 2.0)) + 0.4 * exp(-pow(b / 0.42, 2.0));
+      float bulge = 1.0 + 2.2 * exp(-pow(acos(clamp(dot(eq, gc), -1.0, 1.0)) / 0.55, 2.0));
+      float dust = 0.55 + 0.45 * vnoise(eq * 9.0) - 0.35 * exp(-pow(b / 0.04, 2.0)) * vnoise(eq * 23.0);
+      color += vec3(0.010, 0.011, 0.014) * band * bulge * max(dust, 0.0) * ext * night * night;
+    }
+    // ---- rainbow: primary 40.6–42.4° around the antisolar point (red
+    // outside), secondary 50.3–53.5° (reversed, ~0.43×), Alexander's dark
+    // band between, a little extra light just inside the primary.
+    if (uRainbow > 0.001 && dir.y > -0.02) {
+      float th = degrees(acos(clamp(dot(dir, -normalize(uSunDir)), -1.0, 1.0)));
+      vec3 bow = spectrum((th - 40.6) / 1.8) + 0.43 * spectrum(1.0 - (th - 50.3) / 3.2);
+      float alexander = smoothstep(42.0, 43.0, th) * (1.0 - smoothstep(49.8, 50.8, th));
+      float inside = (1.0 - smoothstep(37.0, 40.8, th)) * smoothstep(20.0, 34.0, th);
+      float horizonFade = smoothstep(-0.02, 0.06, dir.y);
+      vec3 skyLum = vec3(dot(color, vec3(0.2126, 0.7152, 0.0722)));
+      color = color * (1.0 - 0.22 * alexander * uRainbow * horizonFade) +
+        (bow * 0.55 * skyLum + vec3(0.06) * inside * skyLum) * uRainbow * horizonFade;
     }
     gl_FragColor = vec4(color, 1.0);
     #include <tonemapping_fragment>
@@ -52,6 +125,9 @@ const FRAG = /* glsl */ `
  * Scattering integration runs only when the sun or observer altitude changes. */
 export class SkyDome {
   readonly sunDir = new THREE.Vector3(0, 1, 0)
+  /** The Moon's direction (render frame) and the render→equatorial rotation. */
+  readonly moonDir = new THREE.Vector3(0, -1, 0)
+  readonly equatorial = new THREE.Matrix3()
   elevationDeg = 0
   private cloudCover = 0
   get directTransmission(): number { return Math.exp(-this.cloudCover * 2.7) }
@@ -108,7 +184,11 @@ export class SkyDome {
     })
     this.lookupScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.integration))
     this.material = new THREE.ShaderMaterial({
-      uniforms: { uSky: { value: this.lookup.texture }, uSunDir: { value: this.sunDir } },
+      uniforms: {
+        uSky: { value: this.lookup.texture }, uSunDir: { value: this.sunDir },
+        uMoonDir: { value: this.moonDir }, uEquatorial: { value: this.equatorial },
+        uTime: { value: 0 }, uRainbow: { value: 0 },
+      },
       vertexShader: VERT, fragmentShader: FRAG,
       side: THREE.BackSide, depthWrite: false,
     })
@@ -157,7 +237,17 @@ export class SkyDome {
     }
   }
 
+  /** Rainbow strength 0..1 (rain falling with the sun out, below 42°). */
+  setRainbow(strength: number): void {
+    this.material.uniforms.uRainbow!.value = Math.max(0, Math.min(1, strength))
+  }
+
   update(date: Date, latDeg: number, lonDeg: number): THREE.Vector3 {
+    const md = moonDirection(date, latDeg, lonDeg)
+    this.moonDir.set(md.x, md.y, md.z)
+    const em = equatorialMatrix(date, latDeg, lonDeg)
+    this.equatorial.set(em[0]!, em[1]!, em[2]!, em[3]!, em[4]!, em[5]!, em[6]!, em[7]!, em[8]!)
+    this.material.uniforms.uTime!.value = (date.getTime() / 1000) % 3600
     const angles = sunPosition(date, latDeg, lonDeg)
     this.elevationDeg = angles.elevationDeg
     const d = sunDirectionENU(angles)

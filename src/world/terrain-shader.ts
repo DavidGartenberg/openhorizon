@@ -38,6 +38,10 @@ export const TERRAIN_FRAG = /* glsl */ `
   uniform float uQuality;
   uniform vec3 uCloudColor;
   uniform sampler2D uImagery, uSky;
+  // Cloud shadows: darkness map (r) over a render-frame rect (minX, minZ, 1/w, 1/d).
+  uniform sampler2D uCloudShadow;
+  uniform vec4 uCloudShadowRect;
+  uniform float uCloudShadowOn;
   uniform vec2 uWorldOffset;
   varying vec3 vColor, vNormal;
   varying float vDist, vUrban, vAltitude, vCloudDepth;
@@ -183,6 +187,15 @@ export const TERRAIN_FRAG = /* glsl */ `
     }
     float ndl = max(dot(N,L),0.0);
     float direct = mix(ndl,mix(1.0,ndl,0.4),imW);
+    // Cloud shadows: the sun-projected footprints of the clouds overhead,
+    // faded out toward the edge of the map.
+    float cloudShade = 1.0;
+    if (uCloudShadowOn > 0.0) {
+      vec2 suv = (vWXZ - uCloudShadowRect.xy) * uCloudShadowRect.zw;
+      float edgeFade = smoothstep(0.0, 0.08, min(min(suv.x, suv.y), min(1.0-suv.x, 1.0-suv.y)));
+      cloudShade = 1.0 - uCloudShadowOn * edgeFade * texture2D(uCloudShadow, suv).r;
+    }
+    direct *= cloudShade;
     // Hemispheric ambient: slopes turned from the sky see less of it and
     // pick up a warm ground bounce instead; photos already carry baked AO.
     float skyVis = mix(0.5+0.5*N.y,1.0,imW*0.7);
@@ -192,7 +205,7 @@ export const TERRAIN_FRAG = /* glsl */ `
       sunTint*0.65*uDayness*direct*uSunTransmission);
     // Snow glints toward the sun.
     vec3 Hh = normalize(L+V);
-    float glint = pow(max(dot(N,Hh),0.0),56.0)*snow*ndl;
+    float glint = pow(max(dot(N,Hh),0.0),56.0)*snow*ndl*cloudShade;
     lit += sunTint*glint*0.22*uDayness*uSunTransmission;
     // Wet ground: a water film reflects the sky at grazing angles (Fresnel,
     // n = 1.33) and gives a tight sun glint — the wet-road look.
@@ -204,7 +217,7 @@ export const TERRAIN_FRAG = /* glsl */ `
       // Unresolved relief inside a distant pixel blurs the sheen out.
       float sharp = 1.0-smoothstep(1.5,25.0,footprint);
       lit += skyRadiance(uSky,refl)*fres*film*(0.12+0.18*sharp);
-      lit += sunTint*pow(max(dot(N0,Hh),0.0),220.0)*film*0.15*sharp*uDayness*uSunTransmission;
+      lit += sunTint*pow(max(dot(N0,Hh),0.0),220.0)*film*0.15*sharp*uDayness*uSunTransmission*cloudShade;
     }
     float night = clamp(1.0-uDayness*1.6,0.0,1.0);
     if (night>0.001 && vUrban>0.001) {

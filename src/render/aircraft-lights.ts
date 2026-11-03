@@ -9,6 +9,7 @@
 import * as THREE from 'three'
 import { beaconOn, strobeOn } from '../sim/lights'
 import { lightGlowTexture } from './light-glow'
+import { LandingBeam, beamGroundCut, beamIntensity } from './landing-beam'
 
 const OFF = new THREE.Color(0, 0, 0)
 const NAV_L = new THREE.Color(1, 0.1, 0.08)
@@ -32,6 +33,15 @@ export class AircraftLights {
   private readonly disc: THREE.Mesh
   private readonly discMat: THREE.MeshBasicMaterial
   landingOn = false
+  /** Volumetric beam from the nose (render/landing-beam.ts). */
+  private beam: LandingBeam | null = null
+  private readonly beamWx = { precip: 0, fog: 0 }
+  private readonly fwdScratch = new THREE.Vector3()
+  /** What the beam can scatter on: precipitation and fog/cloud, 0..1. */
+  setBeamWeather(precip: number, fog: number): void {
+    this.beamWx.precip = precip
+    this.beamWx.fog = fog
+  }
 
   constructor(scene: THREE.Scene) {
     this.discMat = new THREE.MeshBasicMaterial({
@@ -48,6 +58,14 @@ export class AircraftLights {
    *  carry real wingtip/tail anchors; Tier-A meshes fall back to their
    *  bounding box (wingtips ARE the ±x extremes). */
   attach(group: THREE.Group): void {
+    {
+      // The landing-light beam starts at the nose, a third of the way up.
+      group.updateWorldMatrix(true, true)
+      const bb = new THREE.Box3().setFromObject(group)
+      const apex = new THREE.Vector3(0, THREE.MathUtils.lerp(bb.min.y, bb.max.y, 0.32), bb.min.z + 0.3)
+      this.beam = new LandingBeam(THREE.MathUtils.clamp((bb.max.x - bb.min.x) * 9, 110, 240), apex)
+      group.add(this.beam.mesh)
+    }
     let anchors: Anchors | null = null
     group.traverse((o) => {
       if (!anchors && (o.userData.lightAnchors as Anchors | undefined)) anchors = o.userData.lightAnchors as Anchors
@@ -132,6 +150,13 @@ export class AircraftLights {
       set(4, STROBE_WHITE, s)
       set(5, STROBE_WHITE, s)
       this.colorAttr.needsUpdate = true
+    }
+    if (this.beam) {
+      const night = Math.min(Math.max(1 - dayness * 1.6, 0), 1)
+      const fwd = this.fwdScratch.set(0, 0, -1).applyQuaternion(group.quaternion)
+      const pitch = Math.asin(Math.max(-1, Math.min(1, fwd.y)))
+      this.beam.update(this.landingOn && powered, beamIntensity(this.beamWx.precip, this.beamWx.fog, night),
+        beamGroundCut(aglM, pitch, this.beam.maxLengthM))
     }
     // Landing-light ground spot: an additive ellipse projected ahead along
     // the beam, brightness falling off with throw distance.

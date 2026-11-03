@@ -9,6 +9,7 @@
 import * as THREE from 'three'
 import { SkyDome } from '../../src/render/sky'
 import { TERRAIN_VERT, TERRAIN_FRAG } from '../../src/world/terrain-shader'
+import { rasterCloudShadows, SHADOW_MAP_PX, SHADOW_HALF_M } from '../../src/render/cloud-shadows'
 
 const params = new URLSearchParams(location.search)
 const view = params.get('view') ?? 'far'
@@ -131,10 +132,32 @@ const material = new THREE.ShaderMaterial({
     uWetness: { value: Number(params.get('wet') ?? 0) },
     uSnowCover: { value: Number(params.get('snowcover') ?? 0) },
     uQuality: { value: Number(params.get('quality') ?? 1) },
+    // ?clouds=1: a deterministic field of cumulus shadows (render/cloud-shadows.ts).
+    uCloudShadow: { value: white },
+    uCloudShadowRect: { value: new THREE.Vector4(-14000, -14000, 1 / 28000, 1 / 28000) },
+    uCloudShadowOn: { value: params.get('clouds') === '1' ? 1 : 0 },
   },
   vertexShader: TERRAIN_VERT,
   fragmentShader: params.get('count') === '1' ? countingShader(TERRAIN_FRAG) : TERRAIN_FRAG,
 })
+
+/** Cloud-shadow map for ?clouds=1: a lattice of cumulus masses at 1,500 m,
+ *  their shadows projected along this view's sun (cloud-shadows.ts). */
+function cloudShadowTexture(sunNow: THREE.Vector3): THREE.DataTexture {
+  const size = SHADOW_MAP_PX, data = new Float32Array(size * size), bytes = new Uint8Array(size * size)
+  const masses: number[][] = []
+  for (let j = -6; j <= 6; j++) for (let i = -6; i <= 6; i++) {
+    const h = Math.sin(i * 12.9898 + j * 78.233) * 43758.5453, r = h - Math.floor(h)
+    if (r < 0.55) continue
+    masses.push([i * 2200 + (r - 0.5) * 1600, 1500 + r * 900, j * 2200 + (r - 0.7) * 1400, 500 + 700 * r, 400 + 300 * r, 500 + 600 * r])
+  }
+  rasterCloudShadows(data, size, SHADOW_HALF_M, 0, 0, 300, sunNow, { version: 0, forEachCloud: (fn) => { for (const m of masses) fn(m[0]!, m[1]! + 1500, m[2]!, m[3]!, m[4]!, m[5]!) } })
+  for (let k = 0; k < data.length; k++) bytes[k] = Math.round(data[k]! * 255)
+  const t = new THREE.DataTexture(bytes, size, size, THREE.RedFormat)
+  t.magFilter = t.minFilter = THREE.LinearFilter
+  t.needsUpdate = true
+  return t
+}
 
 /** ?count=1: instrument the real program to output, per pixel, how many
  *  value-noise lookups it made (red = count/255, written raw, untonemapped).
@@ -155,17 +178,27 @@ const when: Record<string, string> = {
   far: '2026-07-15T20:30:00Z', near: '2026-07-15T21:00:00Z',
   snow: '2026-07-15T19:30:00Z', dusk: '2026-07-16T02:50:00Z',
 }
-const date = new Date(when[view] ?? when.far!)
+// ?date=ISO overrides the view's time (night sky, rainbows); ?rainbow=0..1.
+const date = new Date(params.get('date') ?? when[view] ?? when.far!)
+sky.setRainbow(Number(params.get('rainbow') ?? 0))
 const sunDir = sky.update(date, 37.5, -122.0)
 const elev = sky.elevationDeg
 material.uniforms.uSunDir!.value.copy(sunDir)
 material.uniforms.uDayness!.value = THREE.MathUtils.smoothstep(elev, -4, 10)
 material.uniforms.uLowSun!.value = 1 - THREE.MathUtils.smoothstep(elev, 0, 25)
+if (params.get('clouds') === '1') material.uniforms.uCloudShadow!.value = cloudShadowTexture(sunDir)
 
 if (view === 'near') { camera.position.set(-300, 900, 700); camera.lookAt(500, 700, -2200) }
 else if (view === 'snow') { camera.position.set(0, 2600, 3200); camera.lookAt(0, 2300, -3000) }
 else if (view === 'dusk') { camera.position.set(0, 1600, 5200); camera.lookAt(0, 900, -3000) }
 else { camera.position.set(0, 1700, 6200); camera.lookAt(0, 800, -3000) }
+// ?look=azimuthDeg,elevationDeg aims the camera (compass bearing, up +).
+const look = params.get('look')?.split(',').map(Number)
+if (params.get('fov')) { camera.fov = Number(params.get('fov')); camera.updateProjectionMatrix() }
+if (look && look.length === 2) {
+  const az = (look[0]! * Math.PI) / 180, el = (look[1]! * Math.PI) / 180
+  camera.lookAt(camera.position.clone().add(new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el))))
+}
 camera.updateMatrixWorld()
 sky.updateEnvironment(renderer, scene, camera.position)
 

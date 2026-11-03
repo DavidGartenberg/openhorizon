@@ -28,6 +28,8 @@ import { parseMetar } from './sim/weather/metar'
 import { blendWeather, type StationWeather, type BlendedWeather } from './sim/weather/weather'
 import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-model'
 import { Clouds } from './render/clouds'
+import { CloudShadowMap } from './render/cloud-shadows'
+import { rainbowStrength } from './render/rainbow'
 import { NexradField } from './world/nexrad'
 import { CommsBus, isAudible, type Transmission } from './sim/atc/comms'
 import { AiPatternPilot } from './sim/traffic/ai-pilot'
@@ -197,6 +199,8 @@ const tireSmoke = new TireSmoke(scene)
 let smokeWasOnGround = true
 const _wheelL = new THREE.Vector3(), _wheelR = new THREE.Vector3()
 const clouds = new Clouds(scene)
+// Cloud shadows on the terrain: the visible masses' sun-projected footprints.
+const cloudShadows = new CloudShadowMap()
 const hud = new Hud()
 const loop = new FixedTimestepLoop(120)
 
@@ -536,6 +540,11 @@ function updateWeatherEffects(dayness: number, sunDir: THREE.Vector3): void {
     // The 737's open cabin: the B738 barrel (r 1.88 m, axis 0.6 m, ±19.7 m).
     DECK_PROFILE?.cabin ? { group: mesh.group, radiusM: 1.9, axisY: 0.6, zMin: -19.8, zMax: 19.8 } : undefined)
   lastPrecipAt = nowMs
+  // Landing-light beams scatter on precipitation, cloud and mist.
+  aircraftLights.setBeamWeather(inPrecip, Math.min(1, inCloud + (weather.some((w) => /FG|BR|HZ/.test(w)) ? 0.5 : 0)))
+  // Rainbow: rain in the air with the sun out (not behind an overcast) and
+  // low enough (< 42°) for the bow to stand above the horizon.
+  sky.setRainbow(rainbowStrength(kind === 'rain' ? inPrecip : 0, sky.elevationDeg, sky.directTransmission))
   // Tyre smoke on touchdown: emit at the main-wheel contact points.
   const smoke = touchdownSmoke(smokeWasOnGround, d.onGround, d.groundSpeedKt * KT, -d.verticalSpeedFpm * 0.00508)
   smokeWasOnGround = d.onGround
@@ -3519,6 +3528,12 @@ function advanceFrame(elapsed: number, now: number): void {
   tiles.setWorldOffset(worldShift.e, worldShift.n)
   tiles.setLight(sunDir, dayness, lowSunT * lowSunT * (3 - 2 * lowSunT), sky.directTransmission)
   clouds.update(wxSlabs, camera.position, worldShift.e, worldShift.n, dayness, sunDir, dusk)
+  {
+    // Ground height under the camera sets where the footprints land.
+    const groundY = aircraft.groundElevAt?.(aircraft.posNed.x, aircraft.posNed.y) ?? 0
+    cloudShadows.update(clouds, camera.position, groundY, sunDir)
+    tiles.setCloudShadows(cloudShadows.texture, cloudShadows.rect, cloudShadows.active * dayness)
+  }
   // 13c night lights: airport layer + aircraft exterior lights.
   const night = Math.min(Math.max(1 - dayness * 1.6, 0), 1)
   airports.updateNight(loop.simTime, night)
@@ -3928,6 +3943,11 @@ Object.assign(window as unknown as Record<string, unknown>, {
     systemsControls.magneto = pos
   },
   __ohProfile: () => ({ totalMs: profiler.totalMs(), sections: profiler.report() }),
+  /** Landing light: set (when the type has electrics) and read back. */
+  __ohLanding: (on?: boolean) => {
+    if (typeof on === 'boolean' && aircraft.P.electrical !== false) aircraftLights.landingOn = on
+    return aircraftLights.landingOn
+  },
   /** GPU-synchronised frame timing (scripts/bench.mjs). The rAF loop idles
    *  while it renders `frames` frames back to back, each followed by a
    *  1-pixel readback so the time includes all of the GPU's work for that

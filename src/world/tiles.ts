@@ -130,6 +130,10 @@ export class TileManager {
         uWetness: { value: 0 },
         uSnowCover: { value: 0 },
         uQuality: { value: 1 },
+        // Cloud shadows (render/cloud-shadows.ts); off until a map is set.
+        uCloudShadow: { value: white },
+        uCloudShadowRect: { value: new THREE.Vector4(0, 0, 1, 1) },
+        uCloudShadowOn: { value: 0 },
       },
       vertexShader: TERRAIN_VERT,
       fragmentShader: TERRAIN_FRAG,
@@ -145,6 +149,13 @@ export class TileManager {
   /** Terrain shader tier: false = performance (cheaper detail, no micro-relief). */
   setShaderQuality(full: boolean): void {
     this.material.uniforms.uQuality!.value = full ? 1 : 0
+  }
+  /** Cloud-shadow darkness map over the terrain (render-frame rect). */
+  setCloudShadows(texture: THREE.Texture, rect: THREE.Vector4, on: number): void {
+    const u = this.material.uniforms
+    u.uCloudShadow!.value = texture
+    ;(u.uCloudShadowRect!.value as THREE.Vector4).copy(rect)
+    u.uCloudShadowOn!.value = on
   }
   /** Surface weather 0..1 (shared uniform objects reach every tile clone). */
   setSurfaceWeather(wetness: number, snowCover: number): void {
