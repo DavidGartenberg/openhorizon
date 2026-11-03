@@ -68,6 +68,16 @@ export interface EnvironmentHooks {
 export type EnvironmentEventKind = 'windshear' | 'overstress' | 'failure' | 'icing' | 'hydroplaning'
 export interface EnvironmentEvent { kind: EnvironmentEventKind; text: string }
 
+/** What a save/load carries over (plan step 15): the airframe's condition. */
+export interface EnvironmentSnapshot {
+  iceMm: number
+  overstressed: boolean
+  wingFailure: -1 | 0 | 1
+  maxG: number
+  minG: number
+  antiIce: 'auto' | 'on' | 'off'
+}
+
 export interface EnvironmentToggles {
   thermals: boolean
   ridge: boolean
@@ -136,6 +146,25 @@ export class Environment {
     if (!this.toggles.thermals) return []
     return thermalCumulus(this.thermals, n + this.originN, e + this.originE, timeS, this.status.convection, dewpointSpreadC, windN, windE)
       .map((c) => ({ ...c, n: c.n - this.originN, e: c.e - this.originE }))
+  }
+
+  snapshot(): EnvironmentSnapshot {
+    const st = this.structure
+    return { iceMm: this.ice.thicknessMm, overstressed: st.overstressed, wingFailure: st.wingFailure, maxG: st.maxG, minG: st.minG, antiIce: this.antiIce }
+  }
+
+  /** Restore a saved condition; malformed fields are ignored. */
+  restore(s: Partial<EnvironmentSnapshot> | null | undefined): void {
+    if (!s || typeof s !== 'object') return
+    const num = (v: unknown, lo: number, hi: number): number | null => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : null)
+    const ice = num(s.iceMm, 0, 40)
+    if (ice !== null) this.ice.thicknessMm = ice
+    if (typeof s.overstressed === 'boolean') this.structure.overstressed = s.overstressed
+    if (s.wingFailure === -1 || s.wingFailure === 0 || s.wingFailure === 1) this.structure.wingFailure = s.wingFailure
+    const mx = num(s.maxG, -20, 20), mn = num(s.minG, -20, 20)
+    if (mx !== null) this.structure.maxG = mx
+    if (mn !== null) this.structure.minG = mn
+    if (s.antiIce === 'auto' || s.antiIce === 'on' || s.antiIce === 'off') this.antiIce = s.antiIce
   }
 
   /** Floating-origin rebase: the frame moved by (dn, de) metres (the new
@@ -257,8 +286,9 @@ export class Environment {
       const lim = this.structure.limitsFor(s.flapsDeg)
       if (ev === 'overstress') events.push({ kind: 'overstress', text: `OVERSTRESS ${s.loadFactorG.toFixed(1)} G (LIMIT ${s.loadFactorG > 0 ? lim.pos.toFixed(1) : lim.neg.toFixed(1)})` })
       if (ev === 'failure') events.push({ kind: 'failure', text: `STRUCTURAL FAILURE — ${this.structure.wingFailure < 0 ? 'LEFT' : 'RIGHT'} WING` })
-      hooks.wingFailure = this.structure.wingFailure
     }
+    // Damage persists on the ground too (e.g. restored from a save).
+    hooks.wingFailure = this.structure.wingFailure
     return events
   }
 }

@@ -1,7 +1,7 @@
 import { FixedTimestepLoop, type SimRate } from './sim/loop'
 import { Aircraft } from './sim/aircraft'
 import { WindModel } from './sim/wind'
-import { Environment, type EnvironmentEvent } from './sim/environment'
+import { Environment, type EnvironmentEvent, type EnvironmentSnapshot } from './sim/environment'
 import { chooseFallbackSpawn, needsRepark } from './sim/spawn-fallback'
 import { safetyHazard } from './audio/safety-hazard'
 import { TeVario } from './sim/vario'
@@ -948,6 +948,8 @@ interface Snapshot {
   flapsIndex: number; fuelKg: number; payloadKg: number
   fuelLeftKg?: number; fuelRightKg?: number
   simMs: number; onGround: boolean; spawn: string
+  /** Airframe condition: ice, overstress, wing failure, anti-ice (step 15). */
+  env?: EnvironmentSnapshot
 }
 
 let toastLine = ''
@@ -969,6 +971,7 @@ function saveSnapshot(): void {
     // 9A: a ground save restores to where you ARE — spawnDesc is the
     // last spawn point, wrong after landing somewhere else.
     onGround: d.onGround, spawn: d.onGround ? (airports.near(ll.lat, ll.lon, 5000)[0]?.i ?? spawnDesc) : spawnDesc,
+    env: environment.snapshot(),
   }
   try {
     localStorage.setItem('oh-save', JSON.stringify(snap))
@@ -1031,6 +1034,8 @@ function loadSnapshot(): boolean {
     airports.updateVisuals(frame.anchor.lat, frame.anchor.lon)
   }
   applyLoading(snapshotLoading, FLEET_ACTIVE.params, aircraft, fuelState, true)
+  // The airframe's condition comes back with it (the spawn above reset it).
+  environment.restore(snap.env)
   scrubSeconds = (snap.simMs - baseDate.getTime()) / 1000 - loop.simTime
   toast(`LOADED — ${snap.spawn || 'airborne'} ${Math.round(snap.altFt)} ft`)
   return true

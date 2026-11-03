@@ -378,6 +378,27 @@ describe('environment orchestration', () => {
     expect(new Environment(C172S).iceProtectionFitted).toBe(false)
   })
 
+  it('saves and restores the airframe condition, ignoring malformed fields', () => {
+    const a = new Environment(B738)
+    a.ice.thicknessMm = 3.5
+    a.structure.overstressed = true
+    a.structure.wingFailure = -1
+    a.structure.maxG = 3.1
+    a.antiIce = 'off'
+    const snap = JSON.parse(JSON.stringify(a.snapshot()))
+    const b = new Environment(B738)
+    b.restore(snap)
+    expect(b.snapshot()).toEqual(a.snapshot())
+    const c = new Environment(B738)
+    c.restore({ iceMm: Number.NaN, wingFailure: 7 as never, antiIce: 'maybe' as never, overstressed: 'yes' as never })
+    expect(c.snapshot()).toEqual(new Environment(B738).snapshot())
+    c.restore(undefined)
+    // A restored failure reaches the aircraft hooks even on the ground.
+    const h = hooks()
+    b.step(state({ onGround: true, aglM: 0 }), v3(), h)
+    expect(h.wingFailure).toBe(-1)
+  })
+
   it('never judges gear contact as a wing load (spawning into the ground broke the wings)', () => {
     const env = new Environment(C172S)
     const h = hooks()

@@ -59,6 +59,7 @@ describe('main loading lifecycle', () => {
       FT: .3048, KT: .514444, kcasFromKias: (n: number) => n, isa: () => ({ densityKgM3: 1.225 }),
       trim: (input: { massKg: number }) => { trimMass = input.massKg; return { alphaRad: 0, gammaRad: 0, elevatorRad: 0, throttle: 0, rpm: 0 } },
       fuelState, applyLoading, baseDate: new Date(0), loop: { simTime: 0 },
+      environment: { restore: noop },
     }
     const declarations = "let parkingBrake=true,spawnDesc='',scrubSeconds=0;"
     const code = ts.transpileModule(`${declarations}${functionText('loadSnapshot')};return loadSnapshot();`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
