@@ -91,8 +91,8 @@ const RATE_POINTS = {
 }
 
 /** Words per minute → the `say -r` rate that gives this voice that pace, interpolated along its measured curve (clamped to what it can do). */
-export function sayRateFor(voice, wpm) {
-  const pts = RATE_POINTS[voice]
+export function sayRateFor(voice, wpm, measured) {
+  const pts = RATE_POINTS[voice] ?? measured?.get(voice)
   if (!pts) return Math.max(90, Math.min(330, Math.round(150 + (wpm - 121) / 0.55)))
   if (wpm <= pts[0][1]) return pts[0][0]
   for (let k = 1; k < pts.length; k++) {
@@ -108,24 +108,28 @@ function installedOnly(names, installed) {
 }
 
 /** The voice, say rate and pitch note for one speaker. Deterministic: the same inputs always give the same cast. */
-export function castVoice({ role = 'warning', speaker = '', style = 'faa', installed } = {}) {
+export function castVoice({ role = 'warning', speaker = '', style = 'faa', installed, better = [], rates } = {}) {
   const name = String(speaker)
   const h = hashOf(name)
   const paced = (key) => { const [lo, hi] = PACE[key]; return lo + (h % (hi - lo + 1)) }
   const result = (voice, wpm, shiftable = true, spread = 3) => {
     const facts = VOICE_FACTS[voice]
     const delta = shiftable && facts?.midi ? (((h >> 5) % (2 * spread + 1)) - spread) : 0
-    return { voice, rate: sayRateFor(voice, wpm), ...(delta ? { pbas: facts.midi + delta } : {}) }
+    return { voice, rate: sayRateFor(voice, wpm, rates), ...(delta ? { pbas: facts.midi + delta } : {}) }
   }
+  // Premium / Enhanced voices of the right accent are preferred: all of them when there are enough to tell speakers apart, else alongside the built-in ones.
+  const withBetter = (accents, base, exclusive = false) => { const mine = better.filter((v) => !accents || accents.includes(v.accent)).map((v) => v.name); return exclusive && mine.length ? mine : mine.length >= 3 ? mine : [...mine, ...base] }
 
   if (role === 'copilot') return { voice: 'Rocko (English (US))', rate: 178 }
   if (role === 'atis') {
-    const v = style === 'icao' ? 'Daniel' : 'Samantha'
+    const nicer = better.find((v) => v.accent === (style === 'icao' ? 'GB' : 'US'))
+    const v = nicer?.name ?? (style === 'icao' ? 'Daniel' : 'Samantha')
     return { ...result(installedOnly([v], installed)?.[0] ?? 'Samantha', PACE.atis[0], false) }
   }
   if (role === 'atc') {
-    const pool = installedOnly(style === 'icao' ? POOLS.atcIcao : POOLS.atc, installed)
-    if (!pool) return { voice: 'Samantha', rate: 190 }
+    const base = installedOnly(style === 'icao' ? POOLS.atcIcao : POOLS.atc, installed) ?? []
+    const pool = withBetter(style === 'icao' ? null : ['US'], base)
+    if (!pool.length) return { voice: 'Samantha', rate: 190 }
     // "Palo Alto Tower" and "Palo Alto Ground" share the field (hash of the rest) but take different steps through the pool.
     const kind = KINDS.findIndex((k) => new RegExp(`\\b${k}\\b`, 'i').test(name))
     const field = hashOf(name.replace(new RegExp(`\\b(${KINDS.join('|')})\\b`, 'ig'), '').trim().toLowerCase())
@@ -136,11 +140,34 @@ export function castVoice({ role = 'warning', speaker = '', style = 'faa', insta
   }
   if (role === 'pilot') {
     const airline = AIRLINE_VOICES.find(([rx]) => rx.test(name))
-    const pool = installedOnly(airline ? airline[1] : POOLS.pilot, installed) ?? installedOnly(POOLS.pilot, installed)
-    if (!pool) return { voice: 'Samantha', rate: 170 }
+    const wanted = airline ? (installedOnly(airline[1], installed) ?? installedOnly(POOLS.pilot, installed) ?? []) : (installedOnly(POOLS.pilot, installed) ?? [])
+    const accentOf = airline ? ({ Daniel: 'GB', Moira: 'IE', Karen: 'AU', Tessa: 'ZA', Rishi: 'IN' }[airline[1][0]] ?? null) : 'US'
+    // An airline crew with a Premium voice of its accent sounds like that voice alone; others share the cast.
+    const pool = withBetter(accentOf ? [accentOf] : null, wanted, !!airline)
+    if (!pool.length) return { voice: 'Samantha', rate: 170 }
     return result(pool[h % pool.length], paced('pilot'))
   }
   return { voice: 'Samantha', rate: 165 }
+}
+
+/** `say -v '?'` lines → every voice with its locale ("Zoe (Premium)", "en_US"). */
+export function parseSayVoiceList(output) {
+  const out = []
+  for (const line of String(output).split('\n')) {
+    const m = /^(.+?)\s+([a-z]{2}[_-][A-Za-z]{2})\s+#/.exec(line)
+    if (m) out.push({ name: m[1].trim(), locale: m[2].replace('-', '_') })
+  }
+  return out
+}
+
+const ACCENTS = { en_US: 'US', en_CA: 'US', en_GB: 'GB', en_AU: 'AU', en_NZ: 'AU', en_IE: 'IE', en_ZA: 'ZA', en_IN: 'IN' }
+
+/**
+ * The Premium and Enhanced English voices a Mac has downloaded (System Settings → Accessibility → Spoken Content → Manage
+ * Voices): far more natural than the built-in ones, so they are used first whenever they are there.
+ */
+export function betterVoices(list) {
+  return list.filter((v) => /\((Premium|Enhanced)\)/i.test(v.name) && /^en_/.test(v.locale)).map((v) => ({ name: v.name, accent: ACCENTS[v.locale] ?? 'US' }))
 }
 
 /** Voice names a Mac has, from `say -v '?'` output (the name before the locale column). */

@@ -90,3 +90,18 @@ describe('casting on the speech route',()=>{
   expect((seen[2]!.at(-1)!.match(/\[\[/g)??[]).length).toBeLessThanOrEqual(1)      // at most the cast's own pitch command
  })
 })
+
+describe('Premium voices on the speech route',()=>{
+ it('speaks controllers in a Premium voice a Mac has, and measures its pace once in the background',async()=>{
+  const seen:string[][]=[];const measured:string[]=[]
+  const run=async(_f:string,args:string[])=>{seen.push(args);await fs.copyFile(fixture,args[args.indexOf('-o')+1]!)}
+  const svc=createVoiceService({whisper:'/fake/whisper',model:'/fake/model',say:'/fake/say',available:async()=>true,run,
+   listVoices:async()=>['Zoe (Premium)    en_US  # Hello!','Evan (Enhanced)  en_US  # Hello!','Nathan (Enhanced) en_US # Hello!','Samantha en_US # Hello!'].join('\n'),
+   calibrate:async(v:string)=>{measured.push(v);return [[150,130],[250,230]]}})
+  const res=await request(svc,'/api/voice/speak',Buffer.from(JSON.stringify({text:'Skyhawk three Alpha Bravo, cleared for takeoff',role:'atc',speaker:'Palo Alto Tower'})),{type:'application/json'})
+  expect(res.statusCode).toBe(200)
+  expect(['Zoe (Premium)','Evan (Enhanced)','Nathan (Enhanced)']).toContain(seen[0]![seen[0]!.indexOf('-v')+1])
+  await new Promise(r=>setTimeout(r,20))
+  expect(measured.sort()).toEqual(['Evan (Enhanced)','Nathan (Enhanced)','Zoe (Premium)'])
+ })
+})

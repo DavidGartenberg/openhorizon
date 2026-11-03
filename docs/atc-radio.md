@@ -67,8 +67,13 @@ gender, natural pitch, intelligibility and pace curve:
   each voice's own curve. Controllers run about 168–190 words per minute, pilots 148–172, the ATIS 150.
 - **Pitch** moves up to three semitones around each voice's own (`[[pbas]]`), which turns about ten voices
   into dozens of people. Voices with no measured pitch are never shifted.
-- Better voices help: install the Premium or Enhanced voices in System Settings → Accessibility →
-  Spoken Content → System Voice → Manage Voices and add them to `VOICE_FACTS` and a pool.
+- **Better voices are used automatically.** Download Premium or Enhanced English voices in System Settings →
+  Accessibility → Spoken Content → System Voice → Manage Voices (Zoe, Ava, Evan, Nathan, Oliver, Serena, Matilda …)
+  and restart the dev server: any installed English voice with "(Premium)" or "(Enhanced)" in its name is cast
+  ahead of the built-in ones (controllers and the ATIS from the American ones, airline crews from the one matching
+  their airline's accent), and its pace is measured once, in the background. Nothing in this repo was tested
+  against such a voice (none is installed on the development Mac): the selection is covered by tests with fake
+  voice lists, so give it a listen.
 - `scripts/voice/rehearse.ts` runs a short scenario through the real controllers, AI pilots and
   background traffic, speaks it with the real cast and reads it back: who said what, in which voice, at
   what pace, and how much was understood (82 % of the words on the development Mac, with the base English
@@ -83,7 +88,7 @@ gender, natural pitch, intelligibility and pace curve:
 ## Limits
 
 - Voices are the Mac's own synthesizer: clear, not indistinguishable from people. Only a listening check
-  can judge that; the recogniser audit cannot. Premium voices would help most.
+  can judge that; the recogniser audit cannot. Premium voices would help most (and are picked up on their own).
 - Background traffic is radio-only: the aircraft that talk are not drawn. The visible ones are the AI
   pattern pilots on the tower frequency.
 - Live ADS-B traffic is not addressed by the controllers.

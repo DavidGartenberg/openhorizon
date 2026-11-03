@@ -5,7 +5,7 @@ import path from 'node:path'
 import os from 'node:os'
 import {fileURLToPath} from 'node:url'
 import {execFile} from 'node:child_process'
-import {castVoice,parseSayVoices} from './voice-cast.mjs'
+import {castVoice,parseSayVoices,parseSayVoiceList,betterVoices} from './voice-cast.mjs'
 
 const MAX_WAV = 44 + 16000 * 2 * 20 + 4096
 function failure(status,message) { return Object.assign(new Error(message),{status}) }
@@ -48,10 +48,12 @@ async function body(req,max,signal) {
   finally{signal.removeEventListener('abort',abort)}
 }
 /** Aviation voices (macOS `say`), cast per speaker in `voice-cast.mjs`: controllers, other aircraft's crews, the ATIS, the first officer and the cockpit warnings each sound like different people. */
-export function pickVoice(role,speaker='',style='faa',installed) {
-  const cast=castVoice({role,speaker,style,installed})
+export function pickVoice(role,speaker='',style='faa',installed,extra={}) {
+  const cast=castVoice({role,speaker,style,installed,...extra})
   return {voice:cast.voice,rate:cast.rate,...(cast.pbas?{pbas:cast.pbas}:{})}
 }
+const CAL_SENTENCE='Skyhawk one two three Alpha Bravo, Palo Alto Tower, wind two seven zero at niner, runway three one, cleared for takeoff, then contact departure one two zero point five, good day.'
+const CAL_WORDS=CAL_SENTENCE.split(/\s+/).length
 /** The user's text with the speech synthesizer's embedded commands defused: a transmission is only words. */
 export function plainSpeech(text){return String(text).replace(/\[\[/g,'[ [')}
 export function createVoiceService(options={}) {
@@ -60,9 +62,31 @@ export function createVoiceService(options={}) {
   const say=options.say??'/usr/bin/say'
   const available=options.available??(async(file,executable=false)=>{try{await fs.access(file,executable?constants.X_OK:constants.R_OK);return true}catch{return false}})
   const run=options.run??runCommand
-  const listVoices=options.listVoices??(()=>new Promise(resolve=>{execFile(say,['-v','?'],{timeout:5000,maxBuffer:256*1024},(error,stdout)=>resolve(error?undefined:parseSayVoices(stdout)))}))
-  let installedVoices
-  const installed=()=>(installedVoices??=listVoices().catch(()=>undefined))
+  // The installed voices (and any Premium / Enhanced ones, which are used first and have their pace measured once, in the background).
+  const listVoices=options.listVoices??(()=>new Promise(resolve=>{execFile(say,['-v','?'],{timeout:5000,maxBuffer:256*1024},(error,stdout)=>resolve(error?undefined:stdout))}))
+  const measuredRates=new Map()
+  async function calibrate(voice) {
+    if(options.calibrate)return options.calibrate(voice)
+    if(options.say!==undefined)return undefined
+    let dir
+    try{
+      dir=await fs.mkdtemp(path.join(os.tmpdir(),'openhorizon-rate-'))
+      const points=[]
+      for(const rate of [150,250]){
+        const file=path.join(dir,`${rate}.wav`)
+        await run(say,['-v',voice,'-r',String(rate),'--file-format=WAVE','--data-format=LEI16@16000','-o',file,'--',CAL_SENTENCE],{timeout:25000})
+        points.push([rate,Math.round(CAL_WORDS/(((await fs.stat(file)).size-44)/32000)*60)])
+      }
+      return points[1][1]>points[0][1]?points:undefined
+    }catch{return undefined}finally{if(dir)await fs.rm(dir,{recursive:true,force:true}).catch(()=>{})}
+  }
+  let voiceInfo
+  const installed=()=>(voiceInfo??=Promise.resolve(listVoices()).then(text=>{
+    if(!text)return {}
+    const better=betterVoices(parseSayVoiceList(text))
+    ;(async()=>{for(const v of better.slice(0,8)){const pts=await calibrate(v.name);if(pts)measuredRates.set(v.name,pts)}})().catch(()=>{})
+    return {installed:parseSayVoices(text),better}
+  }).catch(()=>({})))
   let busy=false
   async function status(){return {transcription:await available(whisper,true)&&await available(model),synthesis:(options.say!==undefined||process.platform==='darwin')&&await available(say,true),engine:'whisper.cpp',maxSeconds:20}}
   return async function voiceRoute(url,res,method='GET',req) {
@@ -97,7 +121,8 @@ export function createVoiceService(options={}) {
       const audio=path.join(dir,'audio.wav'),output=path.join(dir,'result')
       if(synth){
         stage='synthesis-process'
-        const pick={...pickVoice(typeof role==='string'?role:'warning',typeof speaker==='string'?speaker.slice(0,64):'',style==='icao'?'icao':'faa',await installed()),role}
+        const voices=await installed()
+        const pick={...pickVoice(typeof role==='string'?role:'warning',typeof speaker==='string'?speaker.slice(0,64):'',style==='icao'?'icao':'faa',voices.installed,{better:voices.better??[],rates:measuredRates}),role}
         // The ATIS reads item by item: a beat between sentences, as a recording does.
         const words=pick.role==='atis'?plainSpeech(text).replace(/\.\s+/g,'. [[slnc 280]] '):plainSpeech(text)
         // Pitch is a speech command in the text itself: a few semitones either way makes one voice several people.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error plain ES module without types (server code)
-import { castVoice, hashOf, parseSayVoices, sayRateFor, VOICE_FACTS } from '../server/voice-cast.mjs'
+import { betterVoices, castVoice, hashOf, parseSayVoiceList, parseSayVoices, sayRateFor, VOICE_FACTS } from '../server/voice-cast.mjs'
 // @ts-expect-error plain ES module without types (server code)
 import { pickVoice, plainSpeech } from '../server/voice.mjs'
 
@@ -88,5 +88,46 @@ describe('casting the radio', () => {
     const out = 'Samantha            en_US    # Hello! My name is Samantha.\nDaniel (English (UK)) en_GB    # Hello!\nBad line\n'
     expect([...parseSayVoices(out)]).toEqual(['Samantha', 'Daniel (English (UK))'])
     expect(hashOf('x')).toBe(hashOf('x'))
+  })
+})
+
+describe('Premium and Enhanced voices, when a Mac has them', () => {
+  const list = parseSayVoiceList([
+    'Zoe (Premium)       en_US    # Hello! My name is Zoe.', 'Evan (Enhanced)     en_US    # Hello!', 'Nathan (Enhanced)   en_US    # Hello!',
+    'Oliver (Enhanced)   en_GB    # Hello!', 'Samantha           en_US    # Hello!', 'Amélie (Premium)    fr_CA    # Bonjour!', 'Moira (Enhanced)    en_IE    # Hello!',
+  ].join('\n'))
+  const better = betterVoices(list) as Array<{ name: string; accent: string }>
+
+  it('are recognised by name and locale, with their accent', () => {
+    expect(list.map((v: { name: string }) => v.name)).toContain('Amélie (Premium)')
+    expect(better).toEqual([
+      { name: 'Zoe (Premium)', accent: 'US' }, { name: 'Evan (Enhanced)', accent: 'US' }, { name: 'Nathan (Enhanced)', accent: 'US' },
+      { name: 'Oliver (Enhanced)', accent: 'GB' }, { name: 'Moira (Enhanced)', accent: 'IE' },
+    ])
+  })
+
+  it('cast controllers, the ATIS and airline crews from them, by accent, instead of the built-in voices', () => {
+    for (let i = 0; i < 40; i++) expect(['Zoe (Premium)', 'Evan (Enhanced)', 'Nathan (Enhanced)']).toContain(cast('atc', `Field${i} Tower`, { better }).voice)
+    expect(cast('atis', 'KSFO ATIS', { better }).voice).toBe('Zoe (Premium)')
+    expect(cast('pilot', 'BAW2KP', { better }).voice).toBe('Oliver (Enhanced)')
+    expect(cast('pilot', 'EIN123', { better }).voice).toBe('Moira (Enhanced)')
+    for (let i = 0; i < 40; i++) expect(['Zoe (Premium)', 'Evan (Enhanced)', 'Nathan (Enhanced)']).toContain(cast('pilot', `Skyhawk ${i}AB`, { better }).voice)
+    expect(cast('copilot', '', { better }).voice).toBe('Rocko (English (US))')
+  })
+
+  it('share the cast with the built-in voices when there are fewer than three of an accent, and never shift their pitch', () => {
+    const one = [{ name: 'Zoe (Premium)', accent: 'US' }]
+    const voices = new Set(Array.from({ length: 60 }, (_, i) => cast('atc', `Field${i} Tower`, { better: one }).voice))
+    expect(voices.has('Zoe (Premium)')).toBe(true)
+    expect(voices.size).toBeGreaterThan(2)
+    for (let i = 0; i < 40; i++) { const c = cast('atc', `F${i} Tower`, { better }); expect(c.pbas).toBeUndefined() }
+  })
+
+  it('take their pace from their own measured curve, and a plausible one until it is measured', () => {
+    const rates = new Map([['Zoe (Premium)', [[150, 130], [250, 230]]]])
+    expect(sayRateFor('Zoe (Premium)', 180, rates)).toBe(200)
+    expect(sayRateFor('Zoe (Premium)', 180)).toBeGreaterThan(150)
+    const c = castVoice({ role: 'atc', speaker: 'Palo Alto Tower', better: [better[0]], rates, installed: undefined }) as { voice: string; rate: number }
+    expect(c.rate).toBeGreaterThanOrEqual(90)
   })
 })
