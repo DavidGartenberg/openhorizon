@@ -29,5 +29,10 @@ lands on its own commit. Status is updated as steps complete.
 
 ## Status
 
-- [ ] 1 · [ ] 2 · [ ] 3 · [ ] 4 · [ ] 5 · [ ] 6 · [ ] 7 · [ ] 8 · [ ] 9 · [ ] 10
-- [ ] 11 · [ ] 12 · [ ] 13 · [ ] 14 · [ ] 15 · [ ] 16 · [ ] 17 · [ ] 18 · [ ] 19 · [ ] 20
+- [x] 1 · [x] 2 · [x] 3 · [x] 4 · [x] 5 · [x] 6 · [x] 7 · [x] 8 · [x] 9 · [x] 10
+- [x] 11 · [x] 12 · [x] 13 · [x] 14 · [x] 15 · [x] 16 · [x] 17 · [x] 18 · [x] 19 · [ ] 20
+
+Notes from doing it:
+- **7**: lightning already existed, as a full-screen flash and synthesised thunder near heavy NEXRAD cells. The step became an upgrade: METAR-storm triggers, 3D bolts and distance-shaped thunder.
+- **2** paid for itself at once. It caught the no-airport spawn rendering a dark scene: a night clock, and a false structural failure from gear forces while under the terrain. Both are fixed.
+- **16**: the profile put about 11 of about 15 ms per frame in draw submission, which pointed step 17 at draw calls. Frames in this sandbox's software GL take about 5 s whatever the resolution, so no FPS gain is claimed from it.

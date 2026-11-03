@@ -48,6 +48,23 @@ By default the terrain is draped with USGS satellite imagery (public domain, US 
 
 Google's attribution is shown at the bottom left whenever a Google layer is visible. Tiles are cached only in memory, for no longer than Google's cache headers allow, and are never written to disk. Your use of the API is governed by the Google Maps Platform terms for your key. Without a key, the Google options are disabled and the sim uses USGS.
 
+## Weather & physics
+
+Beyond the POH-validated flight model, the sim models the air and the airframe. Everything is inert in calm, clear, dry air, so the validated numbers stay exactly as they are.
+
+- **Turbulence**: MIL-F-8785C Dryden. Scale lengths and intensities vary with height, from the reported gusts and surface wind, and include roll gusts. Thunderstorms (TS, +TS, VCTS, heavy radar cells) and lee rotor downwind of ridges in strong wind add to it.
+- **Thermals and ridge lift**: sun-driven thermals with a real life cycle, drifting with the wind, with sink between them. Ridge lift (and lee sink) comes from the wind over the terrain slope. Fair-weather **cumulus** cap the thermals when the air is moist enough. Gliders get a **total-energy variometer** with audio.
+- **Microburst windshear**: type `MICROBURST`. Jets get the reactive "WINDSHEAR" alert, spoken.
+- **Wake turbulence**: from AI and live traffic, as sinking, drifting, decaying vortex pairs that can roll you hard. The tower adds "caution wake turbulence" behind heavier traffic.
+- **Airframe icing**: in cloud or freezing precipitation. It reduces CLmax and adds drag. Jets and turboprops have anti-ice (`ANTI-ICE ON|OFF|AUTO`). Others show an AIRFRAME ICE caution, and their windscreens frost.
+- **Runway contamination**: wet, flooded, slush, snow or ice from the METAR, with braking-action friction and hydroplaning above 9·√p kt.
+- **Structural limits**: certification-category g limits. Over the limit, the airframe is marked overstressed. Past the ultimate load, a wing fails.
+- **Weather visuals**: wet and snow-covered terrain, glossy wet runways, rain and frost on the windscreen, falling rain and snow, lightning bolts with distance-delayed thunder, contrails (Schmidt–Appleman) and wingtip vapour, and touchdown tyre smoke. The View & graphics weather menu has Rain, Snow and Thunderstorm presets.
+
+Switch the models in **View & graphics → Realism** or with typed commands. Type `HELP` in the command box (`/`) for the full list. The landing debrief reports what the environment did on the flight (max g, overstress, windshear, ice, hydroplaning). Saves keep the airframe's condition.
+
+**Performance**: **Frame rate** (Auto 60 / Auto 30 / Fixed) holds a frame-rate target by scaling resolution below the Quality setting. Quality also sets the terrain shader tier and shadow-map size. Far airport buildings and AI traffic drop out by distance. `PERF` shows per-section frame timing.
+
 ## Scripts
 
 | Command | Description |
@@ -56,6 +73,7 @@ Google's attribution is shown at the bottom left whenever a Google layer is visi
 | `npm run build` | Type-check and produce a production build in `dist/` |
 | `npm test` | Full Vitest test suite |
 | `npm run validate` | POH/fleet validation harness (physics accuracy gate) |
+| `npm run smoke` | Headless browser smoke test: boot, and boot with the airport list unavailable; fails on page errors or a black 3D view (needs Playwright + Chromium) |
 
 ## Architecture
 
