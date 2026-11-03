@@ -75,6 +75,8 @@ import { Input } from './input/input'
 import { EngineSound } from './audio/engine-sound'
 import { Hud } from './ui/hud'
 import { GraphicsPanel } from './ui/graphics-panel'
+import { MapAttribution } from './ui/map-attribution'
+import { IMAGERY_SOURCES, googleStyle, imageryBasePath, isGoogleSource, parseImagerySource, resolveImagerySource, viewBounds, type ImagerySource } from './world/imagery-source'
 import { LoadingPanel } from './ui/loading-panel'
 import { sunPosition } from './math/solar'
 import { WorldFrame, TileManager } from './world/tiles'
@@ -156,6 +158,38 @@ const tiles = new TileManager(scene, frame, (s, n, w, e) => airports.runwaysInBo
 tiles.setSky(sky.radianceTexture)
 // Satellite imagery (13b) defaults ON; `IMAGERY OFF` persists across loads.
 try { if (localStorage.getItem('oh-imagery') === 'OFF') tiles.setImagery(false) } catch { /* private mode */ }
+
+// Photo/map layer draped on the terrain: USGS by default; the Google Maps
+// layers (satellite / hybrid roads+labels / map) exist when the companion
+// server has GOOGLE_MAPS_API_KEY. The choice survives reloads.
+let imagerySource: ImagerySource = 'usgs'
+let googleImageryAvailable = false
+let lastAttributionAt = -Infinity
+const mapAttribution = new MapAttribution()
+let onMapLayerChanged: ((src: ImagerySource, googleAvailable: boolean) => void) | null = null
+function applyImagerySource(wanted: ImagerySource, announce: boolean): void {
+  const src = resolveImagerySource(wanted, googleImageryAvailable)
+  imagerySource = src
+  tiles.setImageryBase(imageryBasePath(src))
+  try { localStorage.setItem('oh-imagery-source', src) } catch { /* private mode */ }
+  onMapLayerChanged?.(src, googleImageryAvailable)
+  lastAttributionAt = -Infinity
+  // Attribution is on screen whenever Google tiles can be.
+  mapAttribution.show(isGoogleSource(src) ? 'Map data ©Google' : null)
+  if (announce) {
+    toast(src !== wanted
+      ? 'GOOGLE MAP LAYERS NEED GOOGLE_MAPS_API_KEY ON THE SERVER — USING USGS SATELLITE'
+      : `MAP LAYER: ${IMAGERY_SOURCES.find((s) => s.id === src)!.label.toUpperCase()}`)
+  }
+}
+{
+  let stored: ImagerySource = 'usgs'
+  try { stored = parseImagerySource(localStorage.getItem('oh-imagery-source')) } catch { /* private mode */ }
+  fetch('/api/imagery-sources.json')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j: { google?: boolean } | null) => { googleImageryAvailable = !!j?.google; applyImagerySource(stored, false) })
+    .catch(() => applyImagerySource('usgs', false))
+}
 
 // ---- Phase 4: nav/airspace data loading. `NavaidsIndex`/`airspacesContaining`
 // are pure `/sim` modules (§4.1) that don't fetch themselves — this mirrors
@@ -807,6 +841,11 @@ function handleSearch(query: string): void {
     tiles.setImagery(on)
     try { localStorage.setItem('oh-imagery', parts[1]) } catch { /* private mode */ }
     toast(`SATELLITE IMAGERY ${parts[1]}${on ? '' : ' — stylized terrain'}`)
+    return
+  }
+  // IMAGERY USGS | GOOGLE | HYBRID | MAP | GOOGLE SATELLITE: pick the layer.
+  if (parts[0] === 'IMAGERY' && parts.length > 1) {
+    applyImagerySource(parseImagerySource(parts.slice(1).join(' ')), true)
     return
   }
   if (parts[0] === 'REPLAY') {
@@ -2711,6 +2750,16 @@ function advanceFrame(elapsed: number, now: number): void {
   const ll = frame.fromLocal(pos.x, pos.y)
   tiles.update(pos.x, pos.y)
   tiles.updateDetail(pos.x, pos.y, aircraft.data.aglFt*FT, now)
+  // Google layers: refresh the required attribution for the area in view.
+  const gStyle = googleStyle(imagerySource)
+  if (gStyle && now - lastAttributionAt > 30_000) {
+    lastAttributionAt = now
+    const bb = viewBounds(ll.lat, ll.lon)
+    fetch(`/api/gmaps-attribution.json?style=${gStyle}&zoom=13&north=${bb.north.toFixed(3)}&south=${bb.south.toFixed(3)}&east=${bb.east.toFixed(3)}&west=${bb.west.toFixed(3)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { copyright?: string } | null) => { if (googleStyle(imagerySource)) mapAttribution.show(j?.copyright || 'Map data ©Google') })
+      .catch(() => { if (googleStyle(imagerySource)) mapAttribution.show('Map data ©Google') })
+  }
   if (now - lastVisualUpdate > 2000) {
     lastVisualUpdate = now
     airports.updateVisuals(ll.lat, ll.lon)
@@ -3549,6 +3598,7 @@ void distanceM
 
 const graphicsPanel = new GraphicsPanel(renderer, {
   clearInput: () => input.clearHeld(),
+  mapLayer: source => applyImagerySource(source, true),
   quality: mode => { clouds.setQuality(mode); tiles.setDetailEnabled(mode !== 'performance') },
   camera: mode => { cameraMode = mode },
   lighting: mode => {
@@ -3581,6 +3631,9 @@ const graphicsPanel = new GraphicsPanel(renderer, {
     wxDesc = `MANUAL ${mode.toUpperCase()} · 300@8 10SM`
   },
 })
+
+onMapLayerChanged = (src, available) => graphicsPanel.setMapLayer(src, available)
+graphicsPanel.setMapLayer(imagerySource, googleImageryAvailable)
 
 new LoadingPanel(FLEET_ACTIVE.params, {
   current: currentLoading,

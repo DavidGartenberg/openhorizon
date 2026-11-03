@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { IMAGERY_SOURCES, type ImagerySource } from '../world/imagery-source'
 
 export interface GraphicsActions {
   clearInput(): void
@@ -6,12 +7,16 @@ export interface GraphicsActions {
   camera(mode: 'chase' | 'orbit' | 'cockpit' | 'free'): void
   lighting(mode: 'day' | 'sunset' | 'night'): void
   weather(mode: 'live' | 'clear' | 'scattered' | 'overcast'): void
+  /** Photo/map layer draped on the terrain. */
+  mapLayer(source: ImagerySource): void
 }
 
 /** Small flight-view controls; labels describe visible choices, not GPU internals. */
 export class GraphicsPanel {
   private readonly stats: HTMLOutputElement
   private readonly view: HTMLSelectElement
+  private readonly mapLayer: HTMLSelectElement
+  private readonly mapHint: HTMLElement
   private lastStats = 0
 
   constructor(renderer: THREE.WebGLRenderer, actions: GraphicsActions) {
@@ -32,6 +37,7 @@ export class GraphicsPanel {
       #graphics-panel button:hover{background:#3a505f;} #graphics-panel button:focus-visible,
       #graphics-panel select:focus-visible{outline:2px solid #a9dbe5;outline-offset:2px;}
       #graphics-panel output{display:block;color:#9eafb9;font:10px/1.5 ui-monospace,monospace;margin-top:12px;}
+      #graphics-panel .hint{display:block;color:#9eafb9;font-size:10.5px;margin-top:4px;}
       @media(max-height:500px){#graphics-panel{bottom:6px;right:6px}.controls{max-height:280px;overflow:auto}}
     `
     document.head.appendChild(style)
@@ -41,6 +47,8 @@ export class GraphicsPanel {
       <label>Camera<select aria-label="Camera view"><option value="chase">Chase</option><option value="cockpit">Cockpit</option><option value="orbit">Orbit</option><option value="free">Free camera</option></select></label>
       <label>Quality<select aria-label="Graphics quality"><option value="1">Performance</option><option value="1.5" selected>High</option><option value="2">Ultra</option></select></label>
       <label>Exposure<input aria-label="Exposure" type="range" min="0.4" max="1.2" step="0.05" value="0.8"></label>
+      <label>Map layer<select aria-label="Map layer">${IMAGERY_SOURCES.map(s => `<option value="${s.id}">${s.label}</option>`).join('')}</select></label>
+      <span class="hint" data-map-hint hidden>Google layers need GOOGLE_MAPS_API_KEY on the server.</span>
       <label>Weather<select aria-label="Weather"><option value="live">Live weather</option><option value="clear">Clear</option><option value="scattered">Scattered</option><option value="overcast">Overcast</option></select></label>
       <div class="time"><button type="button" data-light="day">Daylight</button><button type="button" data-light="sunset">Sunset</button><button type="button" data-light="night">Night</button></div>
       <label>Flight overlay<input aria-label="Flight overlay" type="checkbox" checked></label>
@@ -60,6 +68,10 @@ export class GraphicsPanel {
     panel.querySelector<HTMLInputElement>('[aria-label="Exposure"]')!.oninput = e => {
       renderer.toneMappingExposure = Number((e.target as HTMLInputElement).value)
     }
+    this.mapLayer = panel.querySelector<HTMLSelectElement>('[aria-label="Map layer"]')!
+    this.mapHint = panel.querySelector<HTMLElement>('[data-map-hint]')!
+    this.mapLayer.onchange = () => actions.mapLayer(this.mapLayer.value as ImagerySource)
+    this.setMapLayer('usgs', false)
     const weather = panel.querySelector<HTMLSelectElement>('[aria-label="Weather"]')!
     weather.onchange = () => actions.weather(weather.value as Parameters<GraphicsActions['weather']>[0])
     panel.querySelectorAll<HTMLButtonElement>('[data-light]').forEach(b => {
@@ -73,6 +85,16 @@ export class GraphicsPanel {
     }
     this.stats = panel.querySelector('output')!
     document.body.appendChild(panel)
+  }
+
+  /** Reflect the active layer; Google options are disabled without a key. */
+  setMapLayer(current: ImagerySource, googleAvailable: boolean): void {
+    for (const opt of Array.from(this.mapLayer.options)) {
+      const google = IMAGERY_SOURCES.find(s => s.id === opt.value)?.google ?? false
+      opt.disabled = google && !googleAvailable
+    }
+    this.mapLayer.value = current
+    this.mapHint.hidden = googleAvailable
   }
 
   update(now: number, camera: string, frameMs: number, renderer: THREE.WebGLRenderer): void {

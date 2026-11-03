@@ -33,6 +33,21 @@ npm run build
 node server/index.mjs
 ```
 
+### Optional: Google Maps on the terrain
+
+By default the terrain is draped with USGS satellite imagery (public domain, US only). The sim can instead drape Google's map layers worldwide through the official [Google Maps Platform Map Tiles API](https://developers.google.com/maps/documentation/tile), using your own key:
+
+1. In Google Cloud, enable the **Map Tiles API** for a project with billing, create an API key and restrict it to that API.
+2. Start the server with the key in its environment. The key stays on the server and is never sent to the browser.
+
+   ```bash
+   GOOGLE_MAPS_API_KEY=your-key npm run dev
+   ```
+
+3. In **View & graphics → Map layer**, choose *Google satellite*, *Google hybrid (roads + labels)* or *Google map*. You can also type `IMAGERY GOOGLE`, `IMAGERY MAP` or `IMAGERY USGS` in the command box.
+
+Google's attribution is shown at the bottom left whenever a Google layer is visible. Tiles are cached only in memory, for no longer than Google's cache headers allow, and are never written to disk. Your use of the API is governed by the Google Maps Platform terms for your key. Without a key, the Google options are disabled and the sim uses USGS.
+
 ## Scripts
 
 | Command | Description |

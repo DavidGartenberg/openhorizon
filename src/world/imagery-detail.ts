@@ -31,7 +31,7 @@ export function imageryChildren(z: number, x: number, y: number, targetZoom: num
 /** Compose one z13 footprint from its 64 z16 photographs. At most four
  * requests/decodes run concurrently. The caller owns the returned texture;
  * on failure we abort requests, drain decodes and release every bitmap. */
-export async function loadDetailedImagery(key: string, signal: AbortSignal): Promise<THREE.CanvasTexture> {
+export async function loadDetailedImagery(key: string, signal: AbortSignal, base = '/proxy/imagery'): Promise<THREE.CanvasTexture> {
   signal.throwIfAborted()
   if (!/^13\/\d+\/\d+$/.test(key)) throw new RangeError('Detailed imagery requires a z13 tile key')
   const [z, x, y] = key.split('/').map(Number)
@@ -55,7 +55,7 @@ export async function loadDetailedImagery(key: string, signal: AbortSignal): Pro
         while (cursor < children.length) {
           controller.signal.throwIfAborted()
           const child = children[cursor++]!
-          const res = await fetch(`/proxy/imagery/${child.z}/${child.x}/${child.y}`, { signal: controller.signal })
+          const res = await fetch(`${base}/${child.z}/${child.x}/${child.y}`, { signal: controller.signal })
           if (!res.ok) throw new Error(`Detailed imagery ${child.z}/${child.x}/${child.y}: HTTP ${res.status}`)
           const blob = await res.blob()
           controller.signal.throwIfAborted()

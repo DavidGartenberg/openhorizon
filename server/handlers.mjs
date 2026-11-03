@@ -11,6 +11,10 @@ import { execFileSync } from 'node:child_process'
 import { buildAirports, buildNavaids, buildCifpProcedures, buildUsAirspace, buildFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb , buildIls } from './parse.mjs'
 import { voiceRoute } from './voice.mjs'
 import { xpRoute } from './xp-static.mjs'
+import { createGoogleTiles } from './google-tiles.mjs'
+
+/** Opt-in Google Map Tiles API layers (GOOGLE_MAPS_API_KEY, server-side only). */
+export const googleTiles = createGoogleTiles()
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 /** Vendored offline fallbacks committed with the repo (Phase 12a). */
@@ -552,7 +556,50 @@ export async function route(url, res, method = 'GET', req) {
   const metar = url.match(/^\/api\/metar\?bbox=([-\d.,]+)$/)
   const nexrad = url.match(/^\/proxy\/nexrad\/(\d+)\/(\d+)\/(\d+)\.png$/)
   const landcover = url.match(/^\/proxy\/landcover\/(\d+)\/(\d+)\/(\d+)\.png$/)
+  const json404 = (msg) => {
+    res.writeHead(404, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+    res.end(JSON.stringify({ error: msg }))
+    return true
+  }
   try {
+    if (bare === '/api/imagery-sources.json') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' })
+      res.end(JSON.stringify({ usgs: true, google: googleTiles.enabled, googleStyles: googleTiles.styles }))
+      return true
+    }
+    {
+      const m = url.match(/^\/proxy\/gmaps\/(satellite|hybrid|roadmap)\/(\d+)\/(\d+)\/(\d+)$/)
+      if (m) {
+        if (!googleTiles.enabled) return json404('Google map layers need GOOGLE_MAPS_API_KEY on the server')
+        let tile
+        try {
+          tile = await googleTiles.tile(m[1], m[2], m[3], m[4])
+        } catch (err) {
+          if (!(err instanceof RangeError)) throw err
+          res.writeHead(400, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+          res.end(JSON.stringify({ error: String(err) }))
+          return true
+        }
+        const { buf, type } = tile
+        // Browser-side caching stays short and private (Google's terms
+        // allow only temporary caching); the server never writes these to disk.
+        res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'private, max-age=3600', 'Access-Control-Allow-Origin': '*' })
+        res.end(buf)
+        return true
+      }
+    }
+    {
+      const m = url.match(/^\/api\/gmaps-attribution\.json\?style=(satellite|hybrid|roadmap)&zoom=(\d+)&north=(-?[\d.]+)&south=(-?[\d.]+)&east=(-?[\d.]+)&west=(-?[\d.]+)$/)
+      if (m) {
+        if (!googleTiles.enabled) return json404('Google map layers need GOOGLE_MAPS_API_KEY on the server')
+        const copyright = await googleTiles.attribution(m[1], m[2], m[3], m[4], m[5], m[6])
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' })
+        res.end(JSON.stringify({ copyright }))
+        return true
+      }
+    }
+    // Any other /proxy/gmaps path is not a layer we serve.
+    if (url.startsWith('/proxy/gmaps/')) return json404('unknown Google map layer')
     if (landcover) {
       const buf = await landcoverTile(landcover[1], landcover[2], landcover[3])
       res.writeHead(200, {

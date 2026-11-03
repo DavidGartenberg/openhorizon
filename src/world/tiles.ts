@@ -90,6 +90,8 @@ export class TileManager {
   // material's uniform OBJECTS for light/fog (one write updates all) and
   // its GLSL source (three compiles one program for the lot).
   private imageryOn = true
+  /** Tile path prefix of the active photo/map layer (USGS or a Google layer). */
+  private imageryBase = '/proxy/imagery'
   private imLoading = 0
   private readonly imQueue: string[] = []
   private imFailStreak = 0
@@ -162,9 +164,10 @@ export class TileManager {
     if (!tile) return
     const controller = new AbortController()
     this.detailLoading = { key: tile.key, controller }
-    loadDetailedImagery(tile.key, AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]))
+    const base = this.imageryBase
+    loadDetailedImagery(tile.key, AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]), base)
       .then(texture => {
-        if (this.tiles.get(tile.key) !== tile || !this.detailWanted.has(tile.key) || !tile.imMat || !this.imageryOn) {
+        if (this.tiles.get(tile.key) !== tile || !this.detailWanted.has(tile.key) || !tile.imMat || !this.imageryOn || base !== this.imageryBase) {
           texture.dispose()
           return
         }
@@ -346,22 +349,44 @@ export class TileManager {
     if (on === this.imageryOn) return
     this.imageryOn = on
     this.imFailStreak = 0
-    if (on) {
-      for (const t of this.tiles.values()) if (t.state === 'ready') this.queueImagery(t)
-    } else {
-      this.imQueue.length = 0
-      this.detailLoading?.controller.abort()
-      this.detailWanted.clear()
-      for (const t of this.tiles.values()) {
-        t.imQueued = false
-        if (t.imMat && t.mesh) t.mesh.material = t.baseMat!
-        t.imTex?.dispose()
-        t.detailTex?.dispose()
-        t.imMat?.dispose()
-        t.imTex = undefined
-        t.detailTex = undefined
-        t.imMat = undefined
-      }
+    if (on) this.requeueImagery()
+    else this.dropImagery()
+  }
+
+  /** Switch the draped layer (tile path prefix, e.g. `/proxy/imagery` or
+   *  `/proxy/gmaps/hybrid`). Every loaded photo is released and reloaded
+   *  from the new source; in-flight loads for the old one are discarded. */
+  setImageryBase(base: string): void {
+    if (base === this.imageryBase) return
+    this.imageryBase = base
+    this.imFailStreak = 0
+    this.dropImagery()
+    this.detailRetry.clear()
+    this.lastDetailUpdate = -Infinity
+    if (this.imageryOn) this.requeueImagery()
+  }
+
+  get imagerySourceBase(): string {
+    return this.imageryBase
+  }
+
+  private requeueImagery(): void {
+    for (const t of this.tiles.values()) if (t.state === 'ready') this.queueImagery(t)
+  }
+
+  private dropImagery(): void {
+    this.imQueue.length = 0
+    this.detailLoading?.controller.abort()
+    this.detailWanted.clear()
+    for (const t of this.tiles.values()) {
+      t.imQueued = false
+      if (t.imMat && t.mesh) t.mesh.material = t.baseMat!
+      t.imTex?.dispose()
+      t.detailTex?.dispose()
+      t.imMat?.dispose()
+      t.imTex = undefined
+      t.detailTex = undefined
+      t.imMat = undefined
     }
   }
 
@@ -457,7 +482,7 @@ export class TileManager {
    *  (512 px ≈ 7.6 m/px) with fallback to the single z13 tile; z11
    *  keeps single tiles. Alpha is preserved (no-coverage children stay
    *  transparent → the shader's per-pixel fallback still works). */
-  private async loadImageryTexture(key: string): Promise<THREE.Texture> {
+  private async loadImageryTexture(key: string, base: string): Promise<THREE.Texture> {
     const parts = key.split('/')
     const z = Number(parts[0])
     const x = Number(parts[1])
@@ -470,7 +495,7 @@ export class TileManager {
     if (z === 13) {
       try {
         const kids = await Promise.all([0, 1, 2, 3].map((i) =>
-          fetchBitmap(`/proxy/imagery/14/${x * 2 + (i % 2)}/${y * 2 + (i >> 1)}`)))
+          fetchBitmap(`${base}/14/${x * 2 + (i % 2)}/${y * 2 + (i >> 1)}`)))
         const canvas = document.createElement('canvas')
         canvas.width = canvas.height = 512
         const ctx = canvas.getContext('2d')!
@@ -483,7 +508,7 @@ export class TileManager {
         // fall through to the single z13 tile
       }
     }
-    const bmp = await fetchBitmap(`/proxy/imagery/${key}`)
+    const bmp = await fetchBitmap(`${base}/${key}`)
     const canvas = document.createElement('canvas')
     canvas.width = bmp.width
     canvas.height = bmp.height
@@ -501,9 +526,13 @@ export class TileManager {
         continue
       }
       this.imLoading++
-      this.loadImageryTexture(key)
+      const base = this.imageryBase
+      this.loadImageryTexture(key, base)
         .then((tex) => {
           this.imLoading--
+          // A source switch while this was in flight makes it stale: drop
+          // it without touching the tile's (possibly re-queued) state.
+          if (base !== this.imageryBase) { tex.dispose(); this.pumpImagery(); return }
           this.imFailStreak = 0
           const t = this.tiles.get(key)
           if (!t || !this.imageryOn || t.imTex || !t.mesh) {
@@ -531,6 +560,8 @@ export class TileManager {
         })
         .catch(() => {
           this.imLoading--
+          // Failures from a source that is no longer active don't count.
+          if (base !== this.imageryBase) { this.pumpImagery(); return }
           const t = this.tiles.get(key)
           if (t) t.imQueued = false
           // Missing tiles keep their stylized look (never a black world);
