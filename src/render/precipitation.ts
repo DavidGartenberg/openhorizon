@@ -30,7 +30,9 @@ export class Precipitation {
 
   constructor(scene: THREE.Scene) {
     const box = new THREE.Vector3(60, 36, 60)
-    const shared = { uOffset: { value: this.offset }, uBox: { value: box }, uCam: { value: new THREE.Vector3() }, uIntensity: { value: 0 }, uLight: { value: 1 }, uInner: { value: 0 } }
+    const shared = { uOffset: { value: this.offset }, uBox: { value: box }, uCam: { value: new THREE.Vector3() }, uIntensity: { value: 0 }, uLight: { value: 1 }, uInner: { value: 0 },
+      // Fuselage hull (body frame) to keep clear when the skin is hidden in the cockpit view.
+      uHullInv: { value: new THREE.Matrix4() }, uHull: { value: new THREE.Vector4(0, 0, 0, 0) }, uHullOn: { value: 0 } }
 
     // Rain: 2 vertices per drop (head, tail).
     const rg = new THREE.BufferGeometry()
@@ -48,7 +50,9 @@ export class Precipitation {
       transparent: true, depthWrite: false,
       vertexShader: /* glsl */ `
         uniform vec3 uOffset, uBox, uCam, uVel;
-        uniform float uStreak, uIntensity, uInner;
+        uniform float uStreak, uIntensity, uInner, uHullOn;
+        uniform mat4 uHullInv;
+        uniform vec4 uHull; // radius, axis height, z min, z max (body frame)
         attribute vec3 aSeed;
         attribute float aEnd;
         varying float vAlpha;
@@ -58,7 +62,9 @@ export class Precipitation {
           vec3 q = p / uBox;
           float edge = 1.0 - smoothstep(0.32, 0.5, max(max(abs(q.x), abs(q.y)), abs(q.z)));
           float inner = smoothstep(uInner, uInner + 1.5, length(p));
-          vAlpha = keep * edge * inner;
+          vec3 hb = (uHullInv * vec4(uCam + p, 1.0)).xyz;
+          float inHull = uHullOn * step(length(vec2(hb.x, hb.y - uHull.y)), uHull.x) * step(uHull.z, hb.z) * step(hb.z, uHull.w);
+          vAlpha = keep * edge * inner * (1.0 - inHull);
           vec3 wp = uCam + p - uVel * uStreak * aEnd;
           gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
         }
@@ -90,7 +96,9 @@ export class Precipitation {
       transparent: true, depthWrite: false,
       vertexShader: /* glsl */ `
         uniform vec3 uOffset, uBox, uCam;
-        uniform float uIntensity, uInner, uTime, uPixel;
+        uniform float uIntensity, uInner, uTime, uPixel, uHullOn;
+        uniform mat4 uHullInv;
+        uniform vec4 uHull;
         attribute vec3 aSeed;
         varying float vAlpha;
         void main() {
@@ -102,7 +110,9 @@ export class Precipitation {
           vec3 q = p / uBox;
           float edge = 1.0 - smoothstep(0.32, 0.5, max(max(abs(q.x), abs(q.y)), abs(q.z)));
           float inner = smoothstep(uInner, uInner + 1.5, length(p));
-          vAlpha = keep * edge * inner;
+          vec3 hb = (uHullInv * vec4(uCam + p, 1.0)).xyz;
+          float inHull = uHullOn * step(length(vec2(hb.x, hb.y - uHull.y)), uHull.x) * step(uHull.z, hb.z) * step(hb.z, uHull.w);
+          vAlpha = keep * edge * inner * (1.0 - inHull);
           vec4 mv = viewMatrix * vec4(uCam + p, 1.0);
           gl_Position = projectionMatrix * mv;
           gl_PointSize = clamp(uPixel * 26.0 / max(-mv.z, 0.5), 1.0, 14.0);
@@ -135,7 +145,8 @@ export class Precipitation {
    * @param inCockpit clear a sphere around the eye so rain stays outside
    */
   update(dt: number, timeS: number, camera: THREE.Camera, kind: 'none' | 'rain' | 'snow', intensity: number,
-    camVel: THREE.Vector3, wind: THREE.Vector3, light: number, inCockpit: boolean, pixelRatio = 1): void {
+    camVel: THREE.Vector3, wind: THREE.Vector3, light: number, inCockpit: boolean, pixelRatio = 1,
+    hull?: { group: THREE.Object3D; radiusM: number; axisY: number; zMin: number; zMax: number }): void {
     const on = kind !== 'none' && intensity > 0.01
     this.rain.visible = on && kind === 'rain'
     this.snow.visible = on && kind === 'snow'
@@ -150,6 +161,13 @@ export class Precipitation {
       u.uIntensity!.value = Math.min(1, intensity)
       u.uLight!.value = light
       u.uInner!.value = inCockpit ? 3 : 0
+      // A long cabin (737) is open in the cockpit view: keep rain out of all of it.
+      u.uHullOn!.value = inCockpit && hull ? 1 : 0
+      if (inCockpit && hull) {
+        hull.group.updateMatrixWorld()
+        ;(u.uHullInv!.value as THREE.Matrix4).copy(hull.group.matrixWorld).invert()
+        ;(u.uHull!.value as THREE.Vector4).set(hull.radiusM, hull.axisY, hull.zMin, hull.zMax)
+      }
     }
     this.snowMat.uniforms.uTime!.value = timeS
     this.snowMat.uniforms.uPixel!.value = pixelRatio

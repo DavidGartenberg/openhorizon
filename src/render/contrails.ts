@@ -75,6 +75,7 @@ export class Trails {
   /** Distance between contrail samples (m). The sim sets it from speed ×
    *  lifetime so a trail spans its whole life within the sample ring. */
   contrailSpacingM = 20
+  private lastIndexCount = -1
 
   constructor(scene: THREE.Scene, sky: THREE.Texture, maxEmitters = 8) {
     const verts = maxEmitters * MAX_PTS * 2
@@ -233,6 +234,9 @@ export class Trails {
       }
     }
     this.geometry.setDrawRange(0, ii)
+    // Nothing drawn now or last frame: skip re-uploading ~64 KB of empty buffers.
+    if (ii === 0 && this.lastIndexCount === 0) return
+    this.lastIndexCount = ii
     ;(this.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true
     ;(this.geometry.getAttribute('trail') as THREE.BufferAttribute).needsUpdate = true
     this.geometry.index!.needsUpdate = true

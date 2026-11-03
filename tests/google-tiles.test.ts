@@ -94,6 +94,15 @@ describe('Google Map Tiles API provider', () => {
     await expect(g2.tile('satellite', 2, 1, 1)).rejects.toThrow(/403/)
   })
 
+  it('remembers missing tiles instead of re-minting sessions for them', async () => {
+    const m = mockFetch({ tileStatus: [404] })
+    const g = createGoogleTiles({ key: 'K', fetchImpl: m.fn })
+    await expect(g.tile('satellite', 18, 1, 1)).rejects.toThrow(/404/)
+    await expect(g.tile('satellite', 18, 1, 1)).rejects.toThrow(/cached/)
+    expect(m.calls.filter(c => c.url.includes('/2dtiles/'))).toHaveLength(1)
+    expect(m.sessions()).toBe(1)
+  })
+
   it('refreshes sessions before they expire', async () => {
     let t = 0
     const m = mockFetch({ expiry: 3600 }) // expires at t = 3600 s

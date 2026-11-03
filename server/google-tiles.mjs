@@ -66,6 +66,7 @@ export function createGoogleTiles({
   const sessions = new Map() // style -> { token, expiresAt } | { pending: Promise }
   const tiles = new Map() // "style/z/x/y" -> { buf, type, until }  (insertion order = LRU)
   const attributions = new Map() // query -> { copyright, until }
+  const misses = new Map() // "style/z/x/y" -> until  (tiles upstream says do not exist)
   const enabled = typeof key === 'string' && key.length > 0
 
   function assertEnabled() {
@@ -119,6 +120,8 @@ export function createGoogleTiles({
       throw new RangeError(`invalid tile ${z}/${x}/${y}`)
     }
     const id = `${style}/${z}/${x}/${y}`
+    const miss = misses.get(id)
+    if (miss && miss > now()) throw new Error(`Google tile ${id}: not available (cached)`)
     const hit = tiles.get(id)
     if (hit && hit.until > now()) {
       remember(id, hit)
@@ -128,8 +131,14 @@ export function createGoogleTiles({
     for (let attempt = 0; attempt < 2; attempt++) {
       const token = await session(style, { force: attempt > 0 })
       const res = await fetchImpl(`${base}/v1/2dtiles/${z}/${x}/${y}?session=${encodeURIComponent(token)}&key=${encodeURIComponent(key)}`)
-      // An expired or revoked session answers 400/401/403: mint a new one once.
-      if ((res.status === 400 || res.status === 401 || res.status === 403) && attempt === 0) continue
+      // An expired or revoked session answers 401/403: mint a new one once.
+      // (400/404 also mean "no such tile" — re-minting for those churned sessions.)
+      if ((res.status === 401 || res.status === 403) && attempt === 0) continue
+      if (res.status === 400 || res.status === 404) {
+        misses.set(id, now() + 10 * 60_000)
+        if (misses.size > 5000) misses.delete(misses.keys().next().value)
+        throw new Error(`Google tile ${id}: upstream ${res.status}`)
+      }
       if (!res.ok) throw new Error(`Google tile ${id}: upstream ${res.status}`)
       const buf = Buffer.from(await res.arrayBuffer())
       if (!isImage(buf)) throw new Error(`Google tile ${id}: non-image upstream (${res.headers.get('content-type')}, ${buf.length} B)`)

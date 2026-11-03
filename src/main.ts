@@ -523,7 +523,9 @@ function updateWeatherEffects(dayness: number, sunDir: THREE.Vector3): void {
   _airVel.set(aircraft.windNed.y, -aircraft.windNed.z, -aircraft.windNed.x)
   const nowMs = performance.now()
   const kind = inPrecip <= 0 ? 'none' : precip === 'snow' && oatC <= 1.5 ? 'snow' : 'rain'
-  precipitation.update((nowMs - lastPrecipAt) / 1000, simT, camera, kind, inPrecip, _camVel, _airVel, 0.15 + 0.85 * dayness, cameraMode === 'cockpit', renderer.getPixelRatio())
+  precipitation.update((nowMs - lastPrecipAt) / 1000, simT, camera, kind, inPrecip, _camVel, _airVel, 0.15 + 0.85 * dayness, cameraMode === 'cockpit', renderer.getPixelRatio(),
+    // The 737's open cabin: the B738 barrel (r 1.88 m, axis 0.6 m, ±19.7 m).
+    DECK_PROFILE?.cabin ? { group: mesh.group, radiusM: 1.9, axisY: 0.6, zMin: -19.8, zMax: 19.8 } : undefined)
   lastPrecipAt = nowMs
   // Tyre smoke on touchdown: emit at the main-wheel contact points.
   const smoke = touchdownSmoke(smokeWasOnGround, d.onGround, d.groundSpeedKt * KT, -d.verticalSpeedFpm * 0.00508)
@@ -2085,6 +2087,7 @@ function cancelAtcTimers(): void {
 /** Remove + dispose the AI pattern ships (9A: three removal sites
  *  leaked every ship's merged geometry on facility change). */
 function disposeAiShips(): void {
+  aiPhaseSeen.clear() // new ships reuse indices: forget the old phases
   for (const s of aiShips) {
     scene.remove(s.mesh.group)
     s.mesh.group.traverse((o) => {
