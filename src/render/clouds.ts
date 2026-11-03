@@ -227,6 +227,9 @@ function localDensity(data: Uint8Array, x: number, y: number, z: number, seed: n
 
 interface LayerField { mesh: THREE.Mesh; material: THREE.ShaderMaterial; slab: CloudSlab }
 
+/** A fair-weather cumulus volume in render coordinates (centre + radii, m). */
+export interface CumulusVolume { x: number; y: number; z: number; rx: number; ry: number; rz: number; seed: number }
+
 export class Clouds {
   private layers: LayerField[] = []
   private layersKey = ''
@@ -235,7 +238,38 @@ export class Clouds {
   private lastCellZ = Infinity
   private noise = makeNoise()
   private lastSortPosition = new THREE.Vector3(Infinity, Infinity, Infinity)
+  /** Thermal cumulus (sim/environment/cumulus.ts): same volume shader, own layer. */
+  private cumulus: LayerField | null = null
   constructor(private readonly scene: THREE.Scene) {}
+
+  /** Replace the thermal-cumulus set (sorted far → near for compositing). */
+  setCumulus(volumes: CumulusVolume[], cameraPos: THREE.Vector3): void {
+    if (volumes.length === 0) {
+      if (this.cumulus) (this.cumulus.mesh.geometry as THREE.InstancedBufferGeometry).instanceCount = 0
+      return
+    }
+    const minBase = Math.min(...volumes.map((v) => v.y - v.ry)), maxTop = Math.max(...volumes.map((v) => v.y + v.ry))
+    if (!this.cumulus || this.cumulus.mesh.userData.capacity < volumes.length) {
+      if (this.cumulus) { this.scene.remove(this.cumulus.mesh); this.cumulus.mesh.geometry.dispose(); this.cumulus.material.dispose() }
+      const slab: CloudSlab = { cover: 'SCT', baseMslFt: minBase / 0.3048, topMslFt: maxTop / 0.3048 }
+      this.cumulus = this.buildLayerSized(slab, Math.max(64, volumes.length * 2))
+      this.setQuality(this.quality)
+    }
+    const l = this.cumulus
+    l.slab = { cover: 'SCT', baseMslFt: minBase / 0.3048, topMslFt: maxTop / 0.3048 }
+    const geo = l.mesh.geometry as THREE.InstancedBufferGeometry
+    const offsets = geo.getAttribute('offset') as THREE.InstancedBufferAttribute
+    const radii = geo.getAttribute('radii') as THREE.InstancedBufferAttribute
+    const seeds = geo.getAttribute('seed') as THREE.InstancedBufferAttribute
+    const sorted = volumes.slice().sort((a, b) => ((b.x - cameraPos.x) ** 2 + (b.z - cameraPos.z) ** 2) - ((a.x - cameraPos.x) ** 2 + (a.z - cameraPos.z) ** 2))
+    sorted.forEach((v, i) => {
+      offsets.setXYZ(i, v.x, v.y, v.z)
+      radii.setXYZ(i, v.rx, v.ry, v.rz)
+      seeds.setX(i, v.seed)
+    })
+    geo.instanceCount = sorted.length
+    offsets.needsUpdate = radii.needsUpdate = seeds.needsUpdate = true
+  }
 
   /** Local cloud extinction in inverse metres at a render-frame position.
    * Call after update() / rebase so the queried and rendered anchors agree.
@@ -245,7 +279,7 @@ export class Clouds {
   extinctionAt(cameraPos: THREE.Vector3): number {
     const data = this.noise.image.data as Uint8Array
     let extinction = 0
-    for (const layer of this.layers) {
+    for (const layer of this.cumulus ? [...this.layers, this.cumulus] : this.layers) {
       if (cameraPos.y <= layer.slab.baseMslFt * 0.3048 || cameraPos.y >= layer.slab.topMslFt * 0.3048) continue
       const geometry = layer.mesh.geometry as THREE.InstancedBufferGeometry
       const centers = geometry.getAttribute('offset'), radii = geometry.getAttribute('radii'), seeds = geometry.getAttribute('seed')
@@ -263,7 +297,7 @@ export class Clouds {
   setQuality(quality: 'performance' | 'high' | 'ultra'): void {
     this.quality = quality
     const budget = quality === 'performance' ? [12, 8] : quality === 'ultra' ? [24, 16] : [18, 12]
-    for (const layer of this.layers) {
+    for (const layer of this.cumulus ? [...this.layers, this.cumulus] : this.layers) {
       layer.material.uniforms.uNearSteps!.value = budget[0]
       layer.material.uniforms.uFarSteps!.value = budget[1]
     }
@@ -288,7 +322,7 @@ export class Clouds {
       this.lastCellZ = cellZ
       this.lastSortPosition.copy(cameraPos)
     }
-    for (const l of this.layers) {
+    for (const l of this.cumulus ? [...this.layers, this.cumulus] : this.layers) {
       l.material.uniforms.uDayness!.value = dayness
       if (sunDir) (l.material.uniforms.uSunDir!.value as THREE.Vector3).copy(sunDir)
       l.material.uniforms.uDusk!.value = dusk
@@ -298,7 +332,10 @@ export class Clouds {
 
   private buildLayer(slab: CloudSlab): LayerField {
     const radiusCells = Math.ceil(FIELD_RADIUS_M / layerCellSize(slab)) + 1
-    const count = (radiusCells * 2 + 1) ** 2
+    return this.buildLayerSized(slab, (radiusCells * 2 + 1) ** 2)
+  }
+
+  private buildLayerSized(slab: CloudSlab, count: number): LayerField {
     const box = new THREE.BoxGeometry(2, 2, 2)
     const geo = new THREE.InstancedBufferGeometry()
     geo.index = box.index
@@ -317,6 +354,7 @@ export class Clouds {
     const mesh = new THREE.Mesh(geo, material)
     mesh.frustumCulled = false
     mesh.userData.dirty = true
+    mesh.userData.capacity = count
     this.scene.add(mesh)
     return { mesh, material, slab }
   }

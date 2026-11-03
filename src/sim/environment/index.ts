@@ -14,6 +14,7 @@
 import type { V3 } from '../../math/vec'
 import type { AircraftParams } from '../aircraft/params'
 import { ThermalField, convectiveStrength, ridgeLift } from './thermals'
+import { thermalCumulus, type CumulusCloud } from './cumulus'
 import { Microburst, WindshearDetector } from './microburst'
 import { WakeField } from './wake'
 import { runwayConditionFromWeather, surfaceFriction, tirePressurePsiFor, type RunwayCondition } from './runway-surface'
@@ -116,6 +117,14 @@ export class Environment {
     const m = new Microburst({ n: n + Math.cos(trackRad) * distanceM, e: e + Math.sin(trackRad) * distanceM, startS: timeS - 150, peakDowndraftMs })
     this.microbursts.push(m)
     return m
+  }
+
+  /** Cumulus capping today's thermals around a frame-local point (positions
+   *  returned in the frame-local NED frame). */
+  cumulusAround(n: number, e: number, timeS: number, dewpointSpreadC: number, windN = 0, windE = 0): CumulusCloud[] {
+    if (!this.toggles.thermals) return []
+    return thermalCumulus(this.thermals, n + this.originN, e + this.originE, timeS, this.status.convection, dewpointSpreadC, windN, windE)
+      .map((c) => ({ ...c, n: c.n - this.originN, e: c.e - this.originE }))
   }
 
   /** Floating-origin rebase: the frame moved by (dn, de) metres (the new

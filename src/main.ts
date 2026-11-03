@@ -425,6 +425,7 @@ function feedWakeGenerators(): void {
 /** Weather shaders, once per frame: ground wetness / snow cover (terrain +
  *  pavement), rain and frost on the windscreen, contrails and tip vapour. */
 let lastSurfaceWxSimS: number | null = null
+let lastCumulusSimS = -Infinity
 function nearestMetar(): ReturnType<typeof parseMetar> | undefined {
   const id = wxBlended?.nearestStation
   return id ? wxStations.find((s) => s.metar.station === id)?.metar : undefined
@@ -467,6 +468,16 @@ function updateWeatherEffects(dayness: number, sunDir: THREE.Vector3): void {
   const cl = (d.loadFactorG * aircraft.massKg * 9.80665) / (0.5 * air.densityKgM3 * v * v * aircraft.P.wingAreaM2)
   const vapor = d.onGround || d.ktas < 40 ? 0 : vaporStrength(spread, inCloud, cl, d.loadFactorG)
   trails.update(simT, mesh.group, camera, contrail, vapor, sunDir, dayness)
+  // Fair-weather cumulus capping the thermals (plan step 5), every 2 s.
+  if (simT - lastCumulusSimS > 2) {
+    lastCumulusSimS = simT
+    const surfaceSpread = m?.tempC !== undefined && m.dewpointC !== undefined ? m.tempC - m.dewpointC : 10
+    const cu = environment.cumulusAround(aircraft.posNed.x, aircraft.posNed.y, simT, surfaceSpread, wind.steadyNorthMs, wind.steadyEastMs)
+    clouds.setCumulus(cu.map((c) => {
+      const ground = aircraft.groundElevAt?.(c.n, c.e) ?? 0
+      return { x: c.e, y: ground + c.baseAglM + c.thicknessM / 2, z: -c.n, rx: c.radiusM, ry: c.thicknessM / 2, rz: c.radiusM * 0.9, seed: c.seed }
+    }), camera.position)
+  }
 }
 // Total-energy variometer with audio for sailplanes (plan step 4).
 const isGlider = aircraft.P.spoilers?.groundAutoDeploy === false
@@ -2451,6 +2462,7 @@ function rebaseIfNeeded(): void {
   clouds.onRebase()
   environment.onRebase(n, e)
   trails.onRebase(-e, n)
+  lastCumulusSimS = -Infinity
 }
 
 /** Verification-only wings-leveler/coordinator (mirrors the headless test
