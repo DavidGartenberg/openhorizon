@@ -116,6 +116,13 @@ and 88 % in the ICAO one on the development Mac with the base English model; the
 "Palo Alto", the ICAO digit words and the built-in background voices. A recogniser is not a listener: it says whether the
 words survive, not how human a voice sounds.
 
+`scripts/voice/prosody.mjs` measures the other thing a recogniser cannot: how much each voice's pitch moves (autocorrelation F0,
+standard deviation and 10th-90th percentile range in semitones; natural conversational English moves roughly 2-4). On the
+development Mac the six neural voices move 2.4-3.8 semitones (mean 3.1; Aman and Tara the flattest), the built-in ones 1.7-3.5
+(mean 2.4; Karen, Moira and Grandpa under 2, Samantha and Daniel as lively as the neural voices). So the neural voices are
+within the natural range and the weaker built-in ones are flat, but pitch movement is necessary for a human sound, not
+sufficient: it says nothing of timbre, rhythm or artefacts. Only a listener can judge those.
+
 ## Settings
 
 - `localStorage['oh-voice-my-calls'] = 'OFF'` stops your menu and typed calls being spoken.
