@@ -32,6 +32,11 @@ export const EYE_BY_LAYOUT = {
 export class CockpitCamera {
   private lookYaw = 0
   private lookPitch = 0
+  /** Max look-around yaw (rad). ±1.4 keeps a GA pilot off their own seatback;
+   *  a deck with a passenger cabin allows a full turn to see it. */
+  private yawLimit = 1.4
+  /** Where the viewer ends up when turned around (a cabin to look at). */
+  private aftEye: { x: number; y: number; up: number } | null = null
   private eye: { x: number; y: number; up: number } = EYE_BY_LAYOUT.ga
 
   constructor(private readonly camera: THREE.PerspectiveCamera) {}
@@ -41,6 +46,31 @@ export class CockpitCamera {
     this.eye = EYE_BY_LAYOUT[kind]
   }
 
+  /** Widen (or restore) the look-around yaw limit, radians (≤ π). */
+  setYawLimit(rad: number): void {
+    this.yawLimit = THREE.MathUtils.clamp(rad, 0.1, Math.PI)
+    this.lookYaw = THREE.MathUtils.clamp(this.lookYaw, -this.yawLimit, this.yawLimit)
+  }
+
+  /** Eyepoint used when looking aft past the seatback: the camera slips
+   *  sideways into the doorway first, then aft into the cabin entrance. */
+  setAftEye(eye: { x: number; y: number; up: number } | null): void {
+    this.aftEye = eye ? { ...eye } : null
+  }
+
+  /** Eyepoint for the current look yaw (blends toward `aftEye` when turned). */
+  eyeForYaw(yaw: number): { x: number; y: number; up: number } {
+    const a = this.aftEye
+    if (!a) return this.eye
+    const s = (e0: number, e1: number): number => THREE.MathUtils.smoothstep(Math.abs(yaw), e0, e1)
+    const side = s(1.2, 1.8), aft = s(1.8, 2.4)
+    return {
+      x: THREE.MathUtils.lerp(this.eye.x, a.x, aft),
+      y: THREE.MathUtils.lerp(this.eye.y, a.y, side),
+      up: THREE.MathUtils.lerp(this.eye.up, a.up, side),
+    }
+  }
+
   /** Set an explicit eyepoint (a scaled deck: business-jet cabins). */
   setEyePoint(eye: { x: number; y: number; up: number }): void {
     this.eye = { ...eye }
@@ -48,7 +78,7 @@ export class CockpitCamera {
 
   /** Verification hook: set the look direction directly (radians). */
   setLook(yaw: number, pitch: number): void {
-    this.lookYaw = THREE.MathUtils.clamp(yaw, -1.4, 1.4)
+    this.lookYaw = THREE.MathUtils.clamp(yaw, -this.yawLimit, this.yawLimit)
     this.lookPitch = THREE.MathUtils.clamp(pitch, -1.25, 1.1)
   }
 
@@ -75,7 +105,7 @@ export class CockpitCamera {
   ): void {
     if (consumeLook) {
       const { dx, dy } = input.consumeMouseDelta()
-      this.lookYaw = THREE.MathUtils.clamp(this.lookYaw - dx * 0.003, -1.4, 1.4)
+      this.lookYaw = THREE.MathUtils.clamp(this.lookYaw - dx * 0.003, -this.yawLimit, this.yawLimit)
       // Down-look widened to −1.25 rad: the floor controls (trim wheel,
       // fuel selector) sit ~80°+ below the raised eyepoint.
       this.lookPitch = THREE.MathUtils.clamp(this.lookPitch - dy * 0.003, -1.25, 1.1)
@@ -84,7 +114,8 @@ export class CockpitCamera {
     const aircraftQuat = new THREE.Quaternion().setFromEuler(
       new THREE.Euler(pitchRad, -headingRad, -rollRad, 'YXZ'),
     )
-    const eyeOffset = new THREE.Vector3(this.eye.y, this.eye.up, -this.eye.x).applyQuaternion(aircraftQuat)
+    const eye = this.eyeForYaw(this.lookYaw)
+    const eyeOffset = new THREE.Vector3(eye.y, eye.up, -eye.x).applyQuaternion(aircraftQuat)
     this.camera.position.copy(aircraftPos).add(eyeOffset)
 
     const lookQuat = new THREE.Quaternion().setFromEuler(

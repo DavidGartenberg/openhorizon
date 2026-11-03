@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { build737Deck, type Deck737 } from './cockpit-737'
+import { buildCabin737 } from './cabin-737'
 import { deckLayout } from './cockpit-737-paint'
 import type { CockpitProfile, DeckProfile } from './cockpit-profile'
 import type { Input } from '../input/input'
@@ -389,6 +390,9 @@ function build737Cockpit(parent: THREE.Object3D, flapDetentsDeg: readonly number
     layout, panel: prof.fcu, maker: prof.maker, control: prof.control, trimWheels: prof.trimWheels,
     reversers: prof.reversers, turboprop: prof.turboprop, speedbrake, autothrottle: prof.autothrottle,
   })
+  // The 737-800 gets its passenger cabin behind the deck; the pilot can turn
+  // around to see it (the camera's yaw limit is widened in main.ts).
+  if (prof.cabin) inner.add(buildCabin737().group)
   const hidden = (): THREE.Mesh => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(0.001, 0.001, 0.001), SWITCH_OFF)
     m.visible = false

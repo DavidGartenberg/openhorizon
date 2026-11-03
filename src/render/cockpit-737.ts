@@ -159,9 +159,16 @@ const M = {
  *  the windows, which a directional sun alone cannot provide inside a
  *  closed cabin — a scaled emissive fill on the interior materials. */
 const FILLED: Array<[THREE.MeshStandardMaterial, number]> = [[M.lining, 0.42], [M.ceiling, 0.48], [M.frame, 0.3], [M.glare, 0.25], [M.panelBack, 0.35], [M.stand, 0.38], [M.carpet, 0.3], [M.seat, 0.32], [M.sheepskin, 0.35], [M.wheel, 0.25], [M.knobGray, 0.3], [M.white, 0.3], [M.metal, 0.25]]
+let fillScale = 1
 export function setInteriorFill(ambient: number): void {
   const k = 0.12 + 0.88 * Math.max(0, Math.min(1, ambient))
+  fillScale = k
   for (const [m, f] of FILLED) m.emissive.copy(m.color).multiplyScalar(f * k)
+}
+/** Let another interior (the passenger cabin) share the deck's daylight fill. */
+export function registerInteriorFill(mat: THREE.MeshStandardMaterial, fill: number): void {
+  FILLED.push([mat, fill])
+  mat.emissive.copy(mat.color).multiplyScalar(fill * fillScale)
 }
 setInteriorFill(1)
 

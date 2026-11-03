@@ -39,6 +39,8 @@ export interface DeckProfile {
   turboprop: boolean
   engines: number
   autothrottle: boolean
+  /** Passenger cabin behind the flight deck (hand-built for the 737-800 only). */
+  cabin?: boolean
 }
 
 export interface GaProfile {
@@ -157,6 +159,7 @@ export function cockpitProfile(designator: string, P: AircraftParams, info: Prof
         turboprop: !isJet,
         engines: isJet ? Math.max(2, Math.min(4, P.jet?.engines ?? engines)) : Math.max(2, engines),
         autothrottle: isJet && hasAutothrottle(d, !isJet),
+        cabin: d === '737',
       },
     }
   }

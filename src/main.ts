@@ -311,6 +311,11 @@ if (DECK_PROFILE) {
   // The deck scales about the airplane origin; the design eye scales with it.
   const e = EYE_BY_LAYOUT.boeing737, k = DECK_PROFILE.scale
   cockpitCam.setEyePoint({ x: e.x * k, y: e.y * k, up: e.up * k })
+  // The 737-800 has a passenger cabin: allow turning all the way around.
+  if (DECK_PROFILE.cabin) {
+    cockpitCam.setYawLimit(Math.PI)
+    cockpitCam.setAftEye({ x: -0.5 * k, y: 0, up: 1.2 * k })
+  }
 } else cockpitCam.setEye('ga')
 let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' = 'chase'
 const DEFAULT_NEAR = camera.near // 0.5 m (scene.ts) — correct for exterior views
