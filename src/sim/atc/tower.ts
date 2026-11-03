@@ -78,8 +78,16 @@ export class TowerController {
        *  cleared an arrival to land OVER a departure still rolling on a
        *  long runway). */
       runwayLengthM?: number
+      /** Wake caution to append to a landing clearance (sim/atc/wake-caution.ts). */
+      wakeCautionFor?: (callsign: string, atSimS: number) => string | null
     },
   ) {}
+
+  /** "…, cleared to land" plus any wake turbulence caution. */
+  private landingClearance(callsign: string, rwy: string, atSimS: number, roger = false): Transmission {
+    const caution = this.cfg.wakeCautionFor?.(callsign, atSimS)
+    return this.say(`${callsign}, ${roger ? 'roger, ' : ''}runway ${rwy}, cleared to land${caution ? `, ${caution}` : ''}`, atSimS)
+  }
 
   private say(text: string, atSimS = 0): Transmission {
     return { freqMhz: this.cfg.freqMhz, from: this.cfg.facility, text, atSimS }
@@ -160,7 +168,7 @@ export class TowerController {
         // clearance and re-queue them last; a clearance is confirmed,
         // an existing sequence position kept.
         if (s.phase === 'clearedLand') {
-          return [this.say(`${callsign}, roger, runway ${rwy}, cleared to land`, atSimS)]
+          return [this.landingClearance(callsign, rwy, atSimS, true)]
         }
         if (s.phase !== 'inbound') {
           s.phase = 'inbound'
@@ -169,7 +177,7 @@ export class TowerController {
         const ahead = this.arrivalQueue().filter((a) => a.callsign !== callsign && a.seq < s.seq)
         if (ahead.length === 0) {
           s.phase = 'clearedLand'
-          return [this.say(`${callsign}, runway ${rwy}, cleared to land`, atSimS)]
+          return [this.landingClearance(callsign, rwy, atSimS)]
         }
         return [
           this.say(

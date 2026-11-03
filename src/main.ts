@@ -16,6 +16,7 @@ import { TireSmoke } from './render/tire-smoke'
 import { touchdownSmoke } from './sim/touchdown'
 import { FlightEventLog, environmentDebrief } from './sim/flight-events'
 import { convectiveTurbulence, rotorTurbulence, effectiveTurbulence } from './sim/weather/turbulence-sources'
+import { wakeCaution, wtcFor, type RunwayUse, type Wtc } from './sim/atc/wake-caution'
 import { WINDSCREEN_WEATHER } from './render/windscreen'
 import { PAVEMENT_WETNESS } from './render/surface-materials'
 import { SurfaceWeatherState, precipIntensity } from './sim/weather/surface-state'
@@ -1680,6 +1681,36 @@ function updateLiveWeather(lat: number, lon: number, now: number): void {
 
 // ---- ATC (Phase 6c): nearest towered field wired to the real radios ----
 const CALLSIGN = 'Skyhawk 123AB'
+// Wake cautions (plan step 13): recent runway uses by heavier traffic.
+const OWN_WTC: Wtc = wtcFor(FLEET_ACTIVE.params.mtowKg, FLEET_ACTIVE.params.spanM)
+let runwayUses: RunwayUse[] = []
+const aiPhaseSeen = new Map<number, string>()
+const liveGndSeen = new Map<string, boolean>()
+function noteRunwayUse(u: RunwayUse): void {
+  runwayUses = [...runwayUses.filter((x) => u.atSimS - x.atSimS < 300), u].slice(-12)
+}
+/** AI landings/departures and live targets touching down / lifting off near the field. */
+function trackRunwayUses(): void {
+  if (!activeAtc) return
+  aiShips.forEach(({ pilot: p }, i) => {
+    const prev = aiPhaseSeen.get(i)
+    if (prev !== p.phase) {
+      if (p.phase === 'landed') noteRunwayUse({ wtc: 'L', kind: 'arrival', atSimS: loop.simTime })
+      if (prev === 'holdShort' && p.phase === 'pattern') noteRunwayUse({ wtc: 'L', kind: 'departure', atSimS: loop.simTime })
+      aiPhaseSeen.set(i, p.phase)
+    }
+  })
+  for (const tg of liveTraffic.targets.values()) {
+    const prev = liveGndSeen.get(tg.id)
+    liveGndSeen.set(tg.id, tg.gnd)
+    if (prev === undefined || prev === tg.gnd) continue
+    if (distanceM(activeAtc.ll, { lat: tg.lat, lon: tg.lon }) > 5000) continue
+    const info = typeInfo(tg.t)
+    const span = archetypeFor(tg.t, info.desc, info.wtc).spanM
+    const wtc: Wtc = info.wtc === 'J' || info.wtc === 'H' || info.wtc === 'M' || info.wtc === 'L' ? info.wtc : wtcFor(wakeMassKg(span), span)
+    noteRunwayUse({ wtc, kind: tg.gnd ? 'arrival' : 'departure', atSimS: loop.simTime, typeName: info.name || undefined })
+  }
+}
 const comms = new CommsBus()
 let atcFreqs: Record<string, Array<{ t: string; f: number; d: string }>> = {}
 fetch('/api/frequencies.json')
@@ -2280,6 +2311,7 @@ function scanAtc(lat: number, lon: number, now: number): void {
           runwayLengthM: actRw
             ? distanceM({ lat: actRw.la1, lon: actRw.lo1 }, { lat: actRw.la2, lon: actRw.lo2 })
             : undefined,
+          wakeCautionFor: (cs, t) => (cs === CALLSIGN ? wakeCaution(OWN_WTC, runwayUses, t) : null),
         }),
         ground: new GroundController({ facility: `${name} Ground`, freqMhz: gndF, activeRunway: atis.activeRunway }),
         approach: new ApproachController({
@@ -3051,6 +3083,7 @@ function advanceFrame(elapsed: number, now: number): void {
   tiles.updateDetail(pos.x, pos.y, aircraft.data.aglFt*FT, now)
   feedWakeGenerators()
   updateTurbulenceSources()
+  trackRunwayUses()
   if (isGlider) {
     if (engineSound.unlocked) varioSound.unlock()
     varioSound.muted = engineSound.muted
