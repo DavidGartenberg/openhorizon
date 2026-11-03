@@ -59,6 +59,7 @@ Beyond the POH-validated flight model, the sim models the air and the airframe. 
 - **Airframe icing**: in cloud or freezing precipitation. It reduces CLmax and adds drag. Jets and turboprops have anti-ice (`ANTI-ICE ON|OFF|AUTO`). Others show an AIRFRAME ICE caution, and their windscreens frost.
 - **Runway contamination**: wet, flooded, slush, snow or ice from the METAR, with braking-action friction and hydroplaning above 9·√p kt.
 - **Structural limits**: certification-category g limits. Over the limit, the airframe is marked overstressed. Past the ultimate load, a wing fails.
+- **Ground handling**: static tyre friction holds a braked airplane against wind and through a full-power run-up. A big enough gust can still weathervane or overturn an untied light airplane (a C172 goes at about 50 kt abeam). Gliders spawned on final come trimmed on the 3° path with the airbrakes part open.
 - **Weather visuals**: wet and snow-covered terrain, glossy wet runways, rain and frost on the windscreen, falling rain and snow, lightning bolts with distance-delayed thunder, contrails (Schmidt–Appleman) and wingtip vapour, and touchdown tyre smoke. The View & graphics weather menu has Rain, Snow and Thunderstorm presets.
 
 Switch the models in **View & graphics → Realism** or with typed commands. Type `HELP` in the command box (`/`) for the full list. The landing debrief reports what the environment did on the flight (max g, overstress, windshear, ice, hydroplaning). Saves keep the airframe's condition.

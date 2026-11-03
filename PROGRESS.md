@@ -2999,3 +2999,23 @@ browser-verified end-to-end. Verified this session via scripted flights
 ## 20-step plan (docs/plans/improvement-20.md)
 - 1 No-airport spawn fallback (parks on the finest terrain, re-parks as tiles refine, daylight clock). 2 `npm run smoke` browser smoke test. 3 Spoken windshear. 4 Total-energy vario with audio. 5 Cumulus over thermals (LCL = 125 m/°C spread), reusing the raymarched cloud volumes. 6 Falling rain and snow. 7 Lightning upgrade: the existing NEXRAD-only screen flash now has METAR-storm triggers, 3D bolts and distance-shaped thunder. 8 Tyre smoke. 9 **737 flight deck moved to the real nose station** (the eye was 18 m behind the nose) with a **full-length 28-row cabin**. 10 Environment events in the debrief and logbook. 11 Ice annunciations and anti-ice control. 12 Convective and lee-rotor turbulence. 13 Tower wake cautions. 14 Realism switches. 15 Saves keep the airframe's condition. 16 Frame profiler. 17 Distance LOD. 18 HELP. 19 These docs. 20 Final regression.
 
+
+## Bug sweep (after the 20-step plan)
+Headless sweeps over the whole fleet (final spawns, ground spawns, parked in wind, random-input fuzz) plus browser checks. Each fix has a regression test.
+- **Windshear false alerts**: severe low-level turbulence alone crossed the F-factor threshold, because the detector differentiated raw gusts. It now low-passes the wind for 2 s first; a real microburst still alerts.
+- **Braked airplanes crept**: the low-speed tyre model was purely viscous. A braked C172 pivoted 34° in 50 s in a 12 kt wind, and 3° with no wind at all. Stick-slip static friction now holds it (a load-scaled anchor per wheel, static brake friction 1.4 × kinetic, inside the tyre's grip circle), and it holds the POH short-field full-power run-up. The kinetic model above 0.4 m/s is unchanged.
+- **Gusts and STALL on the ramp**: the HUD showed STALL on a parked airplane in a breeze. There are now no vertical or roll gusts on the ground (tapering in over 8 m), and the warning needs airflow (airborne, above 20 KIAS).
+- **Gliders dived off a final spawn**: the trim solver's throttle unknown is useless on a glider, so the solve was singular and returned its first guess. The result was a ±20° phugoid at −2,900/+2,200 fpm and PULL UP; an airborne save restore did the same. Unpowered aircraft now trim on their airbrakes (15–24% for a 3° final), and level flight becomes the steady clean glide. Verified in the browser: LS8, 40 s hands-off at 55 kt and −292 fpm. Also, the LS8's and Discus's stall speeds are quoted at minimum wing loading, so back-solving at MTOW gave CLmax 2.33/2.45. Sailplanes are now capped at 1.65, so a ballasted LS8 stalls at about 43 kt, as in its manual.
+- **Ground spawns nodded**: tricycles spawned at a fixed +1.7°, so every ground spawn began with a nod onto the nose wheel (9° on a PA-28). The spawn now solves the strut equilibrium.
+- **A thunderstorm flipped a parked C172** (browser sweep, 24020G32KT +TSRA). Three aero shortcuts that are harmless in flight caused it:
+  - Lift used the full ½ρV² with the wind abeam, where a straight wing only lifts on the in-plane flow, V²cos²β.
+  - Dihedral roll was linear to β ≈ 1.2 rad.
+  - α = atan2(w, max(u, 0.5)) read a tailwind as flow from below: about 85°, with flat-plate drag past the brakes and a nose-over.
+
+  Lift, drag and pitch now take cos²β; dihedral takes sin β·cos β; α is full-range with α̇ unwrapped; and the pitching moment is bounded through reversed flow. All exact at zero sideslip and in forward flight. Now it rides out the storm (under 1° of rock), and goes over at about 50 kt abeam or 70 kt from behind.
+- **737 deck**: the No.2 sliding-window handle stood in mid-glass, a grey bar seemingly floating outside. It's now on the window frame.
+- **Checked and left alone**:
+  - With assists off, many Tier B singles and turboprops roll off a final spawn hands-off (TBM 54° in 30 s). This is the real left-turning tendency at approach power against cruise rigging. The default SAS holds every one within 1.3° using at most 21% rudder.
+  - A C172 dips 3.4° nose-down in a full-power brake hold, which is the braking couple on the nose strut.
+  - Fuzzing 32 types with random inputs, wind and turbulence found no non-finite states.
+- **Harness note**: `__ohStep(n)` reads input and runs the assist once per call. Large steps with SAS on are therefore sample-and-hold control, and they make any airplane misbehave. Use assist off (hands-off), or small steps, for dynamics checks.
