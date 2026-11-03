@@ -586,8 +586,8 @@ const WAVE3: RosterEntry[] = [
       flapDCd: [0.0008,0.0003,0,0.0004,0.0016,0.003,0.006],
       flapDCm: [0.018,0.010,0,-0.010,-0.020,-0.026,-0.036],
     }, vSpeeds: { vyKcas: 51, approachKcas: 51, vneKcas: 146, glideKcas: 54 } }, { glideRatio: 48 }),
-  variant(as21, { designator: 'LS8', label: 'Rolladen-Schneider LS8', wingAreaM2: 10.5, spanM: 15.0, lengthM: 6.66, emptyKg: 250, mtowKg: 525, stallCleanKcas: 36, vSpeeds: { vyKcas: 49, approachKcas: 49, vneKcas: 146, glideKcas: 51 } }, { glideRatio: 43 }),
-  variant(as21, { designator: 'DISC', label: 'Schempp-Hirth Discus', wingAreaM2: 10.58, spanM: 15.0, lengthM: 6.58, emptyKg: 233, mtowKg: 525, stallCleanKcas: 35, vSpeeds: { vyKcas: 49, approachKcas: 49, vneKcas: 135, glideKcas: 51 } }, { glideRatio: 42 }),
+  variant(as21, { designator: 'LS8', label: 'Rolladen-Schneider LS8', wingAreaM2: 10.5, spanM: 15.0, lengthM: 6.66, emptyKg: 250, mtowKg: 525, stallCleanKcas: 36, vSpeeds: { vyKcas: 49, approachKcas: 55 /* 1.3 Vs at the ballasted default load (derive.ts glider CLmax cap) */, vneKcas: 146, glideKcas: 51 } }, { glideRatio: 43 }),
+  variant(as21, { designator: 'DISC', label: 'Schempp-Hirth Discus', wingAreaM2: 10.58, spanM: 15.0, lengthM: 6.58, emptyKg: 233, mtowKg: 525, stallCleanKcas: 35, vSpeeds: { vyKcas: 49, approachKcas: 55 /* 1.3 Vs at the ballasted default load (derive.ts glider CLmax cap) */, vneKcas: 135, glideKcas: 51 } }, { glideRatio: 42 }),
 ]
 
 export const ROSTER_EXT: RosterEntry[] = [...WAVE2, ...WAVE3]

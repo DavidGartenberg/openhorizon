@@ -850,6 +850,16 @@ function resetFlightSafety(): void {
   lastTcasDebug = { level: 'NONE', trackLevels: [] }
 }
 
+/** A glider holds a trimmed path on its airbrakes (trim's third unknown in
+ *  place of the throttle): open them to the solved position, lever and
+ *  panels alike, so the spawn flies the path it was trimmed for. */
+function setTrimAirbrake(airbrake: number): void {
+  if (!aircraft.P.spoilers || !(airbrake > 0)) return
+  aircraft.spoilerCmd = airbrake
+  aircraft.spoilerPos = airbrake
+  aircraft.spoilerArmed = false
+}
+
 function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): void {
   aircraft.crashed = false
   resetSystemsState()
@@ -903,6 +913,7 @@ function spawnAtAirport(ap: AirportData, rwyIdent?: string, onFinal = false): vo
     aircraft.gearDownCommanded = true
     aircraft.gearPos = 1
     aircraft.applyTrimState(tas, t.alphaRad, altM, hRad, t.gammaRad, t.elevatorRad, t.throttle, t.rpm)
+    setTrimAirbrake(t.airbrake)
     aircraft.posNed.x = n
     aircraft.posNed.y = e
   }
@@ -1042,6 +1053,7 @@ function loadSnapshot(): boolean {
     const tas = kcasFromKias(Math.max(snap.kias, 55), flapsDeg, aircraft.P.pitotCal) * KT * Math.sqrt(1.225 / isa(altM).densityKgM3)
     const t = trim({ tasMs: tas, altM, massKg: aircraft.massKg, flapsDeg, gammaRad: 0, params: aircraft.P, isaTempOffsetC: aircraft.isaTempOffsetC })
     aircraft.applyTrimState(tas, t.alphaRad, altM, (snap.hdgDeg * Math.PI) / 180, t.gammaRad, t.elevatorRad, t.throttle, t.rpm)
+    setTrimAirbrake(t.airbrake)
     parkingBrake = false
     spawnDesc = snap.spawn
     tiles.update(aircraft.posNed.x, aircraft.posNed.y)

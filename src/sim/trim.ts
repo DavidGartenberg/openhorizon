@@ -23,6 +23,10 @@ export interface TrimResult {
   thrustN: number
   shaftPowerW: number
   residual: number
+  /** Airbrake deployment (0..1) in the solution. An aircraft with no thrust
+   *  (a glider) holds a commanded path on its airbrakes, so this is the
+   *  third unknown in its place; always 0 for powered aircraft. */
+  airbrake: number
 }
 
 export interface TrimSpec {
@@ -103,7 +107,7 @@ const AIR_SCRATCH = { temperatureK: 0, pressurePa: 0, densityKgM3: 0, speedOfSou
 
 function residuals(
   s: TrimSpec, alpha: number, elevator: number, throttle: number, gamma: number,
-  aeroOut = makeAeroOutput(),
+  aeroOut = makeAeroOutput(), airbrake = 0,
 ): { fx: number; fz: number; m: number; prop: Propelled } {
   const P = s.params ?? C172S
   const air = isa(s.altM, AIR_SCRATCH)
@@ -123,8 +127,9 @@ function residuals(
     elevatorRad: elevator, aileronRad: 0, rudderRad: 0, flapsDeg: s.flapsDeg,
     thrustN: prop.thrustN, propTorqueNm: prop.torqueNm, heightAglM: 1000,
     mach: P.machModel ? s.tasMs / air.speedOfSoundMs : 0,
-    extraCd: s.extraCd ?? 0,
-    extraClDump: s.extraClDump ?? 0,
+    // Airbrakes add exactly what the airframe adds in flight (aircraft.ts).
+    extraCd: (s.extraCd ?? 0) + (airbrake && P.spoilers ? P.spoilers.dCd * airbrake : 0),
+    extraClDump: (s.extraClDump ?? 0) + (airbrake && P.spoilers ? P.spoilers.dCl * airbrake : 0),
   }
   if (P.flaperons) {
     const mixed = {flapsDeg:0,aileronRad:0,flaperonLeftRad:0,flaperonRightRad:0}
@@ -144,12 +149,42 @@ function residuals(
   }
 }
 
+/** Thrust the throttle can change at this condition (N): ~0 for a glider. */
+function thrustAuthorityN(spec: TrimSpec, P: AircraftParams): number {
+  const air = isa(spec.altM)
+  const at = (thr: number): number => (P.jet
+    ? jetAt(thr, spec.tasMs, air.densityKgM3, air.speedOfSoundMs, P)
+    : propAt(thr, spec.tasMs, air.densityKgM3, P)).thrustN
+  return Math.abs(at(1) - at(0))
+}
+
 export function trim(spec: TrimSpec): TrimResult {
   const P = spec.params ?? C172S
-  const solveThrottle = spec.gammaRad !== undefined
+  // No thrust to trim with (gliders: the throttle column of the Jacobian is
+  // zero, the solve was singular and returned its initial guess — a glider
+  // spawned on final then entered a ±20° phugoid). The airbrakes take the
+  // throttle's role; a path shallower than the clean glide (level flight)
+  // or steeper than full airbrake becomes the nearest steady glide.
+  if (spec.gammaRad !== undefined && P.spoilers && thrustAuthorityN(spec, P) < 1e-3 * spec.massKg * G) {
+    const onPath = solve(spec, 'airbrake', 0)
+    if (onPath.converged) return onPath
+    const glide = solve({ ...spec, gammaRad: undefined, throttle: 0 }, 'gamma', onPath.airbrake)
+    return glide.residual < onPath.residual ? glide : onPath
+  }
+  return solve(spec, spec.gammaRad !== undefined ? 'throttle' : 'gamma', 0)
+}
+
+/** Damped Newton on (α, δe, third) where third is the throttle (γ given),
+ *  γ (throttle given) or the airbrake (γ given, unpowered). */
+function solve(spec: TrimSpec, mode: 'throttle' | 'gamma' | 'airbrake', airbrakeFixed: number): TrimResult {
+  const P = spec.params ?? C172S
+  const solveThrottle = mode !== 'gamma' // the third unknown is bounded to [0, 1]
   let alpha = 0.03
   let elevator = 0
-  let third = solveThrottle ? 0.5 : -0.05 // throttle or gamma initial guess
+  let third = mode === 'throttle' ? 0.5 : mode === 'gamma' ? -0.05 : 0.2 // initial guess
+  const throttleOf = (x: number): number => (mode === 'throttle' ? x : mode === 'gamma' ? spec.throttle! : 0)
+  const gammaOf = (x: number): number => (mode === 'gamma' ? x : spec.gammaRad!)
+  const airbrakeOf = (x: number): number => (mode === 'airbrake' ? x : airbrakeFixed)
   const W = spec.massKg * G
   const scale = { fx: W, fz: W, m: W * P.chordM }
   const out = makeAeroOutput()
@@ -162,9 +197,7 @@ export function trim(spec: TrimSpec): TrimResult {
 
   let residual = Infinity
   for (let iter = 0; iter < 60; iter++) {
-    const gamma = solveThrottle ? spec.gammaRad! : third
-    const throttle = solveThrottle ? third : spec.throttle!
-    const r0 = residuals(spec, alpha, elevator, throttle, gamma, out)
+    const r0 = residuals(spec, alpha, elevator, throttleOf(third), gammaOf(third), out, airbrakeOf(third))
     residual = Math.abs(r0.fx / scale.fx) + Math.abs(r0.fz / scale.fz) + Math.abs(r0.m / scale.m)
     if (residual < 1e-6) break
 
@@ -183,9 +216,7 @@ export function trim(spec: TrimSpec): TrimResult {
       const da = j === 0 ? h[0]! : 0
       const de = j === 1 ? h[1]! : 0
       const dt3 = j === 2 ? h[2]! : 0
-      const g2 = solveThrottle ? spec.gammaRad! : third + dt3
-      const t2 = solveThrottle ? third + dt3 : spec.throttle!
-      const r1 = residuals(spec, alpha + da, elevator + de, t2, g2, out)
+      const r1 = residuals(spec, alpha + da, elevator + de, throttleOf(third + dt3), gammaOf(third + dt3), out, airbrakeOf(third + dt3))
       cols.push({
         fx: (r1.fx - r0.fx) / (h[j]! || 1),
         fz: (r1.fz - r0.fz) / (h[j]! || 1),
@@ -217,9 +248,9 @@ export function trim(spec: TrimSpec): TrimResult {
     else third = Math.min(Math.max(third, -0.35), 0.35)
   }
 
-  const gamma = solveThrottle ? spec.gammaRad! : third
-  const throttle = solveThrottle ? third : spec.throttle!
-  const fin = residuals(spec, alpha, elevator, throttle, gamma, out)
+  const gamma = gammaOf(third)
+  const throttle = throttleOf(third)
+  const fin = residuals(spec, alpha, elevator, throttle, gamma, out, airbrakeOf(third))
   return {
     converged: residual < 1e-4,
     alphaRad: alpha,
@@ -230,6 +261,7 @@ export function trim(spec: TrimSpec): TrimResult {
     thrustN: fin.prop.thrustN,
     shaftPowerW: fin.prop.powerW,
     residual,
+    airbrake: airbrakeOf(third),
   }
 }
 

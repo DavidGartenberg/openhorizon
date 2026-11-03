@@ -169,6 +169,13 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
     clMaxClean = jetCap.clean
     flapMaxDClMaxEff = Math.max(spec.flapMaxDClMax, jetCap.land - jetCap.clean)
   }
+  // Sailplane stall speeds are published at MINIMUM wing loading, while
+  // MTOW includes water ballast: back-solving at MTOW gave the LS8 2.33 and
+  // the Discus 2.45 (a 500-kg LS8 stalling at 35 kt with a 20° stall angle).
+  // A sailplane section tops out ≈1.5-1.6 clean; cap at the ASK 21's 1.65,
+  // whose stall IS quoted at its 600-kg MTOW. Ballasted LS8: ≈43 kt (the
+  // manual's ≈80 km/h at 525 kg). Flaperon types keep their flap increments.
+  if (glider && clMaxClean > 1.65) clMaxClean = 1.65
   const effStallKcas = Math.sqrt((2 * spec.mtowKg * G) / (RHO0 * clMaxClean * spec.wingAreaM2)) / KT
 
   // Anchor for handling derivatives + shape constants (INHERITED, see header).
