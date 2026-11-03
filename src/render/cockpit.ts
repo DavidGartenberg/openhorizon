@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { build737Deck, type Deck737 } from './cockpit-737'
 import { buildCabin737 } from './cabin-737'
+import { windscreenMaterial } from './windscreen'
 import { deckLayout } from './cockpit-737-paint'
 import type { CockpitProfile, DeckProfile } from './cockpit-profile'
 import type { Input } from '../input/input'
@@ -102,12 +103,6 @@ const SWITCH_ON = new THREE.MeshStandardMaterial({ color: 0x1f8a3a, roughness: 0
 const YOKE_MAT = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6 })
 
 
-/** Cockpit glazing: a faint blue-grey tint so the windshield reads as
- *  GLASS (an empty hole read as a missing wall — user: "make the cockpits
- *  look perfect"). Additive-free, depthWrite off so it never occludes. */
-const GLAZING = new THREE.MeshStandardMaterial({
-  color: 0x9fb4c4, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.13, depthWrite: false, side: THREE.DoubleSide,
-})
 
 /** G1000 panel face painter (C172S): the flat black box read as "no
  *  panel". Cessna-grey face, DU bezels with painted softkey rows and
@@ -698,7 +693,10 @@ export function buildCockpit(parent: THREE.Object3D, profile: CockpitProfile, fl
     framePart(0.045, 0.42, 0.12, 1.0, -halfW, -0.885, 0.22)
     framePart(0.045, 0.42, 0.12, 1.0, halfW, -0.885, -0.22)
     // Glazing: raked windshield pane between glareshield top and roof.
-    const pane = new THREE.Mesh(new THREE.PlaneGeometry(halfW * 2 + 0.05, 0.36), GLAZING)
+    // Glazing: a faint blue-grey tint so the windshield reads as GLASS (an
+    // empty hole read as a missing wall), depthWrite off so it never
+    // occludes — now with rain and frost (render/windscreen.ts).
+    const pane = new THREE.Mesh(new THREE.PlaneGeometry(halfW * 2 + 0.05, 0.36), windscreenMaterial('up', 0x9fb4c4, 0.13))
     placeBody(pane, 1.06, 0, -0.9)
     pane.rotation.x = -0.45 // raked back at the top
     group.add(pane)

@@ -9,8 +9,14 @@ import { buildB738 } from '../../src/render/aircraft-mesh'
 import { buildCockpit } from '../../src/render/cockpit'
 import { cockpitProfile } from '../../src/render/cockpit-profile'
 import { B738 } from '../../src/sim/aircraft/b738'
+import { WINDSCREEN_WEATHER } from '../../src/render/windscreen'
 
-const view = new URLSearchParams(location.search).get('view') ?? 'aft'
+const qs = new URLSearchParams(location.search)
+const view = qs.get('view') ?? 'aft'
+WINDSCREEN_WEATHER.uRain.value = Number(qs.get('rain') ?? 0)
+WINDSCREEN_WEATHER.uIce.value = Number(qs.get('ice') ?? 0)
+WINDSCREEN_WEATHER.uSpeed.value = Number(qs.get('speed') ?? 0)
+WINDSCREEN_WEATHER.uTime.value = 37.3
 const result: { done: boolean; errors: string[] } = { done: false, errors: [] }
 ;(window as unknown as { __preview: typeof result }).__preview = result
 const origError = console.error
@@ -60,6 +66,8 @@ const camera = new THREE.PerspectiveCamera(view === 'cross' ? 60 : 75, W / H, 0.
 const at: Record<string, [number[], number[]]> = {
   // [camera, target] in body frame (x lat, y up, z = -forward)
   aft: [[-0.5, 1.03, -0.45], [0, 0.85, 8]],
+  forward: [[-0.5, 1.03, -0.45], [-0.5, 0.9, -12]],
+  sidewin: [[-0.5, 1.03, -0.45], [-6, 0.9, -1.2]],
   // What the sim's turn-around camera shows (CockpitCamera aftEye blend).
   turned: [[0, 1.2, 0.5], [0, 0.95, 9]],
   aisle: [[0, 1.2, -0.9], [0, 0.95, 9]],

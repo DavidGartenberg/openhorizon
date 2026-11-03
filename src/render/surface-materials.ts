@@ -1,12 +1,19 @@
 import * as THREE from 'three'
 
+/** Shared rain wetness 0..1 for every pavement material (one write updates
+ *  all of them). Wet pavement darkens, its roughness drops toward a water
+ *  film, and puddles form where the surface dips (the mottle's low spots),
+ *  so the scene's sky probe and sun reflect off runways in the rain. */
+export const PAVEMENT_WETNESS = { value: 0 }
+
 /** Pavement detail in geometry-local metres: survives floating-origin moves.
  * No texture requests or extra passes. Fine detail fades at its pixel footprint
  * instead of turning into a sparkling pattern at a grazing approach angle. */
 export function pavementMaterial(color: number, plane: 'xy' | 'xz', kind: 'asphalt' | 'concrete' | 'runway' = 'asphalt'): THREE.MeshStandardMaterial {
   const material = new THREE.MeshStandardMaterial({ color, roughness: 0.91, metalness: 0, envMapIntensity: 0.4 })
-  material.customProgramCacheKey = () => `pavement-v1-${plane}-${kind}`
+  material.customProgramCacheKey = () => `pavement-v2-${plane}-${kind}`
   material.onBeforeCompile = shader => {
+    shader.uniforms.uPavementWet = PAVEMENT_WETNESS
     const runway = kind === 'runway'
     shader.vertexShader = `varying vec2 vPavement;
 ${runway ? 'attribute vec2 runwayEnds; varying vec2 vRunwayEnds;' : ''}
@@ -15,6 +22,7 @@ ${runway ? 'attribute vec2 runwayEnds; varying vec2 vRunwayEnds;' : ''}
 vPavement = position.${plane};
 ${runway ? 'vRunwayEnds = runwayEnds;' : ''}`)
     shader.fragmentShader = `varying vec2 vPavement;
+uniform float uPavementWet;
 ${runway ? 'varying vec2 vRunwayEnds;' : ''}
 float pavementHash(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -57,9 +65,13 @@ float wheelBand = exp(-wheelOffset * wheelOffset);
 float streak = pavementFiltered(vec2(pavementP.x * 2.7, pavementP.y * 0.09));
 pavementTone *= 1.0 - touchdown * wheelBand * (0.13 + 0.32 * streak);
 ` : ''}
-diffuseColor.rgb *= pavementTone;`)
+diffuseColor.rgb *= pavementTone;
+// Rain: darker, and puddles in the low spots of the mottle.
+float pavementPuddle = uPavementWet * smoothstep(0.42, 0.3, pavementMottle * 0.7 + pavementWeather * 0.3);
+diffuseColor.rgb *= 1.0 - 0.38 * uPavementWet - 0.2 * pavementPuddle;`)
     shader.fragmentShader = shader.fragmentShader.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-roughnessFactor = clamp(roughnessFactor + (pavementGrain - 0.5) * 0.1 + (pavementMottle - 0.5) * 0.08, 0.72, 1.0);`)
+roughnessFactor = clamp(roughnessFactor + (pavementGrain - 0.5) * 0.1 + (pavementMottle - 0.5) * 0.08, 0.72, 1.0);
+roughnessFactor = mix(roughnessFactor, mix(0.32, 0.06, pavementPuddle), uPavementWet);`)
     shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
 // Screen-space surface-gradient bump: works on both plane orientations and
 // their grades without assuming a tangent attribute or allocating a map.

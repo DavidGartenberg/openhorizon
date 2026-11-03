@@ -6,7 +6,7 @@ export interface GraphicsActions {
   quality(mode: 'performance' | 'high' | 'ultra'): void
   camera(mode: 'chase' | 'orbit' | 'cockpit' | 'free'): void
   lighting(mode: 'day' | 'sunset' | 'night'): void
-  weather(mode: 'live' | 'clear' | 'scattered' | 'overcast'): void
+  weather(mode: 'live' | 'clear' | 'scattered' | 'overcast' | 'rain' | 'snow' | 'storm'): void
   /** Photo/map layer draped on the terrain. */
   mapLayer(source: ImagerySource): void
 }
@@ -49,7 +49,7 @@ export class GraphicsPanel {
       <label>Exposure<input aria-label="Exposure" type="range" min="0.4" max="1.2" step="0.05" value="0.8"></label>
       <label>Map layer<select aria-label="Map layer">${IMAGERY_SOURCES.map(s => `<option value="${s.id}">${s.label}</option>`).join('')}</select></label>
       <span class="hint" data-map-hint hidden>Google layers need GOOGLE_MAPS_API_KEY on the server.</span>
-      <label>Weather<select aria-label="Weather"><option value="live">Live weather</option><option value="clear">Clear</option><option value="scattered">Scattered</option><option value="overcast">Overcast</option></select></label>
+      <label>Weather<select aria-label="Weather"><option value="live">Live weather</option><option value="clear">Clear</option><option value="scattered">Scattered</option><option value="overcast">Overcast</option><option value="rain">Rain</option><option value="snow">Snow</option><option value="storm">Thunderstorm</option></select></label>
       <div class="time"><button type="button" data-light="day">Daylight</button><button type="button" data-light="sunset">Sunset</button><button type="button" data-light="night">Night</button></div>
       <label>Flight overlay<input aria-label="Flight overlay" type="checkbox" checked></label>
       <output aria-label="Rendering statistics"></output>

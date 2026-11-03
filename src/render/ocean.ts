@@ -82,6 +82,13 @@ export class Ocean {
           float spec = min(20.0, distribution*geometry*f/(4.0*nv+0.001));
           float low = 1.0-smoothstep(0.0,0.4,l.y);
           color += vec3(1.0,1.0-0.35*low,1.0-0.65*low)*spec*3.2*uDayness*uSunTransmission;
+          // Subsurface scattering: looking toward a low sun, light that enters
+          // the back of steep, thin wave crests leaves through their face as
+          // a blue-green glow.
+          vec3 lh = normalize(vec3(l.x, 0.0, l.z) + vec3(1e-5));
+          float back = pow(clamp(dot(-v, lh), 0.0, 1.0), 4.0) * (1.0 - smoothstep(0.15, 0.6, l.y));
+          float steep = smoothstep(0.06, 0.32, length(slope));
+          color += vec3(0.015, 0.11, 0.09) * back * steep * (1.0 - fresnel) * uDayness * uSunTransmission * 2.2;
           float crest = smoothstep(0.24,0.5,length(slope));
           float breakup = 0.5+0.5*sin(dot(p,vec2(0.37,0.61))+uTime*0.8);
           float foam = uWhitecap*crest*breakup*exp(-footprint*0.2);

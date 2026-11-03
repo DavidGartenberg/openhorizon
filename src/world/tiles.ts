@@ -124,6 +124,8 @@ export class TileManager {
         uSky: { value: white },
         uWorldOffset: { value: new THREE.Vector2() },
         uHasImagery: { value: 0 },
+        uWetness: { value: 0 },
+        uSnowCover: { value: 0 },
       },
       vertexShader: TERRAIN_VERT,
       fragmentShader: TERRAIN_FRAG,
@@ -136,6 +138,11 @@ export class TileManager {
   }
 
   setSky(texture: THREE.Texture): void { this.material.uniforms.uSky!.value = texture }
+  /** Surface weather 0..1 (shared uniform objects reach every tile clone). */
+  setSurfaceWeather(wetness: number, snowCover: number): void {
+    this.material.uniforms.uWetness!.value = wetness
+    this.material.uniforms.uSnowCover!.value = snowCover
+  }
   setCloudFog(fog: THREE.FogExp2): void {
     this.material.uniforms.uCloudDensity!.value = fog.density
     ;(this.material.uniforms.uCloudColor!.value as THREE.Color).copy(fog.color)

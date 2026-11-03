@@ -5,6 +5,7 @@ import {
   type Mcp737State, type AisleState, type DeckLayout, type PanelStyle,
 } from './cockpit-737-paint'
 import { PALETTES, type Maker } from './cockpit-profile'
+import { windscreenMaterial } from './windscreen'
 
 /**
  * Boeing 737NG flight deck (layout 'boeingNG'). Built around the captain's
@@ -154,6 +155,10 @@ const M = {
   glass: new THREE.MeshStandardMaterial({ color: 0x9fb4c4, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.1, depthWrite: false, side: THREE.DoubleSide }),
   fireHandle: new THREE.MeshStandardMaterial({ color: 0x2a1514, roughness: 0.5, emissive: new THREE.Color(0xff2a1a), emissiveIntensity: 0 }),
 }
+
+/** Cockpit glazing with rain and frost (render/windscreen.ts). */
+const SCREEN_UP = windscreenMaterial('up', 0x9fb4c4, 0.1)
+const SCREEN_AFT = windscreenMaterial('aft', 0x9fb4c4, 0.1)
 
 /** Interior fill: the flight deck is lit by daylight scattered through
  *  the windows, which a directional sun alone cannot provide inside a
@@ -437,9 +442,10 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
   const mirror = (p: THREE.Vector3): THREE.Vector3 => new THREE.Vector3(-p.x, p.y, p.z)
   for (const s of [-1, 1]) {
     const f = (p: THREE.Vector3): THREE.Vector3 => (s < 0 ? p.clone() : mirror(p))
-    put(quad(f(W1.ib), f(W1.ob), f(W1.ot), f(W1.it), M.glass))
-    put(quad(f(W2.fb), f(W2.ab), f(W2.at), f(W2.ft), M.glass))
-    put(quad(f(W3.fb), f(W3.ab), f(W3.at), f(W3.ft), M.glass))
+    // Windshields run rain up the glass; side windows run it aft.
+    put(quad(f(W1.ib), f(W1.ob), f(W1.ot), f(W1.it), SCREEN_UP))
+    put(quad(f(W2.fb), f(W2.ab), f(W2.at), f(W2.ft), SCREEN_AFT))
+    put(quad(f(W3.fb), f(W3.ab), f(W3.at), f(W3.ft), SCREEN_AFT))
     // Window frames.
     const fr = (a: THREE.Vector3, b: THREE.Vector3, w = 0.045): void => { put(beam(f(a), f(b), w, 0.05, M.frame)) }
     fr(W1.ob, W1.ot, 0.07) // A-pillar (No.1/No.2 post)

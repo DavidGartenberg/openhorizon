@@ -2,6 +2,11 @@ import { FixedTimestepLoop, type SimRate } from './sim/loop'
 import { Aircraft } from './sim/aircraft'
 import { WindModel } from './sim/wind'
 import { Environment, type EnvironmentEvent } from './sim/environment'
+import { Trails, contrailStrength, vaporStrength } from './render/contrails'
+import { WINDSCREEN_WEATHER } from './render/windscreen'
+import { PAVEMENT_WETNESS } from './render/surface-materials'
+import { SurfaceWeatherState, precipIntensity } from './sim/weather/surface-state'
+import { precipitationFromWeather } from './sim/systems/airframe-ice'
 import { parseMetar } from './sim/weather/metar'
 import { blendWeather, type StationWeather, type BlendedWeather } from './sim/weather/weather'
 import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-model'
@@ -149,6 +154,9 @@ const MMO_BY_TYPE: Record<string, number> = {
 }
 const sky = new SkyDome(scene)
 const ocean = new Ocean(scene, sky.radianceTexture)
+// Contrails / wingtip vapour ribbons and the ground's wetness + snow cover.
+const trails = new Trails(scene, sky.radianceTexture)
+const surfaceWx = new SurfaceWeatherState()
 const clouds = new Clouds(scene)
 const hud = new Hud()
 const loop = new FixedTimestepLoop(120)
@@ -313,6 +321,8 @@ const COCKPIT_PROFILE = cockpitProfile(fleetKey, FLEET_ACTIVE.params, {
 const cockpitLayout = COCKPIT_PROFILE.layout
 const DECK_PROFILE = COCKPIT_PROFILE.deck
 const engineCount = DECK_PROFILE?.engines ?? COCKPIT_PROFILE.ga?.engines ?? 1
+// Exhausts and wingtips (swept jet wings carry their tips well aft).
+trails.setEmitters(Trails.layoutFor(FLEET_ACTIVE.params.spanM, engineCount, aircraft.P.jet ? 0.17 * FLEET_ACTIVE.params.spanM : 0))
 const cockpit = buildCockpit(mesh.group, COCKPIT_PROFILE, FLEET_ACTIVE.params.flapDetentsDeg, { speedbrake: !!FLEET_ACTIVE.params.spoilers })
 // Exteriors previously cast onto runways but never received their own
 // shadows. Light aircraft now get a tightly fitted shadow map as well.
@@ -393,6 +403,52 @@ function feedWakeGenerators(): void {
     const span = archetypeFor(tg.t, info.desc, info.wtc).spanM
     environment.wake.push({ id: tg.id, n: loc.n, e: loc.e, altM: tg.altFt * FT, trackRad: (tg.trkDeg * Math.PI) / 180, speedMs: tg.gsKt * KT, massKg: wakeMassKg(span), spanM: span }, t)
   }
+}
+/** Weather shaders, once per frame: ground wetness / snow cover (terrain +
+ *  pavement), rain and frost on the windscreen, contrails and tip vapour. */
+let lastSurfaceWxSimS: number | null = null
+function nearestMetar(): ReturnType<typeof parseMetar> | undefined {
+  const id = wxBlended?.nearestStation
+  return id ? wxStations.find((s) => s.metar.station === id)?.metar : undefined
+}
+function updateWeatherEffects(dayness: number, sunDir: THREE.Vector3): void {
+  const d = aircraft.data
+  const weather = wxBlended?.weather ?? []
+  const simT = loop.simTime
+  const dtS = lastSurfaceWxSimS === null ? 0 : Math.min(Math.max(simT - lastSurfaceWxSimS, 0), 5)
+  lastSurfaceWxSimS = simT
+  surfaceWx.step(dtS, weather, envSurfaceTempC(), sky.elevationDeg)
+  tiles.setSurfaceWeather(surfaceWx.wetness, surfaceWx.snow)
+  PAVEMENT_WETNESS.value = Math.max(surfaceWx.wetness, surfaceWx.snow * 0.3)
+  // Precipitation reaches the windscreen below the cloud tops.
+  const altM = d.altitudeFt * FT
+  const air = isa(Math.max(altM, 0))
+  const oatC = air.temperatureK - 273.15 + aircraft.isaTempOffsetC
+  const precip = precipitationFromWeather(weather)
+  const k = precipIntensity(weather)
+  const topFt = wxSlabs.reduce((m, s) => Math.max(m, s.topMslFt), 0)
+  const inPrecip = precip !== 'none' && k > 0 && (topFt === 0 || d.altitudeFt < topFt + 500) ? k : 0
+  const inCloud = inCloudFactor(wxSlabs, d.altitudeFt)
+  const wetGlass = precip === 'snow' ? (oatC > -1 ? inPrecip * 0.6 : 0) : inPrecip
+  WINDSCREEN_WEATHER.uRain.value = Math.max(wetGlass, oatC > 0 ? inCloud * 0.25 : 0)
+  WINDSCREEN_WEATHER.uSpeed.value = d.ktas * KT
+  WINDSCREEN_WEATHER.uTime.value = simT
+  WINDSCREEN_WEATHER.uLight.value = 0.15 + 0.85 * dayness
+  // Heated windshields (jets, turboprops) stay clear; others frost with the airframe.
+  WINDSCREEN_WEATHER.uIce.value = environment.protectedAirframe ? 0 : Math.min(1, environment.ice.thicknessMm / 4)
+  // Contrails: Schmidt–Appleman; long-lived near a cloud layer (moist air).
+  const powered = aircraft.engineRunning && (aircraft.P.jet ? true : d.rpm > 1500)
+  const contrail = powered && !d.onGround ? contrailStrength(oatC, air.pressurePa) : 0
+  const moist = inCloud > 0 || wxSlabs.some((s) => d.altitudeFt > s.baseMslFt - 3000 && d.altitudeFt < s.topMslFt + 3000)
+  trails.contrailLifeS = moist ? 150 : 25
+  trails.contrailSpacingM = Math.min(Math.max((d.ktas * KT * trails.contrailLifeS) / 190, 20), 250)
+  // Tip vapour: humid air (surface dewpoint spread, low down; or cloud) at high lift.
+  const m = nearestMetar()
+  const spread = m?.tempC !== undefined && m.dewpointC !== undefined && d.aglFt < 3000 ? m.tempC - m.dewpointC : 99
+  const v = Math.max(d.ktas * KT, 1)
+  const cl = (d.loadFactorG * aircraft.massKg * 9.80665) / (0.5 * air.densityKgM3 * v * v * aircraft.P.wingAreaM2)
+  const vapor = d.onGround || d.ktas < 40 ? 0 : vaporStrength(spread, inCloud, cl, d.loadFactorG)
+  trails.update(simT, mesh.group, camera, contrail, vapor, sunDir, dayness)
 }
 /** HUD suffix: runway state, ice, and lift/sink worth knowing about. */
 function environmentHud(): string {
@@ -2369,6 +2425,7 @@ function rebaseIfNeeded(): void {
   worldShift.n += n
   clouds.onRebase()
   environment.onRebase(n, e)
+  trails.onRebase(-e, n)
 }
 
 /** Verification-only wings-leveler/coordinator (mirrors the headless test
@@ -3198,6 +3255,7 @@ function advanceFrame(elapsed: number, now: number): void {
   // 13c night lights: airport layer + aircraft exterior lights.
   const night = Math.min(Math.max(1 - dayness * 1.6, 0), 1)
   airports.updateNight(loop.simTime, night)
+  updateWeatherEffects(dayness, sunDir)
   airports.updateServices(loop.simTime, camera.position.x, camera.position.z)
   // 13d PAPI: colored from the camera's real elevation angle each frame.
   airports.updatePapi(camera.position.x, camera.position.y, camera.position.z)
@@ -3727,12 +3785,21 @@ const graphicsPanel = new GraphicsPanel(renderer, {
     liveWeatherOn = false
     const ll = frame.fromLocal(aircraft.posNed.x,aircraft.posNed.y)
     const elevFt = (aircraft.groundElevAt?.(aircraft.posNed.x,aircraft.posNed.y) ?? 0)/FT
-    const cloud = mode === 'scattered' ? 'SCT025' : mode === 'overcast' ? 'OVC018' : 'SKC'
+    // Manual presets as METAR bodies (wind, visibility, weather, cloud, T/Td, QNH).
+    const presets: Record<string, string> = {
+      clear: '30008KT 10SM SKC 18/12 A2992',
+      scattered: '30008KT 10SM SCT025 18/12 A2992',
+      overcast: '30008KT 10SM OVC018 18/12 A2992',
+      rain: '21012KT 4SM -RA BR BKN012 OVC025 12/11 A2985',
+      snow: '36010KT 2SM SN BKN008 OVC015 M03/M05 A3002',
+      storm: '24018G30KT 3SM +TSRA BKN015CB OVC040 22/19 A2975',
+    }
+    const body = presets[mode] ?? presets.clear!
     const date = new Date(baseDate.getTime()+(loop.simTime+scrubSeconds)*1000)
     const stamp = [date.getUTCDate(),date.getUTCHours(),date.getUTCMinutes()].map(n=>String(n).padStart(2,'0')).join('')
-    wxStations = [{ metar: parseMetar(`KHAF ${stamp}Z 30008KT 10SM ${cloud} 18/12 A2992`),lat:ll.lat,lon:ll.lon,elevFt }]
+    wxStations = [{ metar: parseMetar(`KHAF ${stamp}Z ${body}`),lat:ll.lat,lon:ll.lon,elevFt }]
     applyBlendedWeather(blendWeather(wxStations,ll.lat,ll.lon))
-    wxDesc = `MANUAL ${mode.toUpperCase()} · 300@8 10SM`
+    wxDesc = `MANUAL ${mode.toUpperCase()} · ${body.split(' ').slice(0, 3).join(' ')}`
   },
 })
 

@@ -32,6 +32,8 @@ export const TERRAIN_VERT = /* glsl */ `
 export const TERRAIN_FRAG = /* glsl */ `
   uniform vec3 uSunDir;
   uniform float uDayness, uLowSun, uFogDensity, uHasImagery, uSunTransmission, uCloudDensity;
+  // Surface weather (0..1): rain-wet ground and fresh snow cover.
+  uniform float uWetness, uSnowCover;
   uniform vec3 uCloudColor;
   uniform sampler2D uImagery, uSky;
   uniform vec2 uWorldOffset;
@@ -115,6 +117,18 @@ export const TERRAIN_FRAG = /* glsl */ `
     snow *= 1.0-smoothstep(0.26,0.5,slope+scree*0.12);
     snow *= proc;
     albedo = mix(albedo,toLinear(vec3(0.89,0.915,0.95)),snow);
+    // ---- weather: fresh snow settles on all but the steeps (patchy while
+    // it builds up); rain darkens and glosses whatever is not snow ----------
+    if (uSnowCover > 0.0) {
+      float patches = fbmBL(ground+vec2(-417.0,233.0),footprint,1.0/45.0);
+      float settle = uSnowCover*(1.0-smoothstep(0.30,0.55,slope+scree*0.15))
+        *smoothstep(-0.05,0.25,patches+uSnowCover*0.6-0.25);
+      settle = clamp(settle,0.0,1.0);
+      albedo = mix(albedo,toLinear(vec3(0.9,0.93,0.965)),settle);
+      snow = max(snow,settle);
+    }
+    float wet = uWetness*(1.0-snow);
+    albedo *= 1.0-0.32*wet;
     // ---- fine grain + procedural micro-relief (near field only) ------------
     float grain = fbmBL(ground,footprint,1.0/2.2);
     albedo *= 1.0+grain*0.62;
@@ -142,6 +156,16 @@ export const TERRAIN_FRAG = /* glsl */ `
     vec3 Hh = normalize(L+V);
     float glint = pow(max(dot(N,Hh),0.0),56.0)*snow*ndl;
     lit += sunTint*glint*0.22*uDayness*uSunTransmission;
+    // Wet ground: a water film reflects the sky at grazing angles (Fresnel,
+    // n = 1.33) and gives a tight sun glint — the wet-road look.
+    if (wet > 0.0) {
+      float nv = clamp(dot(N0,V),0.0,1.0);
+      float fres = 0.02+0.98*pow(1.0-nv,5.0);
+      vec3 refl = reflect(-V,N0);
+      refl.y = max(refl.y,0.02);
+      lit += skyRadiance(uSky,refl)*fres*wet*0.55;
+      lit += sunTint*pow(max(dot(N0,Hh),0.0),160.0)*wet*0.9*uDayness*uSunTransmission;
+    }
     float night = clamp(1.0-uDayness*1.6,0.0,1.0);
     if (night>0.001 && vUrban>0.001) {
       float h = hash(floor(ground/12.0));
