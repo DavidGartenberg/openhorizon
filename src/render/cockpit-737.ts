@@ -456,8 +456,12 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
     fr(W3.ft, W3.at, 0.045)
     fr(W3.fb, W3.ab, 0.04)
     fr(W3.ab, W3.at, 0.05)
-    // Sliding-window handle on No.2.
-    const handle = beam(f(v(0.6, -0.83, 1.0)), f(v(0.6, -0.83, 1.12)), 0.018, 0.03, M.metal)
+    // Sliding-window handle on No.2: along the window's forward frame,
+    // beside the No.1/No.2 post (it used to stand mid-glass, a grey bar
+    // floating in the side window at the captain's 29° left).
+    const along = (t: number, aft: number, inb: number): THREE.Vector3 =>
+      W2.fb.clone().lerp(W2.ft, t).add(new THREE.Vector3(inb, 0, aft)) // (x lat, z aft)
+    const handle = beam(f(along(0.25, 0.035, 0.02)), f(along(0.5, 0.035, 0.02)), 0.018, 0.03, M.metal)
     put(handle)
     // Sidewall: tapers from the A-pillar base to the panel station, then
     // runs aft under the side windows; a sill closes the gap to the
