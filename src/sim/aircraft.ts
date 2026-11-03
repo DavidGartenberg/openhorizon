@@ -12,6 +12,8 @@ import { stepPropulsion, makePropulsionState, type PropulsionState } from './pro
 import { makeTurbofanState, stepTurbofan, windmillDragN, type TurbofanState } from './turbofan'
 import { computeGear, makeGearOutput, type GearInput } from './gear'
 import { isa, casFromTas, kiasFromKcas, G, KT, FT, R_AIR, type AirState } from './atmosphere'
+import { gyroscopicMoment } from './prop-effects'
+import { BrakeThermal, brakeSpecFor } from './systems/brakes'
 import {
   v3, q4, v3set, v3copy, v3cross, qrotate, qrotateInv, qintegrate, qfromEuler,
   qtoEuler, clamp, type Euler,
@@ -60,6 +62,8 @@ export interface FlightData {
   n1Pct: number
   /** Landing gear position, 1 = down/locked (fixed gear is always 1). */
   gearPos: number
+  /** Hottest wheel-brake lining, °C (systems/brakes.ts). */
+  brakeTempC: number
 }
 
 export class Aircraft {
@@ -105,7 +109,10 @@ export class Aircraft {
     // aircraft and gliders cannot boot heavier than their published MTOW.
     this.payloadKg = Math.min(250, Math.max(params.mtowKg - params.emptyMassKg - this.fuelKg, 0))
     this.jetState = params.jet ? makeTurbofanState(params.jet) : null
+    this.brakes = new BrakeThermal(brakeSpecFor(params.mtowKg, !!params.jet))
   }
+  /** Wheel-brake heating and fade (systems/brakes.ts). */
+  readonly brakes: BrakeThermal
 
   readonly controls: Controls = {
     pitch: 0, roll: 0, yaw: 0, throttle: 0, mixture: 1,
@@ -177,7 +184,7 @@ export class Aircraft {
     verticalSpeedFpm: 0, headingDeg: 0, pitchDeg: 0, rollDeg: 0,
     alphaDeg: 0, betaDeg: 0, rpm: 0, fuelFlowGph: 0, loadFactorG: 1,
     stallFraction: 0, onGround: false, flapsDeg: 0, shaftPowerW: 0, thrustN: 0,
-    n1Pct: 0, gearPos: 1,
+    n1Pct: 0, gearPos: 1, brakeTempC: 15,
   }
 
   // ---- scratch (no allocation in step) ----
@@ -192,6 +199,7 @@ export class Aircraft {
   private readonly euler: Euler = { yaw: 0, pitch: 0, roll: 0 }
   private readonly aeroOut = makeAeroOutput()
   private readonly gearOut = makeGearOutput()
+  private readonly gyro = { y: 0, z: 0 }
   /** Static-friction anchors for the gear legs (sim/gear.ts stick-slip). */
   private readonly gearStick = new Float64Array(9)
   private readonly gearIn: GearInput = {
@@ -268,6 +276,7 @@ export class Aircraft {
     qfromEuler(this.quat, headingRad, pitch, 0)
     v3set(this.posNed, north, east, -(groundElevM + cgHeightM))
     this.gearStick.fill(0) // new position: no static-friction anchors
+    this.brakes.reset(15 + this.isaTempOffsetC - 0.0065 * Math.max(groundElevM, 0))
     v3set(this.velBody, 0, 0, 0)
     v3set(this.rates, 0, 0, 0)
     this.prop.omegaRadS = (700 * Math.PI) / 30
@@ -441,6 +450,12 @@ export class Aircraft {
     v3copy(this.force, this.aeroOut.force)
     this.force.x += this.prop.thrustN
     v3copy(this.moment, this.aeroOut.moment)
+    // Propeller gyroscopics (prop-effects.ts): H × Ω on the airframe.
+    if (!this.P.jet && this.P.propDiameterM > 0 && this.prop.omegaRadS > 0) {
+      gyroscopicMoment(this.P.rotInertiaKgM2, this.prop.omegaRadS, this.rates.y, this.rates.z, this.gyro)
+      this.moment.y += this.gyro.y
+      this.moment.z += this.gyro.z
+    }
     if (this.env.wingFailure !== 0) {
       // One wing gone: half the lift is lost, and the remaining wing's lift
       // (centre of pressure ≈ 42% semi-span) rolls the airplane toward the
@@ -459,7 +474,10 @@ export class Aircraft {
       this.gearIn.brakeMuScale = this.env.brakeMuScale
       this.gearIn.latMuScale = this.env.latMuScale
       this.gearIn.rollingScale = this.env.rollingScale
+      this.gearIn.brakeFadeLeft = this.brakes.fade[0]
+      this.gearIn.brakeFadeRight = this.brakes.fade[1]
       computeGear(this.gearIn, this.gearOut, this.P)
+      this.brakes.step(dt, this.gearOut.brakePowerLeftW ?? 0, this.gearOut.brakePowerRightW ?? 0, vAir, this.air.temperatureK - 273.15)
       this.force.x += this.gearOut.force.x
       this.force.y += this.gearOut.force.y
       this.force.z += this.gearOut.force.z
@@ -471,6 +489,8 @@ export class Aircraft {
       // (no belly-slide model — honest simplification, recorded).
       this.gearOut.onGround = false
       this.gearOut.maxCompressionM = 0
+      // Stowed in the wheel well: no braking, no cooling airflow.
+      this.brakes.step(dt, 0, 0, 0, this.air.temperatureK - 273.15)
       // Belly height, not CG height: a heavy's CG sits metres above its
       // skin, so the old 0.3 m CG test let it sink visibly through the
       // runway before "crashing". Belly ≈ 45% of the main-gear leg below
@@ -565,6 +585,7 @@ export class Aircraft {
     d.flapsDeg = this.flapsDeg
     d.shaftPowerW = this.prop.shaftPowerW
     d.thrustN = this.prop.thrustN
+    d.brakeTempC = this.brakes.maxTempC
   }
 
   /** Set full state for a trimmed flight condition (used by trim/tests). */
@@ -573,6 +594,7 @@ export class Aircraft {
     gammaRad: number, elevatorTrimRad: number, throttle: number, rpm: number,
   ): void {
     this.gearStick.fill(0)
+    this.brakes.reset(15 + this.isaTempOffsetC - 0.0065 * Math.max(altM, 0))
     qfromEuler(this.quat, headingRad, alphaRad + gammaRad, 0)
     v3set(this.velBody, tasMs * Math.cos(alphaRad), 0, tasMs * Math.sin(alphaRad))
     v3set(this.posNed, 0, 0, -altM)

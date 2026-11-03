@@ -27,6 +27,9 @@ export interface GearInput {
   /** Static-friction anchors, 3 per leg (north, east, active). Absent = the
    *  original purely kinetic model (bit-exact for direct callers). */
   stick?: Float64Array
+  /** Brake fade multipliers from hot linings (systems/brakes.ts); 1 = cold. */
+  brakeFadeLeft?: number
+  brakeFadeRight?: number
 }
 
 /** Stick-slip ("dragging anchor") tyre friction at standstill: each contact
@@ -52,6 +55,9 @@ export interface GearOutput {
   moment: V3 // body N·m
   onGround: boolean
   maxCompressionM: number
+  /** Friction work the brakes are absorbing (W), for their heating. */
+  brakePowerLeftW?: number
+  brakePowerRightW?: number
 }
 
 type LegSpec = { def: GearLeg; brake: 'none' | 'left' | 'right' }
@@ -90,6 +96,8 @@ export function computeGear(inp: GearInput, out: GearOutput, P: AircraftParams =
   v3set(out.moment, 0, 0, 0)
   out.onGround = false
   out.maxCompressionM = 0
+  out.brakePowerLeftW = 0
+  out.brakePowerRightW = 0
 
   let legIndex = -1
   for (const leg of legsFor(P)) {
@@ -152,7 +160,10 @@ export function computeGear(inp: GearInput, out: GearOutput, P: AircraftParams =
     // avoid friction jitter at 120 Hz).
     const brake =
       leg.brake === 'left' ? inp.brakeLeft : leg.brake === 'right' ? inp.brakeRight : 0
-    const muLong = P.rollingResistance * (inp.rollingScale ?? 1) + P.brakeMu * brake * (inp.brakeMuScale ?? 1)
+    const fade = leg.brake === 'left' ? (inp.brakeFadeLeft ?? 1) : leg.brake === 'right' ? (inp.brakeFadeRight ?? 1) : 1
+    const muRoll = P.rollingResistance * (inp.rollingScale ?? 1)
+    const muBrake = P.brakeMu * brake * (inp.brakeMuScale ?? 1) * fade
+    const muLong = muRoll + muBrake
     const latCap = P.tireLatMuCap * (inp.latMuScale ?? 1)
     let fAlong: number
     let fSide = 0
@@ -167,7 +178,7 @@ export function computeGear(inp: GearInput, out: GearOutput, P: AircraftParams =
       let fA = -k * dA - c * vAlong
       let fS = -k * dS - c * vSide
       // The wheel turns once the force exceeds rolling + static brake friction...
-      const capA = (P.rollingResistance * (inp.rollingScale ?? 1) + P.brakeMu * BRAKE_STATIC_RATIO * brake * (inp.brakeMuScale ?? 1)) * normal
+      const capA = (muRoll + muBrake * BRAKE_STATIC_RATIO) * normal
       fA = clamp(fA, -capA, capA)
       // ...and the tyre skids once the total exceeds its grip.
       const grip = latCap * normal
@@ -192,6 +203,13 @@ export function computeGear(inp: GearInput, out: GearOutput, P: AircraftParams =
       } else {
         fSide = clamp((-vSide / 0.25) * 0.6, -latCap, latCap) * normal
       }
+    }
+
+    // The brakes' share of the along-wheel friction work heats them.
+    if (muBrake > 0) {
+      const pw = Math.abs(fAlong * vAlong) * (muBrake / muLong)
+      if (leg.brake === 'left') out.brakePowerLeftW! += pw
+      else if (leg.brake === 'right') out.brakePowerRightW! += pw
     }
 
     // Assemble NED force: normal up (-z) + plane forces along/across wheel.

@@ -2982,6 +2982,11 @@ function advanceFrame(elapsed: number, now: number): void {
         { source: 'GPS', deflectionFraction: -gpsCdi.deflectionFraction }
       : undefined
 
+  // Boundary-layer wind profile: open water is far smoother than land.
+  {
+    const ge = aircraft.groundElevAt?.(aircraft.posNed.x, aircraft.posNed.y) ?? 1
+    wind.setSurface(ge <= 0.2 ? 0.0002 : 0.03, frame.anchor.lat)
+  }
   let remaining = elapsed
   while (remaining > 1e-6) {
     const chunk = Math.min(remaining, 0.25)
@@ -3377,6 +3382,13 @@ function advanceFrame(elapsed: number, now: number): void {
   if (!environment.iceProtectionFitted && environment.ice.thicknessMm >= 0.5) annunciations.push('AIRFRAME ICE')
   if (environment.iceProtectionFitted && environment.status.icingConditions) {
     annunciations.push(environment.antiIce === 'off' ? 'ANTI-ICE OFF' : 'WING ANTI-ICE ON')
+  }
+  // Hot wheel brakes (systems/brakes.ts): a caution as they near their fade
+  // onset; they are fading once the friction multiplier drops below 1.
+  {
+    const b = aircraft.brakes, onset = b.spec.fadeC[0]
+    if (Math.min(b.fade[0], b.fade[1]) < 0.999) annunciations.push('BRAKES FADING')
+    else if (b.maxTempC > onset - 60) annunciations.push('BRAKES HOT')
   }
   // GA panels (piston / turboprop / glider) wear the Boeing display skin:
   // the PFD, the MAP page and the engine strip use the 737 formats inside

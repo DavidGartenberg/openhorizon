@@ -81,3 +81,23 @@ export function propEffectsYawNm(
     swirlYawNm(k.swirlK, engineTorqueNm)
   )
 }
+
+/**
+ * Gyroscopic precession of the propeller, the fourth left-turning tendency
+ * after torque, P-factor and slipstream. The rotating assembly's angular
+ * momentum H = I·ω points forward for a propeller turning clockwise seen
+ * from behind, and the airframe feels H × Ω. In body axes (x fwd, y right,
+ * z down) that is (0, −H·r, H·q):
+ *  - pitching down yaws left (the swing as a taildragger raises its tail);
+ *  - yawing right pitches the nose down.
+ * Writes the moment (N·m) into `out` and returns it.
+ */
+export function gyroscopicMoment(
+  inertiaKgM2: number, omegaRadS: number, q: number, r: number, out: { y: number; z: number },
+): { y: number; z: number } {
+  const h = inertiaKgM2 * omegaRadS
+  out.y = -h * r
+  out.z = h * q
+  return out
+}
+

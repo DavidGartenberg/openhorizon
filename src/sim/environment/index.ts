@@ -13,7 +13,7 @@
  */
 import type { V3 } from '../../math/vec'
 import type { AircraftParams } from '../aircraft/params'
-import { ThermalField, convectiveStrength, ridgeLift } from './thermals'
+import { ThermalField, convectiveStrength, ridgeLift, leeWaveUpdraft, upwindRidge } from './thermals'
 import { thermalCumulus, type CumulusCloud } from './cumulus'
 import { Microburst, WindshearDetector } from './microburst'
 import { WakeField } from './wake'
@@ -100,6 +100,8 @@ export class Environment {
     convection: 0,
     updraftMs: 0,
     ridgeMs: 0,
+    /** Mountain lee-wave vertical air speed (m/s, + up). */
+    leeWaveMs: 0,
     microburstDownMs: 0,
     wakeRollRate: 0,
     wakeVerticalMs: 0,
@@ -112,6 +114,8 @@ export class Environment {
     windshear: false,
   }
   private readonly tirePsi: number
+  /** Upwind-ridge scan, refreshed after 400 m of travel or a wind change. */
+  private ridgeScan: { n: number; e: number; wn: number; we: number; ridge: { distanceM: number; prominenceM: number } | null } | null = null
   /** Ground-fixed origin of the thermal lattice in the current frame. */
   private originN = 0
   private originE = 0
@@ -171,6 +175,7 @@ export class Environment {
    *  anchor is at the old (dn, de)). Wakes and microbursts move with the
    *  air; the thermal lattice stays fixed to the ground. */
   onRebase(dn: number, de: number): void {
+    this.ridgeScan = null
     this.originN += dn
     this.originE += de
     this.wake.shift(-dn, -de)
@@ -179,6 +184,7 @@ export class Environment {
 
   /** Clear accumulated state (new flight / reset). */
   reset(): void {
+    this.ridgeScan = null
     this.ice.reset()
     this.structure.reset()
     this.wake.clear()
@@ -210,6 +216,19 @@ export class Environment {
     }
     this.status.ridgeMs = ridge
     up += ridge
+    // ---- mountain lee waves (downwind of a ridge, in stable air) ----
+    let wave = 0
+    if (T.ridge && s.groundElevAt && !s.onGround && (s.windN !== 0 || s.windE !== 0)) {
+      const sc = this.ridgeScan
+      if (!sc || Math.hypot(s.n - sc.n, s.e - sc.e) > 400 || Math.abs(s.windN - sc.wn) + Math.abs(s.windE - sc.we) > 1) {
+        this.ridgeScan = { n: s.n, e: s.e, wn: s.windN, we: s.windE, ridge: upwindRidge(s.groundElevAt, s.n, s.e, s.windN, s.windE) }
+      }
+      const r = this.ridgeScan!.ridge
+      // Ridge-height wind ≈ 1.4× the surface wind (boundary-layer profile).
+      if (r) wave = leeWaveUpdraft(r.distanceM, s.aglM, r.prominenceM, 1.4 * Math.hypot(s.windN, s.windE), 1 - 0.8 * strength)
+    }
+    this.status.leeWaveMs = wave
+    up += wave
     // ---- microbursts ----
     this.microbursts = this.microbursts.filter((m) => !m.isOver(s.timeS))
     let mbDown = 0

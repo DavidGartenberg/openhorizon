@@ -63,6 +63,34 @@ export function drydenScales(aglM: number, w20Ms: number, intensity: number): Dr
   return { Lu: mix(a.Lu, high.Lu), Lv: mix(a.Lv, high.Lv), Lw: mix(a.Lw, high.Lw), su: mix(a.su, high.su), sv: mix(a.sv, high.sv), sw: mix(a.sw, high.sw) }
 }
 
+/** Atmospheric boundary layer (neutral stability). The METAR wind is the
+ *  10 m wind; below it the log law, ln(z/z0)/ln(10/z0), thins it toward the
+ *  ground. Above the 100 m surface layer it rises smoothly to the gradient
+ *  wind at the boundary-layer top (the log law extrapolated there, ×0.9:
+ *  ≈1.6× the surface wind over grassland, ≈1.25× over the sea). Ekman turning
+ *  veers it with height, clockwise in the northern hemisphere: ≈30° over
+ *  land, ≈12° over water. Returns the speed factor and the veer (rad, + =
+ *  clockwise seen from above) at height z (m above ground). */
+export function boundaryLayerProfile(zM: number, z0M: number, latDeg: number): { factor: number; veerRad: number } {
+  const z0 = Math.max(z0M, 1e-5)
+  const water = z0 < 0.002
+  const top = water ? 600 : 1000
+  const surfaceTop = 100
+  const z = Math.max(zM, Math.max(1, z0 * 20))
+  const logAt = (h: number): number => Math.log(h / z0) / Math.log(10 / z0)
+  const gradient = logAt(top) * 0.9
+  let factor: number
+  if (z <= surfaceTop) factor = logAt(z)
+  else {
+    const t = Math.min((z - surfaceTop) / (top - surfaceTop), 1)
+    factor = logAt(surfaceTop) + (gradient - logAt(surfaceTop)) * t * t * (3 - 2 * t)
+  }
+  const alpha0 = ((water ? 12 : 30) * Math.PI) / 180
+  const v = Math.min(Math.max((zM - 10) / (top - 10), 0), 1)
+  const veerRad = alpha0 * Math.pow(v, 0.6) * (latDeg < 0 ? -1 : 1)
+  return { factor, veerRad }
+}
+
 export class WindModel {
   /** Steady wind: direction FROM (deg true), speed (kt) → NED vector. */
   private steady = v3()
@@ -77,6 +105,30 @@ export class WindModel {
   private rollGust = 0
   /** Uniform [0,1) source; tests inject a seeded generator. */
   rng: () => number = Math.random
+  /** Boundary-layer profile (setSurface): roughness length (m) and latitude.
+   *  Null = the steady wind blows at every height (legacy, bit-exact). */
+  private surface: { z0M: number; latDeg: number } | null = null
+
+  /** Enable the boundary-layer wind profile: roughness length z0 (m:
+   *  0.0002 open sea, 0.03 grassland and airports, 0.5+ forest and towns)
+   *  and latitude (the sense of the Ekman veer). */
+  setSurface(z0M: number, latDeg: number): void {
+    if (this.surface) { this.surface.z0M = z0M; this.surface.latDeg = latDeg }
+    else this.surface = { z0M, latDeg }
+  }
+
+  /** The steady wind at a height above ground (NED m/s, horizontal). */
+  steadyAt(aglM: number, out: { x: number; y: number }): { x: number; y: number } {
+    if (!this.surface) { out.x = this.steady.x; out.y = this.steady.y; return out }
+    const { factor, veerRad } = boundaryLayerProfile(aglM, this.surface.z0M, this.surface.latDeg)
+    // Veering = the direction the wind comes FROM turns clockwise, and so does
+    // the vector it blows along: rotate (north, east) by +veer.
+    const c = Math.cos(veerRad), sn = Math.sin(veerRad)
+    out.x = factor * (this.steady.x * c - this.steady.y * sn)
+    out.y = factor * (this.steady.x * sn + this.steady.y * c)
+    return out
+  }
+  private readonly prof = { x: 0, y: 0 }
 
   setSteady(directionFromDeg: number, speedKt: number, gustKt = 0): void {
     const toRad = ((directionFromDeg + 180) % 360) * (Math.PI / 180)
@@ -124,10 +176,11 @@ export class WindModel {
         Math.max(Math.sin(this.gustPhase * 0.35) + Math.sin(this.gustPhase * 0.13) - 1.2, 0)) /
         Math.max(Math.hypot(this.steady.x, this.steady.y), 0.1)
 
+    const st = this.surface && this.flight ? this.steadyAt(this.flight.rawAglM, this.prof) : this.steady
     return v3set(
       out,
-      this.steady.x * gustFactor + this.turb.x,
-      this.steady.y * gustFactor + this.turb.y,
+      st.x * gustFactor + this.turb.x,
+      st.y * gustFactor + this.turb.y,
       this.turb.z,
     )
   }

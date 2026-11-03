@@ -122,3 +122,55 @@ export function ridgeLift(windN: number, windE: number, dhdn: number, dhde: numb
   const bounded = Math.max(-8, Math.min(8, surface))
   return bounded * Math.exp(-Math.max(aglM, 0) / 350)
 }
+
+/** Brunt–Väisälä frequency of a standard-atmosphere airstream, 1/s. */
+export const LEE_WAVE_N = 0.011
+
+/**
+ * Mountain lee waves (linear trapped-wave model), m/s (+ up). A stable
+ * airstream crossing a ridge sets up standing waves downwind of it:
+ *  - wavelength λ = 2πU/N (≈ 9–16 km in 15–25 m/s winds);
+ *  - vertical speed amplitude ≈ N·A, with A half the ridge's prominence
+ *    (2–5 m/s behind 500–1,000 m ridges, capped at 8);
+ *  - sink on the lee slope, the first wave's lift ≈ ¾λ downwind, crests
+ *    repeating every λ and decaying downstream over a few wavelengths;
+ *  - no flow through the ground: the wave builds in over twice the ridge
+ *    height above the terrain and fades above 6 km.
+ * Needs ≈ 15 kt at ridge height; convection (thermals) wrecks the stable
+ * layer, so `stability` (0..1) scales it.
+ * @param xDownwindM distance downwind of the ridge crest (m)
+ * @param zAglM height above the local terrain (m)
+ */
+export function leeWaveUpdraft(xDownwindM: number, zAglM: number, prominenceM: number, windMs: number, stability: number): number {
+  if (xDownwindM <= 0 || prominenceM < 60 || windMs < 7 || stability <= 0) return 0
+  const k = LEE_WAVE_N / windMs
+  const lambda = (2 * Math.PI) / k
+  const onset = clamp01((windMs - 7) / 5)
+  const amp = Math.min(8, LEE_WAVE_N * 0.5 * Math.min(prominenceM, 1600)) * onset * clamp01(stability)
+  const t = clamp01(zAglM / (2 * prominenceM))
+  const vertical = t * t * (3 - 2 * t) * Math.exp(-Math.max(0, zAglM - 6000) / 2000)
+  return -amp * Math.sin(k * xDownwindM) * Math.exp(-xDownwindM / (3 * lambda)) * vertical
+}
+
+/** The dominant ridge upwind of a point: crest distance (m) and prominence
+ *  over the point's terrain (m), scanning `rangeM` along the wind every
+ *  `stepM`. Null when nothing upwind stands `minProminenceM` proud. */
+export function upwindRidge(
+  elevAt: (n: number, e: number) => number, n: number, e: number, windN: number, windE: number,
+  rangeM = 25_000, stepM = 500, minProminenceM = 60,
+): { distanceM: number; prominenceM: number } | null {
+  const u = Math.hypot(windN, windE)
+  if (u < 0.5) return null
+  // Wind blows TOWARD (windN, windE): upwind is the opposite way.
+  const un = -windN / u, ue = -windE / u
+  const here = elevAt(n, e)
+  if (!Number.isFinite(here)) return null
+  let best = -Infinity, at = 0
+  for (let d = stepM; d <= rangeM; d += stepM) {
+    const h = elevAt(n + un * d, e + ue * d)
+    if (Number.isFinite(h) && h > best) { best = h; at = d }
+  }
+  const prominence = best - here
+  return prominence >= minProminenceM ? { distanceM: at, prominenceM: prominence } : null
+}
+
