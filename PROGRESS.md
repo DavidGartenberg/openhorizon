@@ -3305,3 +3305,8 @@ See `docs/atc-radio.md`. What changed:
 
 - The earlier entry said agreed takes were "7 of 8 complete": that was a length check, not a transcript. Checked properly (whisper reads the last words of each result): Tara after Nora, ten rounds, 10 of 10 complete in two takes each. In the earlier length-only run one round had two cut takes that agreed (6.33 s). So agreement can lock onto a cut line, about 1 in 18 across both runs, only for background lines (the voices Aman and Tara never speak to the player). Documented in `docs/atc-radio.md`.
 - Still true, and not fixable from here: nobody has listened to the voices; the transcript evidence says the words survive, not that they sound human. Two listening samples were sent to the user.
+
+### ATC voices: pitch movement measured (2026-11-03)
+
+- New `scripts/voice/prosody.mjs`: same six transmissions in every voice, F0 tracked by autocorrelation. Neural voices: pitch sd 2.35–3.82 semitones (mean 3.08), p10–p90 range 6–10 st; built-in: 1.73–3.53 (mean 2.39; Karen 1.73, Moira 1.99, Grandpa 1.74 flat; Samantha 3.53, Daniel 3.15 lively). Natural conversational English is roughly 2–4 st (rule of thumb).
+- This is evidence about intonation only, not a verdict on whether the voices sound human: timbre, rhythm and artefacts are unmeasured. The user has the two listening samples; their ear is the remaining check.
