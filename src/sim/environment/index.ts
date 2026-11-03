@@ -94,6 +94,8 @@ export class Environment {
     wakeRollRate: 0,
     wakeVerticalMs: 0,
     iceMm: 0,
+    /** Supercooled water present: an unprotected airframe would be icing. */
+    icingConditions: false,
     runway: 'dry' as RunwayCondition,
     hydroplaning: false,
     windshearF: 0,
@@ -107,7 +109,16 @@ export class Environment {
   private wasHydroplaning = false
   private readonly mb = { x: 0, y: 0, z: 0 }
 
-  constructor(readonly P: AircraftParams, readonly protectedAirframe = !!P.jet || P.mtowKg > 5_700, readonly reactiveWindshear = !!P.jet) {
+  /** Crew anti-ice selection (jets/turboprops): AUTO and ON protect the
+   *  airframe, OFF leaves it to ice like an unprotected one. */
+  antiIce: 'auto' | 'on' | 'off' = 'auto'
+
+  /** Wing/engine anti-ice is protecting the airframe right now. */
+  get protectedAirframe(): boolean {
+    return this.iceProtectionFitted && this.antiIce !== 'off'
+  }
+
+  constructor(readonly P: AircraftParams, readonly iceProtectionFitted = !!P.jet || P.mtowKg > 5_700, readonly reactiveWindshear = !!P.jet) {
     this.structure = new StructureMonitor(P)
     this.tirePsi = tirePressurePsiFor(P.mtowKg)
   }
@@ -204,7 +215,9 @@ export class Environment {
     }
     // ---- airframe ice ----
     if (T.icing) {
-      this.ice.step({ dt: s.dt, oatC: s.oatC, inCloud: s.inCloud, precip: precipitationFromWeather(s.weather), tasMs: s.tasMs, protectedAirframe: this.protectedAirframe })
+      const precip = precipitationFromWeather(s.weather)
+      this.status.icingConditions = s.oatC <= 0.5 && AirframeIce.lwc(s.inCloud, precip, s.oatC) > 0
+      this.ice.step({ dt: s.dt, oatC: s.oatC, inCloud: s.inCloud, precip, tasMs: s.tasMs, protectedAirframe: this.protectedAirframe })
       hooks.iceCdInc = this.ice.cdIncrement
       hooks.clMaxFactor = this.ice.clMaxFactor
       const mm = this.ice.thicknessMm

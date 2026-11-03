@@ -364,6 +364,20 @@ describe('environment orchestration', () => {
     expect(pull.step(state({ loadFactorG: 4.5 }), v3(), hooks()).map(e => e.kind)).toContain('overstress')
   })
 
+  it('anti-ice: AUTO/ON protect a jet, OFF lets it ice; unprotected airframes have none', () => {
+    const icing = (env: Environment): number => {
+      const h = hooks()
+      for (let i = 0; i < 120 * 120; i++) env.step(state({ dt: 1 / 120, timeS: i / 120, oatC: -6, inCloud: 1, tasMs: 120 }), v3(), h)
+      return env.ice.thicknessMm
+    }
+    const auto = new Environment(B738), off = new Environment(B738)
+    off.antiIce = 'off'
+    expect(off.iceProtectionFitted && !off.protectedAirframe).toBe(true)
+    expect(icing(off)).toBeGreaterThan(icing(auto) * 10)
+    expect(auto.status.icingConditions).toBe(true)
+    expect(new Environment(C172S).iceProtectionFitted).toBe(false)
+  })
+
   it('never judges gear contact as a wing load (spawning into the ground broke the wings)', () => {
     const env = new Environment(C172S)
     const h = hooks()

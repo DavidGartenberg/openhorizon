@@ -474,7 +474,7 @@ function updateWeatherEffects(dayness: number, sunDir: THREE.Vector3): void {
   WINDSCREEN_WEATHER.uTime.value = simT
   WINDSCREEN_WEATHER.uLight.value = 0.15 + 0.85 * dayness
   // Heated windshields (jets, turboprops) stay clear; others frost with the airframe.
-  WINDSCREEN_WEATHER.uIce.value = environment.protectedAirframe ? 0 : Math.min(1, environment.ice.thicknessMm / 4)
+  WINDSCREEN_WEATHER.uIce.value = environment.iceProtectionFitted ? 0 : Math.min(1, environment.ice.thicknessMm / 4)
   // Falling rain / snow around the camera (plan step 6); wet snow falls as rain.
   const gs = d.groundSpeedKt * KT, trk = (d.trackDeg * Math.PI) / 180
   _camVel.set(gs * Math.sin(trk), d.verticalSpeedFpm * 0.00508, -gs * Math.cos(trk))
@@ -1068,6 +1068,12 @@ function handleSearch(query: string): void {
     if (parts[0] === 'DAMAGE') environment.structure.failuresEnabled = on
     try { localStorage.setItem(`oh-env-${parts[0].toLowerCase()}`, parts[1]) } catch { /* private mode */ }
     toast(`${parts[0]} ${parts[1]}`)
+    return
+  }
+  if (parts[0] === 'ANTI-ICE' && (parts[1] === 'ON' || parts[1] === 'OFF' || parts[1] === 'AUTO')) {
+    if (!environment.iceProtectionFitted) { toast('NO ICE PROTECTION FITTED'); return }
+    environment.antiIce = parts[1].toLowerCase() as 'on' | 'off' | 'auto'
+    toast(`ANTI-ICE ${parts[1]}`)
     return
   }
   if (parts[0] === 'ENV') {
@@ -3239,6 +3245,12 @@ function advanceFrame(elapsed: number, now: number): void {
   if (failures.alternatorFailed) annunciations.push('ALTERNATOR FAIL')
   if (fuelState.lowFuelFlag) annunciations.push('FUEL LOW')
   if (!fuelState.fuelFlowing) annunciations.push('FUEL STARV')
+  // Ice (plan step 11): unprotected airframes carry it; protected ones show
+  // their anti-ice state while in icing conditions.
+  if (!environment.iceProtectionFitted && environment.ice.thicknessMm >= 0.5) annunciations.push('AIRFRAME ICE')
+  if (environment.iceProtectionFitted && environment.status.icingConditions) {
+    annunciations.push(environment.antiIce === 'off' ? 'ANTI-ICE OFF' : 'WING ANTI-ICE ON')
+  }
   // GA panels (piston / turboprop / glider) wear the Boeing display skin:
   // the PFD, the MAP page and the engine strip use the 737 formats inside
   // the G1000 panel's canvases (boeing-ga-displays.ts). Cockpit view only.
