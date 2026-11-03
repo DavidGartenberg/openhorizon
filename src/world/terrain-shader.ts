@@ -75,6 +75,36 @@ export const TERRAIN_FRAG = /* glsl */ `
     }
     return s;
   }
+  // The same value noise with its analytic gradient (d/dp): relief normals
+  // in one pass instead of three finite-difference fBm calls.
+  vec3 noiseD(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f*f*(3.0-2.0*f), du = 6.0*f*(1.0-f);
+    float a = hash(i), b = hash(i+vec2(1,0)), c = hash(i+vec2(0,1)), d = hash(i+vec2(1,1));
+    float k = a-b-c+d;
+    return vec3(a+(b-a)*u.x+(c-a)*u.y+k*u.x*u.y, du*vec2(b-a+k*u.y, c-a+k*u.x));
+  }
+  // Gradient (per metre of ground) of fbmBL(p, fp, f0): octave i samples
+  // noise(f*q), q = R^i p + c, so its gradient is f * (R^i)^T * grad(noise).
+  vec2 fbmBLgrad(vec2 p, float fp, float f0) {
+    const mat2 R = mat2(0.8,-0.6,0.6,0.8);
+    float f = f0, a = 0.5;
+    vec2 g = vec2(0.0);
+    vec2 q = p;
+    mat2 J = mat2(1.0);
+    int octaves = uQuality > 0.5 ? 5 : 3;
+    for (int i = 0; i < 5; i++) {
+      float w = 1.0-smoothstep(0.25,0.6,fp*f);
+      if (w <= 0.0 || i >= octaves) break;
+      vec3 n = noiseD(q*f);
+      g += a*w*f*vec2(dot(J[0],n.yz), dot(J[1],n.yz));
+      q = R*q+vec2(31.7,17.3);
+      J = R*J;
+      f *= 2.03;
+      a *= 0.5;
+    }
+    return g;
+  }
   vec3 toLinear(vec3 c) { return pow(max(c,vec3(0)),vec3(2.2)); }
   void main() {
     vec2 ground = vWXZ + uWorldOffset;
@@ -101,7 +131,12 @@ export const TERRAIN_FRAG = /* glsl */ `
     albedo *= mix(0.82+0.36*macro,1.0,imW*0.9);
     albedo = mix(albedo,albedo*vec3(1.06,1.0,0.88),clamp(regional*2.0+0.5,0.0,1.0)*0.5*proc);
     // ---- cliffs: slope-driven rock with altitude strata --------------------
-    float rockNoise = fbmBL(ground,footprint,1.0/70.0);
+    // |fbmBL| < 0.4844, so on near-flat ground (slope < 0.005) below any
+    // possible snow line (>= 2,598 m - 246 m of noise) neither rock nor snow
+    // can appear whatever the noise: skip both noise fields there. The
+    // output is identical; flat ground saves ten noise lookups a pixel.
+    bool needRock = slope > 0.005 || vAltitude > 2350.0;
+    float rockNoise = needRock ? fbmBL(ground,footprint,1.0/70.0) : 0.0;
     float rock = smoothstep(0.17,0.34,slope+rockNoise*0.34)*proc;
     // Strata: wavy, noise-warped beds (~22 m) rather than ruled stripes, faded
     // out before they become sub-pixel and kept low-contrast so cliffs read as
@@ -109,7 +144,7 @@ export const TERRAIN_FRAG = /* glsl */ `
     float fa = 1.0-smoothstep(0.35,1.6,altRate);
     float band = vAltitude*0.045+rockNoise*5.0+regional*9.0;
     float strata = (0.5+0.5*sin(band*6.2831853))*fa;
-    float scree = fbmBL(ground,footprint,1.0/9.0);
+    float scree = needRock ? fbmBL(ground,footprint,1.0/9.0) : 0.0;
     vec3 rockCool = vec3(0.40,0.385,0.37), rockWarm = vec3(0.60,0.50,0.40);
     vec3 rockCol = mix(rockCool,rockWarm,clamp(0.5+regional*1.8,0.0,1.0));
     rockCol *= 0.86+0.2*strata*fa+0.1*(1.0-fa)+scree*0.45;
@@ -143,11 +178,7 @@ export const TERRAIN_FRAG = /* glsl */ `
     vec3 N = N0;
     if (bumpFade > 0.0 && uQuality > 0.5) {
       float relief = mix(0.5,2.3,rock)*(1.0-snow*0.7)*mix(1.0,0.4,imW);
-      const float e = 0.45;
-      float h0 = fbmBL(ground,footprint,1.0/26.0);
-      float hx = fbmBL(ground+vec2(e,0.0),footprint,1.0/26.0);
-      float hz = fbmBL(ground+vec2(0.0,e),footprint,1.0/26.0);
-      vec2 g = vec2(hx-h0,hz-h0)/e*relief*bumpFade;
+      vec2 g = fbmBLgrad(ground,footprint,1.0/26.0)*relief*bumpFade;
       N = normalize(N0-vec3(g.x,0.0,g.y));
     }
     float ndl = max(dot(N,L),0.0);

@@ -13,7 +13,7 @@ import { TERRAIN_VERT, TERRAIN_FRAG } from '../../src/world/terrain-shader'
 const params = new URLSearchParams(location.search)
 const view = params.get('view') ?? 'far'
 const withImagery = params.get('imagery') === '1'
-const result: { done: boolean; errors: string[]; programs: number } = { done: false, errors: [], programs: 0 }
+const result: { done: boolean; errors: string[]; programs: number; frameMs?: number } = { done: false, errors: [], programs: 0 }
 ;(window as unknown as { __preview: typeof result }).__preview = result
 const origError = console.error
 console.error = (...a: unknown[]) => { result.errors.push(a.map(String).join(' ')); origError(...a) }
@@ -55,7 +55,8 @@ function terrainHeight(x: number, z: number): number {
   return 90 + ridge * 3300 * (0.25 + 0.75 * basin)
 }
 
-const SIZE = 14000, N = 360
+// ?grid=N sets the mesh resolution (vertices per side); ?mesh=0 renders the sky only.
+const SIZE = 14000, N = Math.max(8, Math.min(720, Number(params.get('grid') ?? 360)))
 const pos = new Float32Array(N * N * 3)
 const nor = new Float32Array(N * N * 3)
 const col = new Float32Array(N * N * 3)
@@ -132,9 +133,21 @@ const material = new THREE.ShaderMaterial({
     uQuality: { value: Number(params.get('quality') ?? 1) },
   },
   vertexShader: TERRAIN_VERT,
-  fragmentShader: TERRAIN_FRAG,
+  fragmentShader: params.get('count') === '1' ? countingShader(TERRAIN_FRAG) : TERRAIN_FRAG,
 })
-scene.add(new THREE.Mesh(geo, material))
+
+/** ?count=1: instrument the real program to output, per pixel, how many
+ *  value-noise lookups it made (red = count/255, written raw, untonemapped).
+ *  A hardware-independent measure of the shader's per-pixel work. */
+function countingShader(src: string): string {
+  let out = src.replace('float hash(vec2 p) {', 'float gNoise = 0.0;\n  float hash(vec2 p) {')
+  out = out.replace('float noise(vec2 p) {', 'float noise(vec2 p) { gNoise += 1.0;')
+  out = out.replace('vec3 noiseD(vec2 p) {', 'vec3 noiseD(vec2 p) { gNoise += 1.0;')
+  out = out.replace('gl_FragColor = vec4(lit,1.0);', 'gl_FragColor = vec4(gNoise/255.0,0.0,0.0,1.0); return;')
+  if (!out.includes('gNoise += 1.0') || !out.includes('gNoise/255.0')) throw new Error('countingShader: patterns not found')
+  return out
+}
+if (params.get('mesh') !== '0') scene.add(new THREE.Mesh(geo, material))
 
 // ---- cameras / time of day -------------------------------------------------
 const camera = new THREE.PerspectiveCamera(70, W / H, 2, 2_000_000)
@@ -156,12 +169,38 @@ else { camera.position.set(0, 1700, 6200); camera.lookAt(0, 800, -3000) }
 camera.updateMatrixWorld()
 sky.updateEnvironment(renderer, scene, camera.position)
 
-// Render a few frames (sky lookup bake settles), then publish.
+// Render a few frames (sky lookup bake settles), then publish. ?time=N then
+// renders N more frames, each forced to completion with a 1-pixel readback,
+// and publishes the median: a deterministic shader benchmark (same mesh,
+// same camera; only the program differs between builds).
+const timeFrames = Number(params.get('time') ?? 0)
 let frames = 0
 function loop(): void {
   renderer.render(scene, camera)
   if (++frames < 4) { requestAnimationFrame(loop); return }
   result.programs = renderer.info.programs?.length ?? 0
+  if (timeFrames > 0) {
+    const gl = renderer.getContext(), px = new Uint8Array(4), ms: number[] = []
+    for (let i = 0; i < timeFrames; i++) {
+      const t0 = performance.now()
+      renderer.render(scene, camera)
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px)
+      ms.push(performance.now() - t0)
+    }
+    ms.sort((a, b) => a - b)
+    result.frameMs = +ms[Math.floor(ms.length / 2)]!.toFixed(1)
+  }
+  if (params.get('count') === '1') {
+    const gl = renderer.getContext(), px = new Uint8Array(W * H * 4)
+    gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px)
+    let n = 0, sum = 0, max = 0
+    for (let i = 0; i < W * H; i++) {
+      if (px[i * 4 + 1]! > 0 || px[i * 4 + 2]! > 0) continue // sky (not the terrain program)
+      const c = px[i * 4]!
+      n++; sum += c; if (c > max) max = c
+    }
+    ;(result as Record<string, unknown>).noise = { terrainPixels: n, meanPerPixel: +(sum / Math.max(n, 1)).toFixed(2), maxPerPixel: max, totalMillions: +(sum / 1e6).toFixed(2) }
+  }
   result.done = true
 }
 loop()

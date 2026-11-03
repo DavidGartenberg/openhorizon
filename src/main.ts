@@ -3603,7 +3603,10 @@ function safeAdvance(elapsed: number, now: number): void {
     }
   }
 }
+/** Set while __ohBench drives frames itself: the rAF loop idles. */
+let benchHold = false
 function frame_(now: number): void {
+  if (benchHold) { requestAnimationFrame(frame_); return }
   lastRafAt = now
   if (adaptiveRes.sample(now - lastFrame, now) !== null) applyPixelRatio()
   const elapsed = (now - lastFrame) / 1000
@@ -3913,6 +3916,87 @@ Object.assign(window as unknown as Record<string, unknown>, {
     systemsControls.magneto = pos
   },
   __ohProfile: () => ({ totalMs: profiler.totalMs(), sections: profiler.report() }),
+  /** GPU-synchronised frame timing (scripts/bench.mjs). The rAF loop idles
+   *  while it renders `frames` frames back to back, each followed by a
+   *  1-pixel readback so the time includes all of the GPU's work for that
+   *  frame. `hide` switches top-level scene categories off for the run
+   *  (__ohDraws names; 'shadows' disables the shadow map), so a category's
+   *  cost is total − hidden. The sim clock is held still (dt = 0 physics
+   *  would skip work, so it steps 1/60 s; pass the sim paused for a
+   *  stationary view). */
+  __ohBench: (frames = 5, warmup = 2, hide: string[] = []) => {
+    benchHold = true
+    // 'nocull' measures the terrain without coverage culling (same scene);
+    // 'finefirst' draws fine rings before coarse ones (renderOrder 20 − z).
+    if (hide.includes('nocull')) tiles.setCoverageCulling(false)
+    const orders: Array<[THREE.Object3D, number]> = []
+    if (hide.includes('finefirst')) for (const top of scene.children) {
+      if (!top.userData.terrainKey) continue
+      orders.push([top, top.renderOrder])
+      top.renderOrder = 20 - Number(String(top.userData.terrainKey).split('/')[0])
+    }
+    const gl = renderer.getContext()
+    const px = new Uint8Array(4)
+    const hidden: THREE.Object3D[] = []
+    const catOf = (top: THREE.Object3D): string => top === mesh.group ? 'aircraft' : top.userData.terrainKey ? 'terrain' : (top.name || top.type)
+    scene.children.forEach((top, i) => {
+      // 'terrain:z11' hides one ring's tiles.
+      const ring = top.userData.terrainKey ? `terrain:z${String(top.userData.terrainKey).split('/')[0]}` : ''
+      if (top.visible && (hide.includes(catOf(top)) || hide.includes(`#${i}`) || (ring && hide.includes(ring)))) { top.visible = false; hidden.push(top) }
+    })
+    const shadowsWere = renderer.shadowMap.enabled
+    if (hide.includes('shadows')) renderer.shadowMap.enabled = false
+    // Objects that set their own visibility every frame (clouds, trails…)
+    // are re-hidden after each update by the patched render below.
+    const origRender = renderer.render.bind(renderer)
+    renderer.render = (sc: THREE.Object3D, cam: THREE.Camera) => {
+      if (sc === scene) for (const o of hidden) o.visible = false
+      origRender(sc, cam)
+    }
+    const total: number[] = [], cpu: number[] = []
+    try {
+      for (let i = 0; i < warmup + frames; i++) {
+        const t0 = performance.now()
+        lastFrame = t0
+        safeAdvance(1 / 60, t0)
+        const t1 = performance.now()
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px)
+        const t2 = performance.now()
+        if (i >= warmup) { total.push(t2 - t0); cpu.push(t1 - t0) }
+      }
+    } finally {
+      renderer.render = origRender
+      if (hide.includes('nocull')) tiles.setCoverageCulling(true)
+      for (const [o, r] of orders) o.renderOrder = r
+      for (const o of hidden) o.visible = true
+      renderer.shadowMap.enabled = shadowsWere
+      lastFrame = performance.now()
+      benchHold = false
+    }
+    const med = (a: number[]): number => { const b = [...a].sort((x, y) => x - y); return +(b[Math.floor(b.length / 2)] ?? 0).toFixed(1) }
+    const cats: Record<string, number> = {}
+    const children: Array<{ i: number; cat: string; drawables: number; tris: number; mat: string }> = []
+    scene.children.forEach((top, i) => {
+      const cat = catOf(top)
+      cats[cat] = (cats[cat] ?? 0) + 1
+      let drawables = 0, tris = 0, mat = ''
+      top.traverse((o) => {
+        const m = o as THREE.Mesh
+        if (!(m.isMesh || (o as THREE.Points).isPoints || (o as THREE.Line).isLine) || !o.visible) return
+        drawables++
+        const g = m.geometry as THREE.BufferGeometry | undefined
+        if (g) tris += Math.floor((g.index ? g.index.count : g.getAttribute('position')?.count ?? 0) / 3) * ((m as THREE.InstancedMesh).isInstancedMesh ? (m as THREE.InstancedMesh).count : 1)
+        if (!mat) { const mm = Array.isArray(m.material) ? m.material[0] : m.material; mat = mm ? (mm.name || mm.type) : '' }
+      })
+      if (drawables) children.push({ i, cat, drawables, tris, mat })
+    })
+    return {
+      frameMs: med(total), cpuMs: med(cpu), minMs: +Math.min(...total).toFixed(1),
+      calls: renderer.info.render.calls, triangles: renderer.info.render.triangles,
+      programs: renderer.info.programs?.length ?? 0,
+      size: [renderer.domElement.width, renderer.domElement.height], hidden: hide, categories: cats, children,
+    }
+  },
   /** Visible drawables by scene category (what the draw calls are spent on). */
   __ohDraws: () => {
     const out: Record<string, number> = {}

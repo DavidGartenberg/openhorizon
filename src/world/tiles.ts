@@ -54,6 +54,9 @@ interface Tile {
   requestId: number
   baseMat?: THREE.ShaderMaterial
   coverage?: TerrainCoverage
+  /** Coarse rings: the full triangle list, compacted into the drawn index
+   *  buffer on every coverage refresh (cullCovered). */
+  indexSrc?: Uint16Array | Uint32Array
   coverageTexture?: THREE.DataTexture
   z: number
   latC: number
@@ -324,6 +327,10 @@ export class TileManager {
     geo.setAttribute('urban', new THREE.BufferAttribute(resp.urban, 1))
     geo.setIndex(new THREE.BufferAttribute(resp.indices, 1))
     tile.coverage = new TerrainCoverage(tile.key)
+    // Only tiles finer tiles can cover need the culling source copy.
+    if (tile.coverage.size > 1) {
+      tile.indexSrc = resp.positions.length / 3 <= 65_536 ? Uint16Array.from(resp.indices) : resp.indices.slice()
+    }
     tile.coverageTexture = new THREE.DataTexture(tile.coverage.cells, tile.coverage.size, tile.coverage.size, THREE.RedFormat)
     tile.coverageTexture.minFilter = tile.coverageTexture.magFilter = THREE.NearestFilter
     tile.coverageTexture.generateMipmaps = false
@@ -643,7 +650,52 @@ export class TileManager {
         changed.latS < tile.latS || changed.latN > tile.latN)) continue
       tile.coverage.rebuild(ready)
       tile.coverageTexture.needsUpdate = true
+      this.cullCovered(tile)
     }
+  }
+
+  /** Leave out of the draw every triangle that the coverage test would
+   *  discard whole: it lies inside cells that ready finer tiles already
+   *  draw. Exact (partially covered triangles stay, and the shader keeps
+   *  discarding pixel by pixel), but coarse rings no longer transform and
+   *  rasterize the ground under the finer ones: near the ground that was
+   *  every pixel once per ring. */
+  /** Coverage culling on/off (benchmark A/B in one scene; default on). */
+  setCoverageCulling(on: boolean): void {
+    this.coverageCulling = on
+    for (const tile of this.tiles.values()) this.cullCovered(tile)
+  }
+  private coverageCulling = true
+
+  private cullCovered(tile: Tile): void {
+    const geo = tile.mesh?.geometry, src = tile.indexSrc, cov = tile.coverage
+    if (!geo || !src || !cov) return
+    if (!this.coverageCulling) {
+      const index = geo.getIndex()
+      if (!index) return
+      ;(index.array as Uint32Array).set(src)
+      geo.setDrawRange(0, src.length)
+      index.needsUpdate = true
+      return
+    }
+    const index = geo.getIndex()
+    const uv = geo.getAttribute('uv')?.array as ArrayLike<number> | undefined
+    if (!index || !uv) return
+    const dst = index.array as Uint32Array
+    let k = 0
+    for (let t = 0; t + 2 < src.length; t += 3) {
+      const a = src[t]!, b = src[t + 1]!, c = src[t + 2]!
+      const ua = uv[a * 2]!, ub = uv[b * 2]!, uc = uv[c * 2]!
+      const va = uv[a * 2 + 1]!, vb = uv[b * 2 + 1]!, vc = uv[c * 2 + 1]!
+      const u0 = Math.min(ua, ub, uc), u1 = Math.max(ua, ub, uc)
+      // North fraction = 1 − v (the shader's convention).
+      const n0 = 1 - Math.max(va, vb, vc), n1 = 1 - Math.min(va, vb, vc)
+      if (cov.coversBox(u0, u1, n0, n1)) continue
+      dst[k++] = a; dst[k++] = b; dst[k++] = c
+    }
+    if (k === geo.drawRange.count && k === dst.length) return
+    geo.setDrawRange(0, k)
+    index.needsUpdate = true
   }
 
   /** CPU equivalent of production fragment visibility for terrain inspection.

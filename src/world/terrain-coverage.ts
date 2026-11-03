@@ -32,6 +32,34 @@ export class TerrainCoverage {
       }
     }
   }
+  /** Row whose half-open band [rows[r], rows[r+1]) holds northFraction. */
+  private rowOf(northFraction: number): number {
+    let low = 0, high = this.size
+    for (let i = 0; i < 6; i++) {
+      if (high - low <= 1) break
+      const middle = Math.floor((low + high) / 2)
+      if (northFraction >= this.rows[middle]!) low = middle
+      else high = middle
+    }
+    return low
+  }
+  /** True when EVERY point of [u0,u1] x [n0,n1] (UV / north fraction) is
+   *  covered, so the shader would discard every pixel there. A degenerate
+   *  box (skirt triangles lie on a tile edge) tests the cells it touches. */
+  coversBox(u0: number, u1: number, n0: number, n1: number): boolean {
+    if (this.size <= 1 || u0 < 0 || n0 < 0 || u1 > 1 || n1 > 1 || u0 >= 1 || n0 >= 1) return false
+    const c0 = Math.floor(u0 * this.size)
+    const c1 = Math.max(c0, Math.ceil(u1 * this.size) - 1)
+    const r0 = this.rowOf(n0)
+    let r1 = this.rowOf(n1)
+    if (r1 > r0 && n1 <= this.rows[r1]!) r1-- // half-open top: n1 on a boundary
+    if (c1 >= this.size || r1 >= this.size) return false
+    for (let r = r0; r <= r1; r++) {
+      const row = r * this.size
+      for (let c = c0; c <= c1; c++) if (this.cells[row + c] === 0) return false
+    }
+    return true
+  }
   /** Same half-open UV ownership and binary search as the fragment shader. */
   covered(u: number, northFraction: number): boolean {
     if (u < 0 || u >= 1 || northFraction < 0 || northFraction >= 1) return false
