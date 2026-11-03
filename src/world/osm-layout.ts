@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { patchCloudShadow } from '../render/cloud-shadows'
+import { patchAtmosphere } from '../render/atmosphere-materials'
 import { mappedTerminalFacade, footprintObstacle, disposeAirportObject, ownMaterial, type GroundPoint, type SurfaceObstacle } from './airport-scenery'
 
 /**
@@ -37,7 +37,7 @@ const APRON = new THREE.MeshStandardMaterial({ color: 0x55595e, roughness: 0.9, 
  */
 function terminalMaterial(): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ color: 0xb4bac1, roughness: 0.6, metalness: 0.2 })
-  m.customProgramCacheKey = () => 'osm-terminal-v3'
+  m.customProgramCacheKey = () => 'osm-terminal-v4'
   m.onBeforeCompile = (shader) => {
     shader.vertexShader = `varying vec3 vTWN;
 varying vec3 vTWP;
@@ -71,7 +71,7 @@ if (abs(vTWN.y) < 0.5) {
 roughnessFactor = mix(roughnessFactor, 0.12, aptWin);`)
       .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
 metalnessFactor = mix(metalnessFactor, 0.5, aptWin);`)
-    patchCloudShadow(shader)
+    patchAtmosphere(shader)
   }
   return m
 }

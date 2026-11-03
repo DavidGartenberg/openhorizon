@@ -5,7 +5,8 @@ import { parseMetar } from './sim/weather/metar'
 import { blendWeather, type StationWeather, type BlendedWeather } from './sim/weather/weather'
 import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-model'
 import { Clouds } from './render/clouds'
-import { CloudShadows, cloudShadowUniforms, installCloudShadowMaterials } from './render/cloud-shadows'
+import { CloudShadows, cloudShadowUniforms } from './render/cloud-shadows'
+import { aerialUniforms, installAtmosphereMaterials } from './render/atmosphere-materials'
 import { NexradField } from './world/nexrad'
 import { CommsBus, isAudible, type Transmission } from './sim/atc/comms'
 import { AiPatternPilot } from './sim/traffic/ai-pilot'
@@ -209,7 +210,9 @@ const MMO_BY_TYPE: Record<string, number> = {
 const sky = new SkyDome(scene)
 const ocean = new Ocean(scene, sky.radianceTexture)
 const clouds = new Clouds(scene)
-installCloudShadowMaterials()
+installAtmosphereMaterials()
+aerialUniforms.uAerialSky.value = sky.radianceTexture
+let aerialPerspective = true
 const cloudShadows = new CloudShadows()
 cloudShadows.enabled = initialFx.cloudShadows
 const hud = new Hud()
@@ -3585,6 +3588,7 @@ function advanceFrame(elapsed: number, now: number): void {
   const dusk = Math.min(Math.max(1 - Math.abs(sky.elevationDeg) / 8, 0), 1)
   const lowSunT = Math.min(1, Math.max(0, 1 - sky.elevationDeg / 25))
   tiles.setWorldOffset(worldShift.e, worldShift.n)
+  aerialUniforms.uAerialDensity.value = aerialPerspective ? tiles.fogDensity : 0
   tiles.setLight(sunDir, dayness, lowSunT * lowSunT * (3 - 2 * lowSunT), sky.coverTransmission)
   clouds.update(wxSlabs, camera.position, worldShift.e, worldShift.n, dayness, sunDir, dusk)
   // Cloud shadows: the ground, pavement and buildings are shaded where a cloud is between them and the sun; the sun light itself takes the
@@ -3925,6 +3929,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   __ohFill: (scale: number) => { const v = finiteOr(scale); if (v !== null) setInteriorFillScale(v) },
   __ohCloudShadowMap: () => cloudShadows.stats(renderer),
   __ohCloudsVisible: (on: boolean) => clouds.setVisible(on),
+  __ohAerial: (on?: boolean) => { if (typeof on === 'boolean') aerialPerspective = on; return aerialPerspective },
   __ohCloudShadows: (on?: boolean) => { if (typeof on === 'boolean') cloudShadows.enabled = on; return cloudShadows.enabled },
   __ohPost: (o?: { enabled?: boolean; bloom?: number; rays?: number; vignette?: number; ao?: number }) => {
     if (o?.enabled !== undefined) postFx.enabled = !!o.enabled

@@ -73,15 +73,6 @@ export function patchCloudShadow(shader: THREE.WebGLProgramParametersWithUniform
   shader.fragmentShader = 'varying vec3 vCloudShadowWorld;\n' + CLOUD_SHADOW_GLSL + shader.fragmentShader.replace('#include <lights_fragment_begin>', LIGHTS_WITH_CLOUD_SHADOW)
 }
 
-let installed = false
-/** Every built-in lit material (standard, physical, lambert, phong, toon) without its own onBeforeCompile gets cloud
- * shadows; materials that patch their shader themselves call patchCloudShadow at the end. Install before first render. */
-export function installCloudShadowMaterials(): void {
-  if (installed) return
-  installed = true
-  THREE.Material.prototype.onBeforeCompile = function cloudShadowDefault(shader: THREE.WebGLProgramParametersWithUniforms) { patchCloudShadow(shader) }
-}
-
 const SHADOW_VERT = /* glsl */ `
   attribute vec3 offset;
   attribute vec3 radii;

@@ -117,6 +117,17 @@ there is no photograph (rock and bare soil by slope), broad warm/cool colour dri
 flat ground, and the sky fill follows the tilted normal. Checked in the browser at KSFO with imagery off and on; it is a
 look, not a measurement (a recogniser cannot judge terrain either), and the amplitudes were set by eye.
 
+## Aerial perspective on objects (2026-11-03)
+
+Terrain, sea and clouds were hazed by the atmosphere, but aircraft, buildings and pavement were not, so a far taxiway or
+terminal stayed crisp and dark against the ground that faded around it. `src/render/atmosphere-materials.ts` gives every
+built-in lit material the terrain shader's haze: an exponential height density integrated along the view segment, mixed
+toward the sky's radiance in the view direction, in linear light before tone mapping. It rides the same shader hook as the
+cloud shadows (`patchAtmosphere`; one default `onBeforeCompile` for built-in materials, an explicit call for the two that
+patch their own). Nothing within 20 m is touched, so the cockpit and the player's own aircraft are unchanged; the density is
+the one the terrain uses (from the weather's visibility). Checked at KSFO at 6 SM: runways and taxiways that stood out dark
+and crisp to the horizon now dissolve into the haze like the ground. `__ohAerial(on)` switches it for comparison.
+
 ## Remaining realism limits
 
 This is a substantial renderer upgrade, not a claim that “10× realism” can be
