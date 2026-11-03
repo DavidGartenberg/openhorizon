@@ -9,6 +9,8 @@ import { VarioSound } from './audio/vario-sound'
 import { Trails, contrailStrength, vaporStrength } from './render/contrails'
 import { AdaptiveResolution } from './render/adaptive-resolution'
 import { Precipitation } from './render/precipitation'
+import { LightningScheduler } from './sim/weather/lightning'
+import { LightningBolt } from './render/lightning-bolt'
 import { WINDSCREEN_WEATHER } from './render/windscreen'
 import { PAVEMENT_WETNESS } from './render/surface-materials'
 import { SurfaceWeatherState, precipIntensity } from './sim/weather/surface-state'
@@ -2369,7 +2371,6 @@ function renderAtcMenu(): void {
 const nexrad = new NexradField()
 let nexradMfdCells: Array<{ dNorthM: number; dEastM: number; intensity: 1 | 2 | 3 }> = []
 let lastRadarCellsAt = -Infinity
-let nextLightningAt = 0
 let appliedWxVisM = 45 * 1609
 const lightningFlash = document.createElement('div')
 lightningFlash.style.cssText =
@@ -2379,23 +2380,31 @@ document.body.appendChild(lightningFlash)
 /** Low rumble via WebAudio, delayed by distance at the call site. No sample
  *  assets — synthesized noise burst (full sound design is Phase 9 §16). */
 let thunderCtx: AudioContext | null = null
-function thunder(): void {
+/** Thunder for a strike `distanceM` away: close strikes crack and rumble,
+ *  far ones only rumble, low and long (air absorbs the highs). */
+function thunder(distanceM = 8000): void {
   try {
     thunderCtx ??= new AudioContext()
-    const len = 1.8
+    const near = Math.max(0, Math.min(1, 1 - distanceM / 6000))
+    const len = 1.6 + 2.2 * (1 - near)
     const buf = thunderCtx.createBuffer(1, thunderCtx.sampleRate * len, thunderCtx.sampleRate)
     const ch = buf.getChannelData(0)
+    let rumble = 0
     for (let i = 0; i < ch.length; i++) {
       const t = i / ch.length
-      ch[i] = (Math.random() * 2 - 1) * Math.exp(-3.2 * t) * (1 - Math.exp(-50 * t))
+      // Rolling: a few swells as echoes arrive from along the channel.
+      const swell = 0.6 + 0.4 * Math.sin(t * 9 + Math.sin(t * 23) * 2)
+      rumble += ((Math.random() * 2 - 1) - rumble) * 0.08
+      const crack = near * (Math.random() * 2 - 1) * Math.exp(-40 * t)
+      ch[i] = (rumble * 3 * swell * Math.exp(-2.4 * t) + crack) * (1 - Math.exp(-60 * t))
     }
     const src = thunderCtx.createBufferSource()
     src.buffer = buf
     const lp = thunderCtx.createBiquadFilter()
     lp.type = 'lowpass'
-    lp.frequency.value = 200
+    lp.frequency.value = 160 + 900 * near
     const gain = thunderCtx.createGain()
-    gain.gain.value = 0.45
+    gain.gain.value = 0.25 + 0.3 * near
     src.connect(lp)
     lp.connect(gain)
     gain.connect(thunderCtx.destination)
@@ -2421,14 +2430,28 @@ function updateRadar(lat: number, lon: number, now: number): void {
   const here = nexrad.intensityAt(lat, lon)
   const radarVisM = here > 0 ? [0, 5, 2.5, 1][here]! * 1609 : Infinity
   tiles.setVisibilityM(Math.min(appliedWxVisM, radarVisM))
-  // Lightning near heavy cells: flash now, thunder delayed by distance.
-  const heavyDistM = nexrad.nearestHeavyM(lat, lon, 25_000)
-  if (heavyDistM !== null && now >= nextLightningAt) {
-    nextLightningAt = now + 5000 + Math.random() * 12_000
-    lightningFlash.style.opacity = '0.8'
-    setTimeout(() => (lightningFlash.style.opacity = '0'), 110)
-    setTimeout(thunder, (heavyDistM / 340) * 1000)
-  }
+  lastHeavyCellDistM = nexrad.nearestHeavyM(lat, lon, 25_000)
+}
+
+// Lightning (plan step 7): reported thunderstorms or heavy radar cells drive
+// a Poisson strike schedule; each strike draws a 3D bolt at its ground point,
+// flashes the view by distance and sends distance-shaped thunder at 343 m/s.
+const lightning = new LightningScheduler()
+const bolt = new LightningBolt(scene)
+let lastHeavyCellDistM: number | null = null
+function updateLightning(now: number): void {
+  bolt.update(now)
+  const strike = lightning.step(loop.simTime, { weather: wxBlended?.weather ?? [], heavyCellDistM: lastHeavyCellDistM })
+  if (!strike) return
+  const n = aircraft.posNed.x + Math.cos(strike.bearingRad) * strike.distanceM
+  const e = aircraft.posNed.y + Math.sin(strike.bearingRad) * strike.distanceM
+  const ground = aircraft.groundElevAt?.(n, e) ?? 0
+  const baseM = (wxSlabs[0]?.baseMslFt ?? 4000) * FT
+  bolt.strike(e, ground, -n, Math.max(baseM - ground, 600), now)
+  const k = Math.max(0.15, Math.min(0.85, 1.4 - strike.distanceM / 8000))
+  lightningFlash.style.opacity = String(k)
+  setTimeout(() => (lightningFlash.style.opacity = '0'), 110)
+  setTimeout(() => thunder(strike.distanceM), strike.thunderDelayS * 1000)
 }
 
 function applyBlendedWeather(b: BlendedWeather | null): void {
@@ -3314,6 +3337,7 @@ function advanceFrame(elapsed: number, now: number): void {
   const night = Math.min(Math.max(1 - dayness * 1.6, 0), 1)
   airports.updateNight(loop.simTime, night)
   updateWeatherEffects(dayness, sunDir)
+  updateLightning(performance.now())
   airports.updateServices(loop.simTime, camera.position.x, camera.position.z)
   // 13d PAPI: colored from the camera's real elevation angle each frame.
   airports.updatePapi(camera.position.x, camera.position.y, camera.position.z)
