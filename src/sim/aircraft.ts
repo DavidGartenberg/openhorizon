@@ -313,11 +313,23 @@ export class Aircraft {
       this.velBody.z - this.windBody.z,
     )
     const vAir = Math.max(Math.hypot(this.vAirBody.x, this.vAirBody.y, this.vAirBody.z), 0.001)
-    const alpha = Math.atan2(this.vAirBody.z, Math.max(this.vAirBody.x, 0.5))
+    // Full-range angle of attack: reversed flow (a tailwind over the ramp,
+    // a tailslide) is α ≈ ±180°, not "flow from below". The old
+    // max(u, 0.5 m/s) floor read a 40-kt tailwind on a parked C172 as α ≈
+    // 85°: flat-plate drag shoved it past its brakes and the pitching moment
+    // stood it on its nose. Near standstill the in-plane velocity is
+    // regularised (as the floor did) so α stays quiet; above 2 m/s it is
+    // the plain atan2 — bit-identical for all forward flight.
+    const uA = this.vAirBody.x, wA = this.vAirBody.z
+    const vIn = Math.hypot(uA, wA)
+    const alpha = Math.atan2(wA, vIn < 2 ? uA + 0.5 * (1 - vIn / 2) : uA)
     const beta = Math.asin(clamp(this.vAirBody.y / vAir, -1, 1))
 
-    // Filtered alpha-dot (downwash lag terms).
-    const alphaDotRaw = (alpha - this.alphaPrev) / dt
+    // Filtered alpha-dot (downwash lag terms), unwrapped across ±180°.
+    let dAlpha = alpha - this.alphaPrev
+    if (dAlpha > Math.PI) dAlpha -= 2 * Math.PI
+    else if (dAlpha < -Math.PI) dAlpha += 2 * Math.PI
+    const alphaDotRaw = dAlpha / dt
     this.alphaDotFilt += clamp(alphaDotRaw - this.alphaDotFilt, -50 * dt, 50 * dt)
     this.alphaPrev = alpha
 

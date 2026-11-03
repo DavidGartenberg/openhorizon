@@ -52,6 +52,19 @@ function sigmoid(x: number): number {
   return 1 / (1 + Math.exp(-x))
 }
 
+/** α for the static pitching moment: exactly α through the stall and into
+ *  the post-stall (|α| ≤ 0.5 rad), blending to sin α by 1.2 rad so the
+ *  moment stays bounded and returns to cm0 in reversed flow. Linear
+ *  cmAlpha·α at α → ±180° (a tailwind over a parked airplane) gave ±2.8,
+ *  flipping sign as α crossed ±π, and pitched a C172 over its nose in 40 kt. */
+export function alphaForMoment(alpha: number): number {
+  const a = Math.abs(alpha)
+  if (a <= 0.5) return alpha
+  const t = Math.min((a - 0.5) / 0.7, 1)
+  const w = t * t * (3 - 2 * t)
+  return Math.sign(alpha) * ((1 - w) * a + w * Math.sin(a))
+}
+
 export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams = C172S): AeroOutput {
   const kInduced = 1 / (Math.PI * P.oswald * P.aspectRatio)
   const diskArea = (Math.PI * P.propDiameterM * P.propDiameterM) / 4
@@ -59,6 +72,16 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
   const qbar = 0.5 * inp.rho * V * V
   const qS = qbar * P.wingAreaM2
   const { alpha, beta } = inp
+  // Sideslip geometry. A straight wing lifts only on the velocity in its
+  // plane of symmetry, u² + w² = V²·cos²β (independence principle: the
+  // spanwise part does nothing), and its dihedral roll comes from the
+  // spanwise component acting on that in-plane flow, ∝ sinβ·cosβ. Both
+  // used the full ½ρV² and a linear β: 40 kt of wind abeam lifted a parked
+  // C172 by a third of its weight while ~1.2 rad of "dihedral" rolled it
+  // over its gear. Exactly 1 and β at zero sideslip (symmetric flight and
+  // trims bit-identical); −0.8 % lift and −0.5 % dihedral at 5°.
+  const cosB = Math.cos(beta)
+  const liftSlip = cosB * cosB
 
   // Non-dimensional rates.
   const bh = P.spanM / (2 * V)
@@ -116,13 +139,19 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
   cl -= inp.extraClDump ?? 0
   // Buffet/annunciation + test detection: 0.5 exactly at the CLmax break.
   const stallFraction = sigmoid((alpha - alphaPeak) / 0.02)
+  // Everything below that the wing and horizontal tail make from α acts on
+  // the in-plane flow only. With the wind abeam, α = atan2(w, u) divides by
+  // a vanishing u and reads 70-80° — its flat-plate drag then shoved a
+  // parked airplane sideways with 6 kN — so those terms carry cos²β too.
+  const clSection = cl
+  cl *= liftSlip
 
   // ---- drag ----
   // Ground effect: induced drag falls near the surface (McCormick).
   const h16b = (16 * Math.max(inp.heightAglM, 0.1)) / P.spanM
   const geFactor = (h16b * h16b) / (1 + h16b * h16b)
-  const cdAttached = P.cd0 + dCd + machDragRise + kInduced * cl * cl * geFactor
-  const cdStalled = P.cd0 + dCd + machDragRise + P.postStallCd * Math.sin(alpha) * Math.sin(alpha)
+  const cdAttached = P.cd0 + dCd + machDragRise + kInduced * clSection * clSection * geFactor * liftSlip
+  const cdStalled = P.cd0 + dCd + machDragRise + P.postStallCd * Math.sin(alpha) * Math.sin(alpha) * liftSlip
   const cd = (1 - stall) * cdAttached + stall * cdStalled + P.cdBeta * beta * beta
 
   // ---- side force ----
@@ -130,18 +159,25 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
     P.cyBeta * beta + P.cyP * phat + P.cyR * rhat + P.cyDr * inp.rudderRad
 
   // ---- pitch ----
-  let cm =
-    P.cm0 +
-    dCm +
-    P.cmAlpha * alpha +
-    (P.cmQ * qhat + P.cmAlphaDot * adot) * tailQFactor +
-    P.cmDe * inp.elevatorRad * tailQFactor
+  // The horizontal tail sees the in-plane freestream plus the propwash
+  // (which blows along the body axis whatever the sideslip). Identical to
+  // tailQFactor at β = 0.
+  const hTailQ = liftSlip === 1 ? tailQFactor
+    : clamp((qbar * liftSlip + P.propwashTailFactor * dqProp) / qbar, liftSlip, 2.5)
+  const alphaM = alphaForMoment(alpha)
+  let cmWing = P.cm0 + dCm + P.cmAlpha * alphaM
   // Post-stall nose-down break.
-  if (alpha > 0) cm += sPos * P.postStallCmDrop * (alpha - alphaPeak + 0.05)
+  // (Beyond 0.5 rad the arm fades to zero as α → 180°, so the moment is
+  // continuous across reversed flow's ±π seam.)
+  if (alpha > 0) cmWing += sPos * P.postStallCmDrop * (alpha > 0.5 ? Math.max(alphaM - alphaPeak + 0.05, 0) : alphaM - alphaPeak + 0.05)
+  let cm =
+    cmWing * liftSlip +
+    (P.cmQ * qhat + P.cmAlphaDot * adot) * hTailQ +
+    P.cmDe * inp.elevatorRad * hTailQ
 
   // ---- roll ----
   let croll =
-    P.clBeta * beta +
+    P.clBeta * Math.sin(beta) * cosB +
     P.clP * phat +
     P.clR * rhat +
     P.clDa * inp.aileronRad +
