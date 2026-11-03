@@ -18,14 +18,12 @@
 
 export const VOICE_FACTS = {
   // Classic voices: clearest on the radio.
-  'Samantha': { gender: 'F', accent: 'US', family: 'classic', midi: 54, intelligibility: 88.5, w150: 139 },
-  'Daniel': { gender: 'M', accent: 'GB', family: 'classic', midi: 47, intelligibility: 88.0, w150: 131 },
+  'Samantha': { gender: 'F', accent: 'US', family: 'classic', midi: 54, intelligibility: 88.5 },
+  'Daniel': { gender: 'M', accent: 'GB', family: 'classic', midi: 47, intelligibility: 88.0 },
   'Karen': { gender: 'F', accent: 'AU', family: 'classic', midi: 55, intelligibility: 87.1 },
   'Moira': { gender: 'F', accent: 'IE', family: 'classic', midi: 54, intelligibility: 84.7 },
   'Tessa': { gender: 'F', accent: 'ZA', family: 'classic', midi: 54, intelligibility: 81.3 },
-  'Tara': { gender: 'F', accent: 'IN', family: 'classic', midi: 54, intelligibility: 79.4, w150: 165 },
-  'Aman': { gender: 'M', accent: 'IN', family: 'classic', midi: 49, intelligibility: 78.5, w150: 165 },
-  'Rishi': { gender: 'M', accent: 'IN', family: 'classic', midi: 46, intelligibility: 74.2, w150: 150 },
+  'Rishi': { gender: 'M', accent: 'IN', family: 'classic', midi: 46, intelligibility: 74.2 },
   // Compact voices.
   'Sandy (English (US))': { gender: 'F', accent: 'US', family: 'compact', midi: 0, intelligibility: 84.2 },
   'Grandpa (English (US))': { gender: 'M', accent: 'US', family: 'compact', midi: 43, intelligibility: 82.3 },
@@ -42,9 +40,9 @@ const POOLS = {
   // Controllers: North American fields.
   atc: ['Grandpa (English (US))', 'Sandy (English (US))', 'Daniel', 'Shelley (English (US))', 'Karen', 'Eddy (English (US))'],
   // Controllers everywhere else: a mix of English accents.
-  atcIcao: ['Daniel', 'Moira', 'Karen', 'Tessa', 'Aman', 'Grandpa (English (US))'],
+  atcIcao: ['Daniel', 'Moira', 'Karen', 'Tessa', 'Rishi', 'Grandpa (English (US))'],
   // Private and corporate pilots, and airline crews without a particular accent.
-  pilot: ['Eddy (English (US))', 'Reed (English (US))', 'Flo (English (US))', 'Grandpa (English (US))', 'Shelley (English (US))', 'Aman', 'Grandma (English (US))', 'Tara'],
+  pilot: ['Eddy (English (US))', 'Reed (English (US))', 'Flo (English (US))', 'Grandpa (English (US))', 'Shelley (English (US))', 'Rishi', 'Grandma (English (US))', 'Karen'],
 }
 
 /** Airline crews' accents: ICAO designator → voices. */
@@ -53,8 +51,8 @@ const AIRLINE_VOICES = [
   [/^(EIN|RYR|EIN)/, ['Moira']],
   [/^(QFA|VOZ|JST|ANZ|QLK)/, ['Karen']],
   [/^(SAA|MNO)/, ['Tessa']],
-  [/^(AIC|IGO|SEJ|AXB)/, ['Aman', 'Tara', 'Rishi']],
-  [/^(DLH|AFR|KLM|SWR|SAS|FIN|IBE|TAP|AUA|THY|UAE|QTR|ETD|SIA|CPA|JAL|ANA|KAL)/, ['Daniel', 'Moira', 'Aman']],
+  [/^(AIC|IGO|SEJ|AXB)/, ['Rishi']],
+  [/^(DLH|AFR|KLM|SWR|SAS|FIN|IBE|TAP|AUA|THY|UAE|QTR|ETD|SIA|CPA|JAL|ANA|KAL)/, ['Daniel', 'Moira', 'Rishi']],
 ]
 
 /** Controllers' words per minute, pilots', the ATIS's. */
@@ -71,12 +69,37 @@ export function hashOf(text) {
 
 const gcd = (a, b) => (b ? gcd(b, a % b) : a)
 
-/** Words per minute → `say -r`, from each voice family's measured response (121 / 139 wpm at 150, 0.58 / 0.65 wpm per unit). */
+/**
+ * Each voice's own pace: [say -r rate, words per minute] pairs measured by `scripts/voice/calibrate-rates.mjs` (a standard
+ * 31-word transmission). Voices differ a great deal, and several floor out below rate 150, so one formula cannot serve them all.
+ */
+const RATE_POINTS = {
+  'Samantha': [[90,127],[110,139],[130,139],[150,139],[190,164],[230,188],[270,216],[310,241]],
+  'Daniel': [[90,120],[110,131],[130,131],[150,131],[190,155],[230,177],[270,204],[310,227]],
+  'Karen': [[90,124],[110,135],[130,135],[150,135],[190,160],[230,183],[270,211],[310,235]],
+  'Moira': [[90,119],[110,129],[130,129],[150,129],[190,153],[230,175],[270,202],[310,225]],
+  'Tessa': [[90,112],[110,122],[130,122],[150,122],[190,145],[230,166],[270,191],[310,213]],
+  'Rishi': [[90,121],[110,132],[130,132],[150,132],[190,156],[230,178],[270,206],[310,229]],
+  'Sandy (English (US))': [[90,96],[110,104],[130,113],[150,121],[190,143],[230,167],[270,195],[310,231]],
+  'Grandpa (English (US))': [[90,96],[110,104],[130,113],[150,121],[190,143],[230,167],[270,195],[310,231]],
+  'Rocko (English (US))': [[90,96],[110,104],[130,113],[150,121],[190,143],[230,167],[270,195],[310,231]],
+  'Shelley (English (US))': [[90,96],[110,104],[130,113],[150,121],[190,143],[230,167],[270,195],[310,231]],
+  'Grandma (English (US))': [[90,96],[110,104],[130,113],[150,121],[190,143],[230,167],[270,195],[310,231]],
+  'Flo (English (US))': [[90,96],[110,104],[130,113],[150,121],[190,143],[230,167],[270,195],[310,231]],
+  'Reed (English (US))': [[90,96],[110,104],[130,113],[150,121],[190,143],[230,167],[270,195],[310,231]],
+  'Eddy (English (US))': [[90,96],[110,104],[130,113],[150,121],[190,143],[230,167],[270,195],[310,231]],
+}
+
+/** Words per minute → the `say -r` rate that gives this voice that pace, interpolated along its measured curve (clamped to what it can do). */
 export function sayRateFor(voice, wpm) {
-  const facts = VOICE_FACTS[voice]
-  const w150 = facts?.w150 ?? (facts?.family === 'classic' ? 135 : 121)
-  const slope = facts?.family === 'classic' ? 0.65 : 0.584
-  return Math.max(90, Math.min(330, Math.round(150 + (wpm - w150) / slope)))
+  const pts = RATE_POINTS[voice]
+  if (!pts) return Math.max(90, Math.min(330, Math.round(150 + (wpm - 121) / 0.55)))
+  if (wpm <= pts[0][1]) return pts[0][0]
+  for (let k = 1; k < pts.length; k++) {
+    const [r0, w0] = pts[k - 1], [r1, w1] = pts[k]
+    if (wpm <= w1) return w1 === w0 ? r0 : Math.round(r0 + ((wpm - w0) / (w1 - w0)) * (r1 - r0))
+  }
+  return pts[pts.length - 1][0]
 }
 
 function installedOnly(names, installed) {

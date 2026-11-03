@@ -39,7 +39,7 @@ describe('casting the radio', () => {
     expect(cast('pilot', 'QFA9').voice).toBe('Karen')
     expect(cast('pilot', 'EIN123').voice).toBe('Moira')
     expect(cast('pilot', 'SAA201').voice).toBe('Tessa')
-    expect(['Aman', 'Tara', 'Rishi']).toContain(cast('pilot', 'AIC101').voice)
+    expect(cast('pilot', 'AIC101').voice).toBe('Rishi')
   })
 
   it('uses other English accents for controllers outside North America', () => {
@@ -68,10 +68,13 @@ describe('casting the radio', () => {
   it('paces controllers faster than pilots, and converts words per minute to a say rate per voice family', () => {
     const pace = (role: string) => { const r = Array.from({ length: 40 }, (_, i) => cast(role, `Speaker ${i}`).rate); return r.reduce((a, b) => a + b, 0) / r.length }
     expect(pace('atc')).toBeGreaterThan(pace('pilot') - 5)
-    expect(sayRateFor('Reed (English (US))', 167)).toBeCloseTo(225, -1)
-    expect(sayRateFor('Samantha', 171)).toBeCloseTo(200, -1)
-    expect(sayRateFor('Samantha', 5000)).toBe(330)
+    expect(sayRateFor('Reed (English (US))', 167)).toBe(230)           // measured: rate 230 is 167 words per minute
+    expect(sayRateFor('Reed (English (US))', 155)).toBe(210)           // between rates 190 (143) and 230 (167)
+    expect(sayRateFor('Samantha', 171)).toBe(202)
+    expect(sayRateFor('Samantha', 139)).toBe(110)                      // a classic voice does not slow below ~139 wpm: the lowest rate that gives it
+    expect(sayRateFor('Samantha', 5000)).toBe(310)
     expect(sayRateFor('Samantha', 1)).toBe(90)
+    expect(sayRateFor('Unknown Voice', 121)).toBe(150)
   })
 
   it('stays compatible with the old picker, and defuses speech commands in the text', () => {

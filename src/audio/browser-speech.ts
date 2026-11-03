@@ -37,6 +37,8 @@ interface BrowserSynth {
 
 export interface BrowserSpeechOptions {
   resolveDynamic?: (message:SpeechMessage,signal:AbortSignal)=>Promise<{url:string;release():void}|undefined>
+  /** Render a queued message ahead of its turn (the local synthesizer), so no silence falls between speakers. */
+  prepareDynamic?: (message:SpeechMessage)=>void
   dynamicTimeoutMs?: number
   dynamicCompletionTimeoutMs?: number
   manifestUrl?: string
@@ -107,6 +109,10 @@ export class BrowserSpeechDriver implements SpeechDriver {
       audio.preload = 'auto'
       this.clips.set(phrase, audio)
     }
+  }
+
+  prepare(message: SpeechMessage): void {
+    if (!STATIC_PHRASES.has(message.text)) this.options.prepareDynamic?.(message)
   }
 
   cancel(): void {

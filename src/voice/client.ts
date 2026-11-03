@@ -40,6 +40,11 @@ export class LocalVoiceClient {
     else{blob=await this.synthesize(message,text,signal);this.remember(key,blob)}
     const url=URL.createObjectURL(blob);return {url,release:()=>URL.revokeObjectURL(url)}
   }
+  private warming:Promise<void>=Promise.resolve()
+  /** Render one queued message in the background, after any other being rendered; the clip is kept for when its turn comes. */
+  prepare(message:SpeechMessage):void{
+    this.warming=this.warming.then(()=>this.prewarm([message],new AbortController().signal)).catch(()=>{})
+  }
   /** Render phrases ahead of need, one at a time and only while no live phrase
    *  is being rendered. Failures are ignored: warming is an optimization. */
   async prewarm(messages:readonly SpeechMessage[],signal:AbortSignal):Promise<void>{

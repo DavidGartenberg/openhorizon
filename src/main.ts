@@ -1781,6 +1781,7 @@ const browserSpeech = new BrowserSpeechDriver({
     },
   } : {}),
   resolveDynamic: (message,signal) => localVoice.resolveSpeech(message,signal),
+  prepareDynamic: message => localVoice.prepare(message),
   onStart: message => {
     if (message.priority === 0) radioSquelch()
     else if (voicePtt?.state.phase === 'listening' || voicePtt?.state.phase === 'requesting') voicePtt.cancel('Safety callout interrupted capture — please transmit again')
@@ -2167,7 +2168,8 @@ function speak(t: Transmission): void {
   const style = styleForAirport(activeAtc?.ident ?? '')
   const now = performance.now()
   const spoken = toSpokenAviation(t.text, { style, callsigns: callsignBook, nowMs: now })
-  safetySpeech.radio(t.text, now, t.from, { role: speakerRole(t.from), ambient: t.ambient, style, spoken })
+  const forPlayer = t.from === CALLSIGN || t.to === CALLSIGN || t.text.startsWith(`${CALLSIGN},`)
+  safetySpeech.radio(t.text, now, t.from, { role: speakerRole(t.from), ambient: t.ambient, forPlayer, style, spoken })
 }
 
 comms.subscribe((t) => {
@@ -2176,7 +2178,7 @@ comms.subscribe((t) => {
   if (transcript.length > 7) transcript.shift()
   transcriptDiv.style.display = 'block'
   transcriptDiv.textContent = transcript.join('\n')
-  if (t.from !== CALLSIGN) { speak(t); shell?.notifier.push(`${t.from}: ${t.text}`, 7000) }
+  if (t.from !== CALLSIGN) { speak(t); if (!t.ambient) shell?.notifier.push(`${t.from}: ${t.text}`, 7000) }
   else { lastPlayerTxAt = performance.now(); if (voiceMyCalls && !playerSpoke) speak(t) }
   // The last instruction given to the player, so the menu can read it back the way it was given.
   if (t.to === CALLSIGN && t.kind) lastInstruction.set(t.kind, t)
@@ -2246,7 +2248,8 @@ function scanAtc(lat: number, lon: number, now: number): void {
           runwayLengthM: actRw
             ? distanceM({ lat: actRw.la1, lon: actRw.lo1 }, { lat: actRw.la2, lon: actRw.lo2 })
             : undefined,
-          windText: () => windPhrase(wxBlended?.windDirDeg ?? 0, wxBlended?.windKt ?? 0, wxBlended?.gustKt ?? 0),
+          // No weather known → no wind said (the ATIS says so too); never an invented "wind calm".
+          windText: () => (wxBlended ? windPhrase(wxBlended.windDirDeg, wxBlended.windKt, wxBlended.gustKt) : ''),
           ...(gndF !== twrF ? { groundFreqMhz: gndF } : {}),
         }),
         ground: new GroundController({ facility: `${name} Ground`, freqMhz: gndF, activeRunway: atis.activeRunway }),

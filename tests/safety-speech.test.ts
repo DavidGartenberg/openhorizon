@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { SafetySpeechController, englishVoice } from '../src/audio/safety-speech'
-function rig(){ const said:string[]=[];const messages:Array<Parameters<SafetySpeechController['radio']>[3]&{text:string;ambient?:boolean;speaker?:string}>=[];const ends:Array<()=>void>=[];let cancelled=0;const c=new SafetySpeechController({speak:(m,end)=>{said.push(m.text);messages.push(m);ends.push(end)},cancel:()=>{cancelled++}});return {c,said,messages,ends,cancelled:()=>cancelled} }
+function rig(){ const said:string[]=[];const messages:Array<Parameters<SafetySpeechController['radio']>[3]&{text:string;ambient?:boolean;speaker?:string}>=[];const prepared:string[]=[];const ends:Array<()=>void>=[];let cancelled=0;const c=new SafetySpeechController({speak:(m,end)=>{said.push(m.text);messages.push(m);ends.push(end)},cancel:()=>{cancelled++},prepare:m=>{prepared.push(m.text)}});return {c,said,messages,prepared,ends,cancelled:()=>cancelled} }
 it('terrain inhibits TCAS and interrupts radio, persistent warning repeats without backlog',()=>{
  const r=rig();r.c.radio('hello',0);r.c.update(0,{text:'PULL UP',priority:4},{text:'CLIMB',priority:3});expect(r.said).toEqual(['hello','PULL UP']);r.c.update(1000,{text:'PULL UP',priority:4},{text:'CLIMB',priority:3});expect(r.said.length).toBe(2);r.ends[0]!();r.c.radio('stale',1100);expect(r.said.length).toBe(2);r.ends[1]!();r.c.update(5000,{text:'PULL UP',priority:4});expect(r.said.at(-1)).toBe('PULL UP')
 })
@@ -57,4 +57,30 @@ it('waits a moment between one transmission and the next, and lets stale backgro
 it('carries the role, style and spoken words on the message to the voice',()=>{
  const r=rig();r.c.radio('N1, cleared',0,'Palo Alto Tower',{role:'atc',style:'icao',spoken:'November one, cleared'})
  expect(r.messages[0]).toMatchObject({text:'N1, cleared',speaker:'Palo Alto Tower',role:'atc',style:'icao',spoken:'November one, cleared',priority:0})
+})
+
+it('lets the player\'s exchange outlive a long wait and go ahead of the other aircraft\'s traffic',()=>{
+ const r=rig();r.c.radio('speaking',0)
+ r.c.radio('tower to another airplane',10,'Palo Alto Tower',{role:'atc'})
+ r.c.radio('reply to me',20,'Palo Alto Tower',{role:'atc',forPlayer:true})
+ r.c.radio('background',21,'Skylane 6EK',{role:'pilot',ambient:true})
+ const order=(r.c as unknown as {queue:Array<{message:{text:string}}>}).queue.map(q=>q.message.text)
+ expect(order).toEqual(['reply to me','tower to another airplane','background'])
+ r.ends[0]!();r.c.update(25_000);r.c.update(26_000)
+ expect(r.said).toEqual(['speaking','reply to me'])       // 25 s on: the other traffic (8 s) and the chatter... the player's reply (30 s) survived
+})
+
+it('keeps the call and the reply in order, and drops other aircraft\'s traffic before the player\'s when the queue is full',()=>{
+ const r=rig();r.c.radio('speaking',0)
+ r.c.radio('my call',1,'N1',{role:'pilot',forPlayer:true});r.c.radio('their reply',2,'Tower',{role:'atc',forPlayer:true})
+ for(let i=1;i<=4;i++)r.c.radio(`other ${i}`,3+i,'Tower',{role:'atc'})
+ const queued=(r.c as unknown as {queue:Array<{message:{text:string}}>}).queue.map(q=>q.message.text)
+ expect(queued.slice(0,2)).toEqual(['my call','their reply'])
+ expect(queued).toHaveLength(4)
+ expect(queued).not.toContain('other 1')
+})
+
+it('has the driver render a message that has to wait, not one that starts at once',()=>{
+ const r=rig();r.c.radio('now',0);r.c.radio('later',1)
+ expect(r.prepared).toEqual(['later'])
 })
