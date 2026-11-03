@@ -15,6 +15,7 @@ import { LightningBolt } from './render/lightning-bolt'
 import { TireSmoke } from './render/tire-smoke'
 import { touchdownSmoke } from './sim/touchdown'
 import { FlightEventLog, environmentDebrief } from './sim/flight-events'
+import { convectiveTurbulence, rotorTurbulence, effectiveTurbulence } from './sim/weather/turbulence-sources'
 import { WINDSCREEN_WEATHER } from './render/windscreen'
 import { PAVEMENT_WETNESS } from './render/surface-materials'
 import { SurfaceWeatherState, precipIntensity } from './sim/weather/surface-state'
@@ -411,6 +412,27 @@ try {
   if (off('icing')) environment.toggles.icing = false
   if (off('damage')) environment.structure.failuresEnabled = false
 } catch { /* private mode */ }
+// Turbulence sources beyond the gust spread (plan step 12): storms and lee
+// rotor, re-evaluated once a second from the weather and terrain upwind.
+let gustIntensity = 0
+let lastTurbulenceSimS = -Infinity
+function updateTurbulenceSources(): void {
+  if (loop.simTime - lastTurbulenceSimS < 1) return
+  lastTurbulenceSimS = loop.simTime
+  const n = aircraft.posNed.x, e = aircraft.posNed.y
+  const here = aircraft.groundElevAt?.(n, e) ?? 0
+  // Wind blows FROM upwind: sample the terrain 2–10 km into the wind.
+  const sp = wind.steadyMs
+  let relief = 0
+  if (sp > 1 && aircraft.groundElevAt) {
+    const un = -wind.steadyNorthMs / sp, ue = -wind.steadyEastMs / sp
+    for (const d of [2000, 5000, 10_000]) relief = Math.max(relief, aircraft.groundElevAt(n + un * d, e + ue * d) - here)
+  }
+  wind.intensity = effectiveTurbulence(gustIntensity,
+    convectiveTurbulence(wxBlended?.weather ?? [], lastHeavyCellDistM),
+    rotorTurbulence(sp, relief, aircraft.data.aglFt * FT))
+}
+
 // What the environment did to this flight, for the debrief (plan step 10).
 const flightEvents = new FlightEventLog()
 function onEnvironmentEvents(events: EnvironmentEvent[]): void {
@@ -2506,13 +2528,15 @@ function applyBlendedWeather(b: BlendedWeather | null): void {
     qnhInHg = 29.92
     wind.setSteady(0, 0)
     wind.intensity = 0
+    gustIntensity = 0
     appliedWxVisM = 45 * 1609
     tiles.setVisibilityM(appliedWxVisM)
     return
   }
   wxSlabs = cloudSlabs(b.clouds, b.stationElevFt)
   wind.setSteady(b.windDirDeg, b.windKt, b.gustKt)
-  wind.intensity = Math.min(Math.max((b.gustKt - b.windKt) / 8, 0), 2)
+  gustIntensity = Math.min(Math.max((b.gustKt - b.windKt) / 8, 0), 2)
+  wind.intensity = gustIntensity
   aircraft.isaTempOffsetC = b.isaTempOffsetC
   qnhInHg = b.qnhInHg
   appliedWxVisM = (b.visibilitySm >= 10 ? 45 : b.visibilitySm) * 1609
@@ -3026,6 +3050,7 @@ function advanceFrame(elapsed: number, now: number): void {
   tiles.update(pos.x, pos.y)
   tiles.updateDetail(pos.x, pos.y, aircraft.data.aglFt*FT, now)
   feedWakeGenerators()
+  updateTurbulenceSources()
   if (isGlider) {
     if (engineSound.unlocked) varioSound.unlock()
     varioSound.muted = engineSound.muted
