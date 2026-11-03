@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js'
 import { registerInteriorFill } from './cockpit-737'
+import { B738_DECK_NOSE_SHIFT_M } from './cockpit-profile'
 
 /**
  * 737-800 passenger cabin in the Boeing Sky Interior style, built behind the
@@ -18,11 +19,16 @@ import { registerInteriorFill } from './cockpit-737'
  * tray tables and seat pockets; a forward galley, closet and entry doors;
  * and an aft bulkhead with lavatory doors and a curtain.
  *
- * The deck sits at the airplane origin (the fuselage is centred on it), so
- * only the constant-diameter barrel aft of the deck (~9 m before the tail
- * taper begins) can hold cabin: the entry/galley zone and seven rows. The
- * loft's barrel axis is 0.6 m above the origin and its radius is 1.88 m.
+ * The flight deck sits at the real nose station (B738_DECK_NOSE_SHIFT_M
+ * forward of the origin-relative deck layout), so the cabin fills the whole
+ * constant-diameter barrel: the cockpit-door bulkhead just behind the deck,
+ * the L1/R1 entry zone with the forward galley and closet, 28 rows of 3-3
+ * seating with the over-wing exits above the wing, and the aft bulkhead where
+ * the tail taper begins. The loft's barrel axis is 0.6 m above the origin,
+ * its radius 1.88 m; it runs from 15.7 m forward to 9.9 m aft of the origin.
  */
+const FRONT = -0.32 + B738_DECK_NOSE_SHIFT_M
+
 export const CABIN = {
   /** Floor and barrel geometry (body up, metres). */
   floor: -0.25,
@@ -31,14 +37,14 @@ export const CABIN = {
   radius: 1.8,
   ceiling: 1.95,
   /** Forward (flight-deck) bulkhead and aft bulkhead, metres forward of origin. */
-  frontFwd: -0.32,
-  aftFwd: -9.2,
+  frontFwd: FRONT,
+  aftFwd: -9.6,
   /** Where the overhead bins (and the arched ceiling) begin. */
-  binsFwd: -3.0,
-  /** Seat rows (3-3). */
-  firstRowFwd: -3.35,
+  binsFwd: FRONT - 2.68,
+  /** Seat rows (3-3), 31 in pitch. */
+  firstRowFwd: FRONT - 3.03,
   rowPitch: 0.79,
-  rows: 7,
+  rows: 28,
   seatLats: [-1.43, -0.96, -0.49, 0.49, 0.96, 1.43] as const,
   /** Sidewall window band and the rounded openings in it. */
   windowPitch: 0.508,
@@ -50,7 +56,9 @@ export const CABIN = {
   openingR: 0.075,
   revealDepth: 0.075,
   /** Entry doors (L1/R1) occupy this fwd span; no windows there. */
-  doorFwd: [-1.45, -2.4] as const,
+  doorFwd: [FRONT - 1.13, FRONT - 2.08] as const,
+  /** Over-wing exit hatches (window plugs) above the wing, fwd centres. */
+  overwingExitFwd: [0.9, 0.1] as const,
   /** Doorway to the flight deck. */
   doorwayHalfWidth: 0.33,
   doorwayTop: 1.5,
@@ -494,7 +502,9 @@ export function buildCabin737(): Cabin737 {
   }
 
   // ---- overhead bins: curved pivot-bin doors, LED lip, latches -----------------
-  const binFwd: Array<[number, number]> = [[C.binsFwd, -4.5], [-4.52, -6.1], [-6.12, -7.7], [-7.72, aft]]
+  // Bin doors every two rows (~1.58 m), separated by narrow seams.
+  const binFwd: Array<[number, number]> = []
+  for (let f = C.binsFwd; f - 0.5 > aft; f -= 1.6) binFwd.push([f, Math.max(f - 1.58, aft)])
   for (const side of [-1, 1] as const) {
     for (const [fa, fb] of binFwd) {
       const len = fa - fb
@@ -601,6 +611,30 @@ export function buildCabin737(): Cabin737 {
     put(rbox(0.06, 0.04, 0.36, 0.015, dark, b(mid, lat - side * 0.03, 0.56)))
     put(rbox(0.05, 0.2, 0.34, 0.02, trim, b(mid, lat - side * 0.03, 0.22)))
     put(box(0.06, 0.09, 0.3, exitM, b(mid, side * 1.35, 1.7)))
+  }
+
+  // ---- over-wing exits: hatch outline around the window bay, EXIT signs -------------
+  {
+    const exitRed = mat('exitHatch', 0xb2342a, 0.5, 0.35)
+    const tB = thetaAt(C.windowBottom - 0.18), tT = thetaAt(C.windowTop + 0.2)
+    for (const ef of C.overwingExitFwd) {
+      // The window bay closest to the exit station.
+      const fc = windows.map((f0) => f0 - C.windowW / 2).reduce((best, x) => (Math.abs(x - ef) < Math.abs(best - ef) ? x : best), Infinity)
+      if (!Number.isFinite(fc)) continue
+      for (const side of [-1, 1] as const) {
+        const hw = 0.3
+        // Thin red outline of the hatch on the wall, just proud of it.
+        const strip = (fa: number, fb: number, t0: number, t1: number): void => {
+          put(patch((u, v) => wallPoint(side, fa + (fb - fa) * u, t0 + (t1 - t0) * v, -0.006), 1, 3, exitRed))
+        }
+        strip(fc + hw, fc - hw, tB, tB + 0.012)
+        strip(fc + hw, fc - hw, tT - 0.012, tT)
+        strip(fc + hw, fc + hw - 0.022, tB, tT)
+        strip(fc - hw + 0.022, fc - hw, tB, tT)
+        // EXIT sign under the bin edge, facing the aisle.
+        put(box(0.06, 0.09, 0.3, exitM, b(fc, side * 0.86, 1.33)))
+      }
+    }
   }
 
   // ---- aft bulkhead: lav doors, curtain, exit sign ------------------------------------

@@ -25,6 +25,12 @@ export type Maker = 'boeing' | 'airbus' | 'md' | 'bombardier' | 'embraer' | 'gul
 export type DuLayoutName = 'six' | 'fourWide' | 'fiveWide' | 'threeWide'
 export type GuidancePanel = 'boeing' | 'airbus' | 'generic'
 
+/** The 737-800's flight deck sits in the nose: the design eye is ≈3 m aft of
+ *  the nose tip (19.7 m ahead of the airplane origin), so the deck, its eye
+ *  and the cabin behind it are placed this far forward of the shared deck
+ *  geometry's origin-relative layout. */
+export const B738_DECK_NOSE_SHIFT_M = 16.25
+
 export interface DeckProfile {
   maker: Maker
   du: DuLayoutName
@@ -41,6 +47,8 @@ export interface DeckProfile {
   autothrottle: boolean
   /** Passenger cabin behind the flight deck (hand-built for the 737-800 only). */
   cabin?: boolean
+  /** Deck + eye moved this far forward (m) to the real nose station. */
+  noseStationM?: number
 }
 
 export interface GaProfile {
@@ -160,6 +168,7 @@ export function cockpitProfile(designator: string, P: AircraftParams, info: Prof
         engines: isJet ? Math.max(2, Math.min(4, P.jet?.engines ?? engines)) : Math.max(2, engines),
         autothrottle: isJet && hasAutothrottle(d, !isJet),
         cabin: d === '737',
+        noseStationM: d === '737' ? B738_DECK_NOSE_SHIFT_M : 0,
       },
     }
   }

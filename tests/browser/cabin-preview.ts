@@ -1,7 +1,7 @@
 /**
  * 737 cabin preview: the real flight deck + cabin inside the real B738
  * fuselage with the exterior skin hidden (as in the sim's cockpit view).
- * Query: ?view=aft|aisle|window|door|wing|cross
+ * Query: ?view=aft|turned|aisle|window|door|wing|cross|rear|forward|sidewin
  * Results on window.__preview: { done, errors }.
  */
 import * as THREE from 'three'
@@ -10,6 +10,8 @@ import { buildCockpit } from '../../src/render/cockpit'
 import { cockpitProfile } from '../../src/render/cockpit-profile'
 import { B738 } from '../../src/sim/aircraft/b738'
 import { WINDSCREEN_WEATHER } from '../../src/render/windscreen'
+import { B738_DECK_NOSE_SHIFT_M } from '../../src/render/cockpit-profile'
+import { CABIN } from '../../src/render/cabin-737'
 
 const qs = new URLSearchParams(location.search)
 const view = qs.get('view') ?? 'aft'
@@ -63,18 +65,21 @@ mesh.group.traverse(o => {
 scene.add(mesh.group)
 
 const camera = new THREE.PerspectiveCamera(view === 'cross' ? 60 : 75, W / H, 0.05, 5000)
+const S = B738_DECK_NOSE_SHIFT_M, F = CABIN.frontFwd
 const at: Record<string, [number[], number[]]> = {
-  // [camera, target] in body frame (x lat, y up, z = -forward)
-  aft: [[-0.5, 1.03, -0.45], [0, 0.85, 8]],
-  forward: [[-0.5, 1.03, -0.45], [-0.5, 0.9, -12]],
-  sidewin: [[-0.5, 1.03, -0.45], [-6, 0.9, -1.2]],
+  // [camera, target] in body frame (x lat, y up, z = -forward). The deck sits
+  // at the nose station (S m forward); the cabin fills the barrel behind it.
+  aft: [[-0.5, 1.03, -0.45 - S], [0, 0.85, 8 - S]],
+  forward: [[-0.5, 1.03, -0.45 - S], [-0.5, 0.9, -12 - S]],
+  sidewin: [[-0.5, 1.03, -0.45 - S], [-6, 0.9, -1.2 - S]],
   // What the sim's turn-around camera shows (CockpitCamera aftEye blend).
-  turned: [[0, 1.2, 0.5], [0, 0.95, 9]],
-  aisle: [[0, 1.2, -0.9], [0, 0.95, 9]],
-  window: [[0.75, 0.9, 3.3], [-1.9, 0.95, 2.6]],
-  door: [[0, 1.15, 4.3], [0, 1.0, -1.0]],
-  wing: [[1.1, 0.85, 2.0], [4.5, 0.2, 1.0]],
-  cross: [[0, 0.7, 6.2], [0, 0.7, 0]],
+  turned: [[0, 1.2, -(F - 0.18)], [0, 0.95, 9]],
+  aisle: [[0, 1.2, -(F - 0.6)], [0, 0.95, 9]],
+  window: [[0.75, 0.9, -0.5], [-1.9, 0.95, -1.2]],
+  door: [[0, 1.15, -(F - 4.5)], [0, 1.0, -(F + 1)]],
+  wing: [[1.1, 0.85, -0.5], [4.5, 0.2, -1.5]],
+  cross: [[0, 0.7, -(F - 6.4)], [0, 0.7, -F]],
+  rear: [[0, 1.2, 5.5], [0, 0.9, -F]],
 }
 const [cp, tp] = at[view] ?? at.aft!
 camera.position.set(cp![0]!, cp![1]!, cp![2]!)

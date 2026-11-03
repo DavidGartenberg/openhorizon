@@ -8,6 +8,7 @@ import { TeVario } from './sim/vario'
 import { VarioSound } from './audio/vario-sound'
 import { Trails, contrailStrength, vaporStrength } from './render/contrails'
 import { AdaptiveResolution } from './render/adaptive-resolution'
+import { CABIN } from './render/cabin-737'
 import { Precipitation } from './render/precipitation'
 import { LightningScheduler } from './sim/weather/lightning'
 import { LightningBolt } from './render/lightning-bolt'
@@ -539,13 +540,15 @@ const cockpitCam = new CockpitCamera(camera)
 // Per-layout eyepoint (Slice 3): GA eye under the C172 cabin top;
 // transport eye above the re-seated 737/Airbus glareshield.
 if (DECK_PROFILE) {
-  // The deck scales about the airplane origin; the design eye scales with it.
-  const e = EYE_BY_LAYOUT.boeing737, k = DECK_PROFILE.scale
-  cockpitCam.setEyePoint({ x: e.x * k, y: e.y * k, up: e.up * k })
-  // The 737-800 has a passenger cabin: allow turning all the way around.
+  // The deck scales about the airplane origin; the design eye scales with it
+  // (and moves with the deck to the nose station where one is set).
+  const e = EYE_BY_LAYOUT.boeing737, k = DECK_PROFILE.scale, shift = DECK_PROFILE.noseStationM ?? 0
+  cockpitCam.setEyePoint({ x: e.x * k + shift, y: e.y * k, up: e.up * k })
+  // The 737-800 has a passenger cabin: allow turning all the way around,
+  // ending just aft of the cockpit-door bulkhead.
   if (DECK_PROFILE.cabin) {
     cockpitCam.setYawLimit(Math.PI)
-    cockpitCam.setAftEye({ x: -0.5 * k, y: 0, up: 1.2 * k })
+    cockpitCam.setAftEye({ x: CABIN.frontFwd - 0.18, y: 0, up: 1.2 * k })
   }
 } else cockpitCam.setEye('ga')
 let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' = 'chase'

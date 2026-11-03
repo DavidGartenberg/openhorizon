@@ -4,7 +4,7 @@ import { installCanvasStub } from './canvas-stub'
 import { buildCabin737, cabinWallLat, cabinWindows, CABIN, type Cabin737 } from '../../src/render/cabin-737'
 import { setInteriorFill } from '../../src/render/cockpit-737'
 import { buildB738 } from '../../src/render/aircraft-mesh'
-import { cockpitProfile } from '../../src/render/cockpit-profile'
+import { cockpitProfile, B738_DECK_NOSE_SHIFT_M } from '../../src/render/cockpit-profile'
 import { CockpitCamera, EYE_BY_LAYOUT } from '../../src/render/cockpit-camera'
 import { B738 } from '../../src/sim/aircraft/b738'
 
@@ -102,6 +102,17 @@ describe('737-800 passenger cabin', () => {
     expect(hit!.point.z).toBeGreaterThan(-CABIN.aftFwd - 0.2)
   })
 
+  it('fills the barrel behind the nose-station deck with a full economy cabin', () => {
+    // The deck's rear wall (0.8 m behind the design eye) meets the cockpit-door bulkhead.
+    const deckRear = EYE_BY_LAYOUT.boeing737.x + B738_DECK_NOSE_SHIFT_M - 0.8
+    expect(Math.abs(CABIN.frontFwd - deckRear)).toBeLessThan(0.1)
+    expect(CABIN.rows).toBeGreaterThanOrEqual(26)
+    // The last row's seat back clears the aft bulkhead with room to pass.
+    const lastBack = CABIN.firstRowFwd - (CABIN.rows - 1) * CABIN.rowPitch - 0.31
+    expect(lastBack - CABIN.aftFwd).toBeGreaterThan(0.6)
+    expect(cockpitProfile('737', B738, { label: 'x', powerplant: { kind: 'jet', count: 2 } }).deck?.noseStationM).toBe(B738_DECK_NOSE_SHIFT_M)
+  })
+
   it('is built only for the 737-800 deck', () => {
     const jet = { label: 'x', powerplant: { kind: 'jet', count: 2 } }
     expect(cockpitProfile('737', B738, jet).deck?.cabin).toBe(true)
@@ -124,8 +135,8 @@ describe('737-800 passenger cabin', () => {
 })
 
 describe('turn-around cockpit camera', () => {
-  const e = EYE_BY_LAYOUT.boeing737
-  const aftEye = { x: -0.5, y: 0, up: 1.2 }
+  const e = { ...EYE_BY_LAYOUT.boeing737, x: EYE_BY_LAYOUT.boeing737.x + B738_DECK_NOSE_SHIFT_M }
+  const aftEye = { x: CABIN.frontFwd - 0.18, y: 0, up: 1.2 }
   const cam = new CockpitCamera(new THREE.PerspectiveCamera())
   cam.setEyePoint(e)
   cam.setAftEye(aftEye)
