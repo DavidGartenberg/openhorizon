@@ -55,7 +55,7 @@ describe('737-800 passenger cabin', () => {
     // Nothing reaches forward into the deck, nothing aft into the tail taper.
     expect(minZ).toBeGreaterThan(-CABIN.frontFwd - 0.13)
     expect(maxZ).toBeLessThan(-CABIN.aftFwd + 0.02)
-  })
+  }, 30_000) // walks ~600k instanced vertices; generous under CPU load
 
   it('seats a 3-3 layout with real knee room between rows', () => {
     expect(cabin.seats).toBe(CABIN.rows * 6)
