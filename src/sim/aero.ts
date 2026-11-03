@@ -36,6 +36,8 @@ export interface AeroInput {
   /** Lift decrement (spoiler lift dump), applied after the stall blend.
    *  Default 0. */
   extraClDump?: number
+  /** CLmax multiplier (airframe ice). Default 1 — bit-exact clean wing. */
+  clMaxFactor?: number
 }
 
 export interface AeroOutput {
@@ -91,7 +93,7 @@ export function computeAero(inp: AeroInput, out: AeroOutput, P: AircraftParams =
   // so the 1-g stall happens exactly at the POH CLmax (§5.6 stall speeds).
   const clAlphaEff = P.clAlpha * pg
   const cl0f = P.cl0 + dCl0
-  const clMax = P.clMaxClean + dClMax
+  const clMax = (P.clMaxClean + dClMax) * (inp.clMaxFactor ?? 1)
   const delta = 0.03 // rad, rounding half-width
   const alphaS = (clMax - cl0f) / clAlphaEff
   const alphaPeak = alphaS + delta

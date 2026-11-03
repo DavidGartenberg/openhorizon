@@ -19,6 +19,11 @@ export interface GearInput {
   groundZ: number // fallback NED z of terrain (flat world)
   /** Per-wheel terrain query: NED z of the ground at (north, east). */
   groundZAt?: (nNed: number, eNed: number) => number
+  /** Runway contamination (environment/runway-surface.ts). Each defaults
+   *  to 1, the dry-runway behaviour, bit-exact. */
+  brakeMuScale?: number
+  latMuScale?: number
+  rollingScale?: number
 }
 
 export interface GearOutput {
@@ -123,7 +128,8 @@ export function computeGear(inp: GearInput, out: GearOutput, P: AircraftParams =
     // avoid friction jitter at 120 Hz).
     const brake =
       leg.brake === 'left' ? inp.brakeLeft : leg.brake === 'right' ? inp.brakeRight : 0
-    const muLong = P.rollingResistance + P.brakeMu * brake
+    const muLong = P.rollingResistance * (inp.rollingScale ?? 1) + P.brakeMu * brake * (inp.brakeMuScale ?? 1)
+    const latCap = P.tireLatMuCap * (inp.latMuScale ?? 1)
     let fAlong: number
     if (Math.abs(vAlong) > 0.25) fAlong = -Math.sign(vAlong) * muLong * normal
     else fAlong = (-vAlong / 0.25) * muLong * normal
@@ -132,9 +138,9 @@ export function computeGear(inp: GearInput, out: GearOutput, P: AircraftParams =
     let fSide = 0
     if (speed > 0.25) {
       const slip = Math.atan2(vSide, Math.abs(vAlong) + 0.3)
-      fSide = clamp(-P.tireCorneringPerRad * slip, -P.tireLatMuCap, P.tireLatMuCap) * normal
+      fSide = clamp(-P.tireCorneringPerRad * slip, -latCap, latCap) * normal
     } else {
-      fSide = clamp((-vSide / 0.25) * 0.6, -P.tireLatMuCap, P.tireLatMuCap) * normal
+      fSide = clamp((-vSide / 0.25) * 0.6, -latCap, latCap) * normal
     }
 
     // Assemble NED force: normal up (-z) + plane forces along/across wheel.

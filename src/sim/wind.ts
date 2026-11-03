@@ -1,10 +1,67 @@
 /**
- * Wind model (§5.3): steady layered wind + gusts + simplified Dryden-style
- * turbulence (first-order colored noise per axis with MIL-F-8785C-flavored
- * scales). METAR-driven winds arrive in Phase 5; the interface is ready.
+ * Wind model (§5.3): steady layered wind + gusts + turbulence.
+ *
+ * Turbulence: once the caller provides the flight state (`setFlightState`),
+ * the model follows the MIL-F-8785C Dryden form. Scale lengths and
+ * intensities depend on height: below 1,000 ft the low-altitude model
+ * (L_w = h, σ_w = 0.1·W20, driven by the surface wind); above 2,000 ft the
+ * medium/high-altitude model (L = 1,750 ft, σ from the light / moderate /
+ * severe intensity); linear blend between. Each axis is an Ornstein–Uhlenbeck
+ * process with time constant L/V, sampled with the exact discretisation so
+ * any timestep is stable. A spanwise-antisymmetric vertical gust (correlation
+ * exp(−b/L_w) across the span, Dryden roll-gust time constant 4b/πV) gives
+ * the rotational roll gust `rollGustRate` that the aero model sees as relative
+ * roll rate. Without a flight state the original fixed-constant filters run
+ * unchanged.
  */
 import type { V3 } from '../math/vec'
 import { v3, v3set } from '../math/vec'
+import { gaussian } from './environment/rng'
+
+const FT = 0.3048
+const KT = 0.514444
+
+export interface DrydenScales {
+  /** Scale lengths, m. */
+  Lu: number
+  Lv: number
+  Lw: number
+  /** RMS intensities, m/s. */
+  su: number
+  sv: number
+  sw: number
+}
+
+/** Medium/high-altitude σ (m/s) for intensity 0..3 (none/light/moderate/severe). */
+const SIGMA_HIGH = [0, 1.5, 3.0, 6.0]
+/** W20 (wind at 20 ft) implied by intensity alone: light 15 kt, moderate 30, severe 45. */
+const W20_BY_INTENSITY = [0, 15 * KT, 30 * KT, 45 * KT]
+
+function lerpTable(t: number[], x: number): number {
+  const i = Math.max(0, Math.min(t.length - 1.000001, x))
+  const k = Math.floor(i)
+  return t[k]! + (t[k + 1]! - t[k]!) * (i - k)
+}
+
+/** MIL-F-8785C Dryden scale lengths and intensities at a height above ground. */
+export function drydenScales(aglM: number, w20Ms: number, intensity: number): DrydenScales {
+  const hFt = Math.max(aglM / FT, 10)
+  const low = (h: number): DrydenScales => {
+    const k = 0.177 + 0.000823 * h
+    const Lw = h * FT
+    const Luv = (h / k ** 1.2) * FT
+    const sw = 0.1 * w20Ms
+    const suv = sw / k ** 0.4
+    return { Lu: Luv, Lv: Luv, Lw, su: suv, sv: suv, sw }
+  }
+  const sHigh = lerpTable(SIGMA_HIGH, intensity)
+  const high: DrydenScales = { Lu: 1750 * FT, Lv: 1750 * FT, Lw: 1750 * FT, su: sHigh, sv: sHigh, sw: sHigh }
+  if (hFt <= 1000) return low(hFt)
+  if (hFt >= 2000) return high
+  const a = low(1000), f = (hFt - 1000) / 1000
+  const mix = (x: number, y: number): number => x + (y - x) * f
+  return { Lu: mix(a.Lu, high.Lu), Lv: mix(a.Lv, high.Lv), Lw: mix(a.Lw, high.Lw), su: mix(a.su, high.su), sv: mix(a.sv, high.sv), sw: mix(a.sw, high.sw) }
+}
 
 export class WindModel {
   /** Steady wind: direction FROM (deg true), speed (kt) → NED vector. */
@@ -14,12 +71,24 @@ export class WindModel {
   intensity = 0
   gustKt = 0
   private gustPhase = Math.random() * 1000
+  private flight: { aglM: number; tasMs: number; spanM: number } | null = null
+  /** Antisymmetric spanwise vertical gust (m/s at the right tip, upward +). */
+  private delta = 0
+  private rollGust = 0
+  /** Uniform [0,1) source; tests inject a seeded generator. */
+  rng: () => number = Math.random
 
   setSteady(directionFromDeg: number, speedKt: number, gustKt = 0): void {
     const toRad = ((directionFromDeg + 180) % 360) * (Math.PI / 180)
     const ms = speedKt * 0.514444
     v3set(this.steady, Math.cos(toRad) * ms, Math.sin(toRad) * ms, 0)
     this.gustKt = Math.max(gustKt - speedKt, 0)
+  }
+
+  /** Height above ground (m), true airspeed (m/s) and wingspan (m) for the
+   *  Dryden scales; enables the MIL-F-8785C turbulence path. */
+  setFlightState(aglM: number, tasMs: number, spanM: number): void {
+    this.flight = { aglM: Math.max(aglM, 3), tasMs: Math.max(tasMs, 5), spanM: Math.max(spanM, 1) }
   }
 
   /** Steady surface wind speed, m/s (13e: feeds the ocean sea state). */
@@ -32,17 +101,20 @@ export class WindModel {
     return Math.atan2(this.steady.y, this.steady.x)
   }
 
+  /** Steady wind components (NED m/s, horizontal). */
+  get steadyNorthMs(): number { return this.steady.x }
+  get steadyEastMs(): number { return this.steady.y }
+
+  /** Rotational roll gust (rad/s): the air's roll rate across the span.
+   *  The aero model sees p − rollGustRate. */
+  get rollGustRate(): number {
+    return this.rollGust
+  }
+
   /** Advance turbulence states; returns total wind (NED, m/s). */
   step(dt: number, out: V3): V3 {
-    // Dryden-flavored first-order shaping filters.
-    const tau = { x: 3.5, y: 2.5, z: 1.8 }
-    const sigma = this.intensity * 0.9 // m/s per axis at intensity 1
-    for (const axis of ['x', 'y', 'z'] as const) {
-      const t = tau[axis]
-      const noise = (Math.random() * 2 - 1) * Math.sqrt(3)
-      this.turb[axis] +=
-        (dt / t) * (-this.turb[axis]) + sigma * Math.sqrt((2 * dt) / t) * noise
-    }
+    if (this.flight) this.stepDryden(dt)
+    else this.stepLegacy(dt)
 
     // Slow gust swell on top of steady wind.
     this.gustPhase += dt
@@ -58,5 +130,44 @@ export class WindModel {
       this.steady.y * gustFactor + this.turb.y,
       this.turb.z,
     )
+  }
+
+  /** Original Dryden-flavoured filters (fixed time constants). */
+  private stepLegacy(dt: number): void {
+    const tau = { x: 3.5, y: 2.5, z: 1.8 }
+    const sigma = this.intensity * 0.9 // m/s per axis at intensity 1
+    for (const axis of ['x', 'y', 'z'] as const) {
+      const t = tau[axis]
+      const noise = (Math.random() * 2 - 1) * Math.sqrt(3)
+      this.turb[axis] +=
+        (dt / t) * (-this.turb[axis]) + sigma * Math.sqrt((2 * dt) / t) * noise
+    }
+  }
+
+  private stepDryden(dt: number): void {
+    if (dt <= 0) return
+    const f = this.flight!
+    const w20 = Math.max(this.steadyMs, lerpTable(W20_BY_INTENSITY, this.intensity))
+    const s = drydenScales(f.aglM, w20, this.intensity)
+    const V = f.tasMs
+    // Exact OU update: x ← a·x + σ·√(1−a²)·n with a = exp(−dt/τ), τ = L/V.
+    const ou = (x: number, L: number, sigma: number): number => {
+      if (sigma <= 0) return x * Math.exp((-dt * V) / Math.max(L, 1))
+      const a = Math.exp((-dt * V) / Math.max(L, 1))
+      return a * x + sigma * Math.sqrt(1 - a * a) * gaussian(this.rng)
+    }
+    // Horizontal axes are taken along north/east (isotropic σu = σv here).
+    this.turb.x = ou(this.turb.x, s.Lu, s.su)
+    this.turb.y = ou(this.turb.y, s.Lv, s.sv)
+    // NED z is down: an updraft is negative.
+    this.turb.z = ou(this.turb.z, s.Lw, s.sw)
+    // Spanwise antisymmetric part of w: variance σw²(1 − ρ(b))/2 with
+    // ρ(b) = exp(−b/Lw); Dryden roll-gust time constant τp = 4b/(πV).
+    const b = f.spanM
+    const sDelta = s.sw * Math.sqrt(Math.max(0, (1 - Math.exp(-b / Math.max(s.Lw, 1))) / 2))
+    const aP = Math.exp((-dt * Math.PI * V) / (4 * b))
+    this.delta = sDelta > 0 ? aP * this.delta + sDelta * Math.sqrt(1 - aP * aP) * gaussian(this.rng) : this.delta * aP
+    // Upward at the right tip, downward at the left → the air rolls left.
+    this.rollGust = this.delta === 0 ? 0 : (-2 * this.delta) / b
   }
 }

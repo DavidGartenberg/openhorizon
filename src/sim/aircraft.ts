@@ -119,6 +119,24 @@ export class Aircraft {
   /** Extra wind in NED (from WindModel), applied as air-mass motion. */
   readonly windNed = v3()
 
+  /** Environment / physics-mod hooks (sim/environment). All neutral by
+   *  default, so callers that never set them see bit-identical physics. */
+  readonly env = {
+    /** Parasite-drag increment from airframe ice. */
+    iceCdInc: 0,
+    /** CLmax multiplier from airframe ice (≤ 1). */
+    clMaxFactor: 1,
+    /** Rotational roll gust (rad/s): turbulence + wake vortices. The aero
+     *  model sees the relative roll rate p − rollGustRate. */
+    rollGustRate: 0,
+    /** Runway contamination friction scales. */
+    brakeMuScale: 1,
+    latMuScale: 1,
+    rollingScale: 1,
+    /** Structural failure: −1 left wing, +1 right wing, 0 intact. */
+    wingFailure: 0 as -1 | 0 | 1,
+  }
+
   /** Terrain elevation (m MSL) at frame-local NED (north, east); Phase 2+. */
   groundElevAt: ((n: number, e: number) => number) | null = null
 
@@ -343,7 +361,7 @@ export class Aircraft {
     ai.alpha = alpha
     ai.beta = beta
     ai.alphaDot = this.alphaDotFilt
-    ai.p = this.rates.x
+    ai.p = this.rates.x - this.env.rollGustRate
     ai.q = this.rates.y
     ai.r = this.rates.z
     // Trim-tab aircraft: tab + elevator share the surface — total clamps to
@@ -372,8 +390,9 @@ export class Aircraft {
     ai.propTorqueNm = this.prop.torqueNm
     ai.mach = mach
     ai.extraCd = (this.P.gearRetractable ? this.P.gearRetractable.dCdExtended * this.gearPos : 0) +
-      (this.P.spoilers ? this.P.spoilers.dCd * this.spoilerPos : 0)
+      (this.P.spoilers ? this.P.spoilers.dCd * this.spoilerPos : 0) + this.env.iceCdInc
     ai.extraClDump = this.P.spoilers ? this.P.spoilers.dCl * this.spoilerPos : 0
+    ai.clMaxFactor = this.env.clMaxFactor
     const groundElev = this.safeGroundElev(this.posNed.x, this.posNed.y)
     ai.heightAglM = altM - groundElev
     this.data.aglFt = ai.heightAglM / FT
@@ -382,6 +401,14 @@ export class Aircraft {
     v3copy(this.force, this.aeroOut.force)
     this.force.x += this.prop.thrustN
     v3copy(this.moment, this.aeroOut.moment)
+    if (this.env.wingFailure !== 0) {
+      // One wing gone: half the lift is lost, and the remaining wing's lift
+      // (centre of pressure ≈ 42% semi-span) rolls the airplane toward the
+      // failed side.
+      const lift = -this.aeroOut.force.z
+      this.force.z += 0.5 * lift
+      this.moment.x += this.env.wingFailure * 0.5 * lift * 0.42 * (this.P.spanM / 2)
+    }
 
     // ---- gear ----
     qrotate(this.velNed, this.quat, this.velBody)
@@ -389,6 +416,9 @@ export class Aircraft {
       this.gearIn.rudder = c.yaw
       this.gearIn.brakeLeft = c.brakeLeft
       this.gearIn.brakeRight = c.brakeRight
+      this.gearIn.brakeMuScale = this.env.brakeMuScale
+      this.gearIn.latMuScale = this.env.latMuScale
+      this.gearIn.rollingScale = this.env.rollingScale
       computeGear(this.gearIn, this.gearOut, this.P)
       this.force.x += this.gearOut.force.x
       this.force.y += this.gearOut.force.y

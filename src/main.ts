@@ -1,6 +1,7 @@
 import { FixedTimestepLoop, type SimRate } from './sim/loop'
 import { Aircraft } from './sim/aircraft'
 import { WindModel } from './sim/wind'
+import { Environment, type EnvironmentEvent } from './sim/environment'
 import { parseMetar } from './sim/weather/metar'
 import { blendWeather, type StationWeather, type BlendedWeather } from './sim/weather/weather'
 import { cloudSlabs, inCloudFactor, type CloudSlab } from './sim/weather/clouds-model'
@@ -331,6 +332,79 @@ mesh.group.traverse(o => { if (o.userData.exteriorCabin) exteriorCabin.push(o) }
 const cockpitInteraction = new CockpitInteraction(camera)
 
 const wind = new WindModel()
+// Physics mods (sim/environment): thermals + ridge lift, microburst
+// windshear, wake turbulence, airframe ice, runway contamination and
+// structural limits — all inert in calm, clear, dry air with no traffic.
+const environment = new Environment(aircraft.P)
+const ENV_COVER: Record<string, number> = { FEW: 0.15, SCT: 0.35, BKN: 0.75, OVC: 1, VV: 1 }
+function envSurfaceTempC(): number | undefined {
+  if (!wxBlended) return undefined
+  return isa(wxBlended.stationElevFt * FT).temperatureK - 273.15 + wxBlended.isaTempOffsetC
+}
+function stepEnvironment(dt: number): void {
+  const d = aircraft.data
+  const n = aircraft.posNed.x, e = aircraft.posNed.y
+  const elev = aircraft.groundElevAt?.(n, e) ?? 0
+  const altM = d.altitudeFt * FT
+  const events = environment.step({
+    timeS: loop.simTime, dt, n, e, altM, aglM: d.aglFt * FT, tasMs: d.ktas * KT,
+    headingRad: (d.headingDeg * Math.PI) / 180, trackRad: (d.trackDeg * Math.PI) / 180,
+    groundSpeedMs: d.groundSpeedKt * KT, onGround: d.onGround, loadFactorG: d.loadFactorG,
+    flapsDeg: aircraft.flapsDeg, rollRate: aircraft.rates.x,
+    oatC: isa(Math.max(altM, 0)).temperatureK - 273.15 + aircraft.isaTempOffsetC,
+    inCloud: inCloudFactor(wxSlabs, d.altitudeFt), weather: wxBlended?.weather ?? [],
+    surfaceTempC: envSurfaceTempC(), sunElevDeg: sky.elevationDeg,
+    cloudCover: wxSlabs.reduce((c, s) => Math.max(c, ENV_COVER[s.cover] ?? 0), 0),
+    overWater: Math.abs(elev) <= 0.2, groundElevAt: aircraft.groundElevAt,
+    windN: wind.steadyNorthMs, windE: wind.steadyEastMs, turbulenceRollGust: wind.rollGustRate,
+  }, aircraft.windNed, aircraft.env)
+  if (events.length) onEnvironmentEvents(events)
+}
+// Persisted physics-mod toggles (THERMALS / WAKE / ICING / DAMAGE OFF).
+try {
+  const off = (k: string): boolean => localStorage.getItem(`oh-env-${k}`) === 'OFF'
+  if (off('thermals')) { environment.toggles.thermals = false; environment.toggles.ridge = false }
+  if (off('wake')) environment.toggles.wake = false
+  if (off('icing')) environment.toggles.icing = false
+  if (off('damage')) environment.structure.failuresEnabled = false
+} catch { /* private mode */ }
+function onEnvironmentEvents(events: EnvironmentEvent[]): void {
+  for (const ev of events) toast(ev.text)
+}
+/** Rough in-flight mass from span for wake strength (737 ≈ 70 t, 777 ≈ 330 t,
+ *  A380 ≈ 560 t, CRJ ≈ 18 t, light singles ≈ 1.1 t). */
+function wakeMassKg(spanM: number): number {
+  return spanM < 14 ? 1100 * (spanM / 11) ** 2 : 70_000 * (spanM / 35.8) ** 2.6
+}
+/** Feed airborne traffic into the wake field (rate-limited per target). */
+function feedWakeGenerators(): void {
+  if (!environment.toggles.wake) return
+  const t = loop.simTime
+  aiShips.forEach(({ pilot: p }, i) => {
+    if (p.onGround) return
+    const loc = frame.toLocal(p.plane.lat, p.plane.lon)
+    environment.wake.push({ id: `AI${i}`, n: loc.n, e: loc.e, altM: p.plane.altFt * FT, trackRad: (p.plane.headingDeg * Math.PI) / 180, speedMs: p.plane.gsKt * KT, massKg: 1100, spanM: 11 }, t)
+  })
+  for (const tg of liveTraffic.targets.values()) {
+    if (tg.gnd) continue
+    const loc = frame.toLocal(tg.lat, tg.lon)
+    if (Math.hypot(loc.n - aircraft.posNed.x, loc.e - aircraft.posNed.y) > 30_000) continue
+    const info = typeInfo(tg.t)
+    const span = archetypeFor(tg.t, info.desc, info.wtc).spanM
+    environment.wake.push({ id: tg.id, n: loc.n, e: loc.e, altM: tg.altFt * FT, trackRad: (tg.trkDeg * Math.PI) / 180, speedMs: tg.gsKt * KT, massKg: wakeMassKg(span), spanM: span }, t)
+  }
+}
+/** HUD suffix: runway state, ice, and lift/sink worth knowing about. */
+function environmentHud(): string {
+  const st = environment.status
+  const bits: string[] = []
+  if (st.runway !== 'dry') bits.push(`RWY ${st.runway.toUpperCase()}${st.hydroplaning ? ' HYDROPLANING' : ''}`)
+  if (st.iceMm >= 0.3) bits.push(`ICE ${st.iceMm.toFixed(1)}MM`)
+  const lift = st.updraftMs + st.ridgeMs
+  if (Math.abs(lift) >= 0.5) bits.push(`${lift > 0 ? 'LIFT +' : 'SINK '}${lift.toFixed(1)} M/S`)
+  if (environment.structure.overstressed) bits.push('OVERSTRESSED')
+  return bits.join(' · ')
+}
 const chase = new ChaseCamera(camera)
 // Chase camera terrain clamp: render x = east, z = south → NED n = −z, e = x.
 chase.setGroundProbe((x, z) => aircraft.groundElevAt?.(-z, x) ?? 0)
@@ -843,6 +917,29 @@ function handleSearch(query: string): void {
     toast(`SATELLITE IMAGERY ${parts[1]}${on ? '' : ' — stylized terrain'}`)
     return
   }
+  // Physics mods: MICROBURST spawns one ahead; THERMALS / WAKE / ICING /
+  // DAMAGE ON|OFF toggle the models; ENV reports their state.
+  if (parts[0] === 'MICROBURST') {
+    const d = aircraft.data
+    environment.spawnMicroburstAhead(aircraft.posNed.x, aircraft.posNed.y, (d.trackDeg * Math.PI) / 180, loop.simTime, Number(parts[1]) > 0 ? Number(parts[1]) * 1852 : 3000)
+    toast(`MICROBURST ${((Number(parts[1]) > 0 ? Number(parts[1]) * 1852 : 3000) / 1852).toFixed(1)} NM AHEAD`)
+    return
+  }
+  if ((parts[0] === 'THERMALS' || parts[0] === 'WAKE' || parts[0] === 'ICING' || parts[0] === 'DAMAGE') && (parts[1] === 'ON' || parts[1] === 'OFF')) {
+    const on = parts[1] === 'ON'
+    if (parts[0] === 'THERMALS') { environment.toggles.thermals = on; environment.toggles.ridge = on }
+    if (parts[0] === 'WAKE') environment.toggles.wake = on
+    if (parts[0] === 'ICING') environment.toggles.icing = on
+    if (parts[0] === 'DAMAGE') environment.structure.failuresEnabled = on
+    try { localStorage.setItem(`oh-env-${parts[0].toLowerCase()}`, parts[1]) } catch { /* private mode */ }
+    toast(`${parts[0]} ${parts[1]}`)
+    return
+  }
+  if (parts[0] === 'ENV') {
+    const st = environment.status
+    toast(`CONVECTION ${(st.convection * 100).toFixed(0)}% · LIFT ${(st.updraftMs + st.ridgeMs).toFixed(1)} M/S · ICE ${st.iceMm.toFixed(1)}MM · RWY ${st.runway.toUpperCase()} · MAX ${environment.structure.maxG.toFixed(1)}G`)
+    return
+  }
   // IMAGERY USGS | GOOGLE | HYBRID | MAP | GOOGLE SATELLITE: pick the layer.
   if (parts[0] === 'IMAGERY' && parts.length > 1) {
     applyImagerySource(parseImagerySource(parts.slice(1).join(' ')), true)
@@ -1133,6 +1230,7 @@ function handleDiscreteKeys(): void {
     const ap = airports.find(parts[0] || 'KHAF')
     if (ap) spawnAtAirport(ap, parts[1])
     aircraft.crashed = false
+    environment.reset()
     c.throttle = 0
     c.trim = 0
     aircraft.resetFlaps()
@@ -1720,6 +1818,8 @@ function updateSafety(now: number): void {
   )
 
   const parts: string[] = []
+  if (environment.status.windshear) parts.push('⚠ WINDSHEAR')
+  if (environment.structure.wingFailure !== 0) parts.push('⚠ STRUCTURAL FAILURE')
   if (tc.level === 'TA' || tc.level === 'RA') parts.push(`⚠ ${tc.advisory}`)
   if (tw.level !== 'NONE' && tw.aural) parts.push(`${tw.level === 'WARNING' ? '⛰' : '△'} ${tw.aural}`)
   if (performance.now() < safetyAudioFailureUntil) parts.push(safetyAudioFailure)
@@ -2268,6 +2368,7 @@ function rebaseIfNeeded(): void {
   worldShift.e += e
   worldShift.n += n
   clouds.onRebase()
+  environment.onRebase(n, e)
 }
 
 /** Verification-only wings-leveler/coordinator (mirrors the headless test
@@ -2594,7 +2695,9 @@ function advanceFrame(elapsed: number, now: number): void {
   while (remaining > 1e-6) {
     const chunk = Math.min(remaining, 0.25)
     loop.advance(chunk, (dt) => {
+      wind.setFlightState(aircraft.data.aglFt * FT, aircraft.data.ktas * KT, aircraft.P.spanM)
       wind.step(dt, aircraft.windNed)
+      stepEnvironment(dt)
 
       stepAutopilot(apState, dt, {
         iasKt: aircraft.data.kias,
@@ -2750,6 +2853,7 @@ function advanceFrame(elapsed: number, now: number): void {
   const ll = frame.fromLocal(pos.x, pos.y)
   tiles.update(pos.x, pos.y)
   tiles.updateDetail(pos.x, pos.y, aircraft.data.aglFt*FT, now)
+  feedWakeGenerators()
   // Google layers: refresh the required attribution for the area in view.
   const gStyle = googleStyle(imagerySource)
   if (gStyle && now - lastAttributionAt > 30_000) {
@@ -3131,7 +3235,7 @@ function advanceFrame(elapsed: number, now: number): void {
       trimPct: aircraft.controls.trim,
       cameraMode,
       tilesReady: tiles.readyCount,
-      wx: wxDesc || undefined,
+      wx: [wxDesc, environmentHud()].filter(Boolean).join(' · ') || undefined,
       // Safety strict priority (9A): a live TCAS/TAWS line must never be
       // blanked by a gear/spoiler toast; the debrief line expires instead
       // of squatting the slot forever.
