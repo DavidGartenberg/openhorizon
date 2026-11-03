@@ -97,11 +97,14 @@ export class Microburst {
 
 /** Reactive windshear detection from the F-factor (jets/transports). */
 export class WindshearDetector {
-  private lastAlong: number | null = null
+  private alongF: number | null = null
+  private downF = 0
   private fAvg = 0
   private alerting = false
-  /** Averaging time (s) and alert / clear thresholds on mean F. */
-  constructor(readonly tauS = 5, readonly alertF = 0.105, readonly clearF = 0.04) {}
+  /** Averaging time (s), alert / clear thresholds on mean F, and the
+   *  low-pass (s) applied to the wind before differentiating — without it
+   *  the step-to-step derivative of turbulence alone crossed the threshold. */
+  constructor(readonly tauS = 5, readonly alertF = 0.105, readonly clearF = 0.04, readonly lowPassS = 2) {}
 
   get f(): number { return this.fAvg }
   get active(): boolean { return this.alerting }
@@ -113,16 +116,20 @@ export class WindshearDetector {
    */
   step(dt: number, windN: number, windE: number, windDown: number, trackRad: number, tasMs: number, airborne: boolean): boolean {
     if (!airborne || tasMs < 30 || dt <= 0) {
-      this.lastAlong = null
+      this.alongF = null
       this.fAvg = 0
       this.alerting = false
       return false
     }
-    // Tailwind component along the track (+ = tailwind).
+    // Tailwind component along the track (+ = tailwind), low-passed.
     const along = windN * Math.cos(trackRad) + windE * Math.sin(trackRad)
-    const dWx = this.lastAlong === null ? 0 : (along - this.lastAlong) / dt
-    this.lastAlong = along
-    const f = dWx / 9.80665 - (-windDown) / tasMs
+    const lp = 1 - Math.exp(-dt / this.lowPassS)
+    if (this.alongF === null) { this.alongF = along; this.downF = windDown }
+    const prev = this.alongF
+    this.alongF += lp * (along - this.alongF)
+    this.downF += lp * (windDown - this.downF)
+    const dWx = (this.alongF - prev) / dt
+    const f = dWx / 9.80665 - (-this.downF) / tasMs
     const a = 1 - Math.exp(-dt / this.tauS)
     this.fAvg += a * (f - this.fAvg)
     if (!this.alerting && this.fAvg >= this.alertF) { this.alerting = true; return true }

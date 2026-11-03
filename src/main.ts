@@ -2974,7 +2974,7 @@ function advanceFrame(elapsed: number, now: number): void {
   while (remaining > 1e-6) {
     const chunk = Math.min(remaining, 0.25)
     loop.advance(chunk, (dt) => {
-      wind.setFlightState(aircraft.data.aglFt * FT, aircraft.data.ktas * KT, aircraft.P.spanM)
+      wind.setFlightState(aircraft.data.aglFt * FT, aircraft.data.ktas * KT, aircraft.P.spanM, aircraft.data.onGround)
       wind.step(dt, aircraft.windNed)
       stepEnvironment(dt)
       if (isGlider) teVario.step(dt, aircraft.data.altitudeFt * FT, aircraft.data.ktas * KT)

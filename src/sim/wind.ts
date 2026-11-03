@@ -71,7 +71,7 @@ export class WindModel {
   intensity = 0
   gustKt = 0
   private gustPhase = Math.random() * 1000
-  private flight: { aglM: number; tasMs: number; spanM: number } | null = null
+  private flight: { aglM: number; rawAglM: number; tasMs: number; spanM: number; onGround: boolean } | null = null
   /** Antisymmetric spanwise vertical gust (m/s at the right tip, upward +). */
   private delta = 0
   private rollGust = 0
@@ -87,8 +87,8 @@ export class WindModel {
 
   /** Height above ground (m), true airspeed (m/s) and wingspan (m) for the
    *  Dryden scales; enables the MIL-F-8785C turbulence path. */
-  setFlightState(aglM: number, tasMs: number, spanM: number): void {
-    this.flight = { aglM: Math.max(aglM, 3), tasMs: Math.max(tasMs, 5), spanM: Math.max(spanM, 1) }
+  setFlightState(aglM: number, tasMs: number, spanM: number, onGround = false): void {
+    this.flight = { aglM: Math.max(aglM, 3), rawAglM: Math.max(aglM, 0), tasMs: Math.max(tasMs, 5), spanM: Math.max(spanM, 1), onGround }
   }
 
   /** Steady surface wind speed, m/s (13e: feeds the ocean sea state). */
@@ -159,12 +159,15 @@ export class WindModel {
     // Horizontal axes are taken along north/east (isotropic σu = σv here).
     this.turb.x = ou(this.turb.x, s.Lu, s.su)
     this.turb.y = ou(this.turb.y, s.Lv, s.sv)
+    // Vertical air motion vanishes at the surface (no flow through the
+    // ground): zero on the ground, tapering in over the first 8 m.
+    const vTaper = f.onGround ? 0 : Math.min(1, f.rawAglM / 8)
     // NED z is down: an updraft is negative.
-    this.turb.z = ou(this.turb.z, s.Lw, s.sw)
+    this.turb.z = ou(this.turb.z, s.Lw, s.sw * vTaper)
     // Spanwise antisymmetric part of w: variance σw²(1 − ρ(b))/2 with
     // ρ(b) = exp(−b/Lw); Dryden roll-gust time constant τp = 4b/(πV).
     const b = f.spanM
-    const sDelta = s.sw * Math.sqrt(Math.max(0, (1 - Math.exp(-b / Math.max(s.Lw, 1))) / 2))
+    const sDelta = s.sw * vTaper * Math.sqrt(Math.max(0, (1 - Math.exp(-b / Math.max(s.Lw, 1))) / 2))
     const aP = Math.exp((-dt * Math.PI * V) / (4 * b))
     this.delta = sDelta > 0 ? aP * this.delta + sDelta * Math.sqrt(1 - aP * aP) * gaussian(this.rng) : this.delta * aP
     // Upward at the right tip, downward at the left → the air rolls left.

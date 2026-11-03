@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { WindModel, drydenScales } from '../../src/sim/wind'
-import { seededRandom } from '../../src/sim/environment/rng'
+import { seededRandom, gaussian as gaussianFrom } from '../../src/sim/environment/rng'
 import { ThermalField, convectiveStrength, thermalProfile, ridgeLift, boundaryLayerDepthM } from '../../src/sim/environment/thermals'
 import { Microburst, WindshearDetector } from '../../src/sim/environment/microburst'
 import { WakeField, wakeCirculation, wakeDecay } from '../../src/sim/environment/wake'
@@ -61,6 +61,25 @@ describe('MIL-F-8785C Dryden turbulence', () => {
     const expected = (2 * 3 * Math.sqrt((1 - Math.exp(-b / L)) / 2)) / b
     expect(Math.sqrt(roll2 / n)).toBeGreaterThan(expected * 0.8)
     expect(Math.sqrt(roll2 / n)).toBeLessThan(expected * 1.2)
+  })
+
+  it('has no vertical gusts or roll gusts on the ground, tapering in over the first 8 m', () => {
+    const rmsAt = (agl: number, onGround: boolean): { w: number; p: number } => {
+      const w = new WindModel()
+      w.rng = seededRandom(7)
+      w.intensity = 2
+      w.setFlightState(agl, onGround ? 2 : 30, 11, onGround)
+      const out = { x: 0, y: 0, z: 0 }
+      let z2 = 0, p2 = 0
+      for (let i = 0; i < 40_000; i++) { w.step(0.02, out); z2 += out.z ** 2; p2 += w.rollGustRate ** 2 }
+      return { w: Math.sqrt(z2 / 40_000), p: Math.sqrt(p2 / 40_000) }
+    }
+    const ground = rmsAt(0, true)
+    expect(ground.w).toBe(0)
+    expect(ground.p).toBe(0)
+    const low = rmsAt(4, false), high = rmsAt(16, false)
+    expect(low.w).toBeGreaterThan(0)
+    expect(low.w).toBeLessThan(high.w * 0.75)
   })
 
   it('is perfectly calm with no wind and no reported turbulence', () => {
@@ -144,6 +163,22 @@ describe('microburst windshear', () => {
     expect(mb.windAt(700, 0, 30, 0, w).x).toBeGreaterThan(5) // outward north
     expect(mb.windAt(-700, 0, 30, 0, w).x).toBeLessThan(-5) // outward south
     expect(new Microburst({ n: 0, e: 0, startS: 100 }).windAt(0, 0, 300, 50, w).z).toBe(0) // not yet born
+  })
+
+  it('severe low-altitude turbulence alone does not raise a windshear alert', () => {
+    // MIL-F-8785C severe at 300 ft AGL (W20 = 45 kt): σu ≈ 3.3 m/s with
+    // τ ≈ 3.4 s, σw ≈ 2.3 m/s with τ ≈ 1.2 s, at approach speed — ten minutes.
+    const det = new WindshearDetector()
+    const rnd = seededRandom(9)
+    const V = 75, dt = 1 / 120
+    let u = 0, w = 0, any = false
+    for (let t = 0; t < 600; t += dt) {
+      const au = Math.exp(-dt / 3.4), aw = Math.exp(-dt / 1.2)
+      u = au * u + 3.3 * Math.sqrt(1 - au * au) * gaussianFrom(rnd)
+      w = aw * w + 2.3 * Math.sqrt(1 - aw * aw) * gaussianFrom(rnd)
+      if (det.step(dt, u, 0, w, 0, V, true)) any = true
+    }
+    expect(any).toBe(false)
   })
 
   it('a jet flying through it on approach gets a windshear alert; calm air does not', () => {

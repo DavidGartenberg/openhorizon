@@ -192,10 +192,13 @@ export class Aircraft {
   private readonly euler: Euler = { yaw: 0, pitch: 0, roll: 0 }
   private readonly aeroOut = makeAeroOutput()
   private readonly gearOut = makeGearOutput()
+  /** Static-friction anchors for the gear legs (sim/gear.ts stick-slip). */
+  private readonly gearStick = new Float64Array(9)
   private readonly gearIn: GearInput = {
     posNed: this.posNed, velNed: this.velNed, quat: this.quat, rates: this.rates,
     rudder: 0, brakeLeft: 0, brakeRight: 0, groundZ: 0,
     groundZAt: (n, e) => -this.safeGroundElev(n, e),
+    stick: this.gearStick,
   }
   private readonly aeroIn: AeroInput = {
     rho: 1.225, vAir: 0, alpha: 0, beta: 0, alphaDot: 0, p: 0, q: 0, r: 0,
@@ -240,6 +243,7 @@ export class Aircraft {
     }
     qfromEuler(this.quat, headingRad, pitch, 0)
     v3set(this.posNed, north, east, -(groundElevM + cgHeightM))
+    this.gearStick.fill(0) // new position: no static-friction anchors
     v3set(this.velBody, 0, 0, 0)
     v3set(this.rates, 0, 0, 0)
     this.prop.omegaRadS = (700 * Math.PI) / 30
@@ -532,6 +536,7 @@ export class Aircraft {
     tasMs: number, alphaRad: number, altM: number, headingRad: number,
     gammaRad: number, elevatorTrimRad: number, throttle: number, rpm: number,
   ): void {
+    this.gearStick.fill(0)
     qfromEuler(this.quat, headingRad, alphaRad + gammaRad, 0)
     v3set(this.velBody, tasMs * Math.cos(alphaRad), 0, tasMs * Math.sin(alphaRad))
     v3set(this.posNed, 0, 0, -altM)

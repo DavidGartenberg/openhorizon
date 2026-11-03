@@ -5,6 +5,13 @@
  */
 import type { FlightData } from '../sim/aircraft'
 
+/** The HUD's stall warning. A stall vane needs real airflow: never on the
+ *  ground or at a crawl, where a gust over a parked airplane reads as a huge
+ *  angle of attack (it showed "⚠ STALL" while tied down in a breeze). */
+export function stallWarningActive(f: Pick<FlightData, 'stallFraction' | 'onGround' | 'kias'>): boolean {
+  return f.stallFraction > 0.35 && !f.onGround && f.kias > 20
+}
+
 export interface HudStats {
   /** Fleet (11g): active aircraft label, gear state text, jet FF kg/h. */
   aircraftLabel?: string
@@ -87,7 +94,7 @@ export class Hud {
     }
 
     const rate = stats.simRate === 0 ? 'PAUSED' : `${stats.simRate}x`
-    const stallWarn = f.stallFraction > 0.35 ? '  ⚠ STALL' : ''
+    const stallWarn = stallWarningActive(f) ? '  ⚠ STALL' : ''
     this.el.textContent =
       `OpenHorizon · ${stats.aircraftLabel ?? 'C172S'} · ${stats.spawnDesc}\n` +
       `IAS ${f.kias.toFixed(0).padStart(3)} kt   ALT ${f.altitudeFt.toFixed(0).padStart(5)} ft   ` +
