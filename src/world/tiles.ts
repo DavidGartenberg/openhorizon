@@ -656,6 +656,15 @@ export class TileManager {
     return !tile.coverage?.covered(u, v)
   }
 
+  /** Whether any loaded tile covers lat/lon (elevationAt returns 0 otherwise). */
+  hasElevationAt(lat: number, lon: number): boolean {
+    for (const ring of RINGS) {
+      const tile = this.tiles.get(`${ring.z}/${Math.floor(lonToTileX(lon, ring.z))}/${Math.floor(latToTileY(lat, ring.z))}`)
+      if (tile?.state === 'ready' && tile.heights && tile.gridSize) return true
+    }
+    return false
+  }
+
   /** Terrain elevation (m MSL) at lat/lon from the best loaded tile. */
   elevationAt(lat: number, lon: number): number {
     for (const ring of RINGS) {

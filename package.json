@@ -9,7 +9,8 @@
     "dev:server": "PORT=8787 node server/index.mjs",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "validate": "vitest run tests/validate --passWithNoTests"
+    "validate": "vitest run tests/validate --passWithNoTests",
+    "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
     "express": "^5.2.1",

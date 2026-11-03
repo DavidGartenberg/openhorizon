@@ -2,6 +2,8 @@ import { FixedTimestepLoop, type SimRate } from './sim/loop'
 import { Aircraft } from './sim/aircraft'
 import { WindModel } from './sim/wind'
 import { Environment, type EnvironmentEvent } from './sim/environment'
+import { chooseFallbackSpawn } from './sim/spawn-fallback'
+import { safetyHazard } from './audio/safety-hazard'
 import { Trails, contrailStrength, vaporStrength } from './render/contrails'
 import { AdaptiveResolution } from './render/adaptive-resolution'
 import { WINDSCREEN_WEATHER } from './render/windscreen'
@@ -1882,7 +1884,7 @@ function updateSafety(now: number): void {
   })
   safetySpeech.setMuted(engineSound.muted)
   safetySpeech.update(now,
-    tw.level !== 'NONE' && tw.aural ? { text: tw.aural, priority: tw.level === 'WARNING' ? 4 : 2 } : undefined,
+    safetyHazard(environment.status.windshear, tw),
     tc.aural && !tc.clearedRa ? { text: tc.aural, priority: tc.level === 'RA' ? 3 : 2 } : undefined,
     tw.callout && tw.newAural ? tw.aural : tc.clearedRa ? tc.aural : undefined,
   )
@@ -3379,13 +3381,33 @@ metronome.onmessage = () => {
 }
 
 // ---- boot ----
+/** No airport data: park on the terrain at the default position (see
+ *  sim/spawn-fallback.ts) instead of staying at sea level under the ground. */
+function spawnWithoutAirports(reason: string): void {
+  const startedAt = performance.now()
+  const attempt = (): void => {
+    if (spawnDesc !== 'boot') return // a real spawn happened meanwhile
+    const ll = frame.fromLocal(0, 0)
+    const choice = chooseFallbackSpawn(tiles.hasElevationAt(ll.lat, ll.lon), tiles.elevationAt(ll.lat, ll.lon), performance.now() - startedAt)
+    if (choice.kind === 'wait') { setTimeout(attempt, 500); return }
+    aircraft.crashed = false
+    aircraft.spawnOnGround(0, 0, (300 * Math.PI) / 180, choice.kind === 'terrain' ? choice.elevM : 0)
+    spawnDesc = 'NO AIRPORT DATA'
+    toast(`AIRPORT DATA UNAVAILABLE (${reason}) — PARKED ON ${choice.kind === 'terrain' ? 'TERRAIN' : 'SEA LEVEL'}`)
+  }
+  attempt()
+}
 airports
   .load()
   .then(() => {
     const khaf = airports.find('KHAF')
     if (khaf) spawnAtAirport(khaf, '30')
+    else spawnWithoutAirports('KHAF MISSING')
   })
-  .catch((err) => console.error('airport data failed to load:', err))
+  .catch((err) => {
+    console.error('airport data failed to load:', err)
+    spawnWithoutAirports(String(err?.message ?? err).slice(0, 40).toUpperCase())
+  })
 
 requestAnimationFrame(frame_)
 
