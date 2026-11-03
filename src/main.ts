@@ -4,6 +4,8 @@ import { WindModel } from './sim/wind'
 import { Environment, type EnvironmentEvent } from './sim/environment'
 import { chooseFallbackSpawn } from './sim/spawn-fallback'
 import { safetyHazard } from './audio/safety-hazard'
+import { TeVario } from './sim/vario'
+import { VarioSound } from './audio/vario-sound'
 import { Trails, contrailStrength, vaporStrength } from './render/contrails'
 import { AdaptiveResolution } from './render/adaptive-resolution'
 import { WINDSCREEN_WEATHER } from './render/windscreen'
@@ -466,6 +468,12 @@ function updateWeatherEffects(dayness: number, sunDir: THREE.Vector3): void {
   const vapor = d.onGround || d.ktas < 40 ? 0 : vaporStrength(spread, inCloud, cl, d.loadFactorG)
   trails.update(simT, mesh.group, camera, contrail, vapor, sunDir, dayness)
 }
+// Total-energy variometer with audio for sailplanes (plan step 4).
+const isGlider = aircraft.P.spoilers?.groundAutoDeploy === false
+const teVario = new TeVario()
+const varioSound = new VarioSound()
+varioSound.enabled = isGlider
+let lastVarioAt = performance.now()
 /** HUD suffix: runway state, ice, and lift/sink worth knowing about. */
 function environmentHud(): string {
   const st = environment.status
@@ -475,6 +483,7 @@ function environmentHud(): string {
   const lift = st.updraftMs + st.ridgeMs
   if (Math.abs(lift) >= 0.5) bits.push(`${lift > 0 ? 'LIFT +' : 'SINK '}${lift.toFixed(1)} M/S`)
   if (environment.structure.overstressed) bits.push('OVERSTRESSED')
+  if (isGlider && !aircraft.data.onGround) bits.unshift(`VARIO ${teVario.rateMs >= 0 ? '+' : ''}${teVario.rateMs.toFixed(1)} M/S`)
   return bits.join(' · ')
 }
 const chase = new ChaseCamera(camera)
@@ -2771,6 +2780,7 @@ function advanceFrame(elapsed: number, now: number): void {
       wind.setFlightState(aircraft.data.aglFt * FT, aircraft.data.ktas * KT, aircraft.P.spanM)
       wind.step(dt, aircraft.windNed)
       stepEnvironment(dt)
+      if (isGlider) teVario.step(dt, aircraft.data.altitudeFt * FT, aircraft.data.ktas * KT)
 
       stepAutopilot(apState, dt, {
         iasKt: aircraft.data.kias,
@@ -2927,6 +2937,12 @@ function advanceFrame(elapsed: number, now: number): void {
   tiles.update(pos.x, pos.y)
   tiles.updateDetail(pos.x, pos.y, aircraft.data.aglFt*FT, now)
   feedWakeGenerators()
+  if (isGlider) {
+    if (engineSound.unlocked) varioSound.unlock()
+    varioSound.muted = engineSound.muted
+    varioSound.update(Math.min((now - lastVarioAt) / 1000, 0.1), aircraft.data.onGround ? 0 : teVario.rateMs)
+    lastVarioAt = now
+  }
   // Google layers: refresh the required attribution for the area in view.
   const gStyle = googleStyle(imagerySource)
   if (gStyle && now - lastAttributionAt > 30_000) {
