@@ -1,3 +1,4 @@
+import { LOD, lodVisible } from '../render/lod'
 import { pavementMaterial } from '../render/surface-materials'
 import * as THREE from 'three'
 import { FT } from '../sim/atmosphere'
@@ -599,6 +600,18 @@ export class Airports {
   }
 
   /** Reposition all rendered airports (call every frame — cheap — and after rebase). */
+  /** Hide far airports' facilities (buildings, services): runways, markings
+   *  and lights stay. Render-frame camera position. */
+  updateLod(cameraX: number, cameraZ: number): void {
+    for (const group of this.rendered.values()) {
+      const d = Math.hypot(group.position.x - cameraX, group.position.z - cameraZ)
+      for (const child of group.children) {
+        if (child.name !== 'airportFacilities' && child.name !== 'mappedAirportServices') continue
+        child.visible = lodVisible(child.visible, d, LOD.facilities)
+      }
+    }
+  }
+
   positionAll(): void {
     for (const group of this.rendered.values()) {
       const ll = group.userData.latLon as LatLon

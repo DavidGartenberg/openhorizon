@@ -88,6 +88,7 @@ export class TireSmoke {
       n++
     }
     this.mesh.count = n
+    this.mesh.visible = n > 0 // no draw call while there is no smoke
     this.mesh.instanceMatrix.needsUpdate = true
     this.opacity.needsUpdate = true
   }

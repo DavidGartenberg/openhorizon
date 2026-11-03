@@ -9,6 +9,8 @@ import { VarioSound } from './audio/vario-sound'
 import { Trails, contrailStrength, vaporStrength } from './render/contrails'
 import { AdaptiveResolution } from './render/adaptive-resolution'
 import { FrameProfiler } from './render/frame-profiler'
+import { LOD, lodVisible } from './render/lod'
+import { helpText } from './ui/command-help'
 import { CABIN } from './render/cabin-737'
 import { Precipitation } from './render/precipitation'
 import { LightningScheduler } from './sim/weather/lightning'
@@ -1114,6 +1116,11 @@ function handleSearch(query: string): void {
     if (!environment.iceProtectionFitted) { toast('NO ICE PROTECTION FITTED'); return }
     environment.antiIce = parts[1].toLowerCase() as 'on' | 'off' | 'auto'
     toast(`ANTI-ICE ${parts[1]}`)
+    return
+  }
+  if (parts[0] === 'HELP') {
+    helpOverlay.textContent = helpText()
+    helpOverlay.style.display = helpOverlay.style.display === 'none' ? 'block' : 'none'
     return
   }
   if (parts[0] === 'PERF') {
@@ -2893,6 +2900,10 @@ const perfOverlay = document.createElement('pre')
 perfOverlay.style.cssText = 'position:fixed;right:12px;top:200px;z-index:25;margin:0;padding:8px 10px;font:11px/1.4 ui-monospace,monospace;color:#d6e4ea;background:rgba(10,16,22,.82);border-radius:8px;pointer-events:none;display:none'
 document.body.appendChild(perfOverlay)
 let lastPerfOverlayAt = 0
+// HELP (plan step 18): the command list.
+const helpOverlay = document.createElement('pre')
+helpOverlay.style.cssText = 'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:40;margin:0;padding:14px 18px;font:12px/1.5 ui-monospace,monospace;color:#e6edf0;background:rgba(10,16,22,.94);border:1px solid #ffffff26;border-radius:10px;pointer-events:none;display:none;max-width:92vw;white-space:pre-wrap'
+document.body.appendChild(helpOverlay)
 function advanceFrame(elapsed: number, now: number): void {
   const perfT0 = performance.now()
   profiler.start(perfT0)
@@ -3171,7 +3182,9 @@ function advanceFrame(elapsed: number, now: number): void {
     m.group.position.set(lp.e, p.plane.altFt * 0.3048, -lp.n)
     m.group.rotation.order = 'YXZ'
     m.group.rotation.y = (-p.plane.headingDeg * Math.PI) / 180
-    updateProp(m, p.phase === 'pattern' ? 2400 : 800, elapsed)
+    // Distance LOD (plan step 17): a pattern single far away is a speck.
+    m.group.visible = lodVisible(m.group.visible, Math.hypot(m.group.position.x - camera.position.x, m.group.position.z - camera.position.z), LOD.aiShip)
+    if (m.group.visible) updateProp(m, p.phase === 'pattern' ? 2400 : 800, elapsed)
   }
 
   // Phase 4 Task 5 wiring: in-airspace detection, once per rendered frame
@@ -3478,6 +3491,7 @@ function advanceFrame(elapsed: number, now: number): void {
   airports.updateServices(loop.simTime, camera.position.x, camera.position.z)
   // 13d PAPI: colored from the camera's real elevation angle each frame.
   airports.updatePapi(camera.position.x, camera.position.y, camera.position.z)
+  airports.updateLod(camera.position.x, camera.position.z) // plan step 17
   // Jets: the electrical model is piston-only (bus reads 0 V), which
   // silently killed every exterior light on the 737/airliners — found by
   // the user. Until a jet electrical model exists, jets count as powered
@@ -3875,6 +3889,20 @@ Object.assign(window as unknown as Record<string, unknown>, {
     systemsControls.magneto = pos
   },
   __ohProfile: () => ({ totalMs: profiler.totalMs(), sections: profiler.report() }),
+  /** Visible drawables by scene category (what the draw calls are spent on). */
+  __ohDraws: () => {
+    const out: Record<string, number> = {}
+    for (const top of scene.children) {
+      if (!top.visible) continue
+      const cat = top === mesh.group ? 'aircraft' : top.userData.terrainKey ? 'terrain' : (top.name || top.type)
+      top.traverseVisible((o) => {
+        if (!(o instanceof THREE.Mesh || o instanceof THREE.Points || o instanceof THREE.Line)) return
+        const key = o === top || cat !== 'aircraft' ? cat : (cockpit.group.getObjectById(o.id) ? 'cockpit' : 'aircraft')
+        out[key] = (out[key] ?? 0) + 1
+      })
+    }
+    return Object.entries(out).sort((a, b) => b[1] - a[1])
+  },
   __ohSave: () => { saveSnapshot(); try { return localStorage.getItem('oh-save') } catch { return null } },
   __ohLoad: () => loadSnapshot(),
   __ohLoading: (selection?: LoadingSelection) => selection

@@ -8,17 +8,37 @@ import { cockpitProfile, B738_DECK_NOSE_SHIFT_M } from '../../src/render/cockpit
 import { CockpitCamera, EYE_BY_LAYOUT } from '../../src/render/cockpit-camera'
 import { B738 } from '../../src/sim/aircraft/b738'
 
-/** Visit every world-space vertex, expanding instanced meshes. */
-function forEachVertex(root: THREE.Object3D, fn: (v: THREE.Vector3, o: THREE.Mesh) => void): void {
+/**
+ * Visit world-space vertices. Plain meshes: every vertex. Instanced meshes:
+ * the barrel's cross-section does not change along its length, so one
+ * instance per lateral column is walked exactly (`radial` = true) and the
+ * rest contribute only their fore-aft extent (bounding-box corners,
+ * `radial` = false) — exact where it matters, fast for 168 seats.
+ */
+function forEachVertex(root: THREE.Object3D, fn: (v: THREE.Vector3, radial: boolean) => void): void {
   root.updateMatrixWorld(true)
-  const v = new THREE.Vector3(), m = new THREE.Matrix4(), inst = new THREE.Matrix4()
+  const v = new THREE.Vector3(), m = new THREE.Matrix4(), inst = new THREE.Matrix4(), t = new THREE.Vector3()
   root.traverse((o) => {
     if (!(o instanceof THREE.Mesh)) return
     const pos = o.geometry.getAttribute('position') as THREE.BufferAttribute
-    const mats = o instanceof THREE.InstancedMesh
-      ? Array.from({ length: o.count }, (_, k) => { o.getMatrixAt(k, inst); return m.clone().multiplyMatrices(o.matrixWorld, inst) })
-      : [o.matrixWorld]
-    for (const mw of mats) for (let i = 0; i < pos.count; i++) fn(v.fromBufferAttribute(pos, i).applyMatrix4(mw), o)
+    if (o instanceof THREE.InstancedMesh) {
+      o.geometry.computeBoundingBox()
+      const bb = o.geometry.boundingBox!
+      const columns = new Set<string>()
+      for (let k = 0; k < o.count; k++) {
+        o.getMatrixAt(k, inst)
+        m.multiplyMatrices(o.matrixWorld, inst)
+        t.setFromMatrixPosition(m)
+        const col = `${t.x.toFixed(3)}/${t.y.toFixed(3)}`
+        if (!columns.has(col)) {
+          columns.add(col)
+          for (let i = 0; i < pos.count; i++) fn(v.fromBufferAttribute(pos, i).applyMatrix4(m), true)
+        }
+        for (let c = 0; c < 8; c++) fn(v.set(c & 1 ? bb.max.x : bb.min.x, c & 2 ? bb.max.y : bb.min.y, c & 4 ? bb.max.z : bb.min.z).applyMatrix4(m), false)
+      }
+      return
+    }
+    for (let i = 0; i < pos.count; i++) fn(v.fromBufferAttribute(pos, i).applyMatrix4(o.matrixWorld), true)
   })
 }
 
@@ -44,9 +64,9 @@ describe('737-800 passenger cabin', () => {
     expect(skin.r).toBeGreaterThan(1.85)
     expect(Math.abs(skin.cy - CABIN.axisY)).toBeLessThan(0.02)
     let worst = 0, n = 0, minZ = Infinity, maxZ = -Infinity
-    forEachVertex(cabin.group, (v) => {
+    forEachVertex(cabin.group, (v, radial) => {
       expect(Number.isFinite(v.x + v.y + v.z)).toBe(true)
-      worst = Math.max(worst, Math.hypot(v.x, v.y - skin.cy))
+      if (radial) worst = Math.max(worst, Math.hypot(v.x, v.y - skin.cy))
       minZ = Math.min(minZ, v.z); maxZ = Math.max(maxZ, v.z)
       n++
     })
