@@ -455,3 +455,16 @@ it('cuts fully transparent body-atlas windows out of an otherwise opaque exterio
  expect(material.alphaTest).toBeGreaterThan(0)
  expect(makeObj8Material({map:new THREE.Texture()},{noBlend:.4}).alphaTest).toBe(.4)
 })
+
+import { textureCandidates } from '../src/render/xplane-obj8'
+describe('texture candidates', () => {
+  it('tries a livery\'s own file (either extension) before the airplane\'s', () => {
+    expect(textureCandidates('738fuselage.png', '/b/', '/b/liveries/Delta/objects/')).toEqual([
+      '/b/liveries/Delta/objects/738fuselage.png', '/b/liveries/Delta/objects/738fuselage.dds', '/b/738fuselage.png', '/b/738fuselage.dds',
+    ])
+  })
+  it('is just the airplane\'s own file without a livery, and a name with no alternate stays single', () => {
+    expect(textureCandidates('a.dds', '/b/')).toEqual(['/b/a.dds', '/b/a.png'])
+    expect(textureCandidates('weird', '/b/', '/l/')).toEqual(['/l/weird', '/b/weird'])
+  })
+})

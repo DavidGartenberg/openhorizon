@@ -589,12 +589,53 @@ export interface Mcp737State {
   atArm: boolean
 }
 
-/** Clickable controls on each guidance panel, as fractions of its width
- *  (shared by the painter and the 3D hit boxes). */
-export const FCU_HITS: Record<PanelStyle, { cmdA: number; atArm?: number; speed?: number; disengage?: number }> = {
-  boeing: { cmdA: 0.925, atArm: 0.15, speed: 0.255, disengage: 0.95 },
-  airbus: { cmdA: 0.565, atArm: 0.655, speed: 0.13 },
-  generic: { cmdA: 0.68, atArm: 0.74, speed: 0.12 },
+/** One clickable control on a guidance panel, as fractions of the panel
+ *  canvas (centre x, centre y from the top, width, height). */
+export interface McpControl { id: string; fx: number; fy: number; fw: number; fh: number }
+
+/** The guidance panel's buttons and selector knobs for a family, matching
+ *  where the painters draw them. Buttons carry `apBtn:<action>`; each knob
+ *  has a left (−) and right (+) half, `apKnob:<knob>:<±1>`. Painted
+ *  positions are in each painter's own units, converted here for the
+ *  canvas size (k = H / 300). */
+export function mcpControls(style: PanelStyle, W: number, H: number, autothrottle: boolean): McpControl[] {
+  const k = H / 300
+  const out: McpControl[] = []
+  const btn = (action: string, cx: number, cy: number, w: number, h: number): void => { out.push({ id: `apBtn:${action}`, fx: cx / W, fy: cy / H, fw: w / W, fh: h / H }) }
+  // A knob: left third turns down, right third turns up, and (where the
+  // family's knobs are push-to-select, as on the FCU) the centre selects.
+  const knobAt = (name: string, cx: number, cy: number, r: number, push?: string): void => {
+    out.push({ id: `apKnob:${name}:-1`, fx: (cx - (2 * r) / 3) / W, fy: cy / H, fw: ((2 * r) / 3) / W, fh: (2 * r) / H })
+    out.push({ id: `apKnob:${name}:1`, fx: (cx + (2 * r) / 3) / W, fy: cy / H, fw: ((2 * r) / 3) / W, fh: (2 * r) / H })
+    if (push) out.push({ id: `apBtn:${push}`, fx: cx / W, fy: cy / H, fw: ((2 * r) / 3) / W, fh: (2 * r) / H })
+  }
+  if (style === 'boeing') {
+    const by = H * 0.62 + 23 * k, bw = 70 * k, bh = 46 * k
+    btn('ap', W * 0.925, by, 58 * k, bh)
+    if (autothrottle) { btn('at', W * 0.15, H * 0.62, 40 * k, 60 * k); btn('speedBtn', W * 0.255, by, bw, bh) }
+    btn('flc', W * 0.395 + 75 * k, by, bw, bh)
+    btn('hdg', W * 0.575, by, bw, bh)
+    btn('nav', W * 0.575 + 75 * k, by, bw, bh)
+    btn('apr', W * 0.655 + 75 * k, by, bw, bh)
+    btn('alt', W * 0.735, by, bw, bh)
+    btn('vs', W * 0.82, by, bw, bh)
+    knobAt('ias', W * 0.3275, H * 0.82, 26 * k); knobAt('heading', W * 0.52, H * 0.82, 26 * k); knobAt('altitude', W * 0.775, H * 0.82, 26 * k)
+    knobAt('vs', W * 0.8825, H * 0.74, 14 * k)
+  } else if (style === 'airbus') {
+    const by = H * 0.56 + 26 * k, bw = 76 * k, bh = 52 * k
+    btn('nav', W * 0.235, by, bw, bh); btn('ap', W * 0.565, by, bw, bh)
+    if (autothrottle) btn('at', W * 0.655, by, bw, bh)
+    btn('apr', W * 0.84, by, bw, bh)
+    knobAt('ias', W * 0.12, H * 0.72, 30 * k, 'flc'); knobAt('heading', W * 0.35, H * 0.72, 30 * k, 'hdg'); knobAt('altitude', W * 0.485, H * 0.72, 30 * k, 'alt'); knobAt('vs', W * 0.93, H * 0.72, 30 * k, 'vs')
+  } else {
+    const by = H * 0.36 + 25 * k, bw = 72 * k, bh = 50 * k
+    btn('hdg', W * 0.2, by, bw, bh); btn('nav', W * 0.2 + 78 * k, by, bw, bh); btn('apr', W * 0.2 + 156 * k, by, bw, bh)
+    btn('flc', W * 0.53 + 78 * k, by, bw, bh); btn('vs', W * 0.53 + 156 * k, by, bw, bh); btn('alt', W * 0.53 + 234 * k, by, bw, bh)
+    btn('ap', W * 0.68, by, bw, bh)
+    if (autothrottle) btn('at', W * 0.74, by, bw, bh)
+    knobAt('ias', W * 0.12, H * 0.5, 30 * k); knobAt('heading', W * 0.45, H * 0.5, 30 * k); knobAt('altitude', W * 0.86, H * 0.5, 30 * k)
+  }
+  return out
 }
 
 export function paintMcp737(c: Ctx, W: number, H: number, s: Mcp737State, style: PanelStyle = 'boeing', autothrottle = true): void {

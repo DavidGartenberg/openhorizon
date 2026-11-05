@@ -98,6 +98,9 @@ export interface AutopilotInputs {
    *  law goes unstable inside ~5-7 km (confirmed with a 0°-error coupled
    *  GS-descent control case — not an intercept-geometry problem). */
   navRangeM?: number
+  /** Distance to the GLIDESLOPE antenna, m — normalizes the GS law's gain
+   *  (its beam narrows toward that antenna). Falls back to `navRangeM`. */
+  glideslopeRangeM?: number
   /** Ground-track direction, deg true. When provided, localizer TRACKING
    *  steers the TRACK onto the course instead of the heading — wind drift
    *  becomes transparent (the loop's output is a track command; the
@@ -105,6 +108,21 @@ export interface AutopilotInputs {
    *  integrator to discover ~12° of crab over minutes — the crosswind
    *  instant-capture case diverged without this). Falls back to heading. */
   trackDeg?: number
+
+  // ---- autoland overrides (sim/autoland.ts owns these for the flare and
+  //      rollout; all optional, so every other caller is untouched) ----
+  /** Fly this pitch attitude instead of the vertical-mode law (flare,
+   *  derotation). Trim stops following while it is set. */
+  pitchTargetOverrideDeg?: number
+  /** Fly this bank angle instead of the lateral-mode law (autoland's
+   *  centerline tracking from short final through the flare). */
+  bankTargetOverrideDeg?: number
+  /** Tighter bank limit than MAX_BANK_DEG (wings nearly level in the flare,
+   *  exactly level on the rollout). */
+  maxBankDeg?: number
+  /** Rudder / nosewheel demand [-1, 1] replacing the turn-coordination
+   *  feed-forward (decrab in the flare, centerline steering on the rollout). */
+  yawOverride?: number
 }
 
 // ---- output / state ----
@@ -266,6 +284,10 @@ export function disconnect(state: AutopilotState): void {
  *  autopilot STCs (many cap around 25-30 deg in heading/nav modes). */
 export const MAX_BANK_DEG = 25
 
+/** ALT hold: vertical speed commanded per foot of altitude error, and its
+ *  cap. 6.5 fpm/ft = a 9.2 s first-order return. */
+export const ALT_HOLD_FPM_PER_FT = 6.5
+export const ALT_HOLD_MAX_VS_FPM = 700
 /** Commanded pitch-attitude cap for ALT/VS/FLC/GS — keeps captures gentle
  *  rather than commanding an aggressive attitude off a large error. */
 export const MAX_PITCH_CMD_DEG = 10
@@ -342,6 +364,14 @@ export const NAV_REF_RANGE_M = 8000
 
 function navRangeFactor(inputs: AutopilotInputs): number {
   return inputs.navRangeM !== undefined ? clamp(inputs.navRangeM / NAV_REF_RANGE_M, 0, 2.5) : 1
+}
+
+/** The glideslope's angular beam narrows toward ITS antenna (which sits
+ *  ~300 m down the runway), not toward the localizer's — so its gain
+ *  normalization uses `glideslopeRangeM` when the caller has it. */
+function gsRangeFactor(inputs: AutopilotInputs): number {
+  const r = inputs.glideslopeRangeM ?? inputs.navRangeM
+  return r !== undefined ? clamp(r / NAV_REF_RANGE_M, 0, 2.5) : 1
 }
 
 export const NAV_INTERCEPT_GAIN_K_DEG = 25
@@ -477,8 +507,16 @@ function verticalPitchTarget(mode: UnderlyingVerticalMode | 'ALT', state: Autopi
     return clamp(inputs.pitchCommandDeg, -30, 30)
   }
   if (mode === 'ALT') {
+    // Cascaded hold: altitude error sets a bounded vertical-speed command
+    // (a first-order return with a ~9 s time constant, at most
+    // ±ALT_HOLD_MAX_VS_FPM), and the vertical-speed loop flies it. The old
+    // direct error→pitch law recovered from a 60 ft dip at a few feet per
+    // minute; this returns to the altitude in well under a minute without
+    // overshoot, and its steady pitch offset lives in the VS loop's
+    // integrator, so the hold stays on altitude through speed changes.
     const error = inputs.altitudeBugFt - inputs.altitudeFt // +ft = need to climb
-    return clamp(pidUpdate(state.altPitch, error, dt, 0.02, 0.0006, 0.05, 200), -MAX_PITCH_CMD_DEG, MAX_PITCH_CMD_DEG)
+    const vsCmd = clamp(error * ALT_HOLD_FPM_PER_FT, -ALT_HOLD_MAX_VS_FPM, ALT_HOLD_MAX_VS_FPM)
+    return clamp(pidUpdate(state.vsPitch, vsCmd - inputs.verticalSpeedFpm, dt, 0.016, 0.003, 0.002, 3000), -MAX_PITCH_CMD_DEG, MAX_PITCH_CMD_DEG)
   }
   if (mode === 'VS') {
     const error = inputs.vsTargetFpm - inputs.verticalSpeedFpm // +fpm = need more climb rate
@@ -703,6 +741,8 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       targetBankDeg = clamp(2.0 * headingErrorDeg(desiredHeadingDeg, refDeg), -MAX_BANK_DEG, MAX_BANK_DEG)
     }
   }
+  if (inputs.bankTargetOverrideDeg !== undefined) targetBankDeg = inputs.bankTargetOverrideDeg
+  if (inputs.maxBankDeg !== undefined) targetBankDeg = clamp(targetBankDeg, -inputs.maxBankDeg, inputs.maxBankDeg)
   state.fdBankDeg = targetBankDeg
 
   // ================= VERTICAL =================
@@ -781,11 +821,15 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
       // never null — the narrowing beam then amplified the standoff to
       // 0.53 fraction near DH (reviewer finding, now a regression test).
       targetPitchDeg = clamp(
-        pidUpdate(state.gsPitch, -inputs.glideslopeDeviation * navRangeFactor(inputs), dt, 6, 0.5, 1, 6),
+        pidUpdate(state.gsPitch, -inputs.glideslopeDeviation * gsRangeFactor(inputs), dt, 6, 0.5, 1, 6),
         -MAX_PITCH_CMD_DEG, MAX_PITCH_CMD_DEG,
       )
       trimEligible = true
     }
+  }
+  if (inputs.pitchTargetOverrideDeg !== undefined) {
+    targetPitchDeg = clamp(inputs.pitchTargetOverrideDeg, -8, 15)
+    trimEligible = false
   }
   state.fdPitchDeg = targetPitchDeg
 
@@ -804,10 +848,19 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
   // overshoot once the target passed). See fix report for before/after
   // convergence numbers across 20/40/60/180 deg initial errors.
   const bankError = targetBankDeg - inputs.rollDeg
-  const rawRoll = clamp(pidUpdateOnMeasurement(state.bankAttitude, bankError, inputs.rollDeg, dt, 0.05, 0.005, 0.4, 3) * gain, -1, 1)
+  // Autoland's centerline tracking commands bank of a degree or two, where
+  // the ordinary loop's proportional gain leaves a large steady error
+  // (found in closed loop: the 737 banked half of what was asked and the
+  // path rang) — it flies with stiffer gains and a real integral.
+  const stiff = inputs.bankTargetOverrideDeg !== undefined
+  const rawRoll = clamp(pidUpdateOnMeasurement(state.bankAttitude, bankError, inputs.rollDeg, dt, stiff ? 0.14 : 0.05, stiff ? 0.03 : 0.005, 0.4, stiff ? 4 : 3) * gain, -1, 1)
 
   const pitchError = targetPitchDeg - inputs.pitchDeg
-  const rawPitch = clamp(pidUpdate(state.pitchAttitude, pitchError, dt, 0.08, 0.03, 0.02, 30) * gain, -1, 1)
+  // The flare commands pitch changes of several degrees in a couple of
+  // seconds; the ordinary loop lags them by ~2 s on a transport, which
+  // balloons the flare (found in closed loop) — so it flies stiffer.
+  const stiffPitch = inputs.pitchTargetOverrideDeg !== undefined
+  const rawPitch = clamp(pidUpdate(state.pitchAttitude, pitchError, dt, stiffPitch ? 0.2 : 0.08, stiffPitch ? 0.04 : 0.03, stiffPitch ? 0.05 : 0.02, 30) * gain, -1, 1)
 
   if (state.masterEnabled) {
     state.rollCmd = rateLimit(state.rollCmd, rawRoll, SERVO_RATE_PER_S, dt)
@@ -815,7 +868,9 @@ export function stepAutopilot(state: AutopilotState, dt: number, inputs: Autopil
     // Basic turn-coordination feed-forward (a design choice, not a full yaw
     // damper): a little rudder in the direction of the commanded roll to
     // offset adverse yaw.
-    state.yawCmd = clamp(state.rollCmd * 0.2, -1, 1)
+    state.yawCmd = inputs.yawOverride !== undefined
+      ? rateLimit(state.yawCmd, clamp(inputs.yawOverride, -1, 1), 4, dt)
+      : clamp(state.rollCmd * 0.2, -1, 1)
 
     if (trimEligible) {
       state.trimCommand = clamp(state.trimCommand + state.pitchCmd * TRIM_FOLLOWUP_RATE_PER_S * dt, -1, 1)

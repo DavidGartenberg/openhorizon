@@ -4,8 +4,9 @@
  * runway" (named taxiway graphs are §28 territory; the phraseology and
  * readback discipline are what this phase owes).
  */
-import type { Transmission } from './comms'
+import type { RadioArgs, RadioKind, Transmission } from './comms'
 import type { PilotRequestKind } from './tower'
+import { taxiInstruction } from './phraseology'
 
 /** Pick the taxiway idents a straight-line taxi would use (night-shift
  *  N7): from the real ident'd segments (OSM refs at their midpoints in
@@ -41,20 +42,26 @@ export function routeIdents(
 
 export class GroundController {
   private readonly pendingReadback = new Map<string, PilotRequestKind>()
+  /** Callsigns already spoken to: the facility name goes on the first transmission only. */
+  private readonly contacted = new Set<string>()
 
   constructor(
     private readonly cfg: { facility: string; freqMhz: number; activeRunway: string },
   ) {}
 
-  private say(text: string, atSimS = 0): Transmission {
-    return { freqMhz: this.cfg.freqMhz, from: this.cfg.facility, text, atSimS }
+  private say(text: string, atSimS = 0, to?: string, kind?: RadioKind, args?: RadioArgs): Transmission {
+    return { freqMhz: this.cfg.freqMhz, from: this.cfg.facility, text, atSimS, ...(to ? { to } : {}), ...(kind ? { kind } : {}), ...(args ? { args } : {}) }
   }
 
   request(callsign: string, kind: 'taxiOut', atSimS = 0, viaIdents?: readonly string[]): Transmission[] {
     if (kind === 'taxiOut') {
       this.pendingReadback.set(callsign, kind)
-      const via = viaIdents && viaIdents.length ? `via ${viaIdents.join(', ')}` : 'via the parallel'
-      return [this.say(`${callsign}, runway ${this.cfg.activeRunway}, taxi ${via}, hold short runway ${this.cfg.activeRunway}`, atSimS)]
+      const lead = this.contacted.has(callsign) ? `${callsign}, ` : `${callsign}, ${this.cfg.facility}, `
+      this.contacted.add(callsign)
+      const rwy = this.cfg.activeRunway
+      // Without named taxiways the controller still says where to go; the runway is held short of by default.
+      const body = viaIdents && viaIdents.length ? taxiInstruction(rwy, viaIdents) : `taxi to runway ${rwy}`
+      return [this.say(lead + body, atSimS, callsign, 'taxi', { runway: rwy, ...(viaIdents && viaIdents.length ? { via: [...viaIdents] } : {}) })]
     }
     return []
   }
@@ -66,8 +73,8 @@ export class GroundController {
   readback(callsign: string, kind: PilotRequestKind, atSimS = 0): Transmission[] {
     if (this.pendingReadback.get(callsign) === kind) {
       this.pendingReadback.delete(callsign)
-      return [this.say(`${callsign}, readback correct`, atSimS)]
+      return [this.say(`${callsign}, readback correct`, atSimS, callsign)]
     }
-    return [this.say(`${callsign}, negative, say again`, atSimS)]
+    return [this.say(`${callsign}, negative, say again`, atSimS, callsign)]
   }
 }

@@ -1,13 +1,13 @@
 import type {SpeechMessage} from './safety-speech'
 
 /** Who is talking, which decides the voice (server) and the processing
- *  (here): ATC and the other aircraft come over the VHF radio, the first
+ *  (here): ATC, other aircraft and the ATIS come over the VHF radio, the first
  *  officer over the intercom, automated warnings clean from the cockpit. */
-export type VoiceRole = 'atc' | 'copilot' | 'warning'
+export type VoiceRole = 'atc' | 'pilot' | 'atis' | 'copilot' | 'warning'
 
 export function voiceRoleFor(message: SpeechMessage): VoiceRole {
   if (message.speaker === 'first-officer') return 'copilot'
-  if (message.priority === 0) return 'atc'
+  if (message.priority === 0) return message.role ?? 'atc'
   return 'warning'
 }
 
@@ -35,10 +35,22 @@ export function softClipCurve(k: number, n = 1024): Float32Array {
 }
 
 interface Chain { highpass: number; lowpass: number; drive: number; noise: number; gain: number }
-/** VHF AM voice is limited to roughly 300–3000 Hz; intercom is wider. */
+/** VHF AM voice is limited to roughly 300–3000 Hz; intercom is wider. Aircraft are farther away, a little noisier and quieter than the ground stations. */
 const CHAINS: Record<Exclude<VoiceRole, 'warning'>, Chain> = {
   atc: { highpass: 380, lowpass: 2900, drive: 2.6, noise: 0.012, gain: 0.5 },
+  atis: { highpass: 340, lowpass: 3100, drive: 1.8, noise: 0.008, gain: 0.5 },
+  pilot: { highpass: 420, lowpass: 2700, drive: 3.0, noise: 0.018, gain: 0.44 },
   copilot: { highpass: 220, lowpass: 4200, drive: 1.6, noise: 0.004, gain: 0.62 },
+}
+
+/** Each aircraft is a little different on the air: how far away it is decides hiss, level and how much of the top end survives. Stable per speaker. */
+export function chainFor(role: Exclude<VoiceRole, 'warning'>, speaker = ''): Chain {
+  const base = CHAINS[role]
+  if (role !== 'pilot' || !speaker) return base
+  let h = 0
+  for (const c of speaker) h = (Math.imul(h, 31) + c.charCodeAt(0)) | 0
+  const far = (Math.abs(h) % 100) / 100                    // 0 close … 1 far
+  return { ...base, noise: base.noise * (0.7 + far * 1.2), gain: base.gain * (1.08 - far * 0.3), lowpass: base.lowpass - far * 300 }
 }
 
 /**
@@ -47,9 +59,9 @@ const CHAINS: Record<Exclude<VoiceRole, 'warning'>, Chain> = {
  * Any failure (no WebAudio, undecodable data) returns the clean original —
  * a transmission must never go silent because the effect could not run.
  */
-export async function applyRadioFilter(wav: Blob, role: VoiceRole): Promise<Blob> {
+export async function applyRadioFilter(wav: Blob, role: VoiceRole, speaker = ''): Promise<Blob> {
   if (role === 'warning') return wav
-  const chain = CHAINS[role]
+  const chain = chainFor(role, speaker)
   try {
     const AC = (globalThis as {AudioContext?: typeof AudioContext}).AudioContext
     const OAC = (globalThis as {OfflineAudioContext?: typeof OfflineAudioContext}).OfflineAudioContext
@@ -57,7 +69,7 @@ export async function applyRadioFilter(wav: Blob, role: VoiceRole): Promise<Blob
     const decoder = new AC()
     const decoded = await decoder.decodeAudioData(await wav.arrayBuffer())
     void decoder.close()
-    const tail = role === 'atc' ? 0.09 : 0.03
+    const tail = role === 'copilot' ? 0.03 : 0.09
     const frames = Math.ceil((decoded.duration + tail) * decoded.sampleRate)
     const ctx = new OAC(1, frames, decoded.sampleRate)
 

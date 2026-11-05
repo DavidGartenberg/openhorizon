@@ -5,6 +5,8 @@ import {
   lonToTileX, latToTileY, tileXToLon, tileYToLat, toNedMeters, fromNedMeters,
   metersPerDegree, type LatLon,
 } from '../math/geo'
+import { cloudShadowUniforms, CLOUD_SHADOW_GLSL } from '../render/cloud-shadows'
+import { snowUniforms, wetnessUniforms } from '../render/wetness'
 import { TerrainCoverage, TERRAIN_COVERAGE_GLSL, sampleTerrainTriangles } from './terrain-coverage'
 import type { TileResponse } from './terrain-worker'
 
@@ -47,6 +49,12 @@ export interface RunwayFlatten {
   e1M: number
   e2M: number
   halfWidthM: number
+  /** An airport's level disk (a zero-length runway): never lifts open water. */
+  disk?: boolean
+  /** Not a runway: a circle (centre la1, lo1; radius halfWidthM) of land below sea level, where the elevation data's negative heights are kept instead of being clamped to sea. */
+  lowland?: boolean
+  /** A run of land (a stretch of a reclaimed field's pavement): levelled only where the elevation data says sea. */
+  land?: boolean
 }
 
 interface Tile {
@@ -106,7 +114,7 @@ const TERRAIN_VERT = /* glsl */ `
 `
 const TERRAIN_FRAG = /* glsl */ `
   uniform vec3 uSunDir;
-  uniform float uDayness, uLowSun, uFogDensity, uHasImagery, uSunTransmission, uCloudDensity;
+  uniform float uDayness, uLowSun, uFogDensity, uHasImagery, uSunTransmission, uCloudDensity, uWet, uSnow;
   uniform vec3 uCloudColor;
   uniform sampler2D uImagery, uSky;
   uniform vec2 uWorldOffset;
@@ -115,6 +123,7 @@ const TERRAIN_FRAG = /* glsl */ `
   varying vec2 vUv, vWXZ;
   ${SKY_LOOKUP}
   ${TERRAIN_COVERAGE_GLSL}
+  ${CLOUD_SHADOW_GLSL}
   float hash(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx)*0.1031);
     p3 += dot(p3,p3.yzx+33.33);
@@ -126,18 +135,49 @@ const TERRAIN_FRAG = /* glsl */ `
     return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),
       mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);
   }
+  // Ground relief in metres, from the wavelengths a pixel can still resolve (each octave fades out as its wavelength
+  // approaches the pixel footprint, so distant ground goes smooth instead of shimmering). Slopes are ~equal per octave.
+  float terrainRelief(vec2 g, float footprint, float amplitude) {
+    float h = 0.0;
+    float freq = 0.045;
+    for (int i = 0; i < 5; i++) {
+      float fade = 1.0 - smoothstep(0.3, 0.75, footprint * freq);
+      h += (noise(g * freq + float(i) * 7.3) - 0.5) * (amplitude / freq) * fade;
+      freq *= 2.6;
+    }
+    return h;
+  }
   void main() {
     if (coveredByReadyTerrain(vUv)) discard;
     vec2 ground = vWXZ + uWorldOffset;
-    float ndl = max(dot(normalize(vNormal),normalize(uSunDir)),0.0);
+    float footprint = max(length(dFdx(ground)),length(dFdy(ground)));
+    vec3 worldP = vec3(vWXZ.x, vAltitude, vWXZ.y);
+    vec3 baseN = normalize(vNormal);
+    vec4 tex = texture2D(uImagery,vUv);
+    float imW = uHasImagery*tex.a*(1.0-smoothstep(38000.0,46000.0,vDist));
+    // Surface-gradient bump (no tangents needed): the relief tilts the normal, so the sun finds small slopes. A photo already
+    // carries its own shading, so over imagery only a little is added.
+    // Ground that is exactly level (an airfield's pad, a polder) is graded, not natural: it gets a fraction of the relief.
+    float graded = smoothstep(0.9995, 0.99999, baseN.y);
+    float relief = terrainRelief(ground, footprint, mix(0.30, 0.12, imW) * mix(1.0, 0.25, graded));
+    vec3 dpx = dFdx(worldP), dpy = dFdy(worldP);
+    vec3 r1 = cross(dpy, baseN), r2 = cross(baseN, dpx);
+    float det = dot(dpx, r1);
+    vec3 nrm = normalize(abs(det) * baseN - sign(det) * (dFdx(relief) * r1 + dFdy(relief) * r2) + baseN * 1e-9);
+    float ndl = max(dot(nrm,normalize(uSunDir)),0.0);
     vec3 sunTint = vec3(1.0,1.0-0.35*uLowSun,1.0-0.65*uLowSun);
     // Vertex palette is authored as display RGB; imagery is tagged sRGB
     // on upload and is decoded by the texture sampler into linear light.
     vec3 albedo = pow(max(vColor,vec3(0)),vec3(2.2));
-    vec4 tex = texture2D(uImagery,vUv);
-    float imW = uHasImagery*tex.a*(1.0-smoothstep(38000.0,46000.0,vDist));
+    // Steep ground sheds its cover: rock and bare soil, only where there is no photograph to say otherwise.
+    float steep = smoothstep(0.28, 0.62, 1.0 - baseN.y) * (1.0 - imW);
+    vec3 rock = vec3(0.30,0.27,0.24) * (0.75 + 0.5 * noise(ground * 0.05)) * (0.8 + 0.4 * noise(ground * 0.31));
+    albedo = mix(albedo, rock, steep * 0.75);
+    // Broad colour drift (fields, scrub, forest patches) at two scales, warm to cool, so flat ground is not one tone.
+    float drift = noise(ground * 0.0045 + 3.7) - 0.5;
+    float drift2 = noise(ground * 0.0012 + 11.3) - 0.5;
+    albedo *= vec3(1.0 + 0.16 * drift + 0.10 * drift2, 1.0 + 0.05 * drift, 1.0 - 0.18 * drift - 0.10 * drift2) * (1.0 - 0.1 * imW);
     albedo = mix(albedo,tex.rgb,imW);
-    float footprint = max(length(dFdx(ground)),length(dFdy(ground)));
     float macro = noise(ground*0.018);
     float detail = noise(ground*0.7);
     float nearDetail = (1.0-smoothstep(1.0,5.0,footprint));
@@ -145,9 +185,17 @@ const TERRAIN_FRAG = /* glsl */ `
     // pixel footprint, keeping low passes detailed and distant hills stable.
     albedo *= mix(0.82+0.36*macro,1.0,imW*0.9);
     albedo *= 1.0+(detail-0.5)*0.16*nearDetail;
+    // Rain-soaked ground is darker and a little richer in colour (less so over a photograph, which was taken in whatever weather it was).
+    float wetLuma = dot(albedo, vec3(0.2126,0.7152,0.0722));
+    albedo = mix(vec3(wetLuma), albedo, 1.0 + 0.3 * uWet);
+    albedo *= 1.0 - 0.3 * uWet * (1.0 - 0.4 * imW);
+    // Snow lies on level and gently sloping ground, patchy at first and at its edges, and thins on steep faces.
+    float snowPatch = 0.78 + 0.44 * noise(ground * 0.011 + 5.1) + 0.2 * (noise(ground * 0.09) - 0.5);
+    float snowCover = clamp(uSnow * snowPatch * 1.15, 0.0, 1.0) * smoothstep(0.45, 0.86, nrm.y);
+    albedo = mix(albedo, vec3(0.80, 0.84, 0.90), snowCover * 0.94);
     float direct = mix(ndl,mix(1.0,ndl,0.4),imW);
-    vec3 lit = albedo*(vec3(0.015)+vec3(0.35,0.43,0.53)*uDayness+
-      sunTint*0.65*uDayness*direct*uSunTransmission);
+    vec3 lit = albedo*(vec3(0.015)+vec3(0.35,0.43,0.53)*uDayness*(0.78+0.22*nrm.y)+
+      sunTint*0.65*uDayness*direct*cloudShadowAt(vec3(vWXZ.x,vAltitude,vWXZ.y)));
     float night = clamp(1.0-uDayness*1.6,0.0,1.0);
     if (night>0.001 && vUrban>0.001) {
       float h = hash(floor(ground/12.0));
@@ -214,6 +262,9 @@ export class TileManager {
         uDayness: { value: 1 },
         uLowSun: { value: 0 },
         uSunTransmission: { value: 1 },
+        ...cloudShadowUniforms,
+        ...wetnessUniforms,
+        ...snowUniforms,
         uCloudDensity: { value: 0 },
         uCloudColor: { value: new THREE.Color(0xc8ccd2) },
         uFogDensity: { value: 9e-6 },
@@ -363,6 +414,9 @@ export class TileManager {
           ha: rw.e1M,
           hb: rw.e2M,
           halfW: rw.halfWidthM,
+          ...(rw.disk ? { disk: true } : {}),
+          ...(rw.lowland ? { lowland: true } : {}),
+          ...(rw.land ? { land: true } : {}),
         }))
       this.inFlight++
       const worker = this.workers[this.nextWorker++ % this.workers.length]!
@@ -661,6 +715,20 @@ export class TileManager {
     this.lastUpdatePos = { n: Infinity, e: Infinity }
   }
 
+  /** Drop every tile within `radiusM` of a point so it is built again with the airports' current runway list. */
+  reloadAround(lat: number, lon: number, radiusM: number): void {
+    const dLat = radiusM / 111_319.5, dLon = radiusM / (111_319.5 * Math.cos((lat * Math.PI) / 180))
+    for (const t of [...this.tiles.values()]) {
+      if (t.latS > lat + dLat || t.latN < lat - dLat || t.lonW > lon + dLon || t.lonE < lon - dLon) continue
+      if (t.mesh) { this.scene.remove(t.mesh); t.mesh.geometry.dispose() }
+      t.imTex?.dispose(); t.detailTex?.dispose(); t.imMat?.dispose(); t.baseMat?.dispose(); t.coverageTexture?.dispose()
+      this.tiles.delete(t.key)
+      this.detailRetry.delete(t.key)
+    }
+    this.refreshCoverage()
+    this.lastUpdatePos = { n: Infinity, e: Infinity }
+  }
+
   private evict(nedN: number, nedE: number): void {
     if (this.tiles.size < 340) return
     const candidates = [...this.tiles.values()]
@@ -710,6 +778,12 @@ export class TileManager {
     const u = (lon - tile.lonW) / (tile.lonE - tile.lonW)
     const v = (tile.latN - lat) / (tile.latN - tile.latS)
     return !tile.coverage?.covered(u, v)
+  }
+
+  /** True when the finest terrain tile at a position (the one a nearby aircraft flies over) has loaded. */
+  fineReady(lat: number, lon: number): boolean {
+    const ring = RINGS[0]!
+    return this.tiles.get(`${ring.z}/${Math.floor(lonToTileX(lon, ring.z))}/${Math.floor(latToTileY(lat, ring.z))}`)?.state === 'ready'
   }
 
   /** Terrain elevation (m MSL) at lat/lon from the best loaded tile. */

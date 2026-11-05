@@ -7,7 +7,8 @@
  * Deliberately small-N and legible (see phase-6 plan: sequencing bugs are
  * the expected escalation zone) — one active runway, one arrival string.
  */
-import type { Transmission } from './comms'
+import type { RadioArgs, RadioKind, Transmission } from './comms'
+import { contactInstruction } from './phraseology'
 
 export interface TrafficView {
   distanceM: number // from the runway threshold
@@ -43,14 +44,25 @@ interface Strip {
   priority?: boolean
 }
 
-export function pilotPhrase(callsign: string, kind: PilotRequestKind, runway: string): string {
+/** What the pilot already knows when calling: the facility being called, the ATIS letter held, miles out. */
+export interface PilotCallContext {
+  /** "Palo Alto Tower": spoken first, as on a real initial call. */
+  facility?: string
+  /** ATIS letter ("Bravo") the pilot has copied. */
+  atis?: string
+  milesOut?: number
+}
+
+export function pilotPhrase(callsign: string, kind: PilotRequestKind, runway: string, ctx: PilotCallContext = {}): string {
+  const lead = ctx.facility ? `${ctx.facility}, ${callsign}` : callsign
+  const info = ctx.atis ? `with information ${ctx.atis}` : 'with the numbers'
   switch (kind) {
     case 'readyTakeoff':
-      return `${callsign}, holding short runway ${runway}, ready for departure`
+      return `${lead}, holding short runway ${runway}, ready for departure`
     case 'inboundLanding':
-      return `${callsign}, 5 miles out, inbound full stop with the numbers`
+      return `${lead}, ${ctx.milesOut ?? 5} miles out, inbound full stop ${info}`
     case 'taxiOut':
-      return `${callsign}, at parking with information, request taxi runway ${runway}`
+      return `${lead}, at the ramp ${ctx.atis ? info : 'with the weather'}, request taxi for departure`
     case 'goAround':
       return `${callsign}, going around`
     case 'clearRunway':
@@ -78,11 +90,21 @@ export class TowerController {
        *  cleared an arrival to land OVER a departure still rolling on a
        *  long runway). */
       runwayLengthM?: number
+      /** Live surface wind, spoken with each takeoff and landing clearance ("wind 290 at 8"). */
+      windText?: () => string
+      /** After a landing, the pilot is told to contact ground on this frequency. */
+      groundFreqMhz?: number
     },
   ) {}
 
-  private say(text: string, atSimS = 0): Transmission {
-    return { freqMhz: this.cfg.freqMhz, from: this.cfg.facility, text, atSimS }
+  private say(text: string, atSimS = 0, to?: string, kind?: RadioKind, args?: RadioArgs): Transmission {
+    return { freqMhz: this.cfg.freqMhz, from: this.cfg.facility, text, atSimS, ...(to ? { to } : {}), ...(kind ? { kind } : {}), ...(args ? { args } : {}) }
+  }
+
+  /** "wind 290 at 8, " ahead of a clearance, when the wind is known. */
+  private windLead(): string {
+    const w = this.cfg.windText?.()
+    return w ? `${w}, ` : ''
   }
 
   /** Register/refresh AI or player position knowledge. */
@@ -150,17 +172,17 @@ export class TowerController {
         const final = this.arrivalQueue().find((a) => a.callsign !== callsign && a.view.distanceM < FINAL_CONFLICT_M)
         if (final || this.runwayOccupied(callsign)) {
           s.phase = 'holdingShort'
-          return [this.say(`${callsign}, hold short runway ${rwy}, ${final ? 'traffic on final' : 'runway occupied'}`, atSimS)]
+          return [this.say(`${callsign}, hold short of runway ${rwy}, ${final ? 'traffic on final' : 'traffic on the runway'}`, atSimS, callsign, 'holdShort', { runway: rwy })]
         }
         s.phase = 'clearedTakeoff'
-        return [this.say(`${callsign}, runway ${rwy}, cleared for takeoff`, atSimS)]
+        return [this.say(`${callsign}, ${this.windLead()}runway ${rwy}, cleared for takeoff`, atSimS, callsign, 'takeoff', { runway: rwy })]
       }
       case 'inboundLanding': {
         // Re-pressing inbound used to revoke the pilot's OWN landing
         // clearance and re-queue them last; a clearance is confirmed,
         // an existing sequence position kept.
         if (s.phase === 'clearedLand') {
-          return [this.say(`${callsign}, roger, runway ${rwy}, cleared to land`, atSimS)]
+          return [this.say(`${callsign}, roger, ${this.windLead()}runway ${rwy}, cleared to land`, atSimS, callsign, 'land', { runway: rwy })]
         }
         if (s.phase !== 'inbound') {
           s.phase = 'inbound'
@@ -169,12 +191,12 @@ export class TowerController {
         const ahead = this.arrivalQueue().filter((a) => a.callsign !== callsign && a.seq < s.seq)
         if (ahead.length === 0) {
           s.phase = 'clearedLand'
-          return [this.say(`${callsign}, runway ${rwy}, cleared to land`, atSimS)]
+          return [this.say(`${callsign}, ${this.windLead()}runway ${rwy}, cleared to land`, atSimS, callsign, 'land', { runway: rwy })]
         }
         return [
           this.say(
             `${callsign}, number ${ahead.length + 1}, follow the traffic ahead, report ${ahead.length > 1 ? 'base' : 'final'} runway ${rwy}`,
-            atSimS,
+            atSimS, callsign, 'sequence', { number: ahead.length + 1, report: ahead.length > 1 ? 'base' : 'final', runway: rwy },
           ),
         ]
       }
@@ -182,16 +204,19 @@ export class TowerController {
         // 14e: the vacated strip stops blocking `runwayOccupied` — the
         // parked-forever AI held every later clearance hostage.
         s.phase = 'vacated'
-        return [this.say(`${callsign}, roger, taxi to parking`, atSimS)]
+        const g = this.cfg.groundFreqMhz
+        return g
+          ? [this.say(`${callsign}, ${contactInstruction('ground', g)}`, atSimS, callsign, 'contact', { facility: 'ground', freqMhz: g })]
+          : [this.say(`${callsign}, roger, taxi to parking`, atSimS, callsign)]
       }
       case 'goAround': {
         s.phase = 'inbound'
         s.seq = ++this.seqCounter // rejoin at the back of the sequence
-        return [this.say(`${callsign}, roger, fly runway heading, report downwind runway ${rwy}`, atSimS)]
+        return [this.say(`${callsign}, roger, fly runway heading, report downwind runway ${rwy}`, atSimS, callsign, 'goAround', { runway: rwy })]
       }
       case 'taxiOut':
         // Tower doesn't handle taxi — ground's job; polite redirect.
-        return [this.say(`${callsign}, contact ground for taxi`, atSimS)]
+        return [this.say(`${callsign}, contact ground for taxi`, atSimS, callsign)]
     }
   }
 
@@ -218,10 +243,8 @@ export class TowerController {
         const f = this.cfg.departureFreqMhz
         out.push(
           this.say(
-            f
-              ? `${s.callsign}, contact departure ${f.toFixed(2)}, so long`
-              : `${s.callsign}, frequency change approved, so long`,
-            atSimS,
+            f ? `${s.callsign}, ${contactInstruction('departure', f)}, good day` : `${s.callsign}, frequency change approved, good day`,
+            atSimS, s.callsign, f ? 'contact' : undefined, f ? { facility: 'departure', freqMhz: f } : undefined,
           ),
         )
       }
@@ -235,8 +258,8 @@ export class TowerController {
       out.push(this.say(
         leader.priority
           ? `${leader.callsign}, runway ${this.cfg.activeRunway}, cleared to land, emergency equipment standing by`
-          : `${leader.callsign}, runway ${this.cfg.activeRunway}, cleared to land`,
-        atSimS,
+          : `${leader.callsign}, ${this.windLead()}runway ${this.cfg.activeRunway}, cleared to land`,
+        atSimS, leader.callsign, 'land', { runway: this.cfg.activeRunway },
       ))
     }
     return out

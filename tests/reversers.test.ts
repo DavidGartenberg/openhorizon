@@ -18,7 +18,7 @@ describe('reversers', () => {
     const ac = new Aircraft({ ...B738 })
     ac.spawnOnGround(0, 0, 0)
     ac.flapsDeg = 30
-    ac.controls.flapsIndex = 6
+    ac.controls.flapsIndex = B738.flapDetentsDeg.indexOf(40)
     ac.spoilerArmed = true
     // Inject a 140-kt rollout: measure the resting gear height, then
     // re-apply the state 0.3 m above it at 72 m/s — a gentle touchdown.

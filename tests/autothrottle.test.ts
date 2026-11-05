@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AT_CLIMB_LIMIT, makeAutothrottle, stepAutothrottle, type AtInputs } from '../src/sim/autothrottle'
+import { AT_CLIMB_LIMIT, atFitment, atGainsFor, makeAutothrottle, stepAutothrottle, type AtInputs } from '../src/sim/autothrottle'
 import { makeAutopilotState, stepAutopilot, type AutopilotInputs } from '../src/sim/autopilot'
 import { Aircraft } from '../src/sim/aircraft'
 import { B738 } from '../src/sim/aircraft/b738'
@@ -91,5 +91,36 @@ describe('autothrottle holds MCP speed on a real 737-800 (closed loop with ALT H
     const r = fly(280, 240, 300)
     expect(r.worstAfter).toBeLessThan(4)
     expect(r.overshoot).toBeLessThan(8)
+  })
+})
+
+describe('autothrottle fitment and per-class gains', () => {
+  it('real A/T on the airliner deck, an assist on every other powered airplane, none on gliders', () => {
+    expect(atFitment('jet', true, 20000)).toBe('full')
+    expect(atFitment('jet', false, 3000)).toBe('assist') // light jet without a deck A/T
+    expect(atFitment('turboprop', false, 1200)).toBe('assist')
+    expect(atFitment('piston', false, 150)).toBe('assist')
+    expect(atFitment('none', false, 0)).toBe('none')
+    expect(atFitment('piston', false, 0)).toBe('none') // no fuel capacity = no engine
+  })
+  it('jets keep the 0.94 climb limit; props may use the whole lever travel', () => {
+    expect(atGainsFor('jet').climbLimit).toBe(0.94)
+    expect(atGainsFor('turboprop').climbLimit).toBe(1)
+    expect(atGainsFor('piston').climbLimit).toBe(1)
+    const s = makeAutothrottle(atGainsFor('piston'))
+    stepAutothrottle(s, DT, base)
+    for (let i = 0; i < 900; i++) stepAutothrottle(s, DT, { ...base, verticalMode: 'FLC', selectedAltFt: 20000, lever: s.cmd })
+    expect(s.cmd).toBeCloseTo(1, 2)
+  })
+  it('engageAirborne engages with the switch on and no autopilot; never on the ground; not after a disconnect', () => {
+    const s = makeAutothrottle(atGainsFor('piston'))
+    const noAp = { ...base, pitchModeActive: false, engageAirborne: true }
+    expect(stepAutothrottle(s, DT, { ...noAp, onGround: true })).toBeNull()
+    expect(s.engaged).toBe(false)
+    expect(stepAutothrottle(s, DT, noAp)).not.toBeNull()
+    expect(s.engaged).toBe(true); expect(s.mode).toBe('MCP SPD')
+    stepAutothrottle(s, DT, { ...noAp, disconnectPressed: true, lever: s.cmd })
+    expect(s.engaged).toBe(false)
+    expect(stepAutothrottle(s, DT, noAp)).toBeNull() // latched light blocks silent re-engagement
   })
 })

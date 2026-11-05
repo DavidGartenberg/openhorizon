@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import {
   MIP, PRST_UP, paintPrst, paintMip, paintOverhead, landingSwitchBox, lightsRowItemBox, ENGINE_START_ITEMS, paintEfis, paintAnnunciators, paintMcp737, paintAisle, paintCdu, paintCduKeys,
-  plate, engrave, knob, gauge, lamp, AMBER, GREEN, RED, ENGRAVE, PANEL_GRAY, setPanelPalette, deckLayout, duGlass, FCU_HITS,
+  plate, engrave, knob, gauge, lamp, AMBER, GREEN, RED, ENGRAVE, PANEL_GRAY, setPanelPalette, deckLayout, duGlass, mcpControls,
   type Mcp737State, type AisleState, type DeckLayout, type PanelStyle,
 } from './cockpit-737-paint'
 import { PALETTES, type Maker } from './cockpit-profile'
@@ -135,7 +135,7 @@ function beam(a: THREE.Vector3, b: THREE.Vector3, w: number, d: number, mat: THR
 }
 
 const M = {
-  frame: new THREE.MeshStandardMaterial({ color: 0x3b3f44, roughness: 0.7, metalness: 0.15 }),
+  frame: new THREE.MeshStandardMaterial({ color: 0x6b6a64, roughness: 0.7, metalness: 0.1 }),
   lining: new THREE.MeshStandardMaterial({ color: 0xb4b3ab, roughness: 0.85, side: THREE.DoubleSide }),
   ceiling: new THREE.MeshStandardMaterial({ color: 0xc4c3bb, roughness: 0.9, side: THREE.DoubleSide }),
   glare: new THREE.MeshStandardMaterial({ color: 0x232527, roughness: 0.95 }),
@@ -146,6 +146,7 @@ const M = {
   rubber: new THREE.MeshStandardMaterial({ color: 0x0e0f10, roughness: 0.9 }),
   metal: new THREE.MeshStandardMaterial({ color: 0x9aa0a6, roughness: 0.35, metalness: 0.75 }),
   white: new THREE.MeshStandardMaterial({ color: 0xe6e6e0, roughness: 0.5 }),
+  leverWhite: new THREE.MeshStandardMaterial({ color: 0xf0ede4, roughness: 0.42 }),
   knobGray: new THREE.MeshStandardMaterial({ color: 0xbfc0bc, roughness: 0.45 }),
   carpet: new THREE.MeshStandardMaterial({ color: 0x353a42, roughness: 1 }),
   seat: new THREE.MeshStandardMaterial({ color: 0x3d4450, roughness: 0.95 }),
@@ -158,12 +159,43 @@ const M = {
 /** Interior fill: the flight deck is lit by daylight scattered through
  *  the windows, which a directional sun alone cannot provide inside a
  *  closed cabin — a scaled emissive fill on the interior materials. */
-const FILLED: Array<[THREE.MeshStandardMaterial, number]> = [[M.lining, 0.42], [M.ceiling, 0.48], [M.frame, 0.3], [M.glare, 0.25], [M.panelBack, 0.35], [M.stand, 0.38], [M.carpet, 0.3], [M.seat, 0.32], [M.sheepskin, 0.35], [M.wheel, 0.25], [M.knobGray, 0.3], [M.white, 0.3], [M.metal, 0.25]]
+const FILLED: Array<[THREE.MeshStandardMaterial, number]> = [[M.lining, 0.5], [M.ceiling, 0.55], [M.frame, 0.3], [M.glare, 0.25], [M.panelBack, 0.35], [M.stand, 0.38], [M.carpet, 0.3], [M.seat, 0.32], [M.sheepskin, 0.35], [M.wheel, 0.25], [M.knobGray, 0.3], [M.white, 0.3], [M.leverWhite, 0.32], [M.metal, 0.25]]
+let lastAmbient = 1
+/** How much of the flat fill remains (default 0.35) once the deck is also lit by the real
+ *  sky/sun/ambient-occlusion: 1 = the original uniform glow (flat, toy-like),
+ *  lower = surfaces keep their shading. */
+let fillScale = 0.35
+export function setInteriorFillScale(scale: number): void {
+  fillScale = Math.max(0, Math.min(1.5, scale))
+  setInteriorFill(lastAmbient)
+}
 export function setInteriorFill(ambient: number): void {
+  lastAmbient = ambient
   const k = 0.12 + 0.88 * Math.max(0, Math.min(1, ambient))
-  for (const [m, f] of FILLED) m.emissive.copy(m.color).multiplyScalar(f * k)
+  for (const [m, f] of FILLED) m.emissive.copy(m.color).multiplyScalar(f * k * fillScale)
 }
 setInteriorFill(1)
+
+/** A black engine-number numeral on a white square (thrust lever handles). */
+function numeralTexture(n: string): THREE.CanvasTexture {
+  const { ctx, texture } = canvasTex(64, 64)
+  ctx.fillStyle = '#f0ede4'; ctx.fillRect(0, 0, 64, 64)
+  ctx.fillStyle = '#111'; ctx.font = 'bold 52px Arial, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+  ctx.fillText(n, 32, 35)
+  texture.needsUpdate = true
+  return texture
+}
+
+/** Quilted anti-glare padding for the glareshield top. */
+function paddingTexture(): THREE.CanvasTexture {
+  const { ctx, texture } = canvasTex(256, 256)
+  ctx.fillStyle = '#17181a'; ctx.fillRect(0, 0, 256, 256)
+  ctx.strokeStyle = '#2a2c2f'; ctx.lineWidth = 2
+  for (let i = -256; i < 512; i += 32) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i + 256, 256); ctx.stroke(); ctx.beginPath(); ctx.moveTo(i + 256, 0); ctx.lineTo(i, 256); ctx.stroke() }
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping
+  texture.needsUpdate = true
+  return texture
+}
 
 function paintedMat(tex: THREE.Texture, alphaTest = 0): THREE.MeshBasicMaterial {
   return new THREE.MeshBasicMaterial({ map: tex, toneMapped: false, ...(alphaTest ? { alphaTest, transparent: false } : {}) })
@@ -172,12 +204,12 @@ function paintedMat(tex: THREE.Texture, alphaTest = 0): THREE.MeshBasicMaterial 
 /** 737 control wheel: hub with checklist clip and two ram's-horn grips. */
 function buildControlWheel(side: -1 | 1): THREE.Group {
   const g = new THREE.Group()
-  const hub = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.075, 0.045), M.wheel)
+  const hub = new THREE.Mesh(new THREE.BoxGeometry(0.125, 0.09, 0.055), M.wheel)
   g.add(hub)
   const clip = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.065, 0.004), M.frame)
   clip.position.set(0, 0.005, 0.026)
   g.add(clip)
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.12, 12), M.metal)
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.12, 12), M.metal)
   shaft.rotation.x = Math.PI / 2
   shaft.position.z = -0.06
   g.add(shaft)
@@ -186,8 +218,8 @@ function buildControlWheel(side: -1 | 1): THREE.Group {
       new THREE.Vector3(s * 0.045, -0.015, 0), new THREE.Vector3(s * 0.11, -0.03, 0.005),
       new THREE.Vector3(s * 0.165, 0.0, 0.01), new THREE.Vector3(s * 0.185, 0.06, 0.012), new THREE.Vector3(s * 0.175, 0.12, 0.01),
     ])
-    g.add(new THREE.Mesh(new THREE.TubeGeometry(path, 24, 0.0135, 10), M.wheel))
-    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.0175, 0.016, 0.085, 12), M.rubber)
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(path, 24, 0.02, 12), M.wheel))
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.023, 0.105, 14), M.rubber)
     grip.position.set(s * 0.181, 0.075, 0.012)
     grip.rotation.z = s * 0.08
     g.add(grip)
@@ -381,6 +413,8 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
   padGeo.computeVertexNormals()
   const glareTop = M.glare.clone()
   glareTop.side = THREE.DoubleSide
+  glareTop.map = paddingTexture()
+  padGeo.setAttribute('uv', new THREE.Float32BufferAttribute(padPts.flatMap((q) => [q.x * 4, q.z * 4]), 2))
   FILLED.push([glareTop, 0.25])
   put(new THREE.Mesh(padGeo, glareTop))
   const hood = new THREE.Mesh(new THREE.BoxGeometry(1.69, GS_TOP - HOOD_BOTTOM, 0.08), M.glare)
@@ -412,11 +446,13 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
     interactive.push(m)
   }
   const mcpLat = (fx: number): number => -0.43 + fx * 0.86
-  const fh = FCU_HITS[style.panel]
-  hit('mcpCmdA', mcpLat(fh.cmdA), faceUp - faceH * 0.2, 0.035, 0.03)
-  if (style.autothrottle && fh.atArm !== undefined) hit('mcpAtArm', mcpLat(fh.atArm), style.panel === 'boeing' ? faceUp : faceUp - faceH * 0.2, 0.035, style.panel === 'boeing' ? 0.06 : 0.03)
-  if (style.autothrottle && fh.speed !== undefined) hit('mcpSpeed', mcpLat(fh.speed), faceUp - faceH * 0.2, 0.035, 0.03)
-  if (fh.disengage !== undefined) hit('mcpDisengage', mcpLat(fh.disengage), faceUp + faceH * 0.24, 0.06, 0.015)
+  // Every button and knob half of the guidance panel is clickable; the
+  // knobs auto-repeat while held (see main.ts) so the altitude can be dialled.
+  const MW = 2400, MH = 310
+  for (const c of mcpControls(style.panel, MW, MH, style.autothrottle)) {
+    hit(c.id, -0.43 + c.fx * 0.86, faceUp + faceH * (0.5 - c.fy), Math.max(0.012, c.fw * 0.86), Math.max(0.008, c.fh * faceH))
+  }
+  if (style.panel === 'boeing') hit('mcpDisengage', mcpLat(0.95), faceUp + faceH * 0.24, 0.06, 0.015)
   hit('masterCaution', -0.69, faceUp + faceH * 0.27, 0.075, 0.035)
   hit('masterCaution', 0.79, faceUp + faceH * 0.27, 0.075, 0.035)
   void mcpMesh
@@ -435,14 +471,14 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
     put(quad(f(W3.fb), f(W3.ab), f(W3.at), f(W3.ft), M.glass))
     // Window frames.
     const fr = (a: THREE.Vector3, b: THREE.Vector3, w = 0.045): void => { put(beam(f(a), f(b), w, 0.05, M.frame)) }
-    fr(W1.ob, W1.ot, 0.07) // A-pillar (No.1/No.2 post)
-    fr(W1.it, W1.ot, 0.05)
-    fr(W2.ab, W2.at, 0.06)
-    fr(W2.ft, W2.at, 0.045)
-    fr(W2.fb, W2.ab, 0.04)
-    fr(W3.ft, W3.at, 0.045)
-    fr(W3.fb, W3.ab, 0.04)
-    fr(W3.ab, W3.at, 0.05)
+    fr(W1.ob, W1.ot, 0.05) // A-pillar (No.1/No.2 post)
+    fr(W1.it, W1.ot, 0.034)
+    fr(W2.ab, W2.at, 0.042)
+    fr(W2.ft, W2.at, 0.03)
+    fr(W2.fb, W2.ab, 0.028)
+    fr(W3.ft, W3.at, 0.03)
+    fr(W3.fb, W3.ab, 0.028)
+    fr(W3.ab, W3.at, 0.034)
     // Sliding-window handle on No.2.
     const handle = beam(f(v(0.6, -0.83, 1.0)), f(v(0.6, -0.83, 1.12)), 0.018, 0.03, M.metal)
     put(handle)
@@ -459,10 +495,9 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
     put(quad(f(v(-0.08, -0.86, 1.18)), f(v(-0.6, -0.42, 1.66)), f(v(-0.7, -0.6, 1.6)), f(v(-0.7, -0.92, 1.1)), M.ceiling))
     put(quad(f(v(-0.1, -0.905, 0.9)), f(v(-0.08, -0.87, 1.18)), f(v(-0.7, -0.93, 1.1)), f(v(-0.7, -0.93, 0.9)), M.lining))
     // Sun visor stowed along the No.1 window head.
-    const visor = beam(f(v(0.79, -0.08, 1.39)), f(v(0.72, -0.66, 1.355)), 0.11, 0.008, new THREE.MeshStandardMaterial({ color: 0x2b3a2f, transparent: true, opacity: 0.85, roughness: 0.3 }))
-    put(visor)
+    // (sun visors stay stowed up against the headliner — not modelled as bars across the glass)
   }
-  put(beam(W1.ib.clone().setX(0), W1.it.clone().setX(0), 0.065, 0.05, M.frame)) // center post
+  put(beam(W1.ib.clone().setX(0), W1.it.clone().setX(0), 0.045, 0.04, M.frame)) // center post
   put(quad(v(0.805, -0.03, 1.415), v(0.805, 0.03, 1.415), v(0.70, 0.42, 1.45), v(0.70, -0.42, 1.45), M.ceiling))
   put(quad(v(0.7, -0.74, 1.37), v(0.805, -0.03, 1.415), v(0.70, -0.42, 1.45), v(0.70, -0.42, 1.45), M.ceiling))
   put(quad(v(0.805, 0.03, 1.415), v(0.7, 0.74, 1.37), v(0.70, 0.42, 1.45), v(0.70, 0.42, 1.45), M.ceiling))
@@ -552,11 +587,17 @@ export function build737Deck(group: THREE.Group, screens: Deck737Screens, flapDe
       // Jet thrust lever: a long arm curving aft to a wide grip.
       const armPath = new THREE.CatmullRomCurve3([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0.14, 0.01), new THREE.Vector3(0, 0.26, 0.05), new THREE.Vector3(0, 0.31, 0.09)])
       p.add(new THREE.Mesh(new THREE.TubeGeometry(armPath, 16, 0.009, 8), M.metal))
-      knobBar = new THREE.Mesh(new THREE.CapsuleGeometry(0.018, 0.03, 4, 10), M.black)
+      knobBar = new THREE.Mesh(new THREE.CapsuleGeometry(0.022, 0.034, 4, 10), M.leverWhite)
       knobBar.rotation.z = Math.PI / 2
       knobBar.scale.set(1, kScale, 1) // capsule length runs along local y before the roll
       knobBar.position.set(0, 0.315, 0.1)
       p.add(knobBar)
+      // The engine number on top of the handle (1, 2, …), black on white.
+      const nTex = numeralTexture(String(lats.indexOf(lat) + 1))
+      const numPlate = new THREE.Mesh(new THREE.PlaneGeometry(0.03 * kScale, 0.03 * kScale), new THREE.MeshBasicMaterial({ map: nTex, toneMapped: false }))
+      numPlate.rotation.x = -Math.PI / 2 // faces up, texture top toward the nose
+      numPlate.position.set(0, 0.315 + 0.0225 * kScale, 0.1)
+      p.add(numPlate)
       if (style.panel === 'boeing') {
         const toga = new THREE.Mesh(new THREE.BoxGeometry(0.022, 0.012, 0.008), M.knobGray)
         toga.position.set(0, 0.297, 0.117)

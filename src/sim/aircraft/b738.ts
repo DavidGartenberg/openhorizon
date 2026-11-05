@@ -69,12 +69,14 @@ export const B738: AircraftParams = {
   cnDa: -0.015,
   cnDr: -0.1,
 
-  // ---- flaps 1/5/15/25/30/40 (Fowler: big CL0 shift, big drag late) ----
-  flapDetentsDeg: [0, 1, 5, 15, 25, 30, 40],
-  flapDCl0: [0, 0.08, 0.2, 0.38, 0.58, 0.72, 0.88],
-  flapDClMax: [0, 0.12, 0.28, 0.48, 0.65, 0.8, 0.9],
-  flapDCd: [0, 0.002, 0.006, 0.016, 0.038, 0.058, 0.09],
-  flapDCm: [0, -0.01, -0.035, -0.075, -0.12, -0.15, -0.19],
+  // ---- flaps UP/1/2/5/10/15/25/30/40: the real 737NG lever gates (Fowler: big CL0 shift, big drag late) ----
+  // Flaps 2 and 10 sit on the straight line between their neighbours in every table, so the
+  // airplane flies exactly as it did with the seven-detent lever; only the handle gained its two gates.
+  flapDetentsDeg: [0, 1, 2, 5, 10, 15, 25, 30, 40],
+  flapDCl0: [0, 0.08, 0.11, 0.2, 0.29, 0.38, 0.58, 0.72, 0.88],
+  flapDClMax: [0, 0.12, 0.16, 0.28, 0.38, 0.48, 0.65, 0.8, 0.9],
+  flapDCd: [0, 0.002, 0.003, 0.006, 0.011, 0.016, 0.038, 0.058, 0.09],
+  flapDCm: [0, -0.01, -0.01625, -0.035, -0.055, -0.075, -0.12, -0.15, -0.19],
   flapRateDegS: 1.5, // full travel ~27 s
 
   // ---- control travels ----

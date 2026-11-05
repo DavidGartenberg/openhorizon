@@ -17,7 +17,7 @@ describe('ApproachController (N7 arrival chain)', () => {
     const app = make()
     const out = app.checkIn('N1', { distanceM: 22 * NM, aglFt: 6000 }, 0)
     expect(out).toHaveLength(1)
-    expect(out[0]!.text).toContain('N1, radar contact 22 miles')
+    expect(out[0]!.text).toContain('N1, Norcal Approach, radar contact 22 miles')
     expect(out[0]!.text).toContain('expect ILS runway 28R')
     expect(out[0]!.text).toContain('descend and maintain 3,000')
     expect(out[0]!.freqMhz).toBe(135.65)
