@@ -239,6 +239,46 @@ export function calibratedUnipolar(raw:number,b?:AxisBinding):number {
   const c=b?.calibration
   return c ? clamp((raw-c.min)/(c.max-c.min)) : axisToUnipolar(raw)
 }
+/** Share of a throttle lever's travel, measured from its idle end, that commands reverse thrust. */
+export const REVERSE_ZONE = 0.25
+const zoneIdle = (c: AxisCalibration, zone: number): number => c.min + zone * (c.max - c.min)
+/** True when the lever's IDLE sits `zone` of the way along its travel, so everything below it is reverse. */
+export function hasReverseZone(b: AxisBinding | undefined, zone = REVERSE_ZONE): boolean {
+  const c = b?.calibration
+  return !!c && Math.abs((c.idle ?? c.min) - zoneIdle(c, zone)) < 0.01
+}
+/** Put IDLE `zone` of the way along the lever's travel (0 puts it back at the end, no reverse). Detents that would fall inside
+ *  the reverse zone are dropped. The result is a user binding, so a preset re-applied on reconnect never undoes it. */
+export function withReverseZone(b: AxisBinding, zone = REVERSE_ZONE): AxisBinding {
+  const c = b.calibration ?? { min: -1, max: 1 }
+  const idle = zoneIdle(c, zone)
+  const cal: AxisCalibration = { min: c.min, max: c.max }
+  if (zone > 0) cal.idle = idle
+  for (const k of ['cl', 'flex'] as const) if (c[k] !== undefined && c[k]! >= idle) cal[k] = c[k]
+  return { ...b, calibration: cal, source: 'user' }
+}
+
+/** Swap which physical end of a lever is IDLE and which is full power. The sign flips, and the calibration (kept in signed
+ *  coordinates with full power at max) is re-expressed so the old full-power end becomes IDLE and the old idle end becomes TOGA.
+ *  A reverse zone follows IDLE to its new end; other reverse travel below the old idle is lost: it would now sit beyond TOGA.
+ *  The result is a user binding, so a preset re-applied on reconnect never undoes it. */
+export function reverseAxisBinding(b: AxisBinding): AxisBinding {
+  const swapped = swapEnds(b)
+  return hasReverseZone(b) ? withReverseZone(swapped) : swapped
+}
+function swapEnds(b: AxisBinding): AxisBinding {
+  const out: AxisBinding = { ...b, sign: b.sign === 1 ? -1 : 1, source: 'user' }
+  const c = b.calibration
+  if (!c) return out
+  const idle = c.idle ?? c.min
+  const cal: AxisCalibration = { min: -c.max, max: -idle, idle: -c.max }
+  // Detents keep their physical places, so with both set the CL/FLEX labels swap to stay in ascending order.
+  if (c.cl !== undefined && c.flex !== undefined) { cal.cl = -c.flex; cal.flex = -c.cl }
+  else if (c.cl !== undefined) cal.cl = -c.cl
+  else if (c.flex !== undefined) cal.flex = -c.flex
+  out.calibration = cal
+  return out
+}
 export function mergePreset(saved: GamepadMap, incoming: GamepadMap): GamepadMap {
   const devices={...saved.devices}
   const slots=new Map<number,number>()

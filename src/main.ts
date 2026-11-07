@@ -1385,7 +1385,8 @@ function pollControls(dt: number): void {
   }
   const aggregate=combineLevers(levers)
   if(levers.length){
-    const hw=aggregate.reverse&&!aircraft.data.onGround?0:aggregate.power
+    // Reverse depth is only a thrust command where there are reversers to deploy, on the ground; anywhere else the lever's reverse zone is idle.
+    const hw=aggregate.reverse&&!(aircraft.P.reversers&&aircraft.data.onGround)?0:aggregate.power
     // A/T engaged: an unmotorized hardware lever must not fight the servo —
     // it takes over (and disconnects the A/T) only when actually moved.
     if(!autothrottle.engaged||!Number.isFinite(atHwRef)||Math.abs(hw-atHwRef)>0.04||aggregate.reverse){c.throttle=hw;atHwRef=hw}
