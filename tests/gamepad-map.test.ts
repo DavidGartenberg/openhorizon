@@ -111,7 +111,7 @@ describe('TCA Captain Pack support (16a-b)', () => {
     expect(m.yaw).toMatchObject({ pad: 0, axis: 5, sign: 1 }) // twist is axis 5 on the real unit
     expect(m.throttle).toMatchObject({ pad: 1, axis: 0, sign: 1 }) // idle=-1, TOGA=+1 (live-verified)
     expect(m.throttle2).toMatchObject({ pad: 1, axis: 1, sign: 1 })
-    expect(m.v).toBe(7)
+    expect(m.v).toBe(8)
     // Full face bound: trigger = PTT, red = AP disconnect, base buttons = gear/flaps/spoilers…
     expect(m.btnKeys?.['0:0']).toBe('KeyT')
     expect(m.btn?.apDisconnect).toMatchObject({ pad: 0, btn: 1 })
@@ -155,7 +155,12 @@ it('sidestick PTT alias is held until trigger release',()=>{expect(tcaButtonPres
 describe('reversing a throttle lever', () => {
   const pad = (a: number) => [{ id: 'TCA Q-Eng 1&2', index: 1, connected: true, axes: [a, 0, 0, 0, 0, 0, 0], buttons: [] }]
   const power = (map: GamepadMap, a: number) => leverWithReverse(readAxis(map, 'throttle', pad(a))!, map.throttle?.calibration).power
-  const quadrant = () => tcaPresetFor([{ id: 'TCA Q-Eng 1&2', index: 1, axes: 7 }])!
+  /** The preset's quadrant with plain, zone-free levers (how a binding looked before v8). */
+  const quadrant = () => {
+    const m = tcaPresetFor([{ id: 'TCA Q-Eng 1&2', index: 1, axes: 7 }])!
+    for (const fn of ['throttle', 'throttle2'] as const) m[fn] = { ...m[fn]!, calibration: undefined }
+    return m
+  }
 
   it('swaps which physical end is idle for an uncalibrated preset binding, and swaps back', () => {
     const m = quadrant()
@@ -225,5 +230,42 @@ describe('reversing a throttle lever', () => {
     saved.throttle = reverseAxisBinding(saved.throttle!)
     const merged = mergePreset(saved, quadrant())
     expect(merged.throttle).toMatchObject({ sign: -1, source: 'user' })
+  })
+})
+
+describe('the quadrant ships with a reverse zone', () => {
+  const pads = [{ id: 'TCA Q-Eng 1&2 (Vendor: 044f Product: 0407)', index: 0, axes: 7 }]
+  const lever = (m: GamepadMap, fn: 'throttle' | 'throttle2', a: number) => leverWithReverse(a * m[fn]!.sign, m[fn]!.calibration)
+
+  it('puts IDLE a quarter of the way up both preset levers', () => {
+    const m = tcaPresetFor(pads)!
+    for (const fn of ['throttle', 'throttle2'] as const) {
+      expect(m[fn]).toMatchObject({ sign: 1, source: 'preset', calibration: { min: -1, idle: -0.5, max: 1 } })
+      expect(lever(m, fn, -1)).toEqual({ power: 1, reverse: true })
+      expect(lever(m, fn, -0.5)).toEqual({ power: 0, reverse: false })
+      expect(lever(m, fn, 1)).toEqual({ power: 1, reverse: false })
+    }
+  })
+
+  it('adds the zone once to a quadrant lever bound before it, keeping its direction, and leaves a toggled-off zone off', () => {
+    const device = pads[0]!.id
+    const saved: GamepadMap = { v: 7, devices: { '0': device }, throttle: { pad: 0, axis: 0, sign: -1, deviceId: device, source: 'user' }, throttle2: { pad: 0, axis: 1, sign: -1, deviceId: device, source: 'user' } }
+    const merged = mergePreset(saved, tcaPresetFor(pads)!)
+    for (const fn of ['throttle', 'throttle2'] as const) {
+      expect(merged[fn]).toMatchObject({ sign: -1, source: 'user', calibration: { min: -1, idle: -0.5, max: 1 } })
+      expect(lever(merged, fn, 1)).toEqual({ power: 1, reverse: true })     // sign -1: the raw top is this lever's reverse end
+      expect(lever(merged, fn, -1)).toEqual({ power: 1, reverse: false })
+    }
+    expect(merged.v).toBe(8)
+    const off: GamepadMap = { ...merged, throttle: withReverseZone(merged.throttle!, 0) }
+    expect(mergePreset(off, tcaPresetFor(pads)!).throttle?.calibration).toEqual({ min: -1, max: 1 })
+  })
+
+  it('leaves a lever the pilot calibrated, and levers on other devices, alone', () => {
+    const cal = { min: -1, max: 0.9, idle: -0.6 }
+    const saved: GamepadMap = { v: 7, devices: { '0': pads[0]!.id }, throttle: { pad: 0, axis: 0, sign: 1, deviceId: pads[0]!.id, source: 'user', calibration: cal } }
+    expect(mergePreset(saved, tcaPresetFor(pads)!).throttle?.calibration).toEqual(cal)
+    const slider: GamepadMap = { v: 7, throttle: { pad: 0, axis: 3, sign: -1, deviceId: 'Generic Joystick', source: 'user' } }
+    expect(mergePreset(slider, tcaPresetFor(pads)!).throttle?.calibration).toBeUndefined()
   })
 })

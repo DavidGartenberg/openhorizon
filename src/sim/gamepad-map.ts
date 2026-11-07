@@ -51,7 +51,7 @@ export type GamepadMap = Partial<Record<BindableAxis, AxisBinding>> & {
   unverifiedBtnKeys?: Record<string, string>
 }
 
-export const TCA_PRESET_VERSION = 7
+export const TCA_PRESET_VERSION = 8
 
 /** Key aliases that act while HELD (everything else is edge-triggered). */
 export const HELD_ALIASES: ReadonlySet<string> = new Set(['KeyT', 'KeyB', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'Comma', 'Period'])
@@ -304,7 +304,12 @@ export function mergePreset(saved: GamepadMap, incoming: GamepadMap): GamepadMap
   }
   for(const fn of AXIS_FUNCTIONS){
     const p=preset[fn],s=saved[fn]; if(!p)continue
+    const isLever=fn==='throttle'||fn==='throttle2'
     if(!s || fn==='throttle' && s.source==='preset' && !s.calibration && /q-eng|quadrant/i.test(p.deviceId??'')) out[fn]=p
+    // v8: the lower quarter of a quadrant lever is reverse. Levers bound to the quadrant before it (no calibration, so still a plain
+    // idle-at-the-end lever) get the zone once; a calibrated lever keeps its own IDLE, and a zone later toggled off stays off (the
+    // version is current by then).
+    else if(isLever && (saved.v??0)<8 && !s.calibration && /q-eng|quadrant/i.test(s.deviceId??'')) out[fn]=withReverseZone(s)
     else if(!s.deviceId && s.pad===p.pad && s.axis===p.axis){
       out[fn]={...s,deviceId:p.deviceId,sign:s.calibration?s.sign:(saved.v??0)<2?p.sign:s.sign}
     }
@@ -353,8 +358,9 @@ export function tcaPresetFor(pads: ReadonlyArray<{ id: string; axes: number; ind
     // unverified guess and shipped a real regression — reported by the
     // user as "push forward, throttle % goes DOWN". Do not flip this
     // again without a live axis reading at both idle and TOGA.
-    map.throttle = { pad: quadrant.index, axis: 0, sign: 1 }
-    map.throttle2 = { pad: quadrant.index, axis: 1, sign: 1 }
+    // v8: IDLE sits a quarter of the way up the travel and everything below it is reverse (REVERSE_ZONE).
+    map.throttle = withReverseZone({ pad: quadrant.index, axis: 0, sign: 1 })
+    map.throttle2 = withReverseZone({ pad: quadrant.index, axis: 1, sign: 1 })
   }
   if (!Object.keys(map).length) return null
   const btns = tcaButtonPreset(stick ? stick.index : null, quadrant ? quadrant.index : null)
