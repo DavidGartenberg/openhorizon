@@ -124,3 +124,24 @@ describe('dragging a lever or wheel', () => {
     expect(x.update(ptr({ y: 150, down: false }), [mesh]).actions).toEqual([])
   })
 })
+
+describe('light-airplane switches and flap lever', () => {
+  const rocker = (on: string, off: string): Obj8Manip => m('command_switch_up_down', [on, off])
+  it('battery, alternator, avionics, pitot heat and fuel pump rockers: up is ON, down is OFF', () => {
+    expect(click(rocker('sim/electrical/battery_1_on', 'sim/electrical/battery_1_off'), { upper: true })).toEqual({ kind: 'gaSwitch', id: 'masterBattery', on: true })
+    expect(click(rocker('sim/electrical/battery_1_on', 'sim/electrical/battery_1_off'), { upper: false })).toEqual({ kind: 'gaSwitch', id: 'masterBattery', on: false })
+    expect(click(rocker('sim/electrical/generator_1_on', 'sim/electrical/generator_1_off'))).toMatchObject({ id: 'masterAlternator' })
+    expect(click(rocker('sim/systems/avionics_on', 'sim/systems/avionics_off'))).toMatchObject({ id: 'avionicsSwitch' })
+    expect(click(rocker('sim/ice/pitot_heat0_on', 'sim/ice/pitot_heat0_off'))).toMatchObject({ id: 'pitotHeat' })
+    expect(click(rocker('sim/fuel/fuel_pumps_on', 'sim/fuel/fuel_pumps_off'))).toMatchObject({ id: 'boostPumpOn' })
+    expect(click(rocker('sim/lights/landing_lights_on', 'sim/lights/landing_lights_off'))).toEqual({ kind: 'landingLights' })
+    expect(click(rocker('sim/lights/strobe_lights_on', 'sim/lights/strobe_lights_off')).kind).toBe('unsimulated')
+  })
+  it('the sliding flap lever: the lower half and the wheel down give more flap', () => {
+    const flap = m('drag_axis', [], ['sim/cockpit2/controls/flap_ratio'])
+    expect(click(flap, { upper: false })).toEqual({ kind: 'flaps', steps: 1 })
+    expect(click(flap, { upper: true })).toEqual({ kind: 'flaps', steps: -1 })
+    expect(click(flap, { wheel: 2 })).toEqual({ kind: 'flaps', steps: 2 })
+    expect(click(m('drag_axis', [], ['sim/cockpit2/engine/actuators/mixture_ratio[0]'])).kind).toBe('unsimulated')
+  })
+})

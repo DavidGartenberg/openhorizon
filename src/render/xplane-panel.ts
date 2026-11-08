@@ -187,8 +187,10 @@ export class XpPanel {
 
   private async image(rel: string): Promise<HTMLImageElement | null> {
     const img = new Image()
+    // `load`, not img.decode(): Chrome keeps decode() pending while the page is not being drawn (a background tab).
+    const loaded = new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = reject })
     img.src = this.base + rel.split('/').map(encodeURIComponent).join('/')
-    try { await img.decode(); return img } catch { this.warnings.push(`panel art missing: ${rel}`); return null }
+    try { await loaded; return img } catch { this.warnings.push(`panel art missing: ${rel}`); return null }
   }
 
   async load(): Promise<void> {

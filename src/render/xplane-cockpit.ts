@@ -18,19 +18,27 @@ import { XpPanel } from './xplane-panel'
  * the airplane's own panel mesh (`b738_cockpit.obj`) puts in place.
  */
 
+export interface XpCockpitObj { path: string; glass?: boolean }
+
 export interface XpCockpitModel {
   folder: string
   /** In draw order: opaque shell first, glass and fuzz last. */
-  objs: string[]
+  objs: ReadonlyArray<string | XpCockpitObj>
   /** The panel mesh: the one draw under ATTR_cockpit_lit_only, sampling the panel bitmap. */
   panelObj: string
   /** ACF datum → CG, feet (x right, y up, z aft). */
   cgFt: [number, number, number]
   /** Captain's eye in OBJ/ACF metres (x right, y up, z aft). */
   eyeObj: [number, number, number]
+  /**
+   * A light airplane (xplane-ga-cockpits.ts): there is no 737 panel bitmap. Panel-texture draws show X-Plane's own
+   * panel art (null: none), avionics screens show the textures given to the loader, and the objects sit at
+   * `offsetFt` from the datum.
+   */
+  ga?: { panelBackground: string | null; offsetFt: [number, number, number] }
 }
 
-export const XP_COCKPIT_B738: XpCockpitModel = {
+export const XP_COCKPIT_B738 = {
   folder: 'Boeing 737-800',
   objs: [
     'objects/738_cockpit_floor.obj', 'objects/738_cockpit_roof.obj', 'objects/738_cockpit_main.obj',
@@ -42,7 +50,7 @@ export const XP_COCKPIT_B738: XpCockpitModel = {
   panelObj: 'objects/b738_cockpit.obj',
   cgFt: [0, -2, 59.5],
   eyeObj: [-0.536, 0.71, 2.59],
-}
+} satisfies XpCockpitModel
 
 /** Share of its own colour a surface glows with in full daylight. */
 const CABIN_DAYLIGHT_FILL = 0.3
@@ -68,8 +76,8 @@ function addCabinFill(m: THREE.MeshStandardMaterial, fill: { value: number }): v
 export interface XpCockpit {
   group: THREE.Group
   parts: LoadedObj8[]
-  /** The panel bitmap behind every display and MCP window: draw into it, then commit(). */
-  panel: XpPanel
+  /** The 737's panel bitmap behind every display and MCP window: draw into it, then commit(). Null in a light airplane. */
+  panel: XpPanel | null
   /** Invisible hit boxes of every manipulator (button, knob, switch, lever), moving with the controls they sit on. */
   hits: THREE.Mesh[]
   /** Re-pose every animated node from this reader. */
@@ -90,7 +98,21 @@ export function eyeFromObj(model: XpCockpitModel, eye: readonly [number, number,
 let active = 0
 const waiting: Array<() => void> = []
 
-export interface LoadXpCockpitOptions { signal?: AbortSignal; /** Shown on both CDU screens (X-Plane's `CDU739_n` device quads). */ cduTexture?: THREE.Texture }
+export interface LoadXpCockpitOptions {
+  signal?: AbortSignal
+  /** Shown on both CDU screens (X-Plane's `CDU739_n` device quads). */
+  cduTexture?: THREE.Texture
+  /** A light airplane's avionics screens by X-Plane device name (G1000_PFD1, GNS530_1 …); `*` serves any other. */
+  screens?: Record<string, THREE.Texture>
+  /**
+   * Fly this deck in another airframe: put the captain's eye at `eye` (forward / lateral / up from the airplane
+   * origin, metres, the cockpit camera's convention) and scale the deck by `scale` about it. Default: the deck's own
+   * airplane, placed by its CG.
+   */
+  place?: { eye: { x: number; y: number; up: number }; scale: number }
+}
+
+const objEntry = (o: string | XpCockpitObj): XpCockpitObj => (typeof o === 'string' ? { path: o } : o)
 
 export async function loadXpCockpit(model: XpCockpitModel = XP_COCKPIT_B738, opts: LoadXpCockpitOptions = {}): Promise<XpCockpit | null> {
   const signal = opts.signal
@@ -106,48 +128,89 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
   if (!manifest.ok || !(await manifest.json() as { available?: boolean }).available) return null
   const group = new THREE.Group()
   group.name = 'xplane-cockpit'
-  group.position.set(...model.cgFt.map((cg) => -cg * FT) as [number, number, number])
+  if (opts.place) {
+    // The eye, in the airplane frame (x right, y up, z aft), lands on the requested point with the deck scaled about it.
+    const k = opts.place.scale, e = opts.place.eye
+    group.scale.setScalar(k)
+    group.position.set(e.y - k * model.eyeObj[0], e.up - k * model.eyeObj[1], -e.x - k * model.eyeObj[2])
+  } else group.position.set(...model.cgFt.map((cg) => -cg * FT) as [number, number, number])
   const parts: LoadedObj8[] = []
   const textureCache = new Map<string, Promise<THREE.Texture | null>>()
-  const panel = new XpPanel(`/xp/aircraft/${encodeURIComponent(model.folder)}/`)
-  const panelMaterial = new THREE.MeshBasicMaterial({ map: panel.texture, toneMapped: false })
-  const panelLoaded = panel.load()
+  const url = (rel: string): string => '/xp/aircraft/' + `${model.folder}/${rel}`.split('/').map(encodeURIComponent).join('/')
+  const panel = model.ga ? null : new XpPanel(`/xp/aircraft/${encodeURIComponent(model.folder)}/`)
+  const owned: Array<{ dispose(): void }> = []
+  const panelMaterial = panel ? new THREE.MeshBasicMaterial({ map: panel.texture, toneMapped: false }) : new THREE.MeshStandardMaterial({ color: 0x2b2e31, roughness: 0.85 })
+  owned.push(panelMaterial)
+  const panelLoaded = panel ? panel.load() : Promise.resolve()
+  if (model.ga?.panelBackground) {
+    // X-Plane paints its 2D instruments into the clear parts of this art at run time; with none painted here they
+    // show as dark, unlit faces rather than the bitmap's empty white.
+    const img = await new THREE.ImageLoader().loadAsync(url(model.ga.panelBackground)).catch(() => null)
+    if (img) {
+      const canvas = document.createElement('canvas')
+      canvas.width = img.width; canvas.height = img.height
+      const ctx = canvas.getContext('2d')!
+      ctx.fillStyle = '#0b0c0e'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0)
+      const art = new THREE.CanvasTexture(canvas)
+      art.colorSpace = THREE.SRGBColorSpace
+      ;(panelMaterial as THREE.MeshStandardMaterial).map = art; (panelMaterial as THREE.MeshStandardMaterial).color.set(0xffffff); owned.push(art)
+    }
+  }
+  // Light-airplane avionics: each screen its own live texture; one with no picture stays a dark, unpowered face.
+  const screenMaterials = new Map<string, THREE.Material>()
+  const screenFor = (device: string | undefined): THREE.Material => {
+    if (!device) return panelMaterial
+    let m = screenMaterials.get(device)
+    if (!m) {
+      const tex = opts.screens?.[device] ?? opts.screens?.['*']
+      m = tex ? new THREE.MeshBasicMaterial({ map: tex, toneMapped: false }) : new THREE.MeshBasicMaterial({ color: 0x050607 })
+      screenMaterials.set(device, m); owned.push(m)
+    }
+    return m
+  }
+  const offset = (model.ga?.offsetFt ?? [0, 0, 0]).map((v) => v * FT) as [number, number, number]
   let disposed = false
   const dispose = (): void => {
     if (disposed) return
     disposed = true
     disposeAircraftGeometry(group)
     group.removeFromParent(); group.clear()
-    panelMaterial.dispose(); panel.dispose()
+    for (const o of owned) o.dispose()
+    panel?.dispose()
     void Promise.all(textureCache.values()).then((maps) => new Set(maps).forEach((m) => m?.dispose()))
   }
-  const url = (rel: string): string => '/xp/aircraft/' + `${model.folder}/${rel}`.split('/').map(encodeURIComponent).join('/')
   try {
-    for (const path of model.objs) {
+    for (const entry of model.objs.map(objEntry)) {
+      const path = entry.path
       signal?.throwIfAborted()
       const u = url(path)
       const cdu = /FMS_screens/.test(path) && opts.cduTexture
         ? new THREE.MeshBasicMaterial({ map: opts.cduTexture, toneMapped: false }) : undefined
-      const part = await loadObj8(u, { textureBase: u.slice(0, u.lastIndexOf('/') + 1), textureCache, lightLevels: true, ...(cdu ? { cockpitMaterial: cdu } : {}) })
+      if (cdu) owned.push(cdu)
+      const part = await loadObj8(u, { textureBase: u.slice(0, u.lastIndexOf('/') + 1), textureCache, lightLevels: true, ...(cdu ? { cockpitMaterial: cdu } : model.ga ? { cockpitMaterial: screenFor } : {}) })
       signal?.throwIfAborted()
       if (!part.parsed.draws.length || !part.parsed.vertices.every(Number.isFinite)) throw new Error(`Invalid cockpit object ${path}`)
       if (part.parsed.albedo && !part.material.map) throw new Error(`Missing cockpit texture for ${path}`)
-      const see = /glass|fuzz/i.test(path)
+      const see = entry.glass ?? /glass|fuzz/i.test(path)
       if (see) { part.material.transparent = true; part.material.depthWrite = false }
       part.material.emissiveIntensity = 0
       for (const l of part.lights) { l.material.transparent = part.material.transparent; l.material.depthWrite = part.material.depthWrite; l.material.emissiveIntensity = 0 }
       part.group.name = path.replace(/^objects\/|\.obj$/g, '')
+      part.group.position.set(...offset)
       part.group.traverse((o) => { if (o instanceof THREE.Mesh) { o.castShadow = !see; o.receiveShadow = !see; o.frustumCulled = false } })
       parts.push(part); group.add(part.group)
     }
-    // The panel mesh: its only enabled draw samples the panel bitmap, so it takes the live panel material.
+    // The panel mesh / click map. In the 737 its only enabled draw samples the panel bitmap; a light airplane's also
+    // carries real geometry (the King Air's whole panel) with its own textures.
     signal?.throwIfAborted()
     const pu = url(model.panelObj)
-    const panelPart = await loadObj8(pu, { textureBase: pu.slice(0, pu.lastIndexOf('/') + 1), loadTextures: false, cockpitMaterial: panelMaterial, hitBoxes: true })
+    const panelPart = await loadObj8(pu, { textureBase: pu.slice(0, pu.lastIndexOf('/') + 1), textureCache, loadTextures: !!model.ga, cockpitMaterial: model.ga ? screenFor : panelMaterial, hitBoxes: true, ...(model.ga ? { lightLevels: true } : {}) })
     signal?.throwIfAborted()
-    if (!panelPart.parsed.draws.some((d) => d.cockpit) || !panelPart.parsed.vertices.every(Number.isFinite)) throw new Error(`Invalid panel mesh ${model.panelObj}`)
+    if (!panelPart.parsed.vertices.every(Number.isFinite) || (!model.ga && !panelPart.parsed.draws.some((d) => d.cockpit))) throw new Error(`Invalid panel mesh ${model.panelObj}`)
     panelPart.group.name = 'panel'
-    panelPart.group.traverse((o) => { if (o instanceof THREE.Mesh) { o.frustumCulled = false; o.castShadow = false; o.receiveShadow = false } })
+    panelPart.group.position.set(...offset)
+    if (model.ga) panelPart.material.emissiveIntensity = 0
+    panelPart.group.traverse((o) => { if (o instanceof THREE.Mesh) { o.frustumCulled = false; o.castShadow = !!model.ga; o.receiveShadow = !!model.ga } })
     parts.push(panelPart); group.add(panelPart.group)
     await panelLoaded
   } catch (error) { dispose(); throw error }
@@ -159,18 +222,18 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
   const lamps: LightLevelGroup[] = parts.flatMap((p) => p.lights)
   const cabinFill = { value: 0 }
   for (const p of parts) {
-    if (/glass|fuzz|panel/i.test(p.group.name)) continue
+    if (/glass|fuzz/i.test(p.group.name) || (p.group.name === 'panel' && !model.ga)) continue
     addCabinFill(p.material, cabinFill)
     for (const l of p.lights) addCabinFill(l.material, cabinFill)
   }
   const datarefs = [...new Set(parts.filter((p) => p.group.name !== 'panel').flatMap((p) => p.parsed.anims.flatMap((n) => n.specs.map((s) => s.dataref))))]
-  const eye = eyeFromObj(model)
+  const eye = opts.place ? { ...opts.place.eye } : eyeFromObj(model)
   return {
     group, parts, panel, hits, dispose,
     evidence: {
       objects: parts.length,
       triangles: parts.reduce((n, p) => n + p.parsed.draws.filter((d) => d.lod === 0).reduce((m, d) => m + d.count / 3, 0), 0),
-      datarefs, warnings: [...parts.flatMap((p) => p.warnings), ...panel.warnings],
+      datarefs, warnings: [...parts.flatMap((p) => p.warnings), ...(panel?.warnings ?? [])],
     },
     pose(read) { for (const node of animated) { applyObj8Anim(node, read); applyObj8Visibility(node, read) } applyObj8Lights(lamps, read) },
     eyePoint: () => eye,

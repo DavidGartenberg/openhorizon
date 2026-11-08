@@ -28,10 +28,23 @@ export type XpAction =
   | { kind: 'landingLights' }
   | { kind: 'baro'; steps: number }
   | { kind: 'course'; steps: number }
+  /** A light airplane's electrical / fuel-pump rocker: up = ON. */
+  | { kind: 'gaSwitch'; id: GaSwitch; on: boolean }
   | { kind: 'unsimulated'; tooltip: string }
   /** A held drag on a lever or wheel: how far the pointer moved since the last frame (pixels, down is positive). */
   | { kind: 'drag'; control: 'throttle' | 'trim'; dyPx: number }
   | { kind: 'none' }
+
+export type GaSwitch = 'masterBattery' | 'masterAlternator' | 'avionicsSwitch' | 'pitotHeat' | 'boostPumpOn'
+
+/** The light airplanes' rocker switches (X-Plane's on / off command pairs) that this simulator has a system for. */
+const GA_SWITCHES: Record<string, GaSwitch> = {
+  'sim/electrical/battery_1_on': 'masterBattery',
+  'sim/electrical/generator_1_on': 'masterAlternator',
+  'sim/systems/avionics_on': 'avionicsSwitch',
+  'sim/ice/pitot_heat0_on': 'pitotHeat',
+  'sim/fuel/fuel_pumps_on': 'boostPumpOn',
+}
 
 /** Where the pointer is on a control (relative to its centre), and the wheel travel if the wheel was used. */
 export interface XpPress { right: boolean; upper: boolean; wheel?: number }
@@ -96,6 +109,8 @@ export function xpActionFor(m: Obj8Manip, press: XpPress): XpAction {
       if (cmd === 'sim/autopilot/autothrottle_arm') return { kind: 'atSwitch', arm: press.upper }
       if (cmd === 'sim/autopilot/vertical_speed_down') return { kind: 'apTurn', knob: 'vs', steps: press.upper ? -1 : 1 }
       if (cmd === 'sim/autopilot/vertical_speed_up') return { kind: 'apTurn', knob: 'vs', steps: press.upper ? 1 : -1 }
+      if (GA_SWITCHES[cmd]) return { kind: 'gaSwitch', id: GA_SWITCHES[cmd], on: press.upper }
+      if (cmd === 'sim/lights/landing_lights_on') return { kind: 'landingLights' }
       return unsimulated
     }
     case 'toggle':
@@ -112,6 +127,10 @@ export function xpActionFor(m: Obj8Manip, press: XpPress): XpAction {
       if (dr === 'laminar/B738/flt_ctrls/speedbrake_lever') return { kind: 'speedbrake' }
       return unsimulated
     }
+    case 'drag_axis':
+      // A light airplane's flap lever slides: the lower half and scrolling down give a notch more flap.
+      if (dr === 'sim/cockpit2/controls/flap_ratio') return { kind: 'flaps', steps: press.wheel ? Math.sign(press.wheel) * Math.max(1, Math.round(Math.abs(press.wheel))) : press.upper ? -1 : 1 }
+      return unsimulated
     default: return unsimulated
   }
 }

@@ -93,6 +93,8 @@ export interface Obj8Draw {
   lod: number
   /** Emitted under ATTR_cockpit: X-Plane draws it with the panel texture. */
   cockpit: boolean
+  /** Emitted under ATTR_cockpit_device: the avionics screen it shows (G1000_PFD1, GNS530_1 …) instead of the panel. */
+  device?: string
   /** The ATTR_light_level in effect (a lamp, a backlight), when there is one. */
   light?: Obj8Light
   /** A hit box: disabled geometry under a manipulator, kept only when parsed with `hitBoxes`. */
@@ -227,6 +229,7 @@ export function parseObj8(text: string, opts: { hitBoxes?: boolean } = {}): Pars
   let lastDraw: Obj8Draw | null = null
   let drawEnabled = true
   let cockpit = false
+  let device: string | null = null
   let light: Obj8Light | null = null
   let manip: Obj8Manip | null = null
   let lodIndex = 0
@@ -278,13 +281,18 @@ export function parseObj8(text: string, opts: { hitBoxes?: boolean } = {}): Pars
     if (hashAt > 0) t.length = hashAt
     const cmd = t[0]!
     let bad = false
+    let lenient = false
     const n = (i: number): number => {
       const v = +t[i]!
-      if (v !== v) {
-        bad = true
-        return 0
+      if (v === v) return v
+      // X-Plane reads numbers with C's atof, the longest numeric prefix: "-2.5.000000" in the C172's own VOR gauge is −2.5.
+      const prefix = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/.exec(t[i] ?? '')
+      if (prefix) {
+        lenient = true
+        return +prefix[0]
       }
-      return v
+      bad = true
+      return 0
     }
     const rest = (from: number): string => t.slice(from).join(' ')
 
@@ -321,10 +329,10 @@ export function parseObj8(text: string, opts: { hitBoxes?: boolean } = {}): Pars
         if (bad) break
         const hidden = !drawEnabled
         if (hidden && !(opts.hitBoxes && manip)) break
-        if (lastDraw && lastDraw.start + lastDraw.count === start && lastDraw.cockpit === cockpit && sameLight(lastDraw.light, light) && !!lastDraw.hidden === hidden && lastDraw.manip === (hidden ? manip ?? undefined : undefined)) {
+        if (lastDraw && lastDraw.start + lastDraw.count === start && lastDraw.cockpit === cockpit && lastDraw.device === (device ?? undefined) && sameLight(lastDraw.light, light) && !!lastDraw.hidden === hidden && lastDraw.manip === (hidden ? manip ?? undefined : undefined)) {
           lastDraw.count += count
         } else {
-          lastDraw = { start, count, animPath: stack.map((e) => e.id), lod: lodIndex, cockpit, ...(light ? { light } : {}), ...(hidden && manip ? { hidden: true, manip } : {}) }
+          lastDraw = { start, count, animPath: stack.map((e) => e.id), lod: lodIndex, cockpit, ...(device ? { device } : {}), ...(light ? { light } : {}), ...(hidden && manip ? { hidden: true, manip } : {}) }
           draws.push(lastDraw)
         }
         // A hit box is not drawn, so it does not make its block a drawn one.
@@ -383,11 +391,16 @@ export function parseObj8(text: string, opts: { hitBoxes?: boolean } = {}): Pars
       case 'ATTR_cockpit':
       case 'ATTR_cockpit_region':
       case 'ATTR_cockpit_lit_only':
+        cockpit = true
+        device = null
+        break
       case 'ATTR_cockpit_device':
         cockpit = true
+        device = t[1] ?? null
         break
       case 'ATTR_no_cockpit':
         cockpit = false
+        device = null
         break
       case 'ANIM_begin':
         pushNode(true)
@@ -464,6 +477,7 @@ export function parseObj8(text: string, opts: { hitBoxes?: boolean } = {}): Pars
         }
     }
     if (bad) warn(`malformed ${cmd} at line ${li + 1}`)
+    else if (lenient) warn(`number read by its leading digits in ${cmd} at line ${li + 1}`)
   }
 
   if (stack.length) warn(`${stack.filter((e) => e.explicit).length} ANIM_begin left open at end of file`)
@@ -627,10 +641,13 @@ export interface BuildObj8Options {
    *  band would stack the LOD meshes on top of each other. */
   lod?: number
   /** Material for ATTR_cockpit geometry (X-Plane's panel texture); defaults
-   *  to a plain untextured material so panel UVs don't sample the albedo. */
-  cockpitMaterial?: THREE.Material
+   *  to a plain untextured material so panel UVs don't sample the albedo. A function picks one per avionics
+   *  screen (the ATTR_cockpit_device name; undefined for the panel itself). */
+  cockpitMaterial?: CockpitMaterial
   name?: string
 }
+
+export type CockpitMaterial = THREE.Material | ((device: string | undefined) => THREE.Material)
 
 /** Validate before creating GPU resources or publishing a partial exterior. */
 function validateObj8(parsed: ParsedObj8, lod: number): void {
@@ -695,7 +712,13 @@ export function buildObj8(
   }
 
   let propAlphaMaterial: THREE.Material | undefined
-  let cockpitMaterial = opts.cockpitMaterial
+  let defaultCockpit: THREE.Material | undefined
+  const cockpitFor = (d: Obj8Draw): THREE.Material => {
+    const m = opts.cockpitMaterial
+    if (typeof m === 'function') return m(d.device)
+    if (m) return m
+    return defaultCockpit ??= new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.8, metalness: 0.1 })
+  }
   const hits: THREE.Mesh[] = []
   let hitMaterial: THREE.MeshBasicMaterial | undefined
   const lightGroups = new Map<string, LightLevelGroup>()
@@ -733,9 +756,6 @@ export function buildObj8(
       hits.push(hit)
       continue
     }
-    if (d.cockpit && !cockpitMaterial) {
-      cockpitMaterial = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.8, metalness: 0.1 })
-    }
     const propDisc = d.animPath.some(id => parsed.anims[id]!.specs.some(s =>
       s.kind === 'hide' && s.dataref.includes('/prop_is_disc[') && s.v1 === 0 && s.v2 <= .5))
     if (propDisc && !propAlphaMaterial) {
@@ -746,7 +766,7 @@ export function buildObj8(
       propAlphaMaterial.depthWrite = false
     }
     const lit = opts.lightLevels && d.light && !d.cockpit && !propDisc ? lightMaterial(d.light) : null
-    const mesh = new THREE.Mesh(geo, d.cockpit ? cockpitMaterial! : propDisc ? propAlphaMaterial! : lit ?? material)
+    const mesh = new THREE.Mesh(geo, d.cockpit ? cockpitFor(d) : propDisc ? propAlphaMaterial! : lit ?? material)
     mesh.name = `tris:${d.start}+${d.count}`
     const last = d.animPath[d.animPath.length - 1]
     ;(last === undefined ? root : animated[last]!).add(mesh)
@@ -918,8 +938,8 @@ export interface LoadObj8Options {
   normalMaxSize?: number
   /** A livery's texture folder (URL prefix): its files replace the airplane's of the same name, the rest fall back to `textureBase`. */
   textureOverrideBase?: string
-  /** Material for ATTR_cockpit* draws (X-Plane's panel / device screens), e.g. a live display. */
-  cockpitMaterial?: THREE.Material
+  /** Material for ATTR_cockpit* draws (X-Plane's panel / device screens), e.g. a live display; a function picks one per screen. */
+  cockpitMaterial?: CockpitMaterial
   /** Lamps and backlights glow on their own datarefs (see BuildObj8Options.lightLevels). */
   lightLevels?: boolean
   /** Parse and build the manipulators' hit boxes (see parseObj8). */
