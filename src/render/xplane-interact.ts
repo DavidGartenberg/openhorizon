@@ -142,7 +142,10 @@ export function xpActionFor(m: Obj8Manip, press: XpPress): XpAction {
   const dr = m.datarefs[0] ?? ''
   switch (m.type) {
     case 'noop': return { kind: 'none' }
-    case 'command': {
+    case 'command':
+    case 'command_knob2':
+    case 'command_switch_up_down2':
+    case 'command_switch_left_right2': {
       const a = PRESS_BUTTONS[cmd]
       return a ?? unsimulated
     }

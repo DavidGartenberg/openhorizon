@@ -164,6 +164,11 @@ describe('light-airplane switches and flap lever', () => {
     expect(press('sim/systems/avionics_toggle')).toEqual({ kind: 'gaSwitch', id: 'avionicsSwitch', on: 'toggle' })
     expect(press('sim/flight_controls/pitch_trim_up')).toEqual({ kind: 'drag', control: 'trim', dyPx: -12 })
   })
+  it('the one-command switch forms press their command whichever half is clicked', () => {
+    expect(click(m('command_switch_up_down2', ['sim/lights/landing_lights_toggle']), { upper: false })).toEqual({ kind: 'landingLights' })
+    expect(click(m('command_knob2', ['sim/electrical/battery_1_toggle']))).toEqual({ kind: 'gaSwitch', id: 'masterBattery', on: 'toggle' })
+    expect(click(m('command_switch_left_right2', ['sim/lights/strobe_lights_toggle'])).kind).toBe('unsimulated')
+  })
   it('radio knobs tune the standby frequency by megahertz or by channel, and the flip button swaps', () => {
     const knob = (up: string, down: string): Obj8Manip => m('command_knob', [up, down])
     expect(click(knob('sim/radios/stby_com1_coarse_up', 'sim/radios/stby_com1_coarse_down'), { right: true })).toEqual({ kind: 'tune', radio: 'com1', coarse: true, steps: 1 })

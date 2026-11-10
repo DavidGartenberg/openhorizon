@@ -4043,6 +4043,22 @@ Object.assign(window as unknown as Record<string, unknown>, {
         verts: ids.map((i) => [pos.getX(i), pos.getY(i), pos.getZ(i)].map((v) => +v.toFixed(3))), uvs: ids.map((i) => [uv.getX(i), uv.getY(i)].map((v) => +v.toFixed(4))) }
     })
   },
+  /** Where the X-Plane deck's manipulators are on screen (verification): tooltip, type, and the projected centre and size of each hit box matching `match`. */
+  __ohXpHits: (match?: string) => {
+    if (!xpCockpit) return null
+    const box = new THREE.Box3(), c = new THREE.Vector3(), size = new THREE.Vector3()
+    const rect = renderer.domElement.getBoundingClientRect()
+    return xpCockpit.hits.filter((h) => !match || String((h.userData.manip as { tooltip?: string } | undefined)?.tooltip ?? '').toLowerCase().includes(match.toLowerCase())).slice(0, 16).map((h) => {
+      h.updateWorldMatrix(true, false)
+      if (!h.geometry.boundingBox) h.geometry.computeBoundingBox()
+      box.copy(h.geometry.boundingBox!).applyMatrix4(h.matrixWorld)
+      box.getSize(size); box.getCenter(c)
+      const local = mesh.group.worldToLocal(c.clone())
+      c.project(camera)
+      const m = h.userData.manip as { tooltip?: string; type?: string; datarefs?: string[]; commands?: string[] }
+      return { tooltip: m?.tooltip, type: m?.type, ref: m?.datarefs?.[0] ?? m?.commands?.[0], px: [Math.round(((c.x + 1) / 2) * rect.width), Math.round(((1 - c.y) / 2) * rect.height)], sizeM: size.toArray().map((v) => +v.toFixed(3)), local: local.toArray().map((v) => +v.toFixed(3)) }
+    })
+  },
   /** What the X-Plane deck is being told right now for the given datarefs (verification): the values its levers are posed from. */
   __ohXpRead: (refs: string[]) => {
     if (!Array.isArray(refs)) return null

@@ -76,3 +76,31 @@ describe('manipulators', () => {
     expect(buildObj8(plain, makeObj8Material({}, plain)).hits).toHaveLength(0)
   })
 })
+
+describe('the light airplanes\' manipulators (lines from the X-Plane C172 and Baron click maps)', () => {
+  const HEAD = ['I', '800', 'OBJ', 'POINT_COUNTS 4 0 0 6', 'VT 0 0 0 0 1 0 0 0', 'VT 1 0 0 0 1 0 1 0', 'VT 1 1 0 0 1 0 1 1', 'VT 0 1 0 0 1 0 0 1', 'IDX 0', 'IDX 1', 'IDX 2', 'IDX 0', 'IDX 2', 'IDX 3', 'ATTR_draw_disable']
+  const manipOf = (...lines: string[]) => parseObj8([...HEAD, ...lines, 'TRIS 0 6'].join('\n'), { hitBoxes: true }).draws[0]?.manip
+
+  it('a sliding lever names its dataref and tooltip after five numbers', () => {
+    expect(manipOf('ATTR_manip_drag_axis hand 0.000000 0.000000 -0.060000 0.000000 1.000000 sim/cockpit2/engine/actuators/throttle_ratio[0] Throttle'))
+      .toMatchObject({ type: 'drag_axis', datarefs: ['sim/cockpit2/engine/actuators/throttle_ratio[0]'], tooltip: 'Throttle' })
+    expect(manipOf('ATTR_manip_drag_axis hand 0.000000 -0.050285 0.000000 0.000000 1.000000 sim/cockpit2/controls/flap_ratio Flaps handle'))
+      .toMatchObject({ datarefs: ['sim/cockpit2/controls/flap_ratio'], tooltip: 'Flaps handle' })
+  })
+
+  it('a mouse-wheel step or a detent belongs to the manipulator before it and does not replace it', () => {
+    const m = manipOf(
+      'ATTR_manip_drag_rotate hand -0.054190 -0.213776 0.328208\t1.000000 0.000000 0.000000\t-1440.000000 1440.000000 0.000000\t-1.000000 1.000000  0.000000 0.000000 sim/cockpit2/controls/elevator_trim none Elevator trim',
+      'ATTR_manip_keyframe 0.000000 0.000000', 'ATTR_manip_wheel 0.005000')
+    expect(m).toMatchObject({ type: 'drag_rotate', datarefs: ['sim/cockpit2/controls/elevator_trim', 'none'], tooltip: 'Elevator trim' })
+  })
+
+  it('reads the one-command switch, the wrapping button and the two-axis yoke', () => {
+    expect(manipOf('ATTR_manip_command_switch_up_down2 up_down sim/lights/landing_lights_toggle Landing lights'))
+      .toMatchObject({ type: 'command_switch_up_down2', commands: ['sim/lights/landing_lights_toggle'], tooltip: 'Landing lights' })
+    expect(manipOf('ATTR_manip_wrap button 1 0 0 2 laminar/c172/knob_OAT Toggle from OAT'))
+      .toMatchObject({ type: 'wrap', datarefs: ['laminar/c172/knob_OAT'], tooltip: 'Toggle from OAT' })
+    expect(manipOf('ATTR_manip_drag_xy four_arrows 100.000000 100.000000 -1.000000 1.000000 1.000000 -1.000000 sim/cockpit2/controls/yoke_roll_ratio sim/cockpit2/controls/yoke_pitch_ratio Yoke'))
+      .toMatchObject({ type: 'drag_xy', datarefs: ['sim/cockpit2/controls/yoke_roll_ratio', 'sim/cockpit2/controls/yoke_pitch_ratio'], tooltip: 'Yoke' })
+  })
+})

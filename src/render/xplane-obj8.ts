@@ -141,11 +141,19 @@ const MANIP_SHAPE: Record<string, { numbers: number; commands: number; datarefs:
   toggle: { numbers: 2, commands: 0, datarefs: 1 },
   drag_rotate: { numbers: 13, commands: 0, datarefs: 2 },
   drag_xy: { numbers: 6, commands: 0, datarefs: 2 },
-  drag_axis: { numbers: 7, commands: 0, datarefs: 1 },
+  // <dx> <dy> <dz> <v1> <v2> <dataref>: the light airplanes' throttle, mixture and flap levers.
+  drag_axis: { numbers: 5, commands: 0, datarefs: 1 },
+  drag_axis_pix: { numbers: 5, commands: 0, datarefs: 1 },
   push: { numbers: 2, commands: 0, datarefs: 1 },
   radio: { numbers: 1, commands: 0, datarefs: 1 },
   delta: { numbers: 4, commands: 0, datarefs: 1 },
-  wheel: { numbers: 1, commands: 0, datarefs: 0 },
+  wrap: { numbers: 4, commands: 0, datarefs: 1 },
+  axis_switch_up_down: { numbers: 4, commands: 0, datarefs: 1 },
+  axis_switch_left_right: { numbers: 4, commands: 0, datarefs: 1 },
+  // The one-command forms: the same command whichever half is clicked.
+  command_knob2: { numbers: 0, commands: 1, datarefs: 0 },
+  command_switch_up_down2: { numbers: 0, commands: 1, datarefs: 0 },
+  command_switch_left_right2: { numbers: 0, commands: 1, datarefs: 0 },
   noop: { numbers: 0, commands: 0, datarefs: 0 },
 }
 
@@ -468,7 +476,7 @@ export function parseObj8(text: string, opts: { hitBoxes?: boolean } = {}): Pars
       }
       default:
         if (cmd === 'ATTR_manip_none') manip = null
-        else if (cmd === 'ATTR_manip_keyframe') { /* belongs to the drag_rotate before it */ }
+        else if (cmd === 'ATTR_manip_keyframe' || cmd === 'ATTR_manip_wheel') { /* belongs to the manipulator before it (a detent, a mouse-wheel step) */ }
         else if (cmd.startsWith('ATTR_manip_')) manip = parseManip(cmd, t)
         else if (/^\d+$/.test(cmd)) {
           if (cmd !== '800') warn(`unsupported OBJ version ${cmd}`)
