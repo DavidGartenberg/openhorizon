@@ -20,11 +20,14 @@ export const CLOUD_DENSITY_GLSL = /* glsl */ `
     float sideSupport = 1.0 - smoothstep(0.72, 1.0, length(p.xz));
     float h = p.y * 0.5 + 0.5;
     float base = smoothstep(0.0, 0.12, h);
-    float top = 1.0 - smoothstep(0.72, 1.0, h);
     vec3 q = p * vec3(1.7, 1.35, 1.7) + seed * 23.7;
     float macro = texture(uNoise, q * 0.055).r;
-    float detail = texture(uNoise, q * 0.25 + 0.37).r;
-    float fine = texture(uNoise, q * 0.71 + 0.13).r;
+    float mid = texture(uNoise, q * 0.3 + 0.71).r;
+    // The top is not a lid: it stands in turrets where the lumps are and sags between them, with a firm edge.
+    float topEdge = 0.6 + 0.4 * mid;
+    float top = 1.0 - smoothstep(topEdge - 0.1, topEdge, h);
+    float detail = texture(uNoise, q * 0.62 + 0.37).r;
+    float fine = texture(uNoise, q * 1.4 + 0.13).r;
     // Broad lobes carve a coherent rounded silhouette; finer erosion only
     // affects the boundary, preserving substantial optically thick interiors.
     float envelope = 1.0 - dot(p.xz, p.xz) - pow(max(p.y, 0.0), 2.0) * 0.65;
@@ -36,8 +39,9 @@ export const CLOUD_DENSITY_GLSL = /* glsl */ `
       structure = max(max(billowA, billowB), billowC) * 1.8;
     }
     float body = structure + (macro - 0.5) * 1.2 - 0.08;
-    // A second, finer octave (zero-mean) frays the boundary into smaller billows.
-    float d = smoothstep(0.0, 0.36, body - (1.0 - detail) * 0.16 + (fine - 0.5) * 0.12);
+    // Lumps a tenth of the mass across bite into the boundary (the cauliflower of a cumulus) and a finer octave
+    // (zero-mean) frays it; the edge itself is firm, as a growing cumulus's is.
+    float d = smoothstep(0.0, 0.2, body - (1.0 - mid) * 0.38 - (1.0 - detail) * 0.22 + (fine - 0.5) * 0.12 + 0.14);
     return d * base * top * sideSupport * (0.65 + macro * 0.65);
   }
 `
@@ -134,25 +138,36 @@ const FRAG = /* glsl */ `
       if (d < 0.005) continue;
       if (firstDensityT < 0.0) firstDensityT = t;
       if (i == 0 || i / 4 * 4 == i || shadow == 1.0) {
-        float optical = density(p + sunStep) * 190.0;
+        // The nearest tap sees the next billow toward the sun: creases between billows fall into shade.
+        float optical = density(p + sunStep * 0.36) * 110.0;
+        optical += density(p + sunStep) * 150.0;
         optical += density(p + sunStep * 2.7) * 320.0;
         optical += density(p + sunStep * 5.0) * 440.0;
         shadow = exp(-optical * extinction);
       }
       float heightLight = smoothstep(-0.8, 0.8, p.y);
-      vec3 ambient = mix(vec3(0.022, 0.029, 0.048), vec3(0.23, 0.29, 0.38), uDayness);
-      ambient *= mix(0.55, 1.25, heightLight);
+      vec3 ambient = mix(vec3(0.022, 0.029, 0.048), vec3(0.21, 0.27, 0.37), uDayness);
+      // Sky light reaches the tops; the base sees only the ground and the cloud above it.
+      // (An overcast's base is lit by the whole bright deck around it, so it stays a lighter grey.)
+      ambient *= mix(mix(0.36, 0.52, uCoverage), 1.3, heightLight);
       // Dusk: shaded undersides pick up the violet-rose of the sky, tops stay warm.
       vec3 duskAmbient = mix(vec3(0.26, 0.22, 0.38), vec3(0.50, 0.27, 0.24), heightLight) * (0.28 + uDayness * 0.9);
       ambient = mix(ambient, duskAmbient, uDusk * 0.85);
       // A bounded forward lobe produces silver edges without a white clip.
-      vec3 direct = sunlight * sunUp * (0.85 + forward * (1.7 + 2.0 * uDusk)) * shadow;
+      // Shading only (the density, which the shadows and the cockpit's in-cloud test share, is untouched): the lit face
+      // carries the billows' small-scale relief, and thin edges return less light than the dense interior of a lit
+      // face (Beer-powder) except toward the sun, where they keep their silver lining.
+      float billow = texture(uNoise, (p * vec3(1.7, 1.35, 1.7) + vSeed * 23.7) * 0.62 + 0.37).r;
+      float powder = mix(mix(0.58, 1.14, 1.0 - exp(-d * 5.0)), 1.0, forward);
+      vec3 direct = sunlight * sunUp * (0.9 + forward * (1.7 + 2.0 * uDusk)) * shadow * powder * (0.84 + 0.32 * billow);
       // Light scattered inside the cloud is rose-violet at dusk (the sky's
       // fill), not the sun's orange: shaded bases read cooler than lit tops.
       vec3 scatterTint = mix(sunlight, vec3(0.85, 0.52, 0.62), uDusk * 0.32);
-      vec3 multipleScatter = scatterTint * sunUp * 0.16 * (1.0 - shadow);
+      vec3 multipleScatter = scatterTint * sunUp * 0.11 * (1.0 - shadow);
       float absorbed = 1.0 - exp(-d * extinction * stepM);
-      accumulated += transmittance * absorbed * (ambient + direct + multipleScatter);
+      // A cumulus stands on a flat grey base.
+      float baseShade = mix(mix(0.62, 0.8, uCoverage), 1.0, smoothstep(-0.95, -0.2, p.y));
+      accumulated += transmittance * absorbed * (ambient + direct + multipleScatter) * baseShade;
       transmittance *= 1.0 - absorbed;
     }
     float alpha = 1.0 - transmittance;
@@ -193,13 +208,43 @@ function hash2(ix: number, iy: number, k: number): number {
   return ((h ^ (h >>> 16)) >>> 0) / 4294967296
 }
 
-/** Small periodic coherent lattice, trilinearly filtered on GPU. */
+const NOISE_SIZE = 64
+/**
+ * Periodic billow noise, trilinearly filtered on the GPU: inverted cellular (Worley) distance in two octaves, so
+ * the field is made of rounded lumps with creases between them — the shape of cumulus — rather than the even bumps
+ * of a random lattice. Stretched to span 0…1 with a mean of one half, which the density's thresholds assume.
+ */
 function makeNoise(): THREE.Data3DTexture {
-  const size = 32
-  const data = new Uint8Array(size ** 3)
-  for (let z = 0; z < size; z++) for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    data[x + size * (y + size * z)] = Math.floor(hash2(x + y * size, z, 91) * 255)
+  const size = NOISE_SIZE
+  const field = new Float32Array(size ** 3)
+  const octave = (cells: number, salt: number): Float32Array => {
+    const out = new Float32Array(size ** 3)
+    const point = (cx: number, cy: number, cz: number, axis: number): number => hash2(((cx % cells) + cells) % cells + 31 * (((cy % cells) + cells) % cells), ((cz % cells) + cells) % cells, salt + axis)
+    const scale = cells / size
+    for (let z = 0; z < size; z++) for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const px = (x + 0.5) * scale, py = (y + 0.5) * scale, pz = (z + 0.5) * scale
+      const ix = Math.floor(px), iy = Math.floor(py), iz = Math.floor(pz)
+      let best = Infinity
+      for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const cx = ix + dx, cy = iy + dy, cz = iz + dz
+        const ex = cx + point(cx, cy, cz, 0) - px, ey = cy + point(cx, cy, cz, 1) - py, ez = cz + point(cx, cy, cz, 2) - pz
+        const d = ex * ex + ey * ey + ez * ez
+        if (d < best) best = d
+      }
+      out[x + size * (y + size * z)] = 1 - Math.min(Math.sqrt(best), 1)
+    }
+    return out
   }
+  const coarse = octave(8, 91), fine = octave(16, 137)
+  let lo = Infinity, hi = -Infinity
+  for (let i = 0; i < field.length; i++) { const v = coarse[i]! * 0.68 + fine[i]! * 0.32; field[i] = v; if (v < lo) lo = v; if (v > hi) hi = v }
+  let mean = 0
+  for (let i = 0; i < field.length; i++) { field[i] = (field[i]! - lo) / (hi - lo); mean += field[i]! }
+  mean /= field.length
+  // A power curve puts the mean at one half without moving the ends.
+  const gamma = Math.log(0.5) / Math.log(mean)
+  const data = new Uint8Array(size ** 3)
+  for (let i = 0; i < field.length; i++) data[i] = Math.round(Math.pow(field[i]!, gamma) * 255)
   const texture = new THREE.Data3DTexture(data, size, size, size)
   texture.format = THREE.RedFormat
   texture.type = THREE.UnsignedByteType
@@ -218,12 +263,13 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
  * Texture coordinates address texel centers, hence the half-texel subtraction.
  */
 function sampleNoise(data: Uint8Array, x: number, y: number, z: number): number {
-  const tx = x * 32 - 0.5, ty = y * 32 - 0.5, tz = z * 32 - 0.5
+  const S = NOISE_SIZE, M = NOISE_SIZE - 1
+  const tx = x * S - 0.5, ty = y * S - 0.5, tz = z * S - 0.5
   const ix = Math.floor(tx), iy = Math.floor(ty), iz = Math.floor(tz)
   const fx = tx - ix, fy = ty - iy, fz = tz - iz
   let value = 0
   for (let dz = 0; dz <= 1; dz++) for (let dy = 0; dy <= 1; dy++) for (let dx = 0; dx <= 1; dx++) {
-    const index = ((ix + dx) & 31) + 32 * (((iy + dy) & 31) + 32 * ((iz + dz) & 31))
+    const index = ((ix + dx) & M) + S * (((iy + dy) & M) + S * ((iz + dz) & M))
     value += data[index]! / 255 * (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy) * (dz ? fz : 1 - fz)
   }
   return value
@@ -238,10 +284,13 @@ function localDensity(data: Uint8Array, x: number, y: number, z: number, seed: n
   if (radial >= 1) return 0
   const side = 1 - smoothstep(0.72, 1, radial)
   const h = y * 0.5 + 0.5
-  const base = smoothstep(0, 0.12, h), top = 1 - smoothstep(0.72, 1, h)
+  const base = smoothstep(0, 0.12, h)
   const qx = x * 1.7 + seed * 23.7, qy = y * 1.35 + seed * 23.7, qz = z * 1.7 + seed * 23.7
   const macro = sampleNoise(data, qx * 0.055, qy * 0.055, qz * 0.055)
-  const detail = sampleNoise(data, qx * 0.25 + 0.37, qy * 0.25 + 0.37, qz * 0.25 + 0.37)
+  const mid = sampleNoise(data, qx * 0.3 + 0.71, qy * 0.3 + 0.71, qz * 0.3 + 0.71)
+  const topEdge = 0.6 + 0.4 * mid
+  const top = 1 - smoothstep(topEdge - 0.1, topEdge, h)
+  const detail = sampleNoise(data, qx * 0.62 + 0.37, qy * 0.62 + 0.37, qz * 0.62 + 0.37)
   let structure = 1 - x * x - z * z - Math.max(y, 0) ** 2 * 0.65
   if (cover < 0.6) {
     const a = 1 - Math.hypot((x + 0.32) / 0.62, (y - 0.04) / 0.96, (z - 0.1) / 0.64)
@@ -250,7 +299,7 @@ function localDensity(data: Uint8Array, x: number, y: number, z: number, seed: n
     structure = Math.max(a, b, c) * 1.8
   }
   const body = structure + (macro - 0.5) * 1.2 - 0.08
-  return smoothstep(0, 0.36, body - (1 - detail) * 0.16) * base * top * side * (0.65 + macro * 0.65)
+  return smoothstep(0, 0.2, body - (1 - mid) * 0.38 - (1 - detail) * 0.22 + 0.14) * base * top * side * (0.65 + macro * 0.65)
 }
 
 interface LayerField { mesh: THREE.Mesh; material: THREE.ShaderMaterial; slab: CloudSlab }
