@@ -10,10 +10,10 @@ export interface GraphicsActions {
   /** Frame pacing: 'uncapped' renders as fast as the machine allows (vsync off). */
   frameMode(mode: FrameMode): void
   /** Post effects: ambient occlusion and the lens set (ghosts, fringing, grain), and clouds shading the ground. */
-  effects(fx: { ao: boolean; lens: boolean; cloudShadows: boolean }): void
+  effects(fx: { ao: boolean; lens: boolean; cloudShadows: boolean; buildings: boolean; trees: boolean }): void
 }
 
-export interface GraphicsInitial { frameMode: FrameMode; ao: boolean; lens: boolean; cloudShadows: boolean }
+export interface GraphicsInitial { frameMode: FrameMode; ao: boolean; lens: boolean; cloudShadows: boolean; buildings: boolean; trees: boolean }
 
 /** Small flight-view controls; labels describe visible choices, not GPU internals. */
 export class GraphicsPanel {
@@ -22,7 +22,7 @@ export class GraphicsPanel {
   private lastStats = 0
   private frames = 0
 
-  constructor(renderer: THREE.WebGLRenderer, actions: GraphicsActions, initial: GraphicsInitial = { frameMode: 'uncapped', ao: true, lens: true, cloudShadows: true }) {
+  constructor(renderer: THREE.WebGLRenderer, actions: GraphicsActions, initial: GraphicsInitial = { frameMode: 'uncapped', ao: true, lens: true, cloudShadows: true, buildings: true, trees: true }) {
     const style = document.createElement('style')
     style.textContent = `
       #graphics-panel{position:fixed;bottom:18px;right:18px;z-index:30;width:244px;
@@ -52,6 +52,8 @@ export class GraphicsPanel {
       <label>Ambient occlusion<input aria-label="Ambient occlusion" type="checkbox"></label>
       <label>Lens effects<input aria-label="Lens effects" type="checkbox"></label>
       <label>Cloud shadows<input aria-label="Cloud shadows" type="checkbox"></label>
+      <label>3D buildings<input aria-label="3D buildings" type="checkbox"></label>
+      <label>Trees<input aria-label="Trees" type="checkbox"></label>
       <label>Exposure<input aria-label="Exposure" type="range" min="0.4" max="1.2" step="0.05" value="0.8"></label>
       <label>Weather<select aria-label="Weather"><option value="live">Live weather</option><option value="clear">Clear</option><option value="scattered">Scattered</option><option value="overcast">Overcast</option></select></label>
       <div class="time"><button type="button" data-light="day">Daylight</button><button type="button" data-light="sunset">Sunset</button><button type="button" data-light="night">Night</button></div>
@@ -78,8 +80,11 @@ export class GraphicsPanel {
     const ao = panel.querySelector<HTMLInputElement>('[aria-label="Ambient occlusion"]')!
     const lens = panel.querySelector<HTMLInputElement>('[aria-label="Lens effects"]')!
     const shadows = panel.querySelector<HTMLInputElement>('[aria-label="Cloud shadows"]')!
+    const buildings = panel.querySelector<HTMLInputElement>('[aria-label="3D buildings"]')!
+    const trees = panel.querySelector<HTMLInputElement>('[aria-label="Trees"]')!
     ao.checked = initial.ao; lens.checked = initial.lens; shadows.checked = initial.cloudShadows
-    ao.onchange = lens.onchange = shadows.onchange = () => actions.effects({ ao: ao.checked, lens: lens.checked, cloudShadows: shadows.checked })
+    buildings.checked = initial.buildings; trees.checked = initial.trees
+    ao.onchange = lens.onchange = shadows.onchange = buildings.onchange = trees.onchange = () => actions.effects({ ao: ao.checked, lens: lens.checked, cloudShadows: shadows.checked, buildings: buildings.checked, trees: trees.checked })
     const weather = panel.querySelector<HTMLSelectElement>('[aria-label="Weather"]')!
     weather.onchange = () => actions.weather(weather.value as Parameters<GraphicsActions['weather']>[0])
     panel.querySelectorAll<HTMLButtonElement>('[data-light]').forEach(b => {

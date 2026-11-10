@@ -34,6 +34,10 @@ interface Ring {
   depthBiasM: number
 }
 
+/** How many of the finest tiles nearest the airplane wear the detailed (z16) photograph: the block of four around it, so the
+ *  ground is sharp in every direction. Each is a 2048² texture (about 21 MB with its mipmaps). */
+const DETAIL_TILES = 4
+
 const RINGS: Ring[] = [
   { z: 13, radiusM: 10_000, grid: 96, skirt: 45, depthBiasM: 0 },
   { z: 11, radiusM: 48_000, grid: 96, skirt: 120, depthBiasM: 0 },
@@ -75,6 +79,9 @@ interface Tile {
   mesh?: THREE.Mesh
   heights?: Float32Array
   gridSize?: number
+  /** Land-cover codes of the finest ring's tiles (terrain-worker.ts `cover`). */
+  cover?: Uint8Array
+  coverSize?: number
   state: 'loading' | 'ready' | 'failed'
   lastWanted: number
   /** Satellite imagery (13b) — near rings only (z ≥ 11). */
@@ -198,9 +205,25 @@ const TERRAIN_FRAG = /* glsl */ `
       sunTint*0.65*uDayness*direct*cloudShadowAt(vec3(vWXZ.x,vAltitude,vWXZ.y)));
     float night = clamp(1.0-uDayness*1.6,0.0,1.0);
     if (night>0.001 && vUrban>0.001) {
-      float h = hash(floor(ground/12.0));
-      float speck = smoothstep(0.86,0.93,h)*(0.5+0.5*fract(h*9.7));
-      lit += vUrban*night*vec3(1.0,0.5,0.16)*(0.005+0.4*speck*smoothstep(150.0,700.0,vDist));
+      // Town lights: one lamp at a jittered point in some cells of a street-sized grid, a soft disc a few metres across that
+      // never shrinks below a pixel (its light is kept, spread thinner), in sodium orange, warm white and a few cool LEDs.
+      // Far away, where a cell is smaller than a pixel, the lamps merge into their average glow.
+      const float CELL = 26.0;
+      vec2 gc = ground / CELL;
+      vec2 id = floor(gc);
+      float h = hash(id);
+      float share = 0.16 + 0.34 * vUrban;                       // lit cells: sparse suburbs to dense centres
+      float on = step(1.0 - share, h);
+      vec2 lamp = (vec2(hash(id + 17.3), hash(id + 41.9)) - 0.5) * 0.7 + 0.5;
+      float radius = max(2.6 / CELL, 0.9 * footprint / CELL);
+      float d = length(fract(gc) - lamp) / radius;
+      float disc = exp(-d * d * 1.6) * min(1.0, (2.6 / CELL) * (2.6 / CELL) / (radius * radius));
+      float kind = fract(h * 37.7);
+      vec3 lampColor = kind < 0.55 ? vec3(1.0,0.56,0.2) : kind < 0.9 ? vec3(1.0,0.82,0.56) : vec3(0.78,0.88,1.0);
+      float merge = smoothstep(0.35, 1.2, footprint / CELL);
+      vec3 points = lampColor * on * disc * (0.6 + 0.8 * fract(h * 9.7)) * 9.0;
+      vec3 glow = vec3(1.0,0.66,0.38) * share * 0.15;                // the lamps' own average over a cell
+      lit += vUrban * night * (mix(points, glow, merge) + albedo * vec3(1.0,0.7,0.42) * 0.05 * share);
     }
     vec3 direction = normalize(vec3(vWXZ.x-cameraPosition.x,
       vAltitude-cameraPosition.y,vWXZ.y-cameraPosition.z)+vec3(1e-5));
@@ -298,7 +321,7 @@ export class TileManager {
     const near = this.imageryOn && this.detailEnabled && aglM < 1800
       ? [...this.tiles.values()].filter(t => t.z === 13 && t.imTex && t.imMat)
         .map(t => { const p = this.frame.toLocal(t.latC, t.lonC); return { t, d: Math.hypot(p.n-north, p.e-east) } })
-        .filter(p => p.d < 4200).sort((a,b) => a.d-b.d).slice(0,2).map(p => p.t)
+        .filter(p => p.d < 5600).sort((a,b) => a.d-b.d).slice(0,DETAIL_TILES).map(p => p.t)
       : []
     this.detailWanted = new Set(near.map(t => t.key))
     for (const t of this.tiles.values()) if (t.detailTex && !this.detailWanted.has(t.key)) {
@@ -429,6 +452,7 @@ export class TileManager {
         // keep the elevation ramp to bound WMS load; the visual difference
         // at 60+ km is negligible under haze.
         landcoverUrl: tile.z >= 11 ? `/proxy/landcover/${z}/${x}/${y}.png` : undefined,
+        wantCover: tile.z === RINGS[0]!.z,
         gridSize: ring.grid,
         sizeEastM: tile.sizeEastM,
         sizeNorthM: tile.sizeNorthM,
@@ -483,6 +507,7 @@ export class TileManager {
     mesh.renderOrder = tile.z
     tile.mesh = mesh
     tile.heights = resp.heights
+    if (resp.cover && resp.coverSize) { tile.cover = resp.cover; tile.coverSize = resp.coverSize }
     tile.gridSize = resp.gridSize
     tile.state = 'ready'
     this.placeTile(tile)
@@ -784,6 +809,17 @@ export class TileManager {
   fineReady(lat: number, lon: number): boolean {
     const ring = RINGS[0]!
     return this.tiles.get(`${ring.z}/${Math.floor(lonToTileX(lon, ring.z))}/${Math.floor(latToTileY(lat, ring.z))}`)?.state === 'ready'
+  }
+
+  /** Land cover (nlcd-palette.ts COVER) at lat/lon from the finest ring's tile: 0 where there is none loaded or nothing to plant. */
+  coverAt(lat: number, lon: number): number {
+    const ring = RINGS[0]!
+    const tile = this.tiles.get(`${ring.z}/${Math.floor(lonToTileX(lon, ring.z))}/${Math.floor(latToTileY(lat, ring.z))}`)
+    if (!tile?.cover || !tile.coverSize) return 0
+    const n = tile.coverSize
+    const px = Math.min(n - 1, Math.max(0, Math.floor(((lon - tile.lonW) / (tile.lonE - tile.lonW)) * n)))
+    const py = Math.min(n - 1, Math.max(0, Math.floor(((tile.latN - lat) / (tile.latN - tile.latS)) * n)))
+    return tile.cover[py * n + px]!
   }
 
   /** Terrain elevation (m MSL) at lat/lon from the best loaded tile. */

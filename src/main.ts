@@ -42,7 +42,7 @@ import { AmbientRadio } from './sim/atc/ambient'
 import { trim } from './sim/trim'
 import { FT, KT, isa, kcasFromKias, indicatedAltitudeFt } from './sim/atmosphere'
 import { C172S, flapInterp } from './sim/aircraft/c172s'
-import { bearingDeg, distanceM, windDirFromNed, type LatLon } from './math/geo'
+import { bearingDeg, distanceM, metersPerDegree, windDirFromNed, type LatLon } from './math/geo'
 import { createScene } from './render/scene'
 import { SkyDome } from './render/sky'
 import { Ocean, OCEAN_HOLES } from './render/ocean'
@@ -69,6 +69,7 @@ import { upgradePlayerAircraft } from './render/local-aircraft'
 import { XP_COCKPIT_B738, eyeFromObj, loadXpCockpit, type XpCockpit, type XpCockpitModel } from './render/xplane-cockpit'
 import { makeXpDatarefReader } from './render/xplane-datarefs'
 import { XP_GA_COCKPITS, gaCockpitFor } from './render/xplane-ga-cockpits'
+import { Scenery, sceneryUniforms } from './world/scenery'
 import { makeXpGaDatarefReader, type XpGaNav } from './render/xplane-ga-datarefs'
 import { mcpTexts, formatCom, formatNav } from './render/xplane-panel'
 import { XpInteraction, describeXpAction, type XpAction, type XpHover } from './render/xplane-interact'
@@ -147,11 +148,11 @@ const FX_KEY = 'oh-fx'
 function loadFrameMode(): FrameMode {
   try { const v = localStorage.getItem(FRAME_MODE_KEY); return isFrameMode(v) ? v : 'uncapped' } catch { return 'uncapped' }
 }
-function loadFx(): { ao: boolean; lens: boolean; cloudShadows: boolean } {
+function loadFx(): { ao: boolean; lens: boolean; cloudShadows: boolean; buildings: boolean; trees: boolean } {
   try {
-    const j = JSON.parse(localStorage.getItem(FX_KEY) ?? 'null') as { ao?: unknown; lens?: unknown; cloudShadows?: unknown } | null
-    return { ao: j?.ao !== false, lens: j?.lens !== false, cloudShadows: j?.cloudShadows !== false }
-  } catch { return { ao: true, lens: true, cloudShadows: true } }
+    const j = JSON.parse(localStorage.getItem(FX_KEY) ?? 'null') as { ao?: unknown; lens?: unknown; cloudShadows?: unknown; buildings?: unknown; trees?: unknown } | null
+    return { ao: j?.ao !== false, lens: j?.lens !== false, cloudShadows: j?.cloudShadows !== false, buildings: j?.buildings !== false, trees: j?.trees !== false }
+  } catch { return { ao: true, lens: true, cloudShadows: true, buildings: true, trees: true } }
 }
 const initialFx = loadFx()
 let lensStrength = initialFx.lens ? 1 : 0
@@ -233,6 +234,38 @@ const loop = new FixedTimestepLoop(120)
 const frame = new WorldFrame(KHAF)
 const airports = new Airports(scene, frame)
 const tiles = new TileManager(scene, frame, (s, n, w, e) => airports.runwaysInBounds(s, n, w, e))
+/** Real buildings and trees around the airplane (world/scenery.ts). */
+const scenery = new Scenery(scene, {
+  toLocal: (lat, lon) => frame.toLocal(lat, lon),
+  groundAt: (lat, lon) => airports.flattenElevation(tiles.elevationAt(lat, lon), lat, lon),
+  fineReady: (lat, lon) => tiles.fineReady(lat, lon),
+  coverAt: (lat, lon) => tiles.coverAt(lat, lon),
+  // An airport draws its own terminals and hangars: nothing within reach of a runway's centreline, or inside the pavement box of a large field.
+  airportMask: (lat, lon, radiusM) => {
+    const m = metersPerDegree(lat)
+    const RUNWAY_MARGIN_M = 380, BOX_MARGIN_M = 120
+    const segments: Array<[number, number, number, number]> = []
+    const boxes: Array<[number, number, number, number]> = []
+    for (const ap of airports.near(lat, lon, radiusM)) {
+      for (const r of ap.r) if (!r.pad) segments.push([(r.lo1 - lon) * m.east, (r.la1 - lat) * m.north, (r.lo2 - lon) * m.east, (r.la2 - lat) * m.north])
+      if (ap.x) boxes.push([(ap.x[1] - lon) * m.east - BOX_MARGIN_M, (ap.x[0] - lat) * m.north - BOX_MARGIN_M, (ap.x[3] - lon) * m.east + BOX_MARGIN_M, (ap.x[2] - lat) * m.north + BOX_MARGIN_M])
+      else if (!ap.r.some((r) => !r.pad)) boxes.push([(ap.lo - lon) * m.east - 150, (ap.la - lat) * m.north - 150, (ap.lo - lon) * m.east + 150, (ap.la - lat) * m.north + 150])
+    }
+    if (!segments.length && !boxes.length) return () => false
+    return (pLat, pLon) => {
+      const e = (pLon - lon) * m.east, n = (pLat - lat) * m.north
+      for (const b of boxes) if (e >= b[0] && e <= b[2] && n >= b[1] && n <= b[3]) return true
+      for (const [ax, ay, bx, by] of segments) {
+        const dx = bx - ax, dy = by - ay
+        const t = Math.min(Math.max(((e - ax) * dx + (n - ay) * dy) / Math.max(dx * dx + dy * dy, 1e-6), 0), 1)
+        if (Math.hypot(e - ax - t * dx, n - ay - t * dy) < RUNWAY_MARGIN_M) return true
+      }
+      return false
+    }
+  },
+})
+scenery.buildingsOn = initialFx.buildings
+scenery.treesOn = initialFx.trees
 airports.terrainAt = (lat, lon) => tiles.elevationAt(lat, lon)
 airports.terrainReady = (lat, lon) => tiles.fineReady(lat, lon)
 airports.onLandMask = (lat, lon, radiusM) => tiles.reloadAround(lat, lon, radiusM)
@@ -2646,6 +2679,7 @@ function rebaseIfNeeded(): void {
   aircraft.posNed.y = 0
   tiles.onRebase()
   airports.positionAll()
+  scenery.positionAll()
   camera.position.x -= e
   camera.position.z += n
   chase.shiftWorld(-e, n)
@@ -3291,6 +3325,7 @@ function advanceFrame(elapsed: number, now: number): void {
   const ll = frame.fromLocal(pos.x, pos.y)
   tiles.update(pos.x, pos.y)
   tiles.updateDetail(pos.x, pos.y, aircraft.data.aglFt*FT, now)
+  scenery.update(ll.lat, ll.lon, aircraft.data.aglFt * FT, now)
   if (now - lastVisualUpdate > 2000) {
     lastVisualUpdate = now
     airports.updateVisuals(ll.lat, ll.lon)
@@ -3681,6 +3716,7 @@ function advanceFrame(elapsed: number, now: number): void {
   // 13c night lights: airport layer + aircraft exterior lights.
   const night = Math.min(Math.max(1 - dayness * 1.6, 0), 1)
   airports.updateNight(loop.simTime, night)
+  sceneryUniforms.uSceneryNight.value = night
   airports.updateServices(loop.simTime, camera.position.x, camera.position.z)
   // 13d PAPI: colored from the camera's real elevation angle each frame.
   airports.updatePapi(camera.position.x, camera.position.y, camera.position.z)
@@ -4063,6 +4099,12 @@ Object.assign(window as unknown as Record<string, unknown>, {
     setTimeout(() => scene.remove(group), 120_000)
     return { placed: list.length }
   },
+  /** The 3D scenery layer (verification): tiles, buildings, trees; pass switches to turn buildings or trees on and off. */
+  __ohScenery: (o?: { buildings?: boolean; trees?: boolean }) => {
+    if (typeof o?.buildings === 'boolean') scenery.buildingsOn = o.buildings
+    if (typeof o?.trees === 'boolean') scenery.treesOn = o.trees
+    return { buildingsOn: scenery.buildingsOn, treesOn: scenery.treesOn, ...scenery.stats(), meshes: scenery.debug() }
+  },
   __ohGraphics: () => ({
     sunElevation: sky.elevationDeg,
     detailedImagery: tiles.debugImagery().detailed,
@@ -4399,6 +4441,8 @@ const graphicsActions: GraphicsActions = {
     postStrength.ao = fx.ao ? 0.8 : 0
     lensStrength = fx.lens ? 1 : 0
     cloudShadows.enabled = fx.cloudShadows
+    scenery.buildingsOn = fx.buildings
+    scenery.treesOn = fx.trees
     try { localStorage.setItem(FX_KEY, JSON.stringify(fx)) } catch { /* storage unavailable */ }
   },
   clearInput: () => input.clearHeld(),
@@ -4434,7 +4478,7 @@ const graphicsActions: GraphicsActions = {
     wxDesc = `MANUAL ${mode.toUpperCase()} · 300@8 10SM`
   },
 }
-const graphicsPanel = new GraphicsPanel(renderer, graphicsActions, { frameMode: framePacer.currentMode, ao: postStrength.ao > 0, lens: lensStrength > 0, cloudShadows: cloudShadows.enabled })
+const graphicsPanel = new GraphicsPanel(renderer, graphicsActions, { frameMode: framePacer.currentMode, ao: postStrength.ao > 0, lens: lensStrength > 0, cloudShadows: cloudShadows.enabled, buildings: scenery.buildingsOn, trees: scenery.treesOn })
 
 new LoadingPanel(FLEET_ACTIVE.params, {
   current: currentLoading,

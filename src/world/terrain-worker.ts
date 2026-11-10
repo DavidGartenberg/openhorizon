@@ -5,7 +5,7 @@
  * origin = tile center, y = height meters). Transfers buffers to main.
  */
 import { terrariumDecode, flattenForRunway, fillShorePits, tileGridUv } from '../math/geo'
-import { classifyNlcdPixel } from './nlcd-palette'
+import { classifyNlcdPixel, coverCode } from './nlcd-palette'
 import { BELOW_SEA_FIELD_M } from './airport-flatten'
 
 export interface TileRequest {
@@ -15,6 +15,8 @@ export interface TileRequest {
   /** NLCD land-cover tile for biome coloring (§6.2); fetch failure or
    *  off-legend pixels fall back to the elevation/slope ramp. */
   landcoverUrl?: string
+  /** Also answer the land cover itself, one code per land-cover pixel (nlcd-palette.ts COVER): where the trees go. */
+  wantCover?: boolean
   gridSize: number
   sizeEastM: number
   sizeNorthM: number
@@ -36,6 +38,9 @@ export interface TileResponse {
   indices: Uint32Array
   heights: Float32Array // gridSize² for elevation queries
   gridSize: number
+  /** Land-cover codes, coverSize² (row 0 = north), when asked for and the land cover loaded. */
+  cover?: Uint8Array
+  coverSize?: number
   error?: string
 }
 
@@ -248,6 +253,11 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
     void skirtIdx
     void vertsPerRow
 
+    let cover: Uint8Array | undefined
+    if (req.wantCover && lc && lc.height === lcPx) {
+      cover = new Uint8Array(lcPx * lcPx)
+      for (let k = 0, o = 0; k < cover.length; k++, o += 4) cover[k] = coverCode(lc.data[o]!, lc.data[o + 1]!, lc.data[o + 2]!, lc.data[o + 3]!)
+    }
     const indices = new Uint32Array(quads)
     const resp: TileResponse = {
       key: req.key,
@@ -260,8 +270,10 @@ self.onmessage = async (ev: MessageEvent<TileRequest>) => {
       indices,
       heights,
       gridSize: G,
+      ...(cover ? { cover, coverSize: lcPx } : {}),
     }
     ;(self as unknown as Worker).postMessage(resp, [
+      ...(cover ? [cover.buffer] : []),
       positions.buffer,
       normals.buffer,
       colors.buffer,

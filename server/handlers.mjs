@@ -695,6 +695,22 @@ export async function route(url, res, method = 'GET', req) {
       res.end(json)
       return true
     }
+    if (url.startsWith('/api/osm-buildings/')) {
+      const m = url.split('?')[0].match(/^\/api\/osm-buildings\/(\d+)\/(\d+)\/(\d+)\.json$/)
+      if (m) {
+        const { buildingTile } = await import('./osm-buildings.mjs')
+        try {
+          const json = await buildingTile(m[1], m[2], m[3])
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=604800', 'Access-Control-Allow-Origin': '*' })
+          res.end(json)
+        } catch (e) {
+          // Overpass busy or unreachable: the client keeps flying without this tile and asks again later.
+          res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' })
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }))
+        }
+        return true
+      }
+    }
     if (url.startsWith('/api/osm/')) {
       const m = url.match(/^\/api\/osm\/([A-Z0-9]{3,4})\.json\?lat=(-?[\d.]+)&lon=(-?[\d.]+)$/)
       if (m) {
