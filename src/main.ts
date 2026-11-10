@@ -91,7 +91,7 @@ import { ParkedAircraftLayer } from './render/parked-aircraft-layer'
 import { sharedTrafficModels } from './render/traffic-model'
 import { XpShipGraphics, chooseTrafficModel } from './render/traffic-model'
 import { ROSTER, rosterParams } from './sim/aircraft/roster'
-import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, type SwitchId } from './render/cockpit'
+import { buildCockpit, updateCockpitControls, updateCockpitDisplays, CockpitInteraction, tuneFrequency, type SwitchId } from './render/cockpit'
 import { vSpeedArcs, type PfdInput } from './cockpit/pfd'
 import { airspaceStrokeStyle, filterAirspaceInRange, glideRangeRadiusM } from './cockpit/mfd'
 import { drawGaBoeingNd, drawGaBoeingPfd, drawBoeingEngineColumn } from './cockpit/boeing-ga-displays'
@@ -532,10 +532,25 @@ function xpAct(a: XpAction): void {
       break
     case 'baro': baroSetInHg = Math.min(Math.max(baroSetInHg + 0.01 * a.steps, 27.5), 31.5); break
     case 'course': radios.obs1Deg = (((radios.obs1Deg + a.steps) % 360) + 360) % 360; break
-    case 'gaSwitch': systemsControls[a.id] = a.on; break
+    case 'gaSwitch': systemsControls[a.id] = a.on === 'toggle' ? !systemsControls[a.id] : a.on; break
+    case 'tune': {
+      // The outer knob steps whole megahertz, the inner one channel spacing (25 kHz COM, 50 kHz NAV).
+      const r = radios[a.radio], com = a.radio === 'com1'
+      r.standbyMhz = tuneFrequency(r.standbyMhz, a.steps, a.coarse ? 1 : com ? 0.025 : 0.05, com ? 118.0 : 108.0, com ? 136.0 : 117.95)
+      // These panels' own frequency windows are X-Plane's 2D instruments (not drawn here), so the tuning is read out.
+      toast(`${a.radio.toUpperCase()} STANDBY ${r.standbyMhz.toFixed(com ? 3 : 2)}`)
+      break
+    }
+    case 'flip': {
+      const r = radios[a.radio], t = r.activeMhz
+      r.activeMhz = r.standbyMhz; r.standbyMhz = t
+      toast(`${a.radio.toUpperCase()} ${r.activeMhz.toFixed(a.radio === 'com1' ? 3 : 2)} ACTIVE`)
+      break
+    }
     case 'drag':
-      // Up is more thrust / nose-up trim; about 240 px of travel moves a lever end to end.
+      // Up is more thrust / richer / nose-up trim; about 240 px of travel moves a lever end to end.
       if (a.control === 'throttle') aircraft.controls.throttle = Math.min(Math.max(aircraft.controls.throttle - a.dyPx / 240, 0), 1)
+      else if (a.control === 'mixture') aircraft.controls.mixture = Math.min(Math.max(aircraft.controls.mixture - a.dyPx / 240, 0), 1)
       else aircraft.controls.trim = Math.min(Math.max(aircraft.controls.trim - a.dyPx / 600, -1), 1)
       break
     case 'unsimulated': {

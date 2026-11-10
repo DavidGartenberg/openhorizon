@@ -40,6 +40,7 @@ export class GraphicsPanel {
       #graphics-panel button:hover{background:#3a505f;} #graphics-panel button:focus-visible,
       #graphics-panel select:focus-visible{outline:2px solid #a9dbe5;outline-offset:2px;}
       #graphics-panel output{display:block;color:#9eafb9;font:10px/1.5 ui-monospace,monospace;margin-top:12px;}
+      #graphics-panel .credit{display:block;color:#7f909a;font-size:10px;margin-top:8px;}
       @media(max-height:500px){#graphics-panel{bottom:6px;right:6px}.controls{max-height:280px;overflow:auto}}
     `
     document.head.appendChild(style)
@@ -59,6 +60,7 @@ export class GraphicsPanel {
       <div class="time"><button type="button" data-light="day">Daylight</button><button type="button" data-light="sunset">Sunset</button><button type="button" data-light="night">Night</button></div>
       <label>Traffic labels<input aria-label="Traffic labels" type="checkbox" checked></label>
       <output aria-label="Rendering statistics"></output>
+      <small class="credit">Buildings © OpenStreetMap contributors, tiles by OpenFreeMap</small>
     </div>`
     // Let native controls consume keys without also flying the airplane.
     panel.addEventListener('keydown', e => e.stopPropagation())

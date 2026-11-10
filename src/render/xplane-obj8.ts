@@ -865,10 +865,23 @@ async function loadTextureWithFallback(
     if (!pending) { pending = loadTextureWithFallback(name, base, srgb, warnings, undefined, undefined, maxSize); cache.set(key, pending) }
     return pending
   }
-  const found = await firstTexture(textureCandidates(name, base), srgb, maxSize)
-  if (!found) warnings.push(`texture not found: ${base}${name}`)
-  return found
+  // An OBJ names its textures .png; X-Plane ships most of them as .dds. Which of the two a folder holds is learned
+  // from its first texture, so the rest are asked for by the right name first instead of each missing once.
+  const urls = textureCandidates(name, base)
+  const swapped = urls.length === 2 && alternateFirst.get(base) === true
+  if (swapped) urls.reverse()
+  for (let i = 0; i < urls.length; i++) {
+    try {
+      const texture = await loadTexture(urls[i]!, srgb, maxSize)
+      if (urls.length === 2) alternateFirst.set(base, (i === 1) !== swapped)
+      return texture
+    } catch { /* try the next candidate */ }
+  }
+  warnings.push(`texture not found: ${base}${name}`)
+  return null
 }
+/** Per texture folder: true when its files turned out to carry the alternate extension (.dds for a named .png). */
+const alternateFirst = new Map<string, boolean>()
 
 export interface Obj8MaterialMaps {
   map?: THREE.Texture | null

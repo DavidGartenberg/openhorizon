@@ -28,11 +28,14 @@ export type XpAction =
   | { kind: 'landingLights' }
   | { kind: 'baro'; steps: number }
   | { kind: 'course'; steps: number }
-  /** A light airplane's electrical / fuel-pump rocker: up = ON. */
-  | { kind: 'gaSwitch'; id: GaSwitch; on: boolean }
+  /** A light airplane's electrical / fuel-pump rocker (up = ON), or a push button that flips it. */
+  | { kind: 'gaSwitch'; id: GaSwitch; on: boolean | 'toggle' }
+  /** A radio's standby frequency, by the outer (MHz) or inner (kHz) knob; and its active / standby swap. */
+  | { kind: 'tune'; radio: 'com1' | 'nav1'; coarse: boolean; steps: number }
+  | { kind: 'flip'; radio: 'com1' | 'nav1' }
   | { kind: 'unsimulated'; tooltip: string }
   /** A held drag on a lever or wheel: how far the pointer moved since the last frame (pixels, down is positive). */
-  | { kind: 'drag'; control: 'throttle' | 'trim'; dyPx: number }
+  | { kind: 'drag'; control: DragControl; dyPx: number }
   | { kind: 'none' }
 
 export type GaSwitch = 'masterBattery' | 'masterAlternator' | 'avionicsSwitch' | 'pitotHeat' | 'boostPumpOn'
@@ -45,6 +48,8 @@ const GA_SWITCHES: Record<string, GaSwitch> = {
   'sim/ice/pitot_heat0_on': 'pitotHeat',
   'sim/fuel/fuel_pumps_on': 'boostPumpOn',
 }
+
+export type DragControl = 'throttle' | 'trim' | 'mixture'
 
 /** Where the pointer is on a control (relative to its centre), and the wheel travel if the wheel was used. */
 export interface XpPress { right: boolean; upper: boolean; wheel?: number }
@@ -64,6 +69,29 @@ const PRESS_BUTTONS: Record<string, XpAction> = {
   'laminar/B738/autopilot/capt_autothro_disco_press': { kind: 'atDisconnect' },
   'laminar/B738/autopilot/fo_autothro_disco_press': { kind: 'atDisconnect' },
   'sim/flight_controls/park_brake_valve_toggle': { kind: 'parking' },
+  // ---- the light airplanes' panels (X-Plane's stock commands)
+  'sim/flight_controls/brakes_toggle_max': { kind: 'parking' },
+  'sim/autopilot/heading': { kind: 'ap', button: 'hdg' },
+  'sim/autopilot/NAV': { kind: 'ap', button: 'nav' },
+  'sim/autopilot/approach': { kind: 'ap', button: 'apr' },
+  'sim/autopilot/altitude_hold': { kind: 'ap', button: 'alt' },
+  'sim/autopilot/vertical_speed': { kind: 'ap', button: 'vs' },
+  'sim/autopilot/servos_toggle': { kind: 'ap', button: 'ap' },
+  'sim/autopilot/servos_on': { kind: 'ap', button: 'ap' },
+  'sim/autopilot/servos_off_any': { kind: 'disengage' },
+  'sim/flight_controls/flaps_down': { kind: 'flaps', steps: 1 },
+  'sim/flight_controls/flaps_up': { kind: 'flaps', steps: -1 },
+  'sim/flight_controls/landing_gear_toggle': { kind: 'gear' },
+  'sim/flight_controls/pitch_trim_up': { kind: 'drag', control: 'trim', dyPx: -12 },
+  'sim/flight_controls/pitch_trim_down': { kind: 'drag', control: 'trim', dyPx: 12 },
+  'sim/lights/landing_lights_toggle': { kind: 'landingLights' },
+  'sim/systems/avionics_toggle': { kind: 'gaSwitch', id: 'avionicsSwitch', on: 'toggle' },
+  'sim/electrical/battery_1_toggle': { kind: 'gaSwitch', id: 'masterBattery', on: 'toggle' },
+  'sim/electrical/generator_1_toggle': { kind: 'gaSwitch', id: 'masterAlternator', on: 'toggle' },
+  'sim/ice/pitot_heat0_tog': { kind: 'gaSwitch', id: 'pitotHeat', on: 'toggle' },
+  'sim/fuel/fuel_pumps_tog': { kind: 'gaSwitch', id: 'boostPumpOn', on: 'toggle' },
+  'sim/radios/com1_standy_flip': { kind: 'flip', radio: 'com1' },
+  'sim/radios/nav1_standy_flip': { kind: 'flip', radio: 'nav1' },
 }
 
 /** Knob command pairs, first = up/clockwise, second = down/counter-clockwise. */
@@ -75,16 +103,35 @@ const KNOBS: Array<[string, (steps: number) => XpAction]> = [
   ['sim/flight_controls/brakes_up_auto', (steps) => ({ kind: 'autobrake', steps })],
   ['sim/instruments/barometer_up', (steps) => ({ kind: 'baro', steps })],
   ['sim/radios/obs_HSI_up', (steps) => ({ kind: 'course', steps })],
+  ['sim/radios/obs1_up', (steps) => ({ kind: 'course', steps })],
+  ['sim/instruments/barometer_copilot_up', (steps) => ({ kind: 'baro', steps })],
+  ['sim/flight_controls/flaps_down', (steps) => ({ kind: 'flaps', steps })],
+  ['sim/flight_controls/pitch_trim_up', (steps) => ({ kind: 'drag', control: 'trim', dyPx: -12 * steps })],
+  ['sim/radios/stby_com1_coarse_up', (steps) => ({ kind: 'tune', radio: 'com1', coarse: true, steps })],
+  ['sim/radios/stby_com1_fine_up', (steps) => ({ kind: 'tune', radio: 'com1', coarse: false, steps })],
+  ['sim/radios/stby_com1_fine_up_833', (steps) => ({ kind: 'tune', radio: 'com1', coarse: false, steps })],
+  ['sim/radios/stby_nav1_coarse_up', (steps) => ({ kind: 'tune', radio: 'nav1', coarse: true, steps })],
+  ['sim/radios/stby_nav1_fine_up', (steps) => ({ kind: 'tune', radio: 'nav1', coarse: false, steps })],
 ]
 
 /** Levers and wheels that follow the pointer while it is held on them. */
-const DRAGGABLE: Record<string, 'throttle' | 'trim'> = {
+const DRAGGABLE: Record<string, DragControl> = {
   'sim/cockpit2/engine/actuators/throttle_jet_rev_ratio[0]': 'throttle',
   'sim/cockpit2/engine/actuators/throttle_jet_rev_ratio[1]': 'throttle',
   'sim/cockpit2/engine/actuators/throttle_jet_rev_ratio_all': 'throttle',
   'sim/cockpit2/controls/elevator_trim': 'trim',
+  // The light airplanes' plungers and quadrant levers (every engine's lever moves the one throttle and mixture this simulator has).
+  'sim/cockpit2/engine/actuators/throttle_ratio[0]': 'throttle',
+  'sim/cockpit2/engine/actuators/throttle_ratio[1]': 'throttle',
+  'sim/cockpit2/engine/actuators/throttle_ratio_all': 'throttle',
+  'sim/cockpit2/engine/actuators/throttle_beta_rev_ratio[0]': 'throttle',
+  'sim/cockpit2/engine/actuators/throttle_beta_rev_ratio[1]': 'throttle',
+  'sim/cockpit2/engine/actuators/throttle_beta_rev_ratio_all': 'throttle',
+  'sim/cockpit2/engine/actuators/mixture_ratio[0]': 'mixture',
+  'sim/cockpit2/engine/actuators/mixture_ratio[1]': 'mixture',
+  'sim/cockpit2/engine/actuators/mixture_ratio_all': 'mixture',
 }
-export const dragControlOf = (m: Obj8Manip): 'throttle' | 'trim' | null => (m.type === 'drag_rotate' ? DRAGGABLE[m.datarefs[0] ?? ''] ?? null : null)
+export const dragControlOf = (m: Obj8Manip): DragControl | null => (m.type === 'drag_rotate' || m.type === 'drag_axis' ? DRAGGABLE[m.datarefs[0] ?? ''] ?? null : null)
 
 const wheelSteps = (wheel: number): number => -Math.sign(wheel) * Math.max(1, Math.round(Math.abs(wheel)))
 
@@ -128,6 +175,7 @@ export function xpActionFor(m: Obj8Manip, press: XpPress): XpAction {
       return unsimulated
     }
     case 'drag_axis':
+      if (dragControlOf(m)) return { kind: 'none' }        // a throttle or mixture plunger follows the pointer while held
       // A light airplane's flap lever slides: the lower half and scrolling down give a notch more flap.
       if (dr === 'sim/cockpit2/controls/flap_ratio') return { kind: 'flaps', steps: press.wheel ? Math.sign(press.wheel) * Math.max(1, Math.round(Math.abs(press.wheel))) : press.upper ? -1 : 1 }
       return unsimulated
