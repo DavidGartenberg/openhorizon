@@ -3310,3 +3310,38 @@ See `docs/atc-radio.md`. What changed:
 
 - New `scripts/voice/prosody.mjs`: same six transmissions in every voice, F0 tracked by autocorrelation. Neural voices: pitch sd 2.35–3.82 semitones (mean 3.08), p10–p90 range 6–10 st; built-in: 1.73–3.53 (mean 2.39; Karen 1.73, Moira 1.99, Grandpa 1.74 flat; Samantha 3.53, Daniel 3.15 lively). Natural conversational English is roughly 2–4 st (rule of thumb).
 - This is evidence about intonation only, not a verdict on whether the voices sound human: timbre, rhythm and artefacts are unmeasured. The user has the two listening samples; their ear is the remaining check.
+
+### Throttle quadrant: reverse axis and a reverse zone (2026-11-07)
+
+- Controllers panel (J): "Reverse throttle axes" swaps the idle and full-power ends of both levers (the calibration is mirrored), and "Reverse zone: lower 25% (toggle)" puts IDLE a quarter of the way up the travel with reverse below it. Both write user bindings, so the TCA preset never undoes them.
+- The TCA preset (v8) ships with the 25 % reverse zone, and levers bound to the quadrant before it get the zone once (direction kept; a calibrated lever keeps its own IDLE; a zone toggled off stays off).
+- Reverse depth is a thrust command only on the ground in a type with reversers; in the air or without reversers the reverse zone is idle (it used to become forward power).
+- Verified with simulated lever readings only (controller tests); not on the physical quadrant.
+
+### X-Plane cockpits across the fleet (2026-11-08)
+
+- Every transport flies the X-Plane 737-800 deck (placed at that type's design eye, scaled to its cabin); every light airplane flies an X-Plane light-airplane cockpit: its own (C172 SP, SR22, Baron 58, PA-18, ASK 21, King Air C90B) or the closest by how it is flown. Read at run time through `/xp/`; nothing copied.
+- `xplane-ga-cockpits.ts` (objects, click map, panel art, eye from each `.acf`), `xplane-ga-datarefs.ts` (steam gauges, levers, CDI / HSI, clocks, engine instruments in X-Plane units). Manifold pressure, turboprop N1 and ITT are derived from throttle and shaft power.
+- Parser: `ATTR_cockpit_device` names its screen (G1000 and GNS screens show the sim's PFD and map); numbers are read like X-Plane's `atof` (the C172's own VOR gauge has `-2.5.000000`).
+- The 737 panel art waited on `img.decode()`, which Chrome holds pending in a background tab: the deck never finished loading there. It now waits for `load`.
+- Looked at in the browser: all six light cockpits, the 737, an A320 and a CJ1. Limits: X-Plane's run-time 2D instruments (King Air EFIS, radio windows) are dark.
+
+### 3D scenery: real buildings and trees (2026-11-09)
+
+- Buildings from OpenStreetMap footprints (OpenFreeMap vector tiles, decoded and cached by `server/osm-buildings.mjs`; `/api/osm-buildings/14/{x}/{y}.json`), one mesh per z14 tile within 3.4 km: walls to height, flat or pitched roofs, windows drawn by the material (dark glass by day, a third lit at night).
+- Trees where the land cover says forest (the terrain worker now returns land-cover codes; `tiles.coverAt`), plus garden-sized trees on built-up ground the same tile's buildings and roads leave free. United States only.
+- Airports are left clear (380 m either side of a runway centreline, or a large field's pavement box). View & graphics: "3D buildings" and "Trees" switches; data credit.
+- Town lights at night are round lamps in three colours instead of 12 m orange squares; the detailed photograph covers four tiles instead of two.
+- Checked at Half Moon Bay and KSFO by day and night; about 1 ms of a 29 ms frame at KSFO (18,376 buildings). Limits: no shadows from buildings or trees; typical, not surveyed, heights and colours where OSM has none.
+
+### Clouds: cumulus shapes (2026-11-09)
+
+- Density noise is a baked 64³ billow field with a cauliflower-scale octave, a firm edge and turreted tops (GLSL and its CPU copy changed together; shadows share the GLSL). Shading: darker flat bases, crease shading from a near sun tap, powdered edges.
+- Checked from below, beside and above a scattered layer, under an overcast and at sunset.
+
+### Light-airplane cockpits: working controls, and a click-map parser fix (2026-11-10)
+
+- Throttle and mixture plungers follow a drag; COM 1 / NAV 1 standby tuning and flip, OBS, barometer, flap up / down, trim, parking brake, the stock autopilot buttons and the toggle forms of the electrical switches act.
+- Found by trying it in the C172: `ATTR_manip_drag_axis` was parsed with seven numbers where the format has five (levers got the last word of their tooltip as their dataref), and `ATTR_manip_wheel` replaced the manipulator before it (the trim wheel went dead). Fixed, with the one-command switch forms, `wrap`, axis switches and `drag_axis_pix` added. Checked in the C172: throttle 0 → 0.375 and mixture 1 → 0.71 by dragging.
+- Textures: a folder's extension (.dds for a named .png) is learned from its first texture instead of every file missing once.
+- Gate: typecheck clean; all tests pass except the five `dg800` tests of the other session's uncommitted work.
