@@ -21,7 +21,52 @@ export interface BuildingRecord {
   /** Outline as micro-degree offsets from the tile's south-west corner: dLat, dLon, … */
   p: number[]
 }
-export interface BuildingTileData { v: number; s: number; w: number; n: number; e: number; b: BuildingRecord[] }
+/** A road or railway: half width in metres and its centreline in the same micro-degree offsets. */
+export interface RoadRecord { w: number; p: number[] }
+export interface BuildingTileData { v: number; s: number; w: number; n: number; e: number; b: BuildingRecord[]; r?: RoadRecord[] }
+
+/**
+ * What stands on a tile's ground, as a grid of cells: buildings (their bounding rectangles, with a margin) and roads
+ * (discs along their centrelines). Trees are kept off occupied cells.
+ */
+export class Occupancy {
+  readonly cells: Uint8Array
+  constructor(readonly size: number, readonly widthM: number, readonly heightM: number) { this.cells = new Uint8Array(size * size) }
+
+  /** Mark the rectangle around points given in metres from the tile's south-west corner (east, north), grown by `marginM`. */
+  markBox(pts: readonly Pt[], marginM: number): void {
+    let e0 = Infinity, e1 = -Infinity, n0 = Infinity, n1 = -Infinity
+    for (const p of pts) { if (p[0] < e0) e0 = p[0]; if (p[0] > e1) e1 = p[0]; if (p[1] < n0) n0 = p[1]; if (p[1] > n1) n1 = p[1] }
+    this.fill(e0 - marginM, n0 - marginM, e1 + marginM, n1 + marginM)
+  }
+
+  /** Mark a strip `halfWidthM` either side of a line. */
+  markLine(pts: readonly Pt[], halfWidthM: number): void {
+    const step = Math.min(this.widthM, this.heightM) / this.size
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const a = pts[i]!, b = pts[i + 1]!
+      const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / step))
+      for (let k = 0; k <= n; k++) {
+        const e = a[0] + ((b[0] - a[0]) * k) / n, nn = a[1] + ((b[1] - a[1]) * k) / n
+        this.fill(e - halfWidthM, nn - halfWidthM, e + halfWidthM, nn + halfWidthM)
+      }
+    }
+  }
+
+  private fill(e0: number, n0: number, e1: number, n1: number): void {
+    const s = this.size
+    const x0 = Math.max(0, Math.floor((e0 / this.widthM) * s)), x1 = Math.min(s - 1, Math.floor((e1 / this.widthM) * s))
+    const y0 = Math.max(0, Math.floor((n0 / this.heightM) * s)), y1 = Math.min(s - 1, Math.floor((n1 / this.heightM) * s))
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) this.cells[y * s + x] = 1
+  }
+
+  /** Is the cell at this point (metres east and north of the south-west corner) taken? Outside the tile counts as taken. */
+  occupied(eastM: number, northM: number): boolean {
+    const s = this.size
+    const x = Math.floor((eastM / this.widthM) * s), y = Math.floor((northM / this.heightM) * s)
+    return x < 0 || y < 0 || x >= s || y >= s || this.cells[y * s + x] === 1
+  }
+}
 
 export type Pt = [number, number]
 

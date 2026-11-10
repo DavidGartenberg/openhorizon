@@ -4,8 +4,9 @@
  *  - Buildings come from OpenStreetMap footprints (server/osm-buildings.mjs), one z14 tile at a time within a few
  *    kilometres, built into one mesh per tile (buildings.ts) a few milliseconds per frame. Windows are drawn by the
  *    material from each wall's own layout: dark glass by day, a share of them lit at night.
- *  - Trees stand where the land cover says forest (the terrain tiles' land-cover codes, tiles.ts `coverAt`; United
- *    States only, where that data exists), as instanced low-polygon crowns per z16 cell.
+ *  - Trees stand where the land cover says forest, and more thinly along the streets and in the yards of built-up
+ *    land, off the buildings and roads of the same OpenStreetMap tile (the terrain tiles' land-cover codes, tiles.ts
+ *    `coverAt`; United States only, where that data exists), as instanced low-polygon crowns per z16 cell.
  *
  * Both sit on the terrain's own heights and are placed by latitude and longitude, so they survive the floating
  * origin's rebase (`positionAll`). Airports draw their own buildings; their boxes are left empty here.
@@ -13,7 +14,7 @@
 import * as THREE from 'three'
 import { metersPerDegree, lonToTileX, latToTileY, tileXToLon, tileYToLat } from '../math/geo'
 import { patchAtmosphere } from '../render/atmosphere-materials'
-import { BuildingMeshBuilder, buildingSeed, footprintMetres, hash01, type BuildingTileData } from './buildings'
+import { BuildingMeshBuilder, Occupancy, buildingSeed, footprintMetres, hash01, type BuildingTileData, type Pt } from './buildings'
 import { COVER } from './nlcd-palette'
 
 export interface SceneryBox { latS: number; latN: number; lonW: number; lonE: number }
@@ -140,12 +141,17 @@ function crownGeometry(kind: 'conifer' | 'broadleaf'): THREE.BufferGeometry {
 
 /** Share of grid points that get a tree, by land cover. */
 const TREE_DENSITY: Record<number, number> = {
-  [COVER.deciduous]: 0.85, [COVER.evergreen]: 0.92, [COVER.mixed]: 0.88, [COVER.woodyWetland]: 0.6, [COVER.devOpen]: 0.1,
+  [COVER.deciduous]: 0.85, [COVER.evergreen]: 0.92, [COVER.mixed]: 0.88, [COVER.woodyWetland]: 0.6,
+  // Built-up land: of the grid points left free by buildings and roads (a minority of them in a dense suburb).
+  [COVER.devOpen]: 0.32, [COVER.devLow]: 0.5, [COVER.devMed]: 0.42, [COVER.devHigh]: 0.14,
 }
 /** Share of the trees that are conifers, by land cover. */
 const CONIFER_SHARE: Record<number, number> = {
-  [COVER.deciduous]: 0.08, [COVER.evergreen]: 0.9, [COVER.mixed]: 0.5, [COVER.woodyWetland]: 0.2, [COVER.devOpen]: 0.3,
+  [COVER.deciduous]: 0.08, [COVER.evergreen]: 0.9, [COVER.mixed]: 0.5, [COVER.woodyWetland]: 0.2,
+  [COVER.devOpen]: 0.25, [COVER.devLow]: 0.22, [COVER.devMed]: 0.15, [COVER.devHigh]: 0.1,
 }
+/** Built-up land: its trees stand between the buildings and roads, and are garden-sized. */
+const isBuiltUp = (cover: number): boolean => cover >= COVER.devOpen && cover <= COVER.devHigh
 
 export interface TreeSpec { lat: number; lon: number; conifer: boolean; heightM: number; radiusM: number; tint: number }
 
@@ -153,7 +159,7 @@ export interface TreeSpec { lat: number; lon: number; conifer: boolean; heightM:
  * The trees of one cell: a jittered grid, each point kept by its land cover's density. Pure and deterministic — the
  * same cell always grows the same trees.
  */
-export function plantCell(box: SceneryBox, coverAt: (lat: number, lon: number) => number, spacingM = TREE_SPACING_M): TreeSpec[] {
+export function plantCell(box: SceneryBox, coverAt: (lat: number, lon: number) => number, spacingM = TREE_SPACING_M, taken?: (lat: number, lon: number) => boolean): TreeSpec[] {
   const m = metersPerDegree((box.latS + box.latN) / 2)
   const nx = Math.max(1, Math.round(((box.lonE - box.lonW) * m.east) / spacingM)), ny = Math.max(1, Math.round(((box.latN - box.latS) * m.north) / spacingM))
   const base = (Math.imul(Math.round(box.latS * 1e4), 73856093) ^ Math.imul(Math.round(box.lonW * 1e4), 19349663)) | 0
@@ -166,9 +172,12 @@ export function plantCell(box: SceneryBox, coverAt: (lat: number, lon: number) =
       const cover = coverAt(lat, lon)
       const density = TREE_DENSITY[cover]
       if (!density || hash01(seed, 3) > density) continue
+      const builtUp = isBuiltUp(cover)
+      // Among buildings a tree needs to know where they and the roads are: without that, none is planted.
+      if (builtUp && (!taken || taken(lat, lon))) continue
       const conifer = hash01(seed, 4) < (CONIFER_SHARE[cover] ?? 0)
       const size = hash01(seed, 5)
-      const heightM = conifer ? 13 + 13 * size : 8 + 9 * size
+      const heightM = (conifer ? 13 + 13 * size : 8 + 9 * size) * (builtUp ? 0.72 : 1)
       out.push({ lat, lon, conifer, heightM, radiusM: heightM * (conifer ? 0.2 + 0.05 * hash01(seed, 6) : 0.42 + 0.14 * hash01(seed, 6)), tint: hash01(seed, 7) })
     }
   }
@@ -184,6 +193,8 @@ interface BuildingTile {
   mesh?: THREE.Mesh
   retryAt: number
   buildings: number
+  /** Where its buildings and roads are (set once built). */
+  occupancy?: Occupancy
 }
 
 interface TreeCell { key: string; lat: number; lon: number; box: SceneryBox; state: 'waiting' | 'ready'; meshes: THREE.InstancedMesh[]; trees: number }
@@ -281,8 +292,28 @@ export class Scenery {
   /** The next piece of building work: a tile whose data and terrain are both in, else a cell of trees. */
   private nextJob(): Generator<void, void, void> | null {
     for (const t of this.tiles.values()) if (t.state === 'data' && this.host.fineReady(t.lat, t.lon)) return this.buildTile(t)
-    for (const c of this.cells.values()) if (c.state === 'waiting' && this.host.fineReady(c.lat, c.lon)) return this.plant(c)
+    for (const c of this.cells.values()) if (c.state === 'waiting' && this.host.fineReady(c.lat, c.lon) && this.buildingsSettled(c)) return this.plant(c)
     return null
+  }
+
+  /** The building tile over a point, when there is one. */
+  private tileAt(lat: number, lon: number): BuildingTile | undefined {
+    return this.tiles.get(`${Math.floor(lonToTileX(lon, BUILDING_Z))}/${Math.floor(latToTileY(lat, BUILDING_Z))}`)
+  }
+
+  /** A cell is planted once the buildings around it are in (or cannot be had), so its street trees can keep off them. */
+  private buildingsSettled(c: TreeCell): boolean {
+    if (!this.buildingsOn) return true
+    const t = this.tileAt(c.lat, c.lon)
+    return !t || t.state === 'ready' || t.state === 'failed'
+  }
+
+  /** Is there a building or road here? Unknown (no built tile over the point) counts as yes. */
+  private takenAt(lat: number, lon: number): boolean {
+    const t = this.tileAt(lat, lon)
+    if (!t?.occupancy) return true
+    const m = metersPerDegree(t.lat)
+    return t.occupancy.occupied((lon - t.box.lonW) * m.east, (lat - t.box.latS) * m.north)
   }
 
   private *buildTile(tile: BuildingTile): Generator<void, void, void> {
@@ -292,6 +323,12 @@ export class Scenery {
     const metres = metersPerDegree(centre.lat)
     const onAirport = this.host.airportMask(centre.lat, centre.lon, 8000)
     const builder = new BuildingMeshBuilder()
+    // Cells of about 4 m: buildings with a little room around them, roads at their width.
+    const widthM = (tile.box.lonE - tile.box.lonW) * metres.east, heightM = (tile.box.latN - tile.box.latS) * metres.north
+    const occupancy = new Occupancy(480, widthM, heightM)
+    const fromCorner = (p: Pt): Pt => [p[0] + widthM / 2, p[1] + heightM / 2]
+    for (const road of data.r ?? []) occupancy.markLine(footprintMetres({ h: null, m: 0, t: 0, p: road.p }, data, centre, metres).map(fromCorner), road.w + 1)
+    yield
     let n = 0
     for (const record of data.b) {
       if (this.tiles.get(tile.key) !== tile) return
@@ -302,6 +339,7 @@ export class Scenery {
       cE /= pts.length; cN /= pts.length
       const cLat = centre.lat + cN / metres.north, cLon = centre.lon + cE / metres.east
       if (onAirport(cLat, cLon)) continue
+      occupancy.markBox(pts.map(fromCorner), 1.5)
       // The ground under the building: its centre and up to eight points of its outline.
       let lo = this.host.groundAt(cLat, cLon), hi = lo
       const step = Math.max(1, Math.ceil(pts.length / 8))
@@ -332,12 +370,13 @@ export class Scenery {
       this.scene.add(mesh)
     }
     tile.buildings = builder.buildings
+    tile.occupancy = occupancy
     tile.state = 'ready'
   }
 
   private *plant(cell: TreeCell): Generator<void, void, void> {
     const onAirport = this.host.airportMask(cell.lat, cell.lon, 6000)
-    const trees = plantCell(cell.box, (lat, lon) => (onAirport(lat, lon) ? 0 : this.host.coverAt(lat, lon)))
+    const trees = plantCell(cell.box, (lat, lon) => (onAirport(lat, lon) ? 0 : this.host.coverAt(lat, lon)), TREE_SPACING_M, (lat, lon) => this.takenAt(lat, lon))
     yield
     if (this.cells.get(cell.key) !== cell) return
     const metres = metersPerDegree(cell.lat)

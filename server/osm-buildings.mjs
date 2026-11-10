@@ -8,7 +8,9 @@
  * micro-degree offsets from the tile's south-west corner. An outline that crosses the tile's edge is cut there, so
  * neighbouring tiles each draw their own piece and the pieces meet exactly.
  *
- *   GET /api/osm-buildings/14/{x}/{y}.json → { v: 2, s, w, n, e, b: [{ h, m, t, p: [dLat, dLon, …] }, …] }
+ * The tile's roads and railways come along as centrelines with a half width, so that nothing is planted on them.
+ *
+ *   GET /api/osm-buildings/14/{x}/{y}.json → { v: 3, s, w, n, e, b: [{ h, m, t, p: [dLat, dLon, …] }, …], r: [{ w, p: [dLat, dLon, …] }, …] }
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -20,6 +22,8 @@ const TILEJSON = 'https://tiles.openfreemap.org/planet'
 const MEMORY_TILES = 96
 /** OpenMapTiles writes this height when OSM has neither a height nor a level count. */
 const UNKNOWN_HEIGHT_M = 5
+/** The cached JSON's format version. */
+const FORMAT = 3
 
 /** The lat/lon box of a slippy tile. */
 export function tileBounds(z, x, y) {
@@ -199,6 +203,28 @@ export function buildingsFromLayer(layer, bounds, z, y) {
   return out
 }
 
+/** Half width, metres, of the ground a road or railway of each class takes (OpenMapTiles `transportation` classes). Paths are left out. */
+const ROAD_HALF_WIDTH_M = { motorway: 12, trunk: 10, primary: 8.5, secondary: 7.5, tertiary: 6.5, minor: 5.5, service: 3.5, track: 2.5, raceway: 5, busway: 4, rail: 4, transit: 4 }
+
+/** The `transportation` layer → centrelines with half widths, in the same micro-degree offsets as the buildings (they may run a little outside the tile). */
+export function roadsFromLayer(layer, bounds, z, y) {
+  const out = []
+  if (!layer) return out
+  const { extent } = layer
+  const latAt = (ty) => { const n = Math.PI - (2 * Math.PI * (y + ty / extent)) / 2 ** z; return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n))) }
+  for (const f of layer.features) {
+    const w = ROAD_HALF_WIDTH_M[f.properties.class]
+    if (f.type !== 2 || !w || f.properties.brunnel === 'tunnel') continue
+    for (const line of f.rings) {
+      if (line.length < 2) continue
+      const p = []
+      for (const [tx, ty] of line) p.push(Math.round((latAt(ty) - bounds.s) * 1e6), Math.round(((tx / extent) * (bounds.e - bounds.w)) * 1e6))
+      out.push({ w, p })
+    }
+  }
+  return out
+}
+
 // ------------------------------------------------------------------- fetching --
 
 const memory = new Map()
@@ -228,12 +254,12 @@ async function fetchTile(z, x, y) {
   const url = (await tileTemplate()).replace('{z}', z).replace('{x}', x).replace('{y}', y)
   const res = await fetch(url, { signal: AbortSignal.timeout(30_000) })
   const b = tileBounds(z, x, y)
-  const head = { v: 2, s: +b.s.toFixed(6), w: +b.w.toFixed(6), n: +b.n.toFixed(6), e: +b.e.toFixed(6) }
+  const head = { v: FORMAT, s: +b.s.toFixed(6), w: +b.w.toFixed(6), n: +b.n.toFixed(6), e: +b.e.toFixed(6) }
   // No tile at all (open ocean) is an answer too: nothing is built there.
-  if (res.status === 404 || res.status === 204) return JSON.stringify({ ...head, b: [] })
+  if (res.status === 404 || res.status === 204) return JSON.stringify({ ...head, b: [], r: [] })
   if (!res.ok) throw new Error(`building tile ${z}/${x}/${y}: ${res.status}`)
-  const layer = decodeVectorLayer(new Uint8Array(await res.arrayBuffer()), 'building')
-  return JSON.stringify({ ...head, b: buildingsFromLayer(layer, b, z, y) })
+  const bytes = new Uint8Array(await res.arrayBuffer())
+  return JSON.stringify({ ...head, b: buildingsFromLayer(decodeVectorLayer(bytes, 'building'), b, z, y), r: roadsFromLayer(decodeVectorLayer(bytes, 'transportation'), b, z, y) })
 }
 
 /** The tile's buildings as a JSON string: memory, then disk, then the tile server. Throws when that cannot answer. */
@@ -244,7 +270,8 @@ export async function buildingTile(z, x, y) {
   const hit = memory.get(key)
   if (hit) return hit
   const file = path.join(cacheDir, `${key}.json`)
-  try { const json = await fs.promises.readFile(file, 'utf8'); remember(key, json); return json } catch { /* not cached yet */ }
+  // A tile cached in an older format (before roads) is fetched once more.
+  try { const json = await fs.promises.readFile(file, 'utf8'); if (json.startsWith(`{"v":${FORMAT},`)) { remember(key, json); return json } } catch { /* not cached yet */ }
   let job = pending.get(key)
   if (!job) {
     job = fetchTile(z, x, y).then(async (json) => {

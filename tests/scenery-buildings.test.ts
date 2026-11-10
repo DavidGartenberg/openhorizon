@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  BuildingMeshBuilder, FOUNDATION_M, ROOF_STYLE, buildingSeed, buildingStyle, footprintMetres, hash01, orientedBox, ringArea, type Pt,
+  BuildingMeshBuilder, FOUNDATION_M, Occupancy, ROOF_STYLE, buildingSeed, buildingStyle, footprintMetres, hash01, orientedBox, ringArea, type Pt,
 } from '../src/world/buildings'
 import { plantCell } from '../src/world/scenery'
 import { COVER, coverCode } from '../src/world/nlcd-palette'
 // @ts-expect-error plain ES module (server code)
-import { buildingsFromLayer, clipRingToTile, decodeVectorLayer, tileBounds } from '../server/osm-buildings.mjs'
+import { buildingsFromLayer, clipRingToTile, decodeVectorLayer, roadsFromLayer, tileBounds } from '../server/osm-buildings.mjs'
 
 const rect = (w: number, d: number, cx = 0, cy = 0): Pt[] => [[cx - w / 2, cy - d / 2], [cx + w / 2, cy - d / 2], [cx + w / 2, cy + d / 2], [cx - w / 2, cy + d / 2]]
 
@@ -130,6 +130,18 @@ describe('building meshes', () => {
   })
 })
 
+describe('what stands on the ground', () => {
+  it('marks buildings with a margin and roads at their width; outside the tile counts as taken', () => {
+    const o = new Occupancy(100, 1000, 1000)                      // 10 m cells
+    expect(o.occupied(500, 500)).toBe(false)
+    o.markBox([[200, 200], [240, 200], [240, 230], [200, 230]], 5)
+    expect(o.occupied(220, 215)).toBe(true); expect(o.occupied(196, 215)).toBe(true); expect(o.occupied(260, 215)).toBe(false)
+    o.markLine([[0, 800], [1000, 800]], 6)
+    expect(o.occupied(503, 803)).toBe(true); expect(o.occupied(503, 830)).toBe(false)
+    expect(o.occupied(-5, 500)).toBe(true); expect(o.occupied(500, 1001)).toBe(true)
+  })
+})
+
 describe('placing records', () => {
   const tile = { s: 37.4, w: -122.5 }
   it('converts micro-degree offsets to metres from the tile centre', () => {
@@ -167,6 +179,18 @@ describe('trees', () => {
     expect(half.length).toBeGreaterThan(500)
     expect(half.every((t) => t.lon < mid)).toBe(true)
     expect(half.filter((t) => t.conifer).length / half.length).toBeLessThan(0.2)
+  })
+  it('plants built-up land thinly, garden-sized, and only where no building or road is known to stand', () => {
+    expect(plantCell(box, () => COVER.devLow)).toHaveLength(0)                       // nothing known about the buildings: nothing planted
+    const free = plantCell(box, () => COVER.devLow, 11, () => false)
+    const forest = plantCell(box, () => COVER.deciduous)
+    expect(free.length).toBeGreaterThan(200); expect(free.length).toBeLessThan(forest.length * 0.7)
+    expect(Math.max(...free.map((t) => t.heightM))).toBeLessThan(19.5)
+    expect(plantCell(box, () => COVER.devLow, 11, () => true)).toHaveLength(0)
+    const mid = (box.latS + box.latN) / 2
+    expect(plantCell(box, () => COVER.devLow, 11, (lat) => lat > mid).every((t) => t.lat <= mid)).toBe(true)
+    // Forest does not ask.
+    expect(plantCell(box, () => COVER.evergreen, 11, () => true).length).toBe(plantCell(box, () => COVER.evergreen).length)
   })
   it('reads the land-cover legend into codes', () => {
     expect(coverCode(28, 95, 44, 255)).toBe(COVER.evergreen)
@@ -231,6 +255,23 @@ describe('vector tile → buildings', () => {
     expect(out[1]).toMatchObject({ h: null, t: 1 })
     const maxLon = Math.round((b.e - b.w) * 1e6)
     expect(Math.max(...out[1].p.filter((_: number, i: number) => i % 2 === 1))).toBe(maxLon)
+  })
+
+  it('roads come as centrelines with a half width by class; paths and tunnels are left out', () => {
+    const b = tileBounds(14, 2620, 6350)
+    const line = [[0, 2048], [4096, 2048]]
+    const layer = { extent: 4096, features: [
+      { type: 2, properties: { class: 'primary' }, rings: [line] },
+      { type: 2, properties: { class: 'path' }, rings: [line] },
+      { type: 2, properties: { class: 'minor', brunnel: 'tunnel' }, rings: [line] },
+      { type: 3, properties: { class: 'minor' }, rings: [line] },
+    ] }
+    const roads = roadsFromLayer(layer, b, 14, 6350)
+    expect(roads).toHaveLength(1)
+    expect(roads[0].w).toBe(8.5)
+    expect(roads[0].p).toHaveLength(4)
+    expect(roads[0].p[1]).toBe(0); expect(roads[0].p[3]).toBe(Math.round((b.e - b.w) * 1e6))
+    expect(roadsFromLayer(null, b, 14, 6350)).toEqual([])
   })
 
   it('clips a ring to the tile square and reports whether it cut', () => {
