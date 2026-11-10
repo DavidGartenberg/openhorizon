@@ -60,6 +60,27 @@ Fields below sea level keep the elevation data's negative heights as land within
 - Analysis scripts (read the install, print facts): `scripts/xplane/list-datarefs.ts` (every dataref the cockpit
   animates), `find-screens.ts` (display openings), `audit-acf.ts` (masses and speeds versus the sim).
 
+## Cockpits across the fleet (2026-11-08)
+
+- **Transports** (every jet and the airliner turboprops, `cockpitProfile(...).deck`) fly the X-Plane 737-800 deck. In any
+  type but the 737 it is placed at that type's own design eye and scaled to its cabin (`loadXpCockpit(..., { place })`).
+- **Light airplanes** fly an X-Plane light-airplane cockpit (`xplane-ga-cockpits.ts`): their own when X-Plane has it
+  (C172 SP, SR22, Baron 58, PA-18, ASK 21, King Air C90B), else the closest by how they are flown (`gaCockpitFor`:
+  gliders the ASK 21, side-yoke Cirruses the SR22, turboprops the King Air, piston twins the Baron, stick singles the
+  Super Cub, other singles the 172). Each entry is the airplane's interior objects, click map, panel art and pilot's eye,
+  read from its `.acf`.
+- Their gauges are 3D instruments animated on X-Plane datarefs in X-Plane's units: `xplane-ga-datarefs.ts`
+  (`makeXpGaDatarefReader`) maps the simulator's state onto them. Manifold pressure and a turboprop's N1 and ITT are
+  derived from throttle and shaft power (the simulator models no intake or gas generator). Avionics screens
+  (`ATTR_cockpit_device`: G1000 PFD / MFD, GNS 530 / 430) show the simulator's own PFD and moving map.
+- Clicks (`xplane-interact.ts`): throttle and mixture plungers follow a held drag; the flap lever, trim wheel and buttons,
+  parking brake, battery / alternator / avionics / pitot heat / fuel pump switches, landing light, COM 1 / NAV 1 standby
+  tuning and flip (read out as a toast), OBS, barometer and the stock autopilot buttons act. Everything else answers
+  "NOT SIMULATED" by its own name.
+- Limits: X-Plane paints its 2D instruments into the panel art at run time, so those faces are dark here (the King Air's
+  EFIS and attitude indicator, the radios' frequency windows). `C90B_lights.obj` (light points only) is left out.
+- `__ohXpHits('throttle')` lists where matching hit boxes project on screen; `__ohXpRead([...])` what the deck is told.
+
 ## Adding things
 
 - **A dataref**: add the name to `makeXpDatarefReader` (live) or `XP_B738_RESTING` (a recorded stand-in) with a test

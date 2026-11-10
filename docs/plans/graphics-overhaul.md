@@ -145,6 +145,57 @@ whitens on level and gently sloping ground (patchy at first, thin on steep faces
 (less on runways, which are ploughed); wet gloss is suppressed under snow. Checked at KSFO in `-SN OVC015`: snow-covered
 airfield with the ploughed taxiway lines still dark.
 
+## 3D scenery: buildings and trees (2026-11-09)
+
+`src/world/scenery.ts`, `src/world/buildings.ts`, `server/osm-buildings.mjs`. Until now everything off an airport was a
+photograph lying flat on the terrain. Now, within a few kilometres of the airplane:
+
+- **Buildings** are real OpenStreetMap footprints. The server reads one z14 vector tile (about 2 km on a side) from
+  OpenFreeMap's public tiles (OpenMapTiles schema), decodes its `building` and `transportation` layers with a minimal
+  protobuf reader, cuts outlines at the tile edge and caches the result forever as compact JSON under
+  `server/cache/osm-bld/` (`GET /api/osm-buildings/14/{x}/{y}.json`). The client fetches tiles within 3.4 km (three at a
+  time, nearest first, dropped beyond 5.2 km, none started above 4,500 m AGL) and builds one mesh per tile a few
+  milliseconds per frame: walls to the building's height, a flat roof triangulated from the outline, or a gabled or hipped
+  roof on a small, nearly rectangular outline (a house). Where OSM has no height the building gets one typical of its
+  size (OpenMapTiles writes 5 m for "unknown", which is treated as unknown). Walls carry their window layout (cells
+  across, storeys up); the material draws dark glass by day, lights about a third of the windows at night, and darkens
+  walls toward the ground. Below a couple of pixels per window the pattern becomes its average.
+- **Trees** stand where the land cover says forest. The terrain worker now returns the land-cover code of every
+  land-cover pixel of the finest tiles (`tiles.coverAt`); forest classes are planted on an 11 m jittered grid per z16
+  cell within 2.4 km as instanced low-polygon conifers and broadleaves, shrinking into the ground toward the edge. Built-up
+  classes get thinner, garden-sized trees on ground the same OSM tile leaves free: each built tile keeps a 4 m occupancy
+  grid of its buildings and roads.
+- **Airports keep their own buildings**: nothing is built or planted within 380 m of a runway centreline or inside a
+  large field's pavement box.
+- Both layers are placed by latitude and longitude, so they survive the floating origin's rebase. View & graphics has
+  "3D buildings" and "Trees" switches (remembered), and credits the data.
+
+Checked in the browser (a separate origin) at Half Moon Bay and around KSFO: a town of pitched-roof houses with trees on
+the hills behind; San Bruno's 18,000 footprints next to KSFO with the airport itself left clear; lit windows at night.
+Cost at KSFO: about 1 ms of a 29 ms frame (18,376 buildings, 440,000 triangles).
+
+Limits: trees need the US land-cover data (none elsewhere); buildings and trees cast no shadows (the shadow map is fitted
+to the airplane); a building's colours, storeys and roof are typical, not surveyed; street trees can stand on a car park;
+courtyards are roofed over; nothing is fetched without a network connection to the tile server.
+
+## Clouds (2026-11-09)
+
+`src/render/clouds.ts`. The masses were smooth pillows: the density's noise was a 32³ random lattice whose detail was too
+fine and too weak to shape anything, and the top faded out as a soft lid. Now the noise is a baked 64³ billow field
+(inverted cellular distance, two octaves), a cauliflower-scale octave bites into the boundary, the edge is firm, and the
+top stands in turrets. The CPU copy of the density (the in-cloud test, `sunTransmissionAt`) carries the same terms and the
+shadows share the GLSL, so shadows still have the shape of their cloud. Shading: sky light falls off toward the base, the
+base is flat grey (lighter under an overcast), a near sun tap shades the creases between billows, and thin edges return
+less light than a lit face's interior except toward the sun. Checked from below, beside and above a scattered layer, under
+an overcast and at sunset.
+
+## Town lights and sharper ground (2026-11-09)
+
+The terrain's night lights were 12 m orange squares. They are now round lamps at jittered points of a 26 m grid, in sodium
+orange, warm white and a few cool white, kept at least a pixel across with their light spread thinner, merging into their
+average glow with distance. The detailed (z16) photograph now covers the four finest tiles nearest the airplane instead
+of two, so the ground is sharp in every direction (about 21 MB of texture each).
+
 ## Remaining realism limits
 
 This is a substantial renderer upgrade, not a claim that “10× realism” can be
@@ -155,6 +206,8 @@ scene depth; the local FogExp2 immersion model is an approximation. Cloud
 shadows are the cloud masses' own (see below); beyond 16 km of the camera, with the sun below about 12° or
 with the switch off, cloud cover dims the sunlight uniformly as before.
 The sea has a flat geometric surface with spectral-style normal waves and sky
-reflections, without bathymetry, coastal foam or reflected scene/cloud geometry.
+reflections, without bathymetry, coastal foam or reflected scene/cloud geometry; where it meets the photograph's own
+shallows the edge is stepped at the terrain's cell size. Buildings and trees are typical shapes on real footprints and
+real forest cover, unshadowed. There is no rain on the windshield and no automatic exposure.
 The existing moon/star model is approximate. Higher quality photographic models,
 scenery assets and depth-aware cloud composition remain valuable future work. Physics accuracy is a separate subsequent phase.
