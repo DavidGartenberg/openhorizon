@@ -183,10 +183,12 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       const pivot = new THREE.Group()
       const chord = chordAt(sy)
       const leX = wingRootX - Math.tan(sweep) * (sy - y0) - chord * 0.78
-      placeBody(pivot, leX, side * sy, wingDrop * 0.7)
+      // The hinge sits on the wing's top surface there: the wing's airfoil section is R·0.16 deep and, over the aft fifth of the
+      // chord where the panels are, its top is about 0.7 of that above the wing's lower face.
+      placeBody(pivot, leX, side * sy, wingDrop - R * 0.16 * 0.7)
       const depth = chord * 0.19
       const panel = new THREE.Mesh(new THREE.BoxGeometry(Math.max(sy1 - sy0 - 0.1, 0.2), 0.05, depth), SURFACE)
-      panel.position.set(0, 0.05, depth / 2)
+      panel.position.set(0, 0.02, depth / 2)
       panel.castShadow = true
       pivot.add(panel)
       pivot.userData.sideIndex = side < 0 ? 0 : 1
