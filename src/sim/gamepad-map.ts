@@ -51,7 +51,7 @@ export type GamepadMap = Partial<Record<BindableAxis, AxisBinding>> & {
   unverifiedBtnKeys?: Record<string, string>
 }
 
-export const TCA_PRESET_VERSION = 7
+export const TCA_PRESET_VERSION = 8
 
 /** Key aliases that act while HELD (everything else is edge-triggered). */
 export const HELD_ALIASES: ReadonlySet<string> = new Set(['KeyT', 'KeyB', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'Comma', 'Period'])
@@ -239,6 +239,46 @@ export function calibratedUnipolar(raw:number,b?:AxisBinding):number {
   const c=b?.calibration
   return c ? clamp((raw-c.min)/(c.max-c.min)) : axisToUnipolar(raw)
 }
+/** Share of a throttle lever's travel, measured from its idle end, that commands reverse thrust. */
+export const REVERSE_ZONE = 0.25
+const zoneIdle = (c: AxisCalibration, zone: number): number => c.min + zone * (c.max - c.min)
+/** True when the lever's IDLE sits `zone` of the way along its travel, so everything below it is reverse. */
+export function hasReverseZone(b: AxisBinding | undefined, zone = REVERSE_ZONE): boolean {
+  const c = b?.calibration
+  return !!c && Math.abs((c.idle ?? c.min) - zoneIdle(c, zone)) < 0.01
+}
+/** Put IDLE `zone` of the way along the lever's travel (0 puts it back at the end, no reverse). Detents that would fall inside
+ *  the reverse zone are dropped. The result is a user binding, so a preset re-applied on reconnect never undoes it. */
+export function withReverseZone(b: AxisBinding, zone = REVERSE_ZONE): AxisBinding {
+  const c = b.calibration ?? { min: -1, max: 1 }
+  const idle = zoneIdle(c, zone)
+  const cal: AxisCalibration = { min: c.min, max: c.max }
+  if (zone > 0) cal.idle = idle
+  for (const k of ['cl', 'flex'] as const) if (c[k] !== undefined && c[k]! >= idle) cal[k] = c[k]
+  return { ...b, calibration: cal, source: 'user' }
+}
+
+/** Swap which physical end of a lever is IDLE and which is full power. The sign flips, and the calibration (kept in signed
+ *  coordinates with full power at max) is re-expressed so the old full-power end becomes IDLE and the old idle end becomes TOGA.
+ *  A reverse zone follows IDLE to its new end; other reverse travel below the old idle is lost: it would now sit beyond TOGA.
+ *  The result is a user binding, so a preset re-applied on reconnect never undoes it. */
+export function reverseAxisBinding(b: AxisBinding): AxisBinding {
+  const swapped = swapEnds(b)
+  return hasReverseZone(b) ? withReverseZone(swapped) : swapped
+}
+function swapEnds(b: AxisBinding): AxisBinding {
+  const out: AxisBinding = { ...b, sign: b.sign === 1 ? -1 : 1, source: 'user' }
+  const c = b.calibration
+  if (!c) return out
+  const idle = c.idle ?? c.min
+  const cal: AxisCalibration = { min: -c.max, max: -idle, idle: -c.max }
+  // Detents keep their physical places, so with both set the CL/FLEX labels swap to stay in ascending order.
+  if (c.cl !== undefined && c.flex !== undefined) { cal.cl = -c.flex; cal.flex = -c.cl }
+  else if (c.cl !== undefined) cal.cl = -c.cl
+  else if (c.flex !== undefined) cal.flex = -c.flex
+  out.calibration = cal
+  return out
+}
 export function mergePreset(saved: GamepadMap, incoming: GamepadMap): GamepadMap {
   const devices={...saved.devices}
   const slots=new Map<number,number>()
@@ -264,7 +304,12 @@ export function mergePreset(saved: GamepadMap, incoming: GamepadMap): GamepadMap
   }
   for(const fn of AXIS_FUNCTIONS){
     const p=preset[fn],s=saved[fn]; if(!p)continue
+    const isLever=fn==='throttle'||fn==='throttle2'
     if(!s || fn==='throttle' && s.source==='preset' && !s.calibration && /q-eng|quadrant/i.test(p.deviceId??'')) out[fn]=p
+    // v8: the lower quarter of a quadrant lever is reverse. Levers bound to the quadrant before it (no calibration, so still a plain
+    // idle-at-the-end lever) get the zone once; a calibrated lever keeps its own IDLE, and a zone later toggled off stays off (the
+    // version is current by then).
+    else if(isLever && (saved.v??0)<8 && !s.calibration && /q-eng|quadrant/i.test(s.deviceId??'')) out[fn]=withReverseZone(s)
     else if(!s.deviceId && s.pad===p.pad && s.axis===p.axis){
       out[fn]={...s,deviceId:p.deviceId,sign:s.calibration?s.sign:(saved.v??0)<2?p.sign:s.sign}
     }
@@ -313,8 +358,9 @@ export function tcaPresetFor(pads: ReadonlyArray<{ id: string; axes: number; ind
     // unverified guess and shipped a real regression — reported by the
     // user as "push forward, throttle % goes DOWN". Do not flip this
     // again without a live axis reading at both idle and TOGA.
-    map.throttle = { pad: quadrant.index, axis: 0, sign: 1 }
-    map.throttle2 = { pad: quadrant.index, axis: 1, sign: 1 }
+    // v8: IDLE sits a quarter of the way up the travel and everything below it is reverse (REVERSE_ZONE).
+    map.throttle = withReverseZone({ pad: quadrant.index, axis: 0, sign: 1 })
+    map.throttle2 = withReverseZone({ pad: quadrant.index, axis: 1, sign: 1 })
   }
   if (!Object.keys(map).length) return null
   const btns = tcaButtonPreset(stick ? stick.index : null, quadrant ? quadrant.index : null)

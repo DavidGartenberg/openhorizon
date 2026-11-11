@@ -2,16 +2,34 @@ import * as THREE from 'three'
 import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
 import { XP_MODELS, XP_PLACEMENT, XP_CONTROL_LIMITS, XP_SURFACE_CALIBRATION } from './xplane-manifest'
 import { applyObj8Anim, applyObj8Visibility, loadObj8, type LoadedObj8 } from './xplane-obj8'
+import { resolveLocalModel } from './xplane-proxy'
+
+/** A cheap copy of a loaded exterior that shares its geometry, materials and textures (traffic). */
+export interface LocalAircraftInstance {
+  group: THREE.Group
+  /** Pose gear, flaps and the prop/fan disc; repeats of the same state cost nothing. */
+  pose: (s: SurfaceState, rpm?: number) => void
+}
 
 export interface LocalAircraftVisual {
   group: THREE.Group
   propDisc: THREE.Mesh
   surfaces: (s: SurfaceState) => void
   updateProp: (rpm: number, dt: number) => void
+  /** Present on real loads: stamp out another airplane of this model without loading it again. */
+  instantiate?: () => LocalAircraftInstance
   dispose: () => void
 }
 const modelKey = (key: string): string => key === '172' ? 'C172' : key === '737' ? 'B738' : key
 export function exactLocalModel(key: string) { return XP_MODELS[modelKey(key)] }
+const KNOWN_MODELS: ReadonlySet<string> = new Set(Object.keys(XP_MODELS))
+/** The installed model that draws this aircraft (exact, or the closest one scaled); null = keep the procedural airframe. */
+export function localModelFor(key: string) { return resolveLocalModel(key, KNOWN_MODELS) }
+/** Models whose OBJ has no propeller blur disc (X-Plane draws that itself): they keep their blades and spin them at a capped visual rate. */
+const BLADES_ONLY: ReadonlySet<string> = new Set(['BE9L'])
+const BLADES_ONLY_MAX_RPM = 300
+/** Cosmetic blade pitch (degrees) for models whose propeller animates on `prop_pitch_deg`. */
+const PROP_BLADE_PITCH_DEG = 20
 const signed = (v: number | undefined): number => Number.isFinite(v) ? THREE.MathUtils.clamp(v!, -1, 1) : 0
 const unit = (v: number): number => Number.isFinite(v) ? THREE.MathUtils.clamp(v, 0, 1) : 0
 
@@ -27,8 +45,11 @@ export function localDatarefReader(state: SurfaceState, angle: number, rpm: numb
     if (/\/gear\/deploy_ratio\[/.test(ref)) return unit(state.gearPos)
     if (/\/(?:prop|engine)_rotation_angle_deg\[/.test(ref)) return Number.isFinite(angle) ? angle : 0
     if (/\/engine_rotation_speed_rad_sec\[/.test(ref)) return Number.isFinite(rpm) ? Math.max(0, rpm) * Math.PI / 30 : 0
-    if (/\/prop_is_disc\[/.test(ref)) return rpm > 900 ? 1 : 0
+    if (/\/prop_is_disc\[/.test(ref)) return rpm > 900 && !(key && BLADES_ONLY.has(modelKey(key))) ? 1 : 0
+    // Blade angle: the sim has no propeller governor, so a turning prop shows a typical cruise pitch (cosmetic).
+    if (/\/prop_pitch_deg\[/.test(ref)) return PROP_BLADE_PITCH_DEG
     if (/\/thrust_reverser_deploy_ratio\[/.test(ref)) return unit(state.reverseFrac ?? 0)
+    if (ref === 'sim/cockpit2/controls/flap_handle_deploy_ratio') return unit(state.flapFrac)
     if (/\/flap[12]_deg\[/.test(ref)) return unit(state.flapFrac) * travel
     if (/\/slat[12]_deploy_ratio$/.test(ref) || ref === 'sim/flightmodel/controls/flaprat') return unit(state.flapFrac)
     if (/\/(speedbrake|spoiler)[12]_deg\[/.test(ref)) return unit(state.spoilerFrac) * travel
@@ -72,11 +93,14 @@ export function disposeAircraftGeometry(root: THREE.Object3D): void {
 // evicted requests whose current image decode is not abortable by Three.
 let activeLoads = 0
 const waitingLoads: Array<() => void> = []
-export async function loadLocalAircraft(key: string, signal?: AbortSignal): Promise<LocalAircraftVisual | null> {
-  if (!exactLocalModel(key)) return null
+/** Options for a traffic copy: a livery folder name (…/liveries/<name>) and a texture cache shared with the model's other loads (never disposed). */
+export interface LocalAircraftOptions { livery?: string; textureCache?: Map<string, Promise<THREE.Texture | null>>; /** Seen from far away: no normal maps, textures capped (see LoadObj8Options.distant). */ distant?: { maxTextureSize: number } }
+
+export async function loadLocalAircraft(key: string, signal?: AbortSignal, opts: LocalAircraftOptions = {}): Promise<LocalAircraftVisual | null> {
+  if (!localModelFor(key)) return null
   if (activeLoads >= 2) await new Promise<void>(resolve => waitingLoads.push(resolve))
   else activeLoads++
-  try { signal?.throwIfAborted(); return await loadLocalAircraftInSlot(key, signal) }
+  try { signal?.throwIfAborted(); return await loadLocalAircraftInSlot(key, signal, opts) }
   finally {
     const next = waitingLoads.shift()
     if (next) next()
@@ -84,17 +108,22 @@ export async function loadLocalAircraft(key: string, signal?: AbortSignal): Prom
   }
 }
 
-async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promise<LocalAircraftVisual | null> {
-  const entry = exactLocalModel(key), placement = XP_PLACEMENT[modelKey(key)]
-  if (!entry || !placement) return null
+async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal, opts: LocalAircraftOptions = {}): Promise<LocalAircraftVisual | null> {
+  const resolved = localModelFor(key)
+  const mk = resolved?.model ?? ''
+  const entry = XP_MODELS[mk], placement = XP_PLACEMENT[mk]
+  if (!resolved || !entry || !placement) return null
   const manifest = await fetch('/xp/manifest.json', {signal: signal ?? null})
   if (!manifest.ok || !(await manifest.json() as {available?: boolean}).available) return null
   const group = new THREE.Group()
-  group.name = `local-aircraft:${modelKey(key)}`
+  group.name = `local-aircraft:${mk}${resolved.exact ? '' : `@${key}`}`
   const offset = placement.attachmentFt ?? [0, 0, 0]
-  group.position.set(...placement.cgFt.map((cg, i) => (offset[i]! - cg) * .3048) as [number, number, number])
+  // A stand-in model is scaled about the airplane's centre of gravity, so its own offset scales with it.
+  group.position.set(...placement.cgFt.map((cg, i) => (offset[i]! - cg) * .3048 * resolved.scale) as [number, number, number])
+  group.scale.setScalar(resolved.scale)
   const parts: LoadedObj8[] = []
-  const textureCache = new Map<string, Promise<THREE.Texture | null>>()
+  const textureCache = opts.textureCache ?? new Map<string, Promise<THREE.Texture | null>>()
+  const liveryBase = opts.livery ? '/xp/aircraft/' + `${entry.folder}/liveries/${opts.livery}/objects`.split('/').map(encodeURIComponent).join('/') + '/' : undefined
   let disposed = false
   const dispose = (): void => {
     if (disposed) return
@@ -111,7 +140,7 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promi
     for (const path of entry.objs) {
       signal?.throwIfAborted()
       const url = '/xp/aircraft/' + path.split('/').map(encodeURIComponent).join('/')
-      const part = await loadObj8(url, {textureBase: url.slice(0, url.lastIndexOf('/') + 1), textureCache})
+      const part = await loadObj8(url, {textureBase: url.slice(0, url.lastIndexOf('/') + 1), textureCache, normalMaxSize: 2048, ...(liveryBase ? {textureOverrideBase: liveryBase} : {}), ...(opts.distant ? {distant: opts.distant} : {})})
       if (/\/[^/]*(?:cfm|trent|engine)[^/]*\.obj$/i.test(path)) part.group.name = 'engineNacelle'
       parts.push(part); group.add(part.group)
       signal?.throwIfAborted()
@@ -130,7 +159,7 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promi
       } })
     }
     const animated = parts.flatMap(p => p.animated)
-    const ranges = new Map<string, number>(Object.entries(XP_CONTROL_LIMITS[modelKey(key)] ?? {}))
+    const ranges = new Map<string, number>(Object.entries(XP_CONTROL_LIMITS[mk] ?? {}))
     for (const part of parts) for (const node of part.parsed.anims) for (const spec of node.specs) {
       if (spec.kind === 'rotate' || spec.kind === 'trans') {
         const max = Math.max(0, ...spec.keys.map(k => Math.abs(k[0])))
@@ -141,7 +170,7 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promi
     const surfaceRefs = [...new Set(parts.flatMap(p => p.parsed.anims.flatMap(n => n.specs.map(s => s.dataref))))]
       .filter(ref => /\/(?:aileron|elevator|rudder|flap|slat|spoiler|speedbrake)[12]_|\/composite_|\/stabilizer_deflection|\/controls\/(?:elevator|rudder)_trim/.test(ref))
     const pose = (): void => {
-      const read = localDatarefReader(state, angle, rpm, ranges, key)
+      const read = localDatarefReader(state, angle, rpm, ranges, mk)
       for (const node of animated) { applyObj8Anim(node, read); applyObj8Visibility(node, read) }
       group.userData.surfaceValues = Object.fromEntries(surfaceRefs.map(ref => [ref, read(ref)]))
     }
@@ -157,8 +186,26 @@ async function loadLocalAircraftInSlot(key: string, signal?: AbortSignal): Promi
     let propDisc: THREE.Mesh | undefined
     ;(propNode ?? group.getObjectByName('engineNacelle') ?? group).traverse(o => { if (!propDisc && o instanceof THREE.Mesh) propDisc = o })
     if (!propDisc) throw new Error('Invalid OBJ8 exterior: no focus geometry')
-    return {group, propDisc, dispose, surfaces: s => { state = {...s}; pose() }, updateProp: (nextRpm, dt) => {
-      rpm = Number.isFinite(nextRpm) ? Math.max(0, nextRpm) : 0; angle = (angle + rpm * 6 * (Number.isFinite(dt) ? Math.max(0, dt) : 0)) % 360; pose()
+    const instantiate = (): LocalAircraftInstance => {
+      const root = group.clone(true)
+      const nodes: THREE.Object3D[] = []
+      root.traverse(o => {
+        if ((o.userData as {anim?: unknown}).anim) nodes.push(o)
+        if (o instanceof THREE.Mesh) { o.castShadow = false; o.receiveShadow = false }
+      })
+      let last = ''
+      return {group: root, pose: (s, rpmIn = 0) => {
+        const stamp = `${s.gearPos.toFixed(2)}|${(s.flapFrac ?? 0).toFixed(2)}|${(s.spoilerFrac ?? 0).toFixed(2)}|${rpmIn > 900}`
+        if (stamp === last) return
+        last = stamp
+        const read = localDatarefReader({...s}, 0, rpmIn, ranges, mk)
+        for (const node of nodes) { applyObj8Anim(node, read); applyObj8Visibility(node, read) }
+      }}
+    }
+    return {group, propDisc, dispose, instantiate, surfaces: s => { state = {...s}; pose() }, updateProp: (nextRpm, dt) => {
+      rpm = Number.isFinite(nextRpm) ? Math.max(0, nextRpm) : 0
+      const spin = BLADES_ONLY.has(mk) ? Math.min(rpm, BLADES_ONLY_MAX_RPM) : rpm
+      angle = (angle + spin * 6 * (Number.isFinite(dt) ? Math.max(0, dt) : 0)) % 360; pose()
     }}
   } catch (error) { dispose(); throw error }
 }

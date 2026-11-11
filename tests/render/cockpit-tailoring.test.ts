@@ -62,7 +62,7 @@ describe('family hardware', () => {
     expect(tp.rig.thrust).toHaveLength(4); expect(tp.rig.reversers).toHaveLength(0)
     expect(tp.interactive.some(o => o.userData.controlId === 'engStart')).toBe(true)
     expect(tp.interactive.some(o => o.userData.controlId === 'atDisconnect')).toBe(false)
-    expect(tp.interactive.some(o => o.userData.controlId === 'mcpAtArm')).toBe(false)
+    expect(tp.interactive.some(o => o.userData.controlId === 'apBtn:at')).toBe(false)
   })
   it('a business-jet cabin is scaled down and its scaled eye keeps the same clear view over the glareshield', () => {
     const prof = profileOf('C25C')
@@ -113,5 +113,25 @@ describe('GA cockpits get their own controls and hardware', () => {
     }
     const c172 = ga('172', C172S, 'Cessna 172S')
     expect(c172.flapLever.visible).toBe(true); expect(c172.starterButton.visible).toBe(true)
+  })
+})
+
+import { mcpControls } from '../../src/render/cockpit-737-paint'
+describe('guidance-panel click areas', () => {
+  it.each(['boeing', 'airbus', 'generic'] as const)('%s: unique ids, inside the panel, no overlapping buttons, every mode reachable', style => {
+    const W = 2400, H = 310
+    const list = mcpControls(style, W, H, true)
+    expect(new Set(list.map(c => c.id)).size).toBe(list.length)
+    for (const c of list) {
+      expect(c.fx - c.fw / 2, c.id).toBeGreaterThanOrEqual(0); expect(c.fx + c.fw / 2, c.id).toBeLessThanOrEqual(1)
+      expect(c.fy - c.fh / 2, c.id).toBeGreaterThanOrEqual(-0.02); expect(c.fy + c.fh / 2, c.id).toBeLessThanOrEqual(1.02)
+    }
+    const hit = (a: typeof list[0], b: typeof list[0]) => Math.abs(a.fx - b.fx) < (a.fw + b.fw) / 2 - 1e-6 && Math.abs(a.fy - b.fy) < (a.fh + b.fh) / 2 - 1e-6
+    for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) expect(hit(list[i]!, list[j]!), `${list[i]!.id} / ${list[j]!.id}`).toBe(false)
+    const ids = new Set(list.map(c => c.id))
+    for (const a of ['ap', 'hdg', 'nav', 'apr', 'alt', 'vs', 'flc']) expect(ids.has(`apBtn:${a}`), a).toBe(true)
+    for (const k of ['heading', 'altitude']) for (const d of [-1, 1]) expect(ids.has(`apKnob:${k}:${d}`), `${k}${d}`).toBe(true)
+    expect(ids.has('apBtn:at')).toBe(true)
+    expect(mcpControls(style, W, H, false).some(c => c.id === 'apBtn:at')).toBe(false)
   })
 })

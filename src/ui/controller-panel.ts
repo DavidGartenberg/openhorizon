@@ -1,5 +1,5 @@
 import { mountFlightPanel } from './flight-panel-dock'
-import { AXIS_FUNCTIONS, BUTTON_FUNCTIONS, readAxis, readButton, leverWithReverse, calibratedUnipolar, UNIPOLAR, type GamepadMap, type PadReading, type BindableAxis, type BindableButton, type AxisBinding, type ButtonBinding } from '../sim/gamepad-map'
+import { AXIS_FUNCTIONS, BUTTON_FUNCTIONS, readAxis, readButton, leverWithReverse, calibratedUnipolar, reverseAxisBinding, withReverseZone, hasReverseZone, REVERSE_ZONE, UNIPOLAR, type GamepadMap, type PadReading, type BindableAxis, type BindableButton, type AxisBinding, type ButtonBinding } from '../sim/gamepad-map'
 import { ControllerCapture } from '../input/controller-capture'
 const LABELS:Partial<Record<BindableAxis|BindableButton,string>>={throttle:'ENG 1 throttle',throttle2:'ENG 2 throttle',reverse:'ENG 1 reverse lift (hold)',reverse2:'ENG 2 reverse lift (hold)',ptt:'Push to talk (hold)',parkingBrake:'Parking brake (latched ON; released = OFF)',engineMaster1:'ENG 1 master (latched ON; released = OFF)',engineMaster2:'ENG 2 master (latched ON; released = OFF)',gearDown:'Gear DOWN position',gearUp:'Gear UP position',speedbrake:'Speedbrake lever',speedbrakeArm:'Speedbrake ARM position'}
 const label=(fn:BindableAxis|BindableButton):string=>LABELS[fn]??fn.replace(/([A-Z0-9])/g,' $1')
@@ -31,13 +31,30 @@ export class ControllerPanel {
     const action=(title:string,fn:()=>void):HTMLButtonElement=>{const b=document.createElement('button');b.textContent=title;b.onclick=()=>{fn();b.blur()};return b}
     this.root.append(help,limits,this.selector,action('Capture',()=>{const[k,f]=this.selector.value.split(':');this.start(k as 'axis'|'button',[f as BindableAxis|BindableButton])}),this.feedback)
     for(const [point,title] of [['min','Record minimum / full reverse'],['max','Record maximum / TOGA'],['idle','Record IDLE'],['cl','Record CL (optional)'],['flex','Record FLEX (optional)']] as const)this.endpointRow.append(action(title,()=>{if(!this.capture?.record(point,this.latest))this.feedback.textContent='No finite connected axis reading.'}))
-    this.root.append(this.endpointRow,action('Save / Next',()=>this.accept()),action('Retry',()=>{if(this.capture)this.capture=new ControllerCapture(this.capture.kind,this.capture.fn,this.latest)}),action('Skip',()=>this.next()),action('Cancel',()=>{this.capture=null;this.queue=[];this.feedback.textContent='Capture cancelled; saved bindings retained.'}),this.live)
+    this.root.append(this.endpointRow,action('Reverse throttle axes',()=>this.reverseThrottles()),action(`Reverse zone: lower ${REVERSE_ZONE*100}% (toggle)`,()=>this.toggleReverseZone()),action('Save / Next',()=>this.accept()),action('Retry',()=>{if(this.capture)this.capture=new ControllerCapture(this.capture.kind,this.capture.fn,this.latest)}),action('Skip',()=>this.next()),action('Cancel',()=>{this.capture=null;this.queue=[];this.feedback.textContent='Capture cancelled; saved bindings retained.'}),this.live)
     mountFlightPanel(this.root)
   }
   start(kind:'axis'|'button',functions:readonly(BindableAxis|BindableButton)[]):void {
     this.error='';this.root.open=true;this.queue=functions.map(fn=>({kind,fn}));this.next();this.onCapture()
   }
   toggle():void {this.root.open=!this.root.open}
+  /** Swap IDLE and full-power ends on every bound throttle lever; press again to swap back. */
+  private reverseThrottles():void {
+    if(this.capture){this.feedback.textContent='Finish or cancel the capture first.';return}
+    const m=this.getMap(),done:string[]=[]
+    for(const fn of ['throttle','throttle2'] as const)if(m[fn]){m[fn]=reverseAxisBinding(m[fn]!);done.push(label(fn))}
+    if(!done.length){this.feedback.textContent='No throttle lever is bound yet. Capture one first.';return}
+    this.save(m);this.feedback.textContent=`Reversed: ${done.join(', ')}. IDLE and full power have swapped ends; any reverse-gate travel below the old idle is gone. Press again to swap back.`
+  }
+  /** Make the lower quarter of each bound throttle lever's travel reverse thrust (IDLE sits at 25%); a second press removes it. */
+  private toggleReverseZone():void {
+    if(this.capture){this.feedback.textContent='Finish or cancel the capture first.';return}
+    const m=this.getMap(),bound=(['throttle','throttle2'] as const).filter(fn=>m[fn])
+    if(!bound.length){this.feedback.textContent='No throttle lever is bound yet. Capture one first.';return}
+    const off=bound.every(fn=>hasReverseZone(m[fn]))
+    for(const fn of bound)m[fn]=withReverseZone(m[fn]!,off?0:REVERSE_ZONE)
+    this.save(m);this.feedback.textContent=off?'Reverse zone removed: IDLE is back at the end of the lever.':`Lower ${REVERSE_ZONE*100}% of each lever (${bound.map(label).join(', ')}) is now reverse thrust; IDLE sits at ${REVERSE_ZONE*100}%. Check the live % and REV readout, or record IDLE if your detent sits elsewhere.`
+  }
   private next():void {
     this.error='';const step=this.queue.shift();this.capture=step?new ControllerCapture(step.kind,step.fn,this.latest):null
     this.feedback.textContent=step?'Waiting for deliberate movement…':'Capture finished. Use the function selector to bind any remaining controls.'

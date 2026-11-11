@@ -65,6 +65,22 @@ export interface AnimNode {
   specs: AnimSpec[]
 }
 
+/** ATTR_light_level: the brightness of the lit texture on the geometry that follows,
+ *  `(dataref − v1) / (v2 − v1)` clamped to 0…1, at `nits` (null when the file gives none). */
+export interface Obj8Light { v1: number; v2: number; dataref: string; nits: number | null }
+
+/** An ATTR_manip_*: what a click or drag on the geometry that follows does in X-Plane. */
+export interface Obj8Manip {
+  /** The ATTR_manip_ suffix: command, command_knob, command_switch_up_down, axis_knob, toggle, drag_rotate, … */
+  type: string
+  cursor: string
+  /** Command names (command, knob, switch types), in file order. */
+  commands: string[]
+  /** Dataref names (axis_knob, toggle, drag types), in file order. */
+  datarefs: string[]
+  tooltip: string
+}
+
 /** A maximal run of index-contiguous TRIS with no state change between. */
 export interface Obj8Draw {
   /** Offset into `indices`. */
@@ -77,6 +93,13 @@ export interface Obj8Draw {
   lod: number
   /** Emitted under ATTR_cockpit: X-Plane draws it with the panel texture. */
   cockpit: boolean
+  /** Emitted under ATTR_cockpit_device: the avionics screen it shows (G1000_PFD1, GNS530_1 …) instead of the panel. */
+  device?: string
+  /** The ATTR_light_level in effect (a lamp, a backlight), when there is one. */
+  light?: Obj8Light
+  /** A hit box: disabled geometry under a manipulator, kept only when parsed with `hitBoxes`. */
+  hidden?: boolean
+  manip?: Obj8Manip
 }
 
 export interface ParsedObj8 {
@@ -105,6 +128,49 @@ export interface ParsedObj8 {
   pointCounts?: { tris: number; lines: number; lights: number; indices: number }
   /** Unknown commands, malformed lines, structural oddities (deduplicated). */
   warnings: string[]
+}
+
+/** Number of leading numeric fields after the cursor, and how many dataref / command names follow, per manipulator type. */
+const MANIP_SHAPE: Record<string, { numbers: number; commands: number; datarefs: number }> = {
+  command: { numbers: 0, commands: 1, datarefs: 0 },
+  command_axis: { numbers: 3, commands: 2, datarefs: 0 },
+  command_knob: { numbers: 0, commands: 2, datarefs: 0 },
+  command_switch_up_down: { numbers: 0, commands: 2, datarefs: 0 },
+  command_switch_left_right: { numbers: 0, commands: 2, datarefs: 0 },
+  axis_knob: { numbers: 4, commands: 0, datarefs: 1 },
+  toggle: { numbers: 2, commands: 0, datarefs: 1 },
+  drag_rotate: { numbers: 13, commands: 0, datarefs: 2 },
+  drag_xy: { numbers: 6, commands: 0, datarefs: 2 },
+  // <dx> <dy> <dz> <v1> <v2> <dataref>: the light airplanes' throttle, mixture and flap levers.
+  drag_axis: { numbers: 5, commands: 0, datarefs: 1 },
+  drag_axis_pix: { numbers: 5, commands: 0, datarefs: 1 },
+  push: { numbers: 2, commands: 0, datarefs: 1 },
+  radio: { numbers: 1, commands: 0, datarefs: 1 },
+  delta: { numbers: 4, commands: 0, datarefs: 1 },
+  wrap: { numbers: 4, commands: 0, datarefs: 1 },
+  axis_switch_up_down: { numbers: 4, commands: 0, datarefs: 1 },
+  axis_switch_left_right: { numbers: 4, commands: 0, datarefs: 1 },
+  // The one-command forms: the same command whichever half is clicked.
+  command_knob2: { numbers: 0, commands: 1, datarefs: 0 },
+  command_switch_up_down2: { numbers: 0, commands: 1, datarefs: 0 },
+  command_switch_left_right2: { numbers: 0, commands: 1, datarefs: 0 },
+  noop: { numbers: 0, commands: 0, datarefs: 0 },
+}
+
+/** `ATTR_manip_<type> <cursor> <numbers…> <commands|datarefs…> <tooltip…>`; null for ATTR_manip_none / unknown shapes. */
+function parseManip(cmd: string, t: string[]): Obj8Manip | null {
+  const type = cmd.slice('ATTR_manip_'.length)
+  const shape = MANIP_SHAPE[type]
+  if (!shape) return null
+  let i = 2 + shape.numbers
+  const commands = t.slice(i, i + shape.commands); i += shape.commands
+  const datarefs = t.slice(i, i + shape.datarefs); i += shape.datarefs
+  return { type, cursor: t[1] ?? '', commands, datarefs, tooltip: t.slice(i).join(' ') }
+}
+
+function sameLight(a: Obj8Light | undefined, b: Obj8Light | null): boolean {
+  if (!a || !b) return !a && !b
+  return a.dataref === b.dataref && a.v1 === b.v1 && a.v2 === b.v2 && a.nits === b.nits
 }
 
 // ---------------------------------------------------------------- parse --
@@ -139,7 +205,7 @@ const IGNORED = /^(ATTR_|LIGHT|GLOBAL_|TEXTURE|VLINE|VLIGHT|LINES|smoke_|PARTICL
 
 const byValue = <K extends [number, unknown]>(a: K, b: K): number => a[0] - b[0]
 
-export function parseObj8(text: string): ParsedObj8 {
+export function parseObj8(text: string, opts: { hitBoxes?: boolean } = {}): ParsedObj8 {
   const warnings = new Set<string>()
   const warn = (s: string): void => {
     warnings.add(s)
@@ -171,6 +237,9 @@ export function parseObj8(text: string): ParsedObj8 {
   let lastDraw: Obj8Draw | null = null
   let drawEnabled = true
   let cockpit = false
+  let device: string | null = null
+  let light: Obj8Light | null = null
+  let manip: Obj8Manip | null = null
   let lodIndex = 0
   // Held in an object: it is assigned inside addSpec(), which TS's flow
   // analysis can't see, so a bare `let` would narrow to null at the read.
@@ -220,13 +289,18 @@ export function parseObj8(text: string): ParsedObj8 {
     if (hashAt > 0) t.length = hashAt
     const cmd = t[0]!
     let bad = false
+    let lenient = false
     const n = (i: number): number => {
       const v = +t[i]!
-      if (v !== v) {
-        bad = true
-        return 0
+      if (v === v) return v
+      // X-Plane reads numbers with C's atof, the longest numeric prefix: "-2.5.000000" in the C172's own VOR gauge is −2.5.
+      const prefix = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/.exec(t[i] ?? '')
+      if (prefix) {
+        lenient = true
+        return +prefix[0]
       }
-      return v
+      bad = true
+      return 0
     }
     const rest = (from: number): string => t.slice(from).join(' ')
 
@@ -260,14 +334,17 @@ export function parseObj8(text: string): ParsedObj8 {
       case 'TRIS': {
         const start = n(1)
         const count = n(2)
-        if (bad || !drawEnabled) break
-        if (lastDraw && lastDraw.start + lastDraw.count === start && lastDraw.cockpit === cockpit) {
+        if (bad) break
+        const hidden = !drawEnabled
+        if (hidden && !(opts.hitBoxes && manip)) break
+        if (lastDraw && lastDraw.start + lastDraw.count === start && lastDraw.cockpit === cockpit && lastDraw.device === (device ?? undefined) && sameLight(lastDraw.light, light) && !!lastDraw.hidden === hidden && lastDraw.manip === (hidden ? manip ?? undefined : undefined)) {
           lastDraw.count += count
         } else {
-          lastDraw = { start, count, animPath: stack.map((e) => e.id), lod: lodIndex, cockpit }
+          lastDraw = { start, count, animPath: stack.map((e) => e.id), lod: lodIndex, cockpit, ...(device ? { device } : {}), ...(light ? { light } : {}), ...(hidden && manip ? { hidden: true, manip } : {}) }
           draws.push(lastDraw)
         }
-        for (const e of stack) nodeHasDraws[e.id] = true
+        // A hit box is not drawn, so it does not make its block a drawn one.
+        if (!hidden) for (const e of stack) nodeHasDraws[e.id] = true
         break
       }
       case 'POINT_COUNTS':
@@ -307,6 +384,12 @@ export function parseObj8(text: string): ParsedObj8 {
         lods.push([n(1), n(2)])
         lodIndex = lods.length - 1
         break
+      case 'ATTR_light_level':
+        light = t[3] ? { v1: n(1), v2: n(2), dataref: t[3], nits: t.length > 4 && Number.isFinite(Number(t[4])) ? Number(t[4]) : null } : null
+        break
+      case 'ATTR_light_level_reset':
+        light = null
+        break
       case 'ATTR_draw_disable':
         drawEnabled = false
         break
@@ -316,11 +399,16 @@ export function parseObj8(text: string): ParsedObj8 {
       case 'ATTR_cockpit':
       case 'ATTR_cockpit_region':
       case 'ATTR_cockpit_lit_only':
+        cockpit = true
+        device = null
+        break
       case 'ATTR_cockpit_device':
         cockpit = true
+        device = t[1] ?? null
         break
       case 'ATTR_no_cockpit':
         cockpit = false
+        device = null
         break
       case 'ANIM_begin':
         pushNode(true)
@@ -387,13 +475,17 @@ export function parseObj8(text: string): ParsedObj8 {
         break
       }
       default:
-        if (/^\d+$/.test(cmd)) {
+        if (cmd === 'ATTR_manip_none') manip = null
+        else if (cmd === 'ATTR_manip_keyframe' || cmd === 'ATTR_manip_wheel') { /* belongs to the manipulator before it (a detent, a mouse-wheel step) */ }
+        else if (cmd.startsWith('ATTR_manip_')) manip = parseManip(cmd, t)
+        else if (/^\d+$/.test(cmd)) {
           if (cmd !== '800') warn(`unsupported OBJ version ${cmd}`)
         } else if (!IGNORED.test(cmd)) {
           warn(`unknown command ${cmd}`)
         }
     }
     if (bad) warn(`malformed ${cmd} at line ${li + 1}`)
+    else if (lenient) warn(`number read by its leading digits in ${cmd} at line ${li + 1}`)
   }
 
   if (stack.length) warn(`${stack.filter((e) => e.explicit).length} ANIM_begin left open at end of file`)
@@ -524,15 +616,46 @@ export function applyObj8Visibility(group: THREE.Object3D, read: DatarefReader):
 
 // ---------------------------------------------------------------- build --
 
+/** One lamp / backlight: a draw group whose lit texture glows by its own dataref. */
+export interface LightLevelGroup { material: THREE.MeshStandardMaterial; v1: number; v2: number; dataref: string; nits: number | null }
+
+/** `(value − v1) / (v2 − v1)` clamped to 0…1; a degenerate range is a switch at v1. */
+export function lightLevelValue(value: number, v1: number, v2: number): number {
+  if (!Number.isFinite(value)) return 0
+  if (v1 === v2) return value >= v1 ? 1 : 0
+  return Math.min(1, Math.max(0, (value - v1) / (v2 - v1)))
+}
+
+/** The reference brightness (nits) that the cockpit's ordinary lit glow stands for. */
+const LIT_REFERENCE_NITS = 500
+/** No lamp is allowed to glow more than this many times the reference (ACES + bloom would flare the screen). */
+const MAX_LIGHT_INTENSITY = 8
+
+/** Set every lamp's glow from the datarefs: level × brightness ÷ 500 nits. */
+export function applyObj8Lights(groups: readonly LightLevelGroup[], read: DatarefReader): void {
+  for (const g of groups) {
+    const level = lightLevelValue(read(g.dataref), g.v1, g.v2)
+    g.material.emissiveIntensity = Math.min(MAX_LIGHT_INTENSITY, (level * (g.nits ?? LIT_REFERENCE_NITS)) / LIT_REFERENCE_NITS)
+  }
+}
+
 export interface BuildObj8Options {
+  /** Build the parsed hit boxes (parseObj8 with `hitBoxes`) as invisible, raycastable meshes carrying `userData.manip`. */
+  hitBoxes?: boolean
+  /** Give every distinct ATTR_light_level its own material so it can glow on its own dataref
+   *  (cockpits). Off by default: exteriors keep their single shared material. */
+  lightLevels?: boolean
   /** Which ATTR_LOD band to build (default 0 = nearest). Building every
    *  band would stack the LOD meshes on top of each other. */
   lod?: number
   /** Material for ATTR_cockpit geometry (X-Plane's panel texture); defaults
-   *  to a plain untextured material so panel UVs don't sample the albedo. */
-  cockpitMaterial?: THREE.Material
+   *  to a plain untextured material so panel UVs don't sample the albedo. A function picks one per avionics
+   *  screen (the ATTR_cockpit_device name; undefined for the panel itself). */
+  cockpitMaterial?: CockpitMaterial
   name?: string
 }
+
+export type CockpitMaterial = THREE.Material | ((device: string | undefined) => THREE.Material)
 
 /** Validate before creating GPU resources or publishing a partial exterior. */
 function validateObj8(parsed: ParsedObj8, lod: number): void {
@@ -567,7 +690,7 @@ export function buildObj8(
   parsed: ParsedObj8,
   material: THREE.Material,
   opts: BuildObj8Options = {},
-): { group: THREE.Group; animated: THREE.Group[] } {
+): { group: THREE.Group; animated: THREE.Group[]; lights: LightLevelGroup[]; hits: THREE.Mesh[] } {
   const lod = opts.lod ?? 0
   validateObj8(parsed, lod)
   const root = new THREE.Group()
@@ -597,9 +720,31 @@ export function buildObj8(
   }
 
   let propAlphaMaterial: THREE.Material | undefined
-  let cockpitMaterial = opts.cockpitMaterial
+  let defaultCockpit: THREE.Material | undefined
+  const cockpitFor = (d: Obj8Draw): THREE.Material => {
+    const m = opts.cockpitMaterial
+    if (typeof m === 'function') return m(d.device)
+    if (m) return m
+    return defaultCockpit ??= new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.8, metalness: 0.1 })
+  }
+  const hits: THREE.Mesh[] = []
+  let hitMaterial: THREE.MeshBasicMaterial | undefined
+  const lightGroups = new Map<string, LightLevelGroup>()
+  const lightMaterial = (l: Obj8Light): THREE.Material => {
+    const key = `${l.dataref}|${l.v1}|${l.v2}|${l.nits}`
+    let g = lightGroups.get(key)
+    if (!g) {
+      const m = (material as THREE.MeshStandardMaterial).clone()
+      m.onBeforeCompile = material.onBeforeCompile
+      m.customProgramCacheKey = material.customProgramCacheKey
+      g = { material: m, v1: l.v1, v2: l.v2, dataref: l.dataref, nits: l.nits }
+      lightGroups.set(key, g)
+    }
+    return g.material
+  }
   for (const d of parsed.draws) {
     if (d.lod !== lod || d.count <= 0) continue
+    if (d.hidden && !opts.hitBoxes) continue
     const geo = new THREE.BufferGeometry()
     geo.setAttribute('position', position)
     geo.setAttribute('normal', normal)
@@ -608,8 +753,16 @@ export function buildObj8(
     geo.setDrawRange(d.start, d.count)
     geo.boundingBox = drawBounds(parsed, d)
     geo.boundingSphere = geo.boundingBox.getBoundingSphere(new THREE.Sphere())
-    if (d.cockpit && !cockpitMaterial) {
-      cockpitMaterial = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.8, metalness: 0.1 })
+    if (d.hidden) {
+      hitMaterial ??= new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, visible: false })
+      const hit = new THREE.Mesh(geo, hitMaterial)
+      hit.name = `hit:${d.manip?.tooltip ?? d.start}`
+      hit.visible = false
+      hit.userData.manip = d.manip
+      const owner = d.animPath[d.animPath.length - 1]
+      ;(owner === undefined ? root : animated[owner]!).add(hit)
+      hits.push(hit)
+      continue
     }
     const propDisc = d.animPath.some(id => parsed.anims[id]!.specs.some(s =>
       s.kind === 'hide' && s.dataref.includes('/prop_is_disc[') && s.v1 === 0 && s.v2 <= .5))
@@ -620,7 +773,8 @@ export function buildObj8(
       propAlphaMaterial.transparent = true
       propAlphaMaterial.depthWrite = false
     }
-    const mesh = new THREE.Mesh(geo, d.cockpit ? cockpitMaterial! : propDisc ? propAlphaMaterial! : material)
+    const lit = opts.lightLevels && d.light && !d.cockpit && !propDisc ? lightMaterial(d.light) : null
+    const mesh = new THREE.Mesh(geo, d.cockpit ? cockpitFor(d) : propDisc ? propAlphaMaterial! : lit ?? material)
     mesh.name = `tris:${d.start}+${d.count}`
     const last = d.animPath[d.animPath.length - 1]
     ;(last === undefined ? root : animated[last]!).add(mesh)
@@ -629,7 +783,7 @@ export function buildObj8(
   // Static pose: every block evaluated at dataref value 0; hide/show is
   // recorded on userData but not applied (everything stays visible).
   for (const g of animated) applyObj8Anim(g, ZERO_DATAREFS)
-  return { group: root, animated }
+  return { group: root, animated, lights: [...lightGroups.values()], hits }
 }
 
 // ------------------------------------------------------------- textures --
@@ -647,11 +801,23 @@ export function buildObj8(
  * top-down (verified against their authored UV islands), so reflect V in
  * each DDS texture matrix instead. PNGs retain Three's normal upload flip.
  */
-async function loadTexture(url: string, srgb: boolean): Promise<THREE.Texture> {
+/** Redraw a decoded image at no more than `maxSize` pixels on its long side (a 4096² RGBA texture is 89 MB with mipmaps; 2048² is 22 MB). */
+function shrinkTexture(tex: THREE.Texture, maxSize: number): void {
+  const im = tex.image as { width: number; height: number } | undefined
+  if (!im || !(im.width > maxSize || im.height > maxSize) || typeof document === 'undefined') return
+  const k = maxSize / Math.max(im.width, im.height)
+  const c = document.createElement('canvas')
+  c.width = Math.max(1, Math.round(im.width * k)); c.height = Math.max(1, Math.round(im.height * k))
+  c.getContext('2d')!.drawImage(im as unknown as CanvasImageSource, 0, 0, c.width, c.height)
+  tex.image = c
+}
+
+async function loadTexture(url: string, srgb: boolean, maxSize?: number): Promise<THREE.Texture> {
   const dds = /\.dds$/i.test(url)
   const tex: THREE.Texture = dds
     ? await new DDSLoader().loadAsync(url)
     : await new THREE.TextureLoader().loadAsync(url)
+  if (!dds && maxSize) shrinkTexture(tex, maxSize)
   tex.flipY = !dds
   if (dds) { tex.repeat.y = -1; tex.offset.y = 1 }
   tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace
@@ -667,31 +833,63 @@ function alternateName(name: string): string | null {
   return null
 }
 
+/** The URLs tried, in order, for one texture name: a livery's own file first (when there is one), then the airplane's. */
+export function textureCandidates(name: string, base: string, overrideBase?: string): string[] {
+  const alt = alternateName(name)
+  const names = alt ? [name, alt] : [name]
+  return [...(overrideBase ? names.map((n) => overrideBase + n) : []), ...names.map((n) => base + n)]
+}
+
+async function firstTexture(urls: string[], srgb: boolean, maxSize?: number): Promise<THREE.Texture | null> {
+  for (const url of urls) {
+    try { return await loadTexture(url, srgb, maxSize) } catch { /* try the next candidate */ }
+  }
+  return null
+}
+
 async function loadTextureWithFallback(
   name: string | undefined,
   base: string,
   srgb: boolean,
   warnings: string[],
   cache?: Map<string, Promise<THREE.Texture | null>>,
+  overrideBase?: string,
+  maxSize?: number,
 ): Promise<THREE.Texture | null> {
-  if (cache && name) {
-    const key = `${base}${name}:${srgb}`
+  if (!name) return null
+  if (overrideBase) {
+    // A livery paints only some textures; the others are the airplane's own, loaded once and shared through the cache.
+    const key = `${overrideBase}${name}:${srgb}:${maxSize ?? 0}`
+    const own = (): Promise<THREE.Texture | null> => firstTexture(textureCandidates(name, base, overrideBase).slice(0, alternateName(name) ? 2 : 1), srgb, maxSize)
+      .then((t) => t ?? loadTextureWithFallback(name, base, srgb, warnings, cache, undefined, maxSize))
+    if (!cache) return own()
     let pending = cache.get(key)
-    if (!pending) { pending = loadTextureWithFallback(name, base, srgb, warnings); cache.set(key, pending) }
+    if (!pending) { pending = own(); cache.set(key, pending) }
     return pending
   }
-  if (!name) return null
-  const alt = alternateName(name)
-  for (const candidate of alt ? [name, alt] : [name]) {
+  if (cache) {
+    const key = `${base}${name}:${srgb}:${maxSize ?? 0}`
+    let pending = cache.get(key)
+    if (!pending) { pending = loadTextureWithFallback(name, base, srgb, warnings, undefined, undefined, maxSize); cache.set(key, pending) }
+    return pending
+  }
+  // An OBJ names its textures .png; X-Plane ships most of them as .dds. Which of the two a folder holds is learned
+  // from its first texture, so the rest are asked for by the right name first instead of each missing once.
+  const urls = textureCandidates(name, base)
+  const swapped = urls.length === 2 && alternateFirst.get(base) === true
+  if (swapped) urls.reverse()
+  for (let i = 0; i < urls.length; i++) {
     try {
-      return await loadTexture(base + candidate, srgb)
-    } catch {
-      /* try the next candidate */
-    }
+      const texture = await loadTexture(urls[i]!, srgb, maxSize)
+      if (urls.length === 2) alternateFirst.set(base, (i === 1) !== swapped)
+      return texture
+    } catch { /* try the next candidate */ }
   }
   warnings.push(`texture not found: ${base}${name}`)
   return null
 }
+/** Per texture folder: true when its files turned out to carry the alternate extension (.dds for a named .png). */
+const alternateFirst = new Map<string, boolean>()
 
 export interface Obj8MaterialMaps {
   map?: THREE.Texture | null
@@ -755,12 +953,28 @@ export interface LoadObj8Options {
   lod?: number
   /** Per-aircraft texture ownership/cache; never shared across disposed aircraft. */
   textureCache?: Map<string, Promise<THREE.Texture | null>>
+  /** For airplanes seen from far away (traffic): no normal / gloss maps, and textures no larger than this on a side. */
+  distant?: { maxTextureSize: number }
+  /** Cap on the side of normal / gloss maps (a decoded 4096² one is 89 MB): the paint keeps its full size. */
+  normalMaxSize?: number
+  /** A livery's texture folder (URL prefix): its files replace the airplane's of the same name, the rest fall back to `textureBase`. */
+  textureOverrideBase?: string
+  /** Material for ATTR_cockpit* draws (X-Plane's panel / device screens), e.g. a live display; a function picks one per screen. */
+  cockpitMaterial?: CockpitMaterial
+  /** Lamps and backlights glow on their own datarefs (see BuildObj8Options.lightLevels). */
+  lightLevels?: boolean
+  /** Parse and build the manipulators' hit boxes (see parseObj8). */
+  hitBoxes?: boolean
 }
 
 export interface LoadedObj8 {
   group: THREE.Group
   /** One group per ANIM block, parse order; userData.anim holds the spec. */
   animated: THREE.Group[]
+  /** Lamps / backlights (empty unless loaded with lightLevels). */
+  lights: LightLevelGroup[]
+  /** Invisible hit boxes of the file's manipulators (empty unless loaded with hitBoxes). */
+  hits: THREE.Mesh[]
   /** Texture file names referenced by the OBJ. */
   textures: string[]
   material: THREE.MeshStandardMaterial
@@ -771,24 +985,27 @@ export interface LoadedObj8 {
 export async function loadObj8(url: string, opts: LoadObj8Options): Promise<LoadedObj8> {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`loadObj8: ${url} → HTTP ${res.status}`)
-  const parsed = parseObj8(await res.text())
+  const parsed = parseObj8(await res.text(), opts.hitBoxes ? { hitBoxes: true } : {})
   validateObj8(parsed, opts.lod ?? 0)
   const warnings = [...parsed.warnings]
 
   const base = opts.textureBase.endsWith('/') ? opts.textureBase : `${opts.textureBase}/`
+  const overrideBase = opts.textureOverrideBase ? (opts.textureOverrideBase.endsWith('/') ? opts.textureOverrideBase : `${opts.textureOverrideBase}/`) : undefined
   const want = opts.loadTextures ?? true
   const [map, emissiveMap, normalMap, materialGlossMap, glossMap] = want
     ? await Promise.all([
-        loadTextureWithFallback(parsed.albedo, base, true, warnings, opts.textureCache),
-        loadTextureWithFallback(parsed.lit, base, true, warnings, opts.textureCache),
-        loadTextureWithFallback(parsed.normal, base, false, warnings, opts.textureCache),
-        loadTextureWithFallback(parsed.materialGloss, base, false, warnings, opts.textureCache),
-        loadTextureWithFallback(parsed.gloss, base, false, warnings, opts.textureCache),
+        loadTextureWithFallback(parsed.albedo, base, true, warnings, opts.textureCache, overrideBase, opts.distant?.maxTextureSize),
+        loadTextureWithFallback(parsed.lit, base, true, warnings, opts.textureCache, undefined, opts.distant?.maxTextureSize),
+        // A livery changes the paint only: its normal and gloss maps are the airplane's own (and are not loaded again —
+        // a second decoded 4096² normal map per livery is what exhausts the graphics memory).
+        opts.distant ? Promise.resolve(null) : loadTextureWithFallback(parsed.normal, base, false, warnings, opts.textureCache, undefined, opts.normalMaxSize),
+        opts.distant ? Promise.resolve(null) : loadTextureWithFallback(parsed.materialGloss, base, false, warnings, opts.textureCache, undefined, opts.normalMaxSize),
+        opts.distant ? Promise.resolve(null) : loadTextureWithFallback(parsed.gloss, base, false, warnings, opts.textureCache, undefined, opts.normalMaxSize),
       ])
     : [null, null, null, null, null]
 
   const material = makeObj8Material({ map, emissiveMap, normalMap, materialGlossMap, glossMap }, parsed)
   const name = url.split('?')[0]!.split('/').pop() || 'obj8'
-  const built = buildObj8(parsed, material, { name, ...(opts.lod !== undefined ? { lod: opts.lod } : {}) })
+  const built = buildObj8(parsed, material, { name, ...(opts.lod !== undefined ? { lod: opts.lod } : {}), ...(opts.cockpitMaterial ? { cockpitMaterial: opts.cockpitMaterial } : {}), ...(opts.lightLevels ? { lightLevels: true } : {}), ...(opts.hitBoxes ? { hitBoxes: true } : {}) })
   return { ...built, textures: parsed.textures, material, parsed, warnings }
 }

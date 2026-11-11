@@ -107,3 +107,18 @@ it('preserves a value snapshot across asynchronous swaps even when the caller re
  const loaded=visual();resolve(loaded);await pending
  expect(loaded.surfaces).toHaveBeenCalledWith({...input,pitch:.6,yaw:-.3})
 })
+
+it('reads the flap handle ratio and a cosmetic blade pitch, as the King Air exterior animates them',()=>{
+ const read=localDatarefReader({flapFrac:.5,spoilerFrac:0,gearPos:1},0,0,new Map())
+ expect(read('sim/cockpit2/controls/flap_handle_deploy_ratio')).toBe(.5)
+ expect(read('sim/flightmodel2/engines/prop_pitch_deg[0]')).toBe(20)
+ expect(read('sim/flightmodel2/engines/prop_pitch_deg[1]')).toBe(20)
+ expect(localDatarefReader({flapFrac:NaN,spoilerFrac:0,gearPos:1},0,0,new Map())('sim/cockpit2/controls/flap_handle_deploy_ratio')).toBe(0)
+})
+
+it('a model whose OBJ carries no blur disc keeps its blades at running RPM; others switch to the disc',()=>{
+ const st={flapFrac:0,spoilerFrac:0,gearPos:1}
+ expect(localDatarefReader(st,0,2200,new Map(),'BE9L')('sim/flightmodel2/engines/prop_is_disc[0]')).toBe(0)
+ expect(localDatarefReader(st,0,2200,new Map(),'C172')('sim/flightmodel2/engines/prop_is_disc[0]')).toBe(1)
+ expect(localDatarefReader(st,0,500,new Map(),'C172')('sim/flightmodel2/engines/prop_is_disc[0]')).toBe(0)
+})

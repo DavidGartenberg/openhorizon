@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process'
 import { buildAirports, buildNavaids, buildCifpProcedures, buildUsAirspace, buildFrequencies, buildAircraftTypes, isImageBuf, normalizeAdsb , buildIls } from './parse.mjs'
 import { voiceRoute } from './voice.mjs'
 import { xpRoute } from './xp-static.mjs'
+import { aptAirport, aptRunwayExtras, aptExtents, aptAirportsOnlyInXplane, aptAirportsNear, aptLandMasks } from './apt.mjs'
 
 const cacheDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'cache')
 /** Vendored offline fallbacks committed with the repo (Phase 12a). */
@@ -426,6 +427,15 @@ export async function frequenciesData() {
 
 const osmCache = new Map()
 
+/** A building's height in metres from its OSM tags (`height`, else `building:levels` × 3.6 m), or null. */
+export function osmHeightM(tags) {
+  const h = parseFloat(String(tags?.height ?? '').replace(',', '.'))
+  if (Number.isFinite(h) && h >= 3 && h <= 400) return Math.round(h * 10) / 10
+  const levels = parseFloat(String(tags?.['building:levels'] ?? ''))
+  if (Number.isFinite(levels) && levels >= 1 && levels <= 80) return Math.round(levels * 3.6 * 10) / 10
+  return null
+}
+
 /** GET /api/osm/{ICAO}.json — the airport's REAL ground layout from OSM
  *  aeroway data (taxiway centerlines with their real idents, apron
  *  polygons, terminal footprints). Cached forever on disk per airport —
@@ -435,27 +445,34 @@ export async function osmAirport(icao, lat, lon) {
   if (!/^[A-Z0-9]{3,4}$/.test(icao)) throw new Error('bad icao')
   if (osmCache.has(icao)) return osmCache.get(icao)
   const file = path.join(cacheDir, `osm-${icao}.json`)
+  let stale = null
   if (fs.existsSync(file)) {
     const j = fs.readFileSync(file, 'utf8')
-    osmCache.set(icao, j)
-    return j
+    // An airport cached before terminal heights were kept (it has terminals but no `th`) is fetched once more.
+    let old = null
+    try { old = JSON.parse(j) } catch { /* refetch */ }
+    if (!old || !Array.isArray(old.tm) || old.tm.length === 0 || Array.isArray(old.th)) { osmCache.set(icao, j); return j }
+    stale = j
   }
   const q = `[out:json][timeout:25];(way["aeroway"~"^(taxiway|apron|terminal)$"](around:4200,${lat},${lon});way["aeroway"="parking_position"](around:4200,${lat},${lon}););out geom;`
-  const res = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'OpenHorizon-flight-sim/1.0 (personal project; cached forever per airport)' },
-    body: 'data=' + encodeURIComponent(q),
-  })
-  if (!res.ok) throw new Error(`overpass ${icao}: ${res.status}`)
+  let res
+  try {
+    res = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'OpenHorizon-flight-sim/1.0 (personal project; cached forever per airport)' },
+      body: 'data=' + encodeURIComponent(q),
+    })
+  } catch (e) { if (stale) { osmCache.set(icao, stale); return stale } throw e }
+  if (!res.ok) { if (stale) { osmCache.set(icao, stale); return stale } throw new Error(`overpass ${icao}: ${res.status}`) }
   const raw = await res.json()
-  const out = { tw: [], ap: [], tm: [], st: [] }
+  const out = { tw: [], ap: [], tm: [], th: [], st: [] }
   for (const el of raw.elements ?? []) {
     if (!el.geometry || el.geometry.length < 2) continue
     const pts = el.geometry.map((g) => [+g.lat.toFixed(6), +g.lon.toFixed(6)])
     const t = el.tags ?? {}
     if (t.aeroway === 'taxiway') out.tw.push({ r: t.ref ?? '', p: pts })
     else if (t.aeroway === 'apron') out.ap.push(pts)
-    else if (t.aeroway === 'terminal') out.tm.push(pts)
+    else if (t.aeroway === 'terminal') { out.tm.push(pts); out.th.push(osmHeightM(t)) }
     else if (t.aeroway === 'parking_position') out.st.push({ r: t.ref ?? '', p: pts })
   }
   const json = JSON.stringify(out)
@@ -628,6 +645,71 @@ export async function route(url, res, method = 'GET', req) {
       })
       res.end(json)
       return true
+    }
+    if (bare === '/api/apt-runways.json') {
+      // X-Plane's blast pads / overruns (server/apt.mjs); an empty object when there is no X-Plane install.
+      const json = aptRunwayExtras(cacheDir, undefined, JSON.parse(await airportsData())) ?? '{}'
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' })
+      res.end(json)
+      return true
+    }
+    if (bare === '/api/apt-airports.json') {
+      // Airports X-Plane has and the old database lacks (server/apt.mjs), within ?r= metres of ?lat=&lon=.
+      const list = aptAirportsOnlyInXplane(cacheDir, undefined, JSON.parse(await airportsData())) ?? []
+      const q = new URL(url, 'http://x').searchParams
+      const near = aptAirportsNear(list, parseFloat(q.get('lat') ?? ''), parseFloat(q.get('lon') ?? ''), Math.min(parseFloat(q.get('r') ?? '') || 0, 300_000))
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' })
+      res.end(JSON.stringify(Number.isFinite(parseFloat(q.get('lat') ?? '')) ? near : []))
+      return true
+    }
+    if (bare === '/api/apt-land.json') {
+      // Where airports that lie low are certainly land (server/apt.mjs), for those within ?r= metres of ?lat=&lon=.
+      const q = new URL(url, 'http://x').searchParams
+      const lat = parseFloat(q.get('lat') ?? ''), lon = parseFloat(q.get('lon') ?? ''), r = Math.min(parseFloat(q.get('r') ?? '') || 0, 100_000)
+      let masks = {}
+      if (Number.isFinite(lat) && Number.isFinite(lon)) {
+        const db = JSON.parse(await airportsData())
+        const only = aptAirportsOnlyInXplane(cacheDir, undefined, db) ?? []
+        masks = aptLandMasks(aptAirportsNear([...db, ...only], lat, lon, r), cacheDir)
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' })
+      res.end(JSON.stringify(masks))
+      return true
+    }
+    if (bare === '/api/apt-extent.json') {
+      const json = aptExtents(cacheDir) ?? '{}'
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' })
+      res.end(json)
+      return true
+    }
+    if (url.startsWith('/api/apt/')) {
+      // X-Plane's own airport layouts (server/apt.mjs): the real runways, pavements, painted lines, ramps.
+      const m = bare.match(/^\/api\/apt\/([A-Z0-9]{3,7})\.json$/)
+      const json = m ? aptAirport(m[1], cacheDir) : null
+      if (json === null) {
+        res.writeHead(404, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+        res.end('{"error":"apt-not-found"}')
+        return true
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=86400', 'Access-Control-Allow-Origin': '*' })
+      res.end(json)
+      return true
+    }
+    if (url.startsWith('/api/osm-buildings/')) {
+      const m = url.split('?')[0].match(/^\/api\/osm-buildings\/(\d+)\/(\d+)\/(\d+)\.json$/)
+      if (m) {
+        const { buildingTile } = await import('./osm-buildings.mjs')
+        try {
+          const json = await buildingTile(m[1], m[2], m[3])
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=604800', 'Access-Control-Allow-Origin': '*' })
+          res.end(json)
+        } catch (e) {
+          // Overpass busy or unreachable: the client keeps flying without this tile and asks again later.
+          res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' })
+          res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }))
+        }
+        return true
+      }
     }
     if (url.startsWith('/api/osm/')) {
       const m = url.match(/^\/api\/osm\/([A-Z0-9]{3,4})\.json\?lat=(-?[\d.]+)&lon=(-?[\d.]+)$/)

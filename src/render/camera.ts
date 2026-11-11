@@ -48,6 +48,14 @@ export class FlyCamera {
     this.camera.position.y = Math.max(this.camera.position.y, 2)
   }
 
+  /** Place the camera (verification hook): yaw 0 looks north (−Z), positive turns left. */
+  setPose(x: number, y: number, z: number, yawRad: number, pitchRad: number): void {
+    this.camera.position.set(x, y, z)
+    this.yaw = yawRad
+    this.pitch = THREE.MathUtils.clamp(pitchRad, -1.55, 1.55)
+    this.camera.quaternion.setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, 'YXZ'))
+  }
+
   get position(): THREE.Vector3 {
     return this.camera.position
   }

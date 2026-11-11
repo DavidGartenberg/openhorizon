@@ -63,7 +63,7 @@ describe('737NG flight deck layout', () => {
   })
   it('exposes the clickable deck controls', () => {
     const ids = new Set(deck.interactive.map(o => o.userData.controlId as string))
-    for (const id of ['throttleKnob', 'flapLever', 'trimWheel', 'fireTest', 'hornCutout', 'mcpCmdA', 'mcpDisengage', 'masterCaution', 'landingLights', 'mcpAtArm', 'mcpSpeed', 'atDisconnect', 'atReset', 'apReset']) expect(ids.has(id), id).toBe(true)
+    for (const id of ['throttleKnob', 'flapLever', 'trimWheel', 'fireTest', 'hornCutout', 'mcpDisengage', 'masterCaution', 'landingLights', 'atDisconnect', 'atReset', 'apReset', 'apBtn:ap', 'apBtn:hdg', 'apBtn:alt', 'apKnob:altitude:1', 'apKnob:heading:-1']) expect(ids.has(id), id).toBe(true)
   })
 })
 

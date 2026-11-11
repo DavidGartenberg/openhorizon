@@ -168,6 +168,11 @@ export interface IlsRef {
   gsAntenna: LatLon
   gsAntennaElevFt: number
   gsAngleDeg?: number // defaults to GS_STANDARD_ANGLE_DEG
+  /** Localizer antenna: real ones sit beyond the FAR end of the runway, so
+   *  the beam stays well defined all the way down the runway (landing
+   *  flare and rollout). Omitted = the legacy threshold-referenced
+   *  geometry, whose bearing flips as the aircraft crosses the threshold. */
+  locAntenna?: LatLon
 }
 
 /** Localizer angular deflection off the extended runway centerline, deg,
@@ -181,7 +186,7 @@ export function localizerDeflection(ils: IlsRef, aircraft: LatLon, fullScaleDeg 
   // angular width is exactly the angle between that actual bearing and the
   // reciprocal course — no small-angle approximation needed, this is a true
   // bearing-based angle like a VOR radial.
-  const bearingFromThreshold = bearingDeg(ils.threshold, aircraft)
+  const bearingFromThreshold = bearingDeg(ils.locAntenna ?? ils.threshold, aircraft)
   const reciprocalCourse = (ils.courseDeg + 180) % 360
   const off = angDiff(bearingFromThreshold, reciprocalCourse)
   return clamp(off, -fullScaleDeg, fullScaleDeg)

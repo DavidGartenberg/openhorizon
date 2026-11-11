@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   lonToTileX, latToTileY, tileXToLon, tileYToLat, toNedMeters, fromNedMeters,
   terrariumDecode, curvatureDrop, sampleGrid, flattenForRunway, distanceM, bearingDeg,
-  windDirFromNed,
+  windDirFromNed, fillShorePits,
 } from '../src/math/geo'
 // @ts-expect-error — plain .mjs module without type declarations
 import { splitCsvLine, buildAirports, buildNavaids } from '../server/parse.mjs'
@@ -181,5 +181,34 @@ describe('global ILS pipeline (night-shift N4)', () => {
     const out = buildIls(dat)
     expect(out.EGLL).toEqual([{ r: '27R', f: 11030, i: 'IRR', c: 'I' }])
     expect(out.KSFO).toEqual([{ r: '28R', f: 11170, i: 'IGWQ', c: 'III' }])
+  })
+})
+
+describe('closing the pits a level airport leaves at the shore', () => {
+  const grid = (rows: string[]): { h: Float32Array; sea: Uint8Array; lev: Uint8Array; n: number } => {
+    const n = rows.length
+    const h = new Float32Array(n * n), sea = new Uint8Array(n * n), lev = new Uint8Array(n * n)
+    rows.forEach((row, j) => [...row].forEach((c, i) => { const k = j * n + i; if (c === 'L') { h[k] = 5; lev[k] = 1 } else if (c === 's') sea[k] = 1 }))
+    return { h, sea, lev, n }
+  }
+  const text = (g: { sea: Uint8Array; n: number }): string[] => Array.from({ length: g.n }, (_, j) => Array.from({ length: g.n }, (_, i) => (g.sea[j * g.n + i] ? 's' : '.')).join(''))
+  it('fills a notch with levelled ground on two perpendicular sides, at the level of its neighbours', () => {
+    const g = grid(['LLLLL', 'LLsLL', 'LLLLL', 'LLLLL', 'LLLLL'])
+    expect(fillShorePits(g.h, g.sea, g.lev, g.n)).toBe(1)
+    expect(g.sea[1 * 5 + 2]).toBe(0); expect(g.h[1 * 5 + 2]).toBe(5)
+  })
+  it('leaves a straight shoreline and a one-cell channel alone, and open water far from the level area', () => {
+    const shore = grid(['LLLLL', 'LLLLL', 'sssss', 'sssss', 'sssss'])
+    fillShorePits(shore.h, shore.sea, shore.lev, shore.n)
+    expect(text(shore).slice(2)).toEqual(['sssss', 'sssss', 'sssss'])
+    const channel = grid(['LLsLL', 'LLsLL', 'LLsLL', 'LLsLL', 'LLsLL'])
+    fillShorePits(channel.h, channel.sea, channel.lev, channel.n)
+    expect(text(channel)).toEqual(['..s..', '..s..', '..s..', '..s..', '..s..'])
+  })
+  it('rounds off a bay corner by at most the number of passes', () => {
+    const g = grid(['LLLLLL', 'LssssL', 'LssssL', 'LssssL', 'LssssL', 'LLLLLL'])
+    fillShorePits(g.h, g.sea, g.lev, g.n, 1)
+    expect(text(g)[1]).toBe('..ss..')                                         // the corner cells filled, the straight edge not
+    expect(g.sea.reduce((a, b) => a + b, 0)).toBeGreaterThan(0)                // the middle of the bay stays water
   })
 })

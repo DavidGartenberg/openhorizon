@@ -1,4 +1,5 @@
 import { flapIndex, airbrakeFlapFloor, mixFlaperons } from './flaperons'
+import { makeSpoilerPanels, resetSpoilerPanels, spoilerLayoutFor, stepSpoilers, type SpoilerPanels } from './spoilers'
 /**
  * The aircraft (§5): 6-DOF rigid body integrating aero + propulsion + gear +
  * gravity at the fixed timestep. Body axes x fwd / y right / z down; world is
@@ -92,6 +93,8 @@ export class Aircraft {
   spoilerPos = 0
   /** Speedbrake ARM: on touchdown the ground spoilers auto-deploy. */
   spoilerArmed = false
+  /** An airliner's wing panels, each at its own angle (spoilers.ts); null for types with a single airbrake actuator. */
+  readonly spoilerPanels: SpoilerPanels | null
   /** Reverse thrust: commanded by the pilot, deploy INTERLOCKED to
    *  weight-on-wheels (real airplane behavior). */
   reverseCmd = false
@@ -99,6 +102,7 @@ export class Aircraft {
 
   constructor(params: AircraftParams = C172S) {
     this.P = params
+    this.spoilerPanels = params.spoilers?.family ? makeSpoilerPanels(spoilerLayoutFor(params.spoilers.family)) : null
     this.resetFlaps()
     this.fuelKg = params.fuelCapacityKg
     // Preserve the established 250 kg default where it fits, while small
@@ -233,6 +237,7 @@ export class Aircraft {
     this.spoilerCmd = 0
     this.spoilerPos = 0
     this.spoilerArmed = false
+    if (this.spoilerPanels) resetSpoilerPanels(this.spoilerPanels)
     this.reverseCmd = false
     this.reversePos = 0
     for(const key of Object.keys(this.appliedControlSurfaces) as Array<keyof typeof this.appliedControlSurfaces>)this.appliedControlSurfaces[key]=0
@@ -279,8 +284,17 @@ export class Aircraft {
     if (this.P.spoilers) {
       // ARM → auto-deploy on touchdown (ground spoilers).
       if (this.P.spoilers.groundAutoDeploy && this.spoilerArmed && this.data.onGround) { this.spoilerCmd = 1; this.spoilerArmed = false }
-      const sRate = this.P.spoilers.ratePerS * dt
-      this.spoilerPos = clamp(this.spoilerPos + clamp(this.spoilerCmd - this.spoilerPos, -sRate, sRate), 0, 1)
+      if (this.spoilerPanels) {
+        const lastGate = this.P.flapDetentsDeg[this.P.flapDetentsDeg.length - 1] ?? 0
+        this.spoilerPos = stepSpoilers(this.spoilerPanels, {
+          lever: this.spoilerCmd, onGround: this.data.onGround, groundSpeedKt: this.data.groundSpeedKt,
+          throttle: c.throttle, reverse: this.reverseCmd, flapsFrac: lastGate > 0 ? this.flapsDeg / lastGate : 0,
+          roll: c.roll, kcas: this.data.kcas,
+        }, dt).aeroFrac
+      } else {
+        const sRate = this.P.spoilers.ratePerS * dt
+        this.spoilerPos = clamp(this.spoilerPos + clamp(this.spoilerCmd - this.spoilerPos, -sRate, sRate), 0, 1)
+      }
     }
     this.selectFlaps(c.flapsIndex, false)
     let flapTarget = this.P.flapDetentsDeg[c.flapsIndex]!

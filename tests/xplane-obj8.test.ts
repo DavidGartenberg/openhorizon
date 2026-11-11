@@ -106,6 +106,26 @@ describe('parseObj8 — grouping and state boundaries', () => {
     expect(p.draws.map((d) => [d.start, d.count, d.cockpit])).toEqual([[3, 3, true], [6, 6, false]])
   })
 
+  it('ATTR_cockpit_device names the avionics screen on its draws, and a material function picks one per screen', () => {
+    const p = parseObj8([...HEAD, 'ATTR_cockpit_device G1000_PFD1 4 -1 1', 'TRIS 0 3', 'ATTR_cockpit_device G1000_MFD 1 -1 1', 'TRIS 3 3', 'ATTR_cockpit', 'TRIS 6 3', 'ATTR_no_cockpit', 'TRIS 9 3'].join('\n'))
+    expect(p.draws.map((d) => [d.cockpit, d.device])).toEqual([[true, 'G1000_PFD1'], [true, 'G1000_MFD'], [true, undefined], [false, undefined]])
+    const pfd = new THREE.MeshBasicMaterial(), mfd = new THREE.MeshBasicMaterial(), panel = new THREE.MeshBasicMaterial()
+    const seen: Array<string | undefined> = []
+    const built = buildObj8(p, makeObj8Material({}), { cockpitMaterial: (device) => { seen.push(device); return device === 'G1000_PFD1' ? pfd : device === 'G1000_MFD' ? mfd : panel } })
+    const used: THREE.Material[] = []
+    built.group.traverse((o) => { if (o instanceof THREE.Mesh) used.push(o.material as THREE.Material) })
+    expect(used.slice(0, 3)).toEqual([pfd, mfd, panel])
+    expect(seen).toEqual(['G1000_PFD1', 'G1000_MFD', undefined])
+  })
+
+  it('reads a number with stray trailing digits as X-Plane does (its leading number), and still rejects a non-number', () => {
+    const p = parseObj8([...HEAD, 'ANIM_begin', 'ANIM_rotate_begin 0 0 1 sim/x', 'ANIM_rotate_key -2.5.000000 -18', 'ANIM_rotate_key 2.5.000000 18', 'ANIM_rotate_end', 'TRIS 0 3', 'ANIM_end'].join('\n'))
+    const spec = p.anims[0]!.specs[0] as Extract<AnimSpec, { kind: 'rotate' }>
+    expect(spec.keys).toEqual([[-2.5, -18], [2.5, 18]])
+    expect(p.warnings.some((w) => /malformed/.test(w))).toBe(false)
+    expect(parseObj8([...HEAD, 'ANIM_begin', 'ANIM_rotate_begin 0 0 1 sim/x', 'ANIM_rotate_key abc 1', 'ANIM_rotate_end', 'TRIS 0 3', 'ANIM_end'].join('\n')).warnings.some((w) => /malformed/.test(w))).toBe(true)
+  })
+
   it('ATTR_LOD bands are indexed on each draw', () => {
     const p = parseObj8([...HEAD, 'ATTR_LOD 0 1000', 'TRIS 0 6', 'ATTR_LOD 1000 5000', 'TRIS 6 6'].join('\n'))
     expect(p.lods).toEqual([[0, 1000], [1000, 5000]])
@@ -454,4 +474,17 @@ it('cuts fully transparent body-atlas windows out of an otherwise opaque exterio
  expect(material.transparent).toBe(false)
  expect(material.alphaTest).toBeGreaterThan(0)
  expect(makeObj8Material({map:new THREE.Texture()},{noBlend:.4}).alphaTest).toBe(.4)
+})
+
+import { textureCandidates } from '../src/render/xplane-obj8'
+describe('texture candidates', () => {
+  it('tries a livery\'s own file (either extension) before the airplane\'s', () => {
+    expect(textureCandidates('738fuselage.png', '/b/', '/b/liveries/Delta/objects/')).toEqual([
+      '/b/liveries/Delta/objects/738fuselage.png', '/b/liveries/Delta/objects/738fuselage.dds', '/b/738fuselage.png', '/b/738fuselage.dds',
+    ])
+  })
+  it('is just the airplane\'s own file without a livery, and a name with no alternate stays single', () => {
+    expect(textureCandidates('a.dds', '/b/')).toEqual(['/b/a.dds', '/b/a.png'])
+    expect(textureCandidates('weird', '/b/', '/l/')).toEqual(['/l/weird', '/b/weird'])
+  })
 })

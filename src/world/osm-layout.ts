@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { patchAtmosphere } from '../render/atmosphere-materials'
 import { mappedTerminalFacade, footprintObstacle, disposeAirportObject, ownMaterial, type GroundPoint, type SurfaceObstacle } from './airport-scenery'
 
 /**
@@ -29,19 +30,66 @@ const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8b23a })
 // shading lit aprons black from above; DoubleSide flips the shading
 // normal for the visible face.
 const APRON = new THREE.MeshStandardMaterial({ color: 0x55595e, roughness: 0.9, envMapIntensity: 0.3, side: THREE.DoubleSide })
-const TERMINAL = new THREE.MeshStandardMaterial({ color: 0x9aa2ab, roughness: 0.6, metalness: 0.2 })
+/**
+ * Terminal walls: a curtain wall of dark glass in three storeys with vertical mullions every 3 m, a pale concrete
+ * band at the base and under the roof, and a plain light roof. Drawn on the extruded footprint by the shader from the
+ * height above the ground (the footprint is extruded to the building's height) and the distance along each wall, so any outline works.
+ */
+function terminalMaterial(): THREE.MeshStandardMaterial {
+  const m = new THREE.MeshStandardMaterial({ color: 0xb4bac1, roughness: 0.6, metalness: 0.2 })
+  m.customProgramCacheKey = () => 'osm-terminal-v4'
+  m.onBeforeCompile = (shader) => {
+    shader.vertexShader = `varying vec3 vTWN;
+varying vec3 vTWP;
+varying float vTH;
+varying float vTTop;
+attribute float aTop;
+` + shader.vertexShader.replace('#include <begin_vertex>', `#include <begin_vertex>
+vTWN = normalize(mat3(modelMatrix) * objectNormal);
+vTWP = (modelMatrix * vec4(transformed, 1.0)).xyz;
+vTH = transformed.y + aTop;
+vTTop = aTop;`)
+    shader.fragmentShader = `varying vec3 vTWN;
+varying vec3 vTWP;
+varying float vTH;
+varying float vTTop;
+` + shader.fragmentShader
+      .replace('#include <color_fragment>', `#include <color_fragment>
+float aptWin = 0.0;
+if (abs(vTWN.y) < 0.5) {
+  vec2 along = normalize(vec2(-vTWN.z, vTWN.x));
+  float u = dot(vTWP.xz, along);
+  float storey = fract(vTH / 3.4);
+  float glass = step(0.14, storey) * step(storey, 0.86) * step(1.2, vTH) * step(vTH, vTTop - 1.1);
+  float mullion = step(0.10, fract(u / 3.0));
+  aptWin = glass * mullion;
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.055, 0.085, 0.12), aptWin * 0.92);
+} else if (vTWN.y > 0.5) {
+  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.62, 0.63, 0.62), 0.55);
+}`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+roughnessFactor = mix(roughnessFactor, 0.12, aptWin);`)
+      .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
+metalnessFactor = mix(metalnessFactor, 0.5, aptWin);`)
+    patchAtmosphere(shader)
+  }
+  return m
+}
+const TERMINAL = terminalMaterial()
 
 interface OsmLayout {
   tw: { r: string; p: [number, number][] }[]
   ap: [number, number][][]
   tm: [number, number][][]
+  /** Height (m) of each terminal from its OSM tags, by polygon (absent = not tagged). */
+  tmh: WeakMap<object, number>
   st: { r: string; p: [number, number][] }[]
 }
 
 
 /** Drop malformed features as units (never join across missing coordinates).
  * Caps keep untrusted OSM geometry, facade batches and signs bounded. */
-function normalizedLayout(raw: unknown): OsmLayout {
+export function normalizedLayout(raw: unknown): OsmLayout {
   const data = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
   const points = (p: unknown, minimum: number): [number, number][] | null => {
     if (!Array.isArray(p) || p.length < minimum || p.length > 512) return null
@@ -59,7 +107,18 @@ function normalizedLayout(raw: unknown): OsmLayout {
     const valid = points(p.p, minimum)
     return valid ? [{ r: typeof p.r === 'string' ? p.r.slice(0, 12) : '', p: valid }] : []
   })
-  return { tw: lines(data.tw, 2), ap: polygons(data.ap), tm: polygons(data.tm), st: lines(data.st, 1) }
+  // Terminal heights ride along with their polygons (the polygon list drops malformed ones, so match by source index).
+  const tmh = new WeakMap<object, number>()
+  const heights = Array.isArray(data.th) ? data.th : []
+  const tm: [number, number][][] = []
+  if (Array.isArray(data.tm)) data.tm.slice(0, 80).forEach((raw, i) => {
+    const [poly] = polygons([raw])
+    if (!poly) return
+    tm.push(poly)
+    const h = heights[i]
+    if (typeof h === 'number' && Number.isFinite(h)) tmh.set(poly, Math.min(Math.max(h, 4), 80))
+  })
+  return { tw: lines(data.tw, 2), ap: polygons(data.ap), tm, tmh, st: lines(data.st, 1) }
 }
 
 /** Butt-jointed ribbon strip along a polyline (local x/z), one quad per
@@ -101,6 +160,8 @@ export async function enhanceAirportWithOsm(
   refLon: number,
   elevM: number,
   runways?: { la1: number; lo1: number; la2: number; lo2: number }[],
+  /** When X-Plane's own layout supplies the pavement, only the OSM terminal buildings are added, and the facility replan keeps X-Plane's aprons and taxiways. */
+  opts?: { terminalsOnly?: boolean; extra?: { aprons: GroundPoint[][]; obstacles: SurfaceObstacle[] } },
 ): Promise<void> {
   let data: OsmLayout
   try {
@@ -125,6 +186,7 @@ export async function enhanceAirportWithOsm(
   data.st = data.st.filter(t => nearby(t.p))
   data.ap = data.ap.filter(nearby)
   data.tm = data.tm.filter(nearby)
+  if (opts?.terminalsOnly) { data.tw = []; data.ap = []; data.st = [] }
   if (!data.tw.length && !data.ap.length && !data.tm.length) return
   const osm = new THREE.Group()
   osm.name = 'osmLayout'
@@ -136,7 +198,7 @@ export async function enhanceAirportWithOsm(
     const p = toLocal(mid[0], mid[1])
     segRegistry.push({ ref: tw.r, x: p.x, z: p.z })
   }
-  osmIdentSegs.set(icao, segRegistry)
+  if (!opts?.terminalsOnly) osmIdentSegs.set(icao, segRegistry)
 
   // Aprons first (lowest).
   if (data.ap.length) {
@@ -184,14 +246,17 @@ export async function enhanceAirportWithOsm(
       if (i === 0) s.moveTo(p.x, p.z)
       else s.lineTo(p.x, p.z)
     })
-    const geo = new THREE.ExtrudeGeometry(s, { depth: 11, bevelEnabled: false })
+    // The height from the building's OSM tags when it has them; otherwise the recorded 11 m class estimate.
+    const hgt = data.tmh.get(poly) ?? 11
+    const geo = new THREE.ExtrudeGeometry(s, { depth: hgt, bevelEnabled: false })
     geo.rotateX(Math.PI / 2)
+    geo.setAttribute('aTop', new THREE.Float32BufferAttribute(new Float32Array(geo.getAttribute('position').count).fill(hgt), 1))
     const m = new THREE.Mesh(geo, TERMINAL)
-    m.position.y = elevM + 11
+    m.position.y = elevM + hgt
     m.castShadow = true
     m.receiveShadow = true
     osm.add(m)
-    osm.add(mappedTerminalFacade(poly.map(([lat, lon]) => toLocal(lat, lon)), elevM))
+    osm.add(mappedTerminalFacade(poly.map(([lat, lon]) => toLocal(lat, lon)), elevM, hgt))
   }
 
   // N9: HOLD-SHORT BARS where real taxiways meet the runway — a taxiway
@@ -355,8 +420,8 @@ export async function enhanceAirportWithOsm(
       colors.needsUpdate = true
     }
   }
-  const polygons = data.ap.map(poly => poly.map(([lat, lon]) => toLocal(lat, lon)))
-  const obstacles: SurfaceObstacle[] = data.tm.map(poly => footprintObstacle(poly.map(([lat, lon]) => toLocal(lat, lon))))
+  const polygons = [...data.ap.map(poly => poly.map(([lat, lon]) => toLocal(lat, lon))), ...(opts?.extra?.aprons ?? [])]
+  const obstacles: SurfaceObstacle[] = [...data.tm.map(poly => footprintObstacle(poly.map(([lat, lon]) => toLocal(lat, lon)))), ...(opts?.extra?.obstacles.slice(0, 600) ?? [])]
   for (const tw of data.tw) {
     const pts = tw.p.map(([lat, lon]) => toLocal(lat, lon))
     for (let i = 1; i < pts.length; i++) obstacles.push({ a: pts[i - 1]!, b: pts[i]!, radius: 18 })
