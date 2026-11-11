@@ -10,9 +10,12 @@ import { B738 } from '../src/sim/aircraft/b738'
 import type { AircraftParams } from '../src/sim/aircraft/params'
 import { trim } from '../src/sim/trim'
 import { KT, FT, isa } from '../src/sim/atmosphere'
+import { FixedTimestepLoop } from '../src/sim/loop'
 import { applyApFeedback, makeApPanel, pressAlt, pressAp, pressFlc, pressHdg, pressVs, toApTargets, turnKnob, type ApPanel, type ApSnapshot } from '../src/sim/ap-panel'
 
-const DT = 1 / 60
+// main.ts updates both the controller and aircraft on the 120 Hz physics tick,
+// independent of the rendering rate. At 60 Hz the pitch loop rings after capture.
+const DT = new FixedTimestepLoop().dt
 const wrap = (a: number): number => ((a + 540) % 360) - 180
 
 function setup(P: AircraftParams, kias: number, altFt: number) {
@@ -56,7 +59,7 @@ const selectAltitude = (target: number) => (p: ApPanel): ApPanel => turnKnob(p, 
 const selectVs = (fpm: number) => (p: ApPanel): ApPanel => turnKnob(p, 'vs', (fpm - p.sel.vsFpm) / 100)
 
 describe('panel-driven autopilot on a Cessna 172', () => {
-  it('climbs on VS to a selected altitude and captures it without overshoot, then holds', () => {
+  it('climbs on VS to the selected altitude, captures it and sustains a stable hold', () => {
     const t = setup(C172S, 100, 3000)
     t.press(pressAp)
     t.run(5)
@@ -64,11 +67,20 @@ describe('panel-driven autopilot on a Cessna 172', () => {
     t.press(pressVs)
     t.setPanel(selectVs(400))
     let maxAlt = 0
-    t.run(330, () => (t.ap.verticalMode === 'ALT' ? 0.78 : 1), () => { maxAlt = Math.max(maxAlt, t.ac.data.altitudeFt) })
-    expect(t.ac.data.altitudeFt).toBeGreaterThan(4450); expect(t.ac.data.altitudeFt).toBeLessThan(4550)
+    let holdAltError = 0
+    let holdVs = 0
+    let stayedInAlt = true
+    t.run(330, () => (t.ap.verticalMode === 'ALT' ? 0.78 : 1), (elapsed) => {
+      maxAlt = Math.max(maxAlt, t.ac.data.altitudeFt)
+      if (elapsed < 300) return
+      holdAltError = Math.max(holdAltError, Math.abs(t.ac.data.altitudeFt - 4500))
+      holdVs = Math.max(holdVs, Math.abs(t.ac.data.verticalSpeedFpm))
+      stayedInAlt &&= t.ap.verticalMode === 'ALT'
+    })
     expect(maxAlt).toBeLessThan(4580)
-    expect(Math.abs(t.ac.data.verticalSpeedFpm)).toBeLessThan(80)
-    expect(t.ap.verticalMode).toBe('ALT')
+    expect(stayedInAlt).toBe(true)
+    expect(holdAltError).toBeLessThan(50)
+    expect(holdVs).toBeLessThan(80)
   })
   it('descends on VS to a lower selected altitude and captures it', () => {
     const t = setup(C172S, 100, 5000)

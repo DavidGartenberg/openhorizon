@@ -1,5 +1,5 @@
 import fs from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { parseObj8 } from '../src/render/xplane-obj8'
 import {
   XP_PANEL, XP_B738_PANEL, ledCells, mcpTexts, ledGlyph, LED_PITCH, type PanelRect,
@@ -72,8 +72,16 @@ describe('LED glyphs and cells', () => {
 // X-Plane install is present (these are skipped, not failed, on a machine without it).
 const OBJ = (process.env.XPLANE_DIR ?? '/Users/davidgartenberg/X-Plane 12/Aircraft/Laminar Research') + '/Boeing 737-800/objects/b738_cockpit.obj'
 describe.skipIf(!fs.existsSync(OBJ))('panel layout matches the X-Plane panel mesh (b738_cockpit.obj)', () => {
-  const parsed = parseObj8(fs.readFileSync(OBJ, 'utf8'))
-  const draw = parsed.draws.find((d) => d.cockpit)!
+  let parsed: ReturnType<typeof parseObj8>
+  let draw: (typeof parsed.draws)[number]
+  // Vitest still calls the suite's registration callback when it is skipped.
+  // Read the optional installed fixture only when this suite actually runs.
+  beforeAll(() => {
+    parsed = parseObj8(fs.readFileSync(OBJ, 'utf8'))
+    const cockpit = parsed.draws.find((d) => d.cockpit)
+    if (!cockpit) throw new Error('X-Plane cockpit OBJ has no cockpit draw')
+    draw = cockpit
+  })
   // The face of a region is the bounding box of the UVs of the triangles that cover it; compare each
   // baked rectangle with the triangle UV extents that lie inside it.
   const px = (vi: number): [number, number] => [parsed.uvs[vi * 2]! * XP_PANEL.width, (1 - parsed.uvs[vi * 2 + 1]!) * XP_PANEL.height]
