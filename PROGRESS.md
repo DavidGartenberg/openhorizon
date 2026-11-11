@@ -3345,3 +3345,15 @@ See `docs/atc-radio.md`. What changed:
 - Found by trying it in the C172: `ATTR_manip_drag_axis` was parsed with seven numbers where the format has five (levers got the last word of their tooltip as their dataref), and `ATTR_manip_wheel` replaced the manipulator before it (the trim wheel went dead). Fixed, with the one-command switch forms, `wrap`, axis switches and `drag_axis_pix` added. Checked in the C172: throttle 0 → 0.375 and mixture 1 → 0.71 by dragging.
 - Textures: a folder's extension (.dds for a named .png) is learned from its first texture instead of every file missing once.
 - Gate: typecheck clean; all tests pass except the five `dg800` tests of the other session's uncommitted work.
+
+### The 737-800 is the installed X-Plane model again (2026-11-11)
+
+- The player 737 had gone back to the procedural look: `upgradePlayerAircraft` sent every Boeing, the exact 737-800 included, to the artwork-fit path (`upgradeBoeingArtwork`) before the installed exterior was ever requested. In `local-aircraft.ts` the fit path is now skipped when `exactLocalModel(key)` exists, so the 737-800 loads its own OBJ geometry and textures (paint, LIT, normal maps) whole; every other Boeing variant keeps its own geometry and takes the fitted artwork. `tests/render/boeing-artwork.test.ts` changed to match. Checked in an isolated origin at close range (rivets, panel lines, decals and titles are X-Plane's).
+- This hunk sits in `local-aircraft.ts` on top of the other session's uncommitted `isBoeingPlayer` lines, so it is in the working tree but not in a commit of its own; it goes in with them. Recorded in `docs/CURRENT-STATE.md`.
+
+### Spoiler panels reach the wings; passenger wing views and a tail camera (2026-11-11)
+
+- The sim's per-panel spoiler angles (`sim/spoilers.ts`) now drive the installed A330 and 737 wings panel by panel (`XP_SPOILER_PANELS`) and a row of panels on the procedural airliner (seated on the wing's top; they had hovered 0.2 m above it). 737 cascade measured in the browser: panels start 0.15 / 0.22 / 0.31 / 0.38 s after the lever, all up at 1.9 s.
+- New camera views: left and right window seats over the wing (keys 7 / 8) and a fin-top tail camera (key 9), also in the C cycle, the View & graphics menu and the camera window's Passenger tab. A cabin sidewall with the window cut out frames the wing views. Looked at on the 737 (installed model) and the procedural A380 and A320.
+- The A330 deck for every Airbus is the other session's work in the tree (all `Airbus …` roster entries route to it); looked at on the A320: the real A330 glareshield with live PFD and ND.
+- Gate on the committed state alone: typecheck clean, all 2,440 tests pass. The working tree also holds the other session's uncommitted work (Boeing artwork, material packs, Airbus deck), which typechecks only with a type error in `boeing-artwork.ts` that is theirs.

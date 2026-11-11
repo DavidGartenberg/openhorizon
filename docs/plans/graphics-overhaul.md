@@ -196,6 +196,26 @@ orange, warm white and a few cool white, kept at least a pixel across with their
 average glow with distance. The detailed (z16) photograph now covers the four finest tiles nearest the airplane instead
 of two, so the ground is sharp in every direction (about 21 MB of texture each).
 
+## Spoiler panels and passenger views (2026-11-11)
+
+`src/sim/spoilers.ts` gives an airliner its row of spoiler panels (5 a wing on the A320 family, 6 on the A330 / A350, 8 on the
+A380, 4 on the 737 …) with the three jobs a spoiler has: ground spoilers (all panels, a cascade from the root outward, about
+1.5 s to full), speedbrakes (the middle panels, slowly, to a partial angle that airflow pushes back at speed and that an
+Airbus stows at full flap) and roll spoilers (the wing being rolled toward). The numbers are typical, not any one
+airplane's, and are recorded as approximations in that file. The panels' angles reach the exteriors: the installed A330 and
+737 wings move each panel by its own dataref (`XP_SPOILER_PANELS`), and the procedural airliner has a row of panels per
+wing, seated on the wing's top. Measured on the 737 in the browser: the four panels start 0.15 / 0.22 / 0.31 / 0.38 s after
+the lever and are all up at 1.9 s.
+
+`src/render/mounted-camera.ts`: a left and a right window seat over the wing (keys 7 / 8, the View & graphics menu, the
+camera window's Passenger tab, or C to cycle) and a fin-top tail camera (key 9), each with a limited look-around by mouse. The
+seat is placed from the length of the airplane (the wing-root trailing edge is 0.062 of it aft of the CG on both the installed
+737-800 and A330-300, and the seat 0.02 forward of the CG) and looks 14 degrees aft of the beam and a little down, so the
+spoiler row and the flaps behind the trailing edge are in the window. A cabin sidewall with the window cut out is drawn
+around it (`ui/cabin-window.ts`). Light airplanes get a seat inside their small cabin, looking level at the wing above.
+Limits: the eye is not measured per type beyond that length rule; there is no interior cabin (the window looks through the
+hull); nothing but the wing, flaps, spoilers and engines is animated for the view (no flap-track fairings drawn).
+
 ## Remaining realism limits
 
 This is a substantial renderer upgrade, not a claim that “10× realism” can be
