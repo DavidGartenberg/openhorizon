@@ -34,7 +34,12 @@ export interface AircraftParams {
    *  (ΔCL removed at full deploy), actuator rate (fraction/s), and an
    *  explicit ground-auto-deploy capability. Glider airbrakes use the same
    *  normalized actuator but never inherit jet touchdown logic. */
-  spoilers?: { dCd: number; dCl: number; ratePerS: number; groundAutoDeploy: boolean }
+  spoilers?: {
+    dCd: number; dCl: number; ratePerS: number; groundAutoDeploy: boolean
+    /** An airliner's row of separate wing panels (spoilers.ts): present = they deploy panel by panel at their own speeds
+     *  instead of as one actuator. Absent (gliders, the old single-actuator types) = `ratePerS` and one panel. */
+    family?: import('../spoilers').SpoilerFamily
+  }
   /** Thrust reversers (jets): effective reverse thrust as a fraction of
    *  forward thrust at the same N1, and sleeve transit time. Deploy is
    *  interlocked to weight-on-wheels like the real airplane. */

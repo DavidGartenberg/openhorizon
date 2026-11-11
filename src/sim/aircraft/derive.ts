@@ -25,6 +25,7 @@ import { B738 } from './b738'
 import { CFM56_7B26 } from '../turbofan'
 import { G, RHO0, KT } from '../atmosphere'
 import { propEffectsYawNm } from '../prop-effects'
+import { spoilerFamilyFor } from '../spoilers'
 
 export type RosterPowerplant =
   | { kind: 'piston'; ratedPowerW: number; count: number; propDiameterM: number; redlineRpm: number; governed?: boolean }
@@ -325,7 +326,7 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
       : {}),
     ...(jet && pp.kind === 'jet'
       ? {
-          spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85, groundAutoDeploy: true },
+          spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85, groundAutoDeploy: true, family: spoilerFamilyFor(spec.designator, pp.count) },
           reversers: { effectiveness: 0.45, transitS: 1.5 },
           jet: {
             ...CFM56_7B26,
