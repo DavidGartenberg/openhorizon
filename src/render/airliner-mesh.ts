@@ -6,6 +6,7 @@ import { jetProfileFor, type JetProfile } from './jet-profiles'
 import { profiledPanel as taperedPanel, buildTurbofan, buildAircraftWheel } from './aircraft-components'
 import { aircraftPaint, aircraftMetal } from './aircraft-materials'
 import { fowlerPose, spoileronRise } from './fowler'
+import { SPOILER_LAYOUTS, panelAngleAt, spoilerFamilyFor } from '../sim/spoilers'
 import { standardGearZ } from '../sim/aircraft/derive'
 import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
 import { createHingeFrame, attachSkin, cutSkin, type HingeFrame } from './procedural-surfaces'
@@ -171,15 +172,25 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       wingGroup.add(pivot)
       flapPivots.push(pivot)
     }
-    for (let i = 0; i < 1; i++) {
-      const sy = y0 + (y1 - y0) * 0.41 // single panel centered over the flap span
+    // A row of spoiler panels along the wing top ahead of the flap's trailing edge, as many as the type has (sim/spoilers.ts):
+    // each panel follows the wing's chord and sweep and is raised by its own angle, so a ground-spoiler cascade runs root to tip.
+    const spoilerCount = cfg.designator ? SPOILER_LAYOUTS[spoilerFamilyFor(cfg.designator, cfg.engines.count)].panels.length : 5
+    const spanFrom = 0.14, spanTo = 0.68
+    for (let i = 0; i < spoilerCount; i++) {
+      const sy0 = y0 + (y1 - y0) * (spanFrom + (spanTo - spanFrom) * (i / spoilerCount))
+      const sy1 = y0 + (y1 - y0) * (spanFrom + (spanTo - spanFrom) * ((i + 1) / spoilerCount))
+      const sy = (sy0 + sy1) / 2
       const pivot = new THREE.Group()
-      const leX = wingRootX - Math.tan(sweep) * (sy - y0) - rootChord * 0.55
+      const chord = chordAt(sy)
+      const leX = wingRootX - Math.tan(sweep) * (sy - y0) - chord * 0.78
       placeBody(pivot, leX, side * sy, wingDrop * 0.7)
-      const panel = new THREE.Mesh(new THREE.BoxGeometry((y1 - y0) * 0.5, 0.05, rootChord * 0.13), SURFACE)
-      panel.position.set(0, 0.05, rootChord * 0.065)
+      const depth = chord * 0.19
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(Math.max(sy1 - sy0 - 0.1, 0.2), 0.05, depth), SURFACE)
+      panel.position.set(0, 0.05, depth / 2)
       panel.castShadow = true
       pivot.add(panel)
+      pivot.userData.sideIndex = side < 0 ? 0 : 1
+      pivot.userData.rank = spoilerCount === 1 ? 0.5 : i / (spoilerCount - 1)
       wingGroup.add(pivot)
       spoilerPivots.push(pivot)
     }
@@ -394,8 +405,12 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       p.position.y = (p.userData.y0 as number) - fp.drop * R * 0.04
       p.rotation.x = fp.rot * 0.5
     }
-    spoilerPivots.forEach((p, i) => {
-      p.rotation.x = -spoileronRise(s.spoilerFrac, s.roll ?? 0, i === 0 ? 0 : 1) * 1.05
+    spoilerPivots.forEach((p) => {
+      const sideIndex = p.userData.sideIndex as 0 | 1
+      // Each panel at its own angle when the airplane has them; otherwise the old single actuator, with roll mixed in.
+      p.rotation.x = s.spoilerPanels
+        ? -THREE.MathUtils.degToRad(panelAngleAt(sideIndex === 0 ? s.spoilerPanels.left : s.spoilerPanels.right, p.userData.rank as number))
+        : -spoileronRise(s.spoilerFrac, s.roll ?? 0, sideIndex) * 1.05
     })
     for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85
     for (const { grp, nose, fold } of gearGroups) {

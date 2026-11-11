@@ -13,7 +13,7 @@ import type { Launcher } from './launcher'
 import { buildApWindow, type ApWindowDeps } from './ap-window'
 import { CHECKLISTS, checklistProgress, evaluateChecklist, suggestChecklist, type ChecklistState } from '../../sim/checklists'
 
-export type CameraMode = 'chase' | 'orbit' | 'free' | 'cockpit' | 'showcase'
+export type CameraMode = 'chase' | 'orbit' | 'free' | 'cockpit' | 'showcase' | 'wingL' | 'wingR' | 'tail'
 
 /** The camera window's tabs and the views each one offers. */
 export const CAMERA_TABS: ReadonlyArray<{ id: string; title: string; views: ReadonlyArray<{ mode: CameraMode; label: string; note: string }> }> = [
@@ -21,6 +21,11 @@ export const CAMERA_TABS: ReadonlyArray<{ id: string; title: string; views: Read
   { id: 'external', title: 'External', views: [
     { mode: 'chase', label: 'Chase', note: 'Behind the airplane' },
     { mode: 'orbit', label: 'Orbit', note: 'Drag to rotate · wheel to zoom' },
+    { mode: 'tail', label: 'Tail camera', note: 'On top of the fin, looking forward · drag to look' },
+  ] },
+  { id: 'passenger', title: 'Passenger', views: [
+    { mode: 'wingL', label: 'Left window', note: 'Over the wing: flaps and spoilers · drag to look · key 7' },
+    { mode: 'wingR', label: 'Right window', note: 'Over the wing: flaps and spoilers · drag to look · key 8' },
   ] },
   { id: 'showcase', title: 'Showcase', views: [{ mode: 'showcase', label: 'Cinematic', note: 'Automatic camera shots' }] },
   { id: 'drone', title: 'Drone', views: [{ mode: 'free', label: 'Free drone', note: 'WASD · R/F up-down · Shift fast' }] },

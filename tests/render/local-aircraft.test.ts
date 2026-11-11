@@ -122,3 +122,25 @@ it('a model whose OBJ carries no blur disc keeps its blades at running RPM; othe
  expect(localDatarefReader(st,0,2200,new Map(),'C172')('sim/flightmodel2/engines/prop_is_disc[0]')).toBe(1)
  expect(localDatarefReader(st,0,500,new Map(),'C172')('sim/flightmodel2/engines/prop_is_disc[0]')).toBe(0)
 })
+
+it('moves each spoiler panel of an installed wing by its own angle, left and right separately, and falls back to one angle without panels',()=>{
+ const panels={left:[10,20,30,40,50,60],right:[1,2,3,4,5,6]}
+ const read=localDatarefReader({flapFrac:0,gearPos:1,spoilerFrac:.5,spoilerPanels:panels},0,0,new Map([['sim/flightmodel2/wing/speedbrake1_deg[0]',35]]),'A333')
+ // A330: speedbrake1[0]/[1] is the root panel of the left/right wing, spoiler2[4]/[5] the tip panel.
+ expect(read('sim/flightmodel2/wing/speedbrake1_deg[0]')).toBe(10)
+ expect(read('sim/flightmodel2/wing/speedbrake1_deg[1]')).toBe(1)
+ expect(read('sim/flightmodel2/wing/spoiler2_deg[4]')).toBe(60)
+ expect(read('sim/flightmodel2/wing/spoiler2_deg[5]')).toBe(6)
+ // ranks 0.2 / 0.4 / 0.7 land on panels 1, 2 and 4 of the six (nearest by position along the wing)
+ expect(read('sim/flightmodel2/wing/spoiler1_deg[2]')).toBe(20); expect(read('sim/flightmodel2/wing/spoiler2_deg[2]')).toBe(30); expect(read('sim/flightmodel2/wing/spoiler1_deg[4]')).toBe(50)
+ // a type with fewer panels is mapped by position: three panels under the same wing
+ const three=localDatarefReader({flapFrac:0,gearPos:1,spoilerFrac:0,spoilerPanels:{left:[0,45,0],right:[0,0,0]}},0,0,new Map(),'A333')
+ expect(three('sim/flightmodel2/wing/spoiler2_deg[2]')).toBe(45)      // rank 0.4 → the middle panel
+ expect(three('sim/flightmodel2/wing/speedbrake1_deg[0]')).toBe(0)
+ // no panels (a single-actuator type): the old behaviour, a share of the authored travel
+ const single=localDatarefReader({flapFrac:0,gearPos:1,spoilerFrac:.4},0,0,new Map([['sim/flightmodel2/wing/speedbrake1_deg[0]',35]]),'A333')
+ expect(single('sim/flightmodel2/wing/speedbrake1_deg[0]')).toBeCloseTo(14)
+ // a model with no table keeps the old behaviour too, whatever the panels
+ const other=localDatarefReader({flapFrac:0,gearPos:1,spoilerFrac:.4,spoilerPanels:panels},0,0,new Map([['sim/flightmodel2/wing/speedbrake1_deg[0]',50]]),'MD82')
+ expect(other('sim/flightmodel2/wing/speedbrake1_deg[0]')).toBeCloseTo(20)
+})

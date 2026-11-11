@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
-import { XP_MODELS, XP_PLACEMENT, XP_CONTROL_LIMITS, XP_SURFACE_CALIBRATION } from './xplane-manifest'
+import { XP_MODELS, XP_PLACEMENT, XP_CONTROL_LIMITS, XP_SURFACE_CALIBRATION, XP_SPOILER_PANELS } from './xplane-manifest'
+import { panelAngleAt } from '../sim/spoilers'
 import { applyObj8Anim, applyObj8Visibility, loadObj8, type LoadedObj8 } from './xplane-obj8'
 import { resolveLocalModel } from './xplane-proxy'
 
@@ -52,7 +53,13 @@ export function localDatarefReader(state: SurfaceState, angle: number, rpm: numb
     if (ref === 'sim/cockpit2/controls/flap_handle_deploy_ratio') return unit(state.flapFrac)
     if (/\/flap[12]_deg\[/.test(ref)) return unit(state.flapFrac) * travel
     if (/\/slat[12]_deploy_ratio$/.test(ref) || ref === 'sim/flightmodel/controls/flaprat') return unit(state.flapFrac)
-    if (/\/(speedbrake|spoiler)[12]_deg\[/.test(ref)) return unit(state.spoilerFrac) * travel
+    if (/\/(speedbrake|spoiler)[12]_deg\[/.test(ref)) {
+      // A model whose panels are known, flown by an airplane that has them: each panel at its own angle (the model's panel
+      // takes its nearest panel of the type's row), in degrees as the model's animation reads them.
+      const panel = key ? XP_SPOILER_PANELS[modelKey(key)]?.[ref] : undefined
+      if (panel && state.spoilerPanels) return Math.max(0, panelAngleAt(panel.side === 'L' ? state.spoilerPanels.left : state.spoilerPanels.right, panel.rank))
+      return unit(state.spoilerFrac) * travel
+    }
     if (ref === 'sim/flightmodel2/controls/elevator_trim' || ref === 'sim/cockpit2/controls/elevator_trim') return signed(state.trim)
     if (ref === 'sim/flightmodel2/controls/rudder_trim') return signed(state.rudderTrim)
     if (calibration) {

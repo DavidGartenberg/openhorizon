@@ -132,6 +132,31 @@ export const XP_CONTROL_LIMITS: Record<string, Record<string, number>> = {
 /** ACF travel (up/down, left/right degrees), with physical sides verified
  * against each authored OBJ's indexed exterior geometry. Never infer parity:
  * an array index identifies a wing station, not a physical side contract. */
+/**
+ * Where each spoiler panel of an installed model sits: the wing side and the position along the wing, 0 (root) … 1 (tip),
+ * by the dataref that moves it (the value is degrees of rotation, one to one). X-Plane numbers the wing parts in
+ * left / right pairs (even left, odd right), root part first; a dataref that moves two neighbouring panels (the A330's
+ * `spoiler1_deg[4]`) is given the middle of the two. Read from the installed wing objects' animations (2026-11-11); which
+ * panel of a part is inboard of the other is the part's own order and was not separately surveyed.
+ */
+export const XP_SPOILER_PANELS: Record<string, Record<string, { side: 'L' | 'R'; rank: number }>> = {
+  // A330-300: six panels a wing, in three wing parts.
+  A333: {
+    'sim/flightmodel2/wing/speedbrake1_deg[0]': { side: 'L', rank: 0 }, 'sim/flightmodel2/wing/speedbrake1_deg[1]': { side: 'R', rank: 0 },
+    'sim/flightmodel2/wing/spoiler1_deg[2]': { side: 'L', rank: 0.2 }, 'sim/flightmodel2/wing/spoiler1_deg[3]': { side: 'R', rank: 0.2 },
+    'sim/flightmodel2/wing/spoiler2_deg[2]': { side: 'L', rank: 0.4 }, 'sim/flightmodel2/wing/spoiler2_deg[3]': { side: 'R', rank: 0.4 },
+    'sim/flightmodel2/wing/spoiler1_deg[4]': { side: 'L', rank: 0.7 }, 'sim/flightmodel2/wing/spoiler1_deg[5]': { side: 'R', rank: 0.7 },
+    'sim/flightmodel2/wing/spoiler2_deg[4]': { side: 'L', rank: 1 }, 'sim/flightmodel2/wing/spoiler2_deg[5]': { side: 'R', rank: 1 },
+  },
+  // 737-800: six panels a wing (one inboard, one, two and two).
+  B738: {
+    'sim/flightmodel2/wing/speedbrake1_deg[0]': { side: 'L', rank: 0 }, 'sim/flightmodel2/wing/speedbrake1_deg[1]': { side: 'R', rank: 0 },
+    'sim/flightmodel2/wing/speedbrake2_deg[2]': { side: 'L', rank: 0.2 }, 'sim/flightmodel2/wing/speedbrake2_deg[3]': { side: 'R', rank: 0.2 },
+    'sim/flightmodel2/wing/spoiler1_deg[2]': { side: 'L', rank: 0.5 }, 'sim/flightmodel2/wing/spoiler1_deg[3]': { side: 'R', rank: 0.5 },
+    'sim/flightmodel2/wing/spoiler2_deg[2]': { side: 'L', rank: 0.85 }, 'sim/flightmodel2/wing/spoiler2_deg[3]': { side: 'R', rank: 0.85 },
+  },
+}
+
 export const XP_SURFACE_CALIBRATION: Record<string, {
   aileron: [number, number]; elevator: [number, number]; rudder: [number, number]
   leftAilerons: number[]; rightAilerons: number[]

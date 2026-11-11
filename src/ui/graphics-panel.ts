@@ -4,7 +4,7 @@ import type { FrameMode } from '../render/frame-pacer'
 export interface GraphicsActions {
   clearInput(): void
   quality(mode: 'performance' | 'high' | 'ultra'): void
-  camera(mode: 'chase' | 'orbit' | 'cockpit' | 'free'): void
+  camera(mode: 'chase' | 'orbit' | 'cockpit' | 'free' | 'wingL' | 'wingR' | 'tail'): void
   lighting(mode: 'day' | 'sunset' | 'night'): void
   weather(mode: 'live' | 'clear' | 'scattered' | 'overcast'): void
   /** Frame pacing: 'uncapped' renders as fast as the machine allows (vsync off). */
@@ -47,7 +47,7 @@ export class GraphicsPanel {
     const panel = document.createElement('details')
     panel.id = 'graphics-panel'
     panel.innerHTML = `<summary>View & graphics</summary><div class="controls">
-      <label>Camera<select aria-label="Camera view"><option value="chase">Chase</option><option value="cockpit">Cockpit</option><option value="orbit">Orbit</option><option value="free">Free camera</option></select></label>
+      <label>Camera<select aria-label="Camera view"><option value="chase">Chase</option><option value="cockpit">Cockpit</option><option value="wingL">Wing (left window)</option><option value="wingR">Wing (right window)</option><option value="tail">Tail camera</option><option value="orbit">Orbit</option><option value="free">Free camera</option></select></label>
       <label>Quality<select aria-label="Graphics quality"><option value="1">Performance</option><option value="1.5" selected>High</option><option value="2">Ultra</option></select></label>
       <label>Frame rate<select aria-label="Frame rate"><option value="uncapped">Uncapped (vsync off)</option><option value="vsync">Display synced</option></select></label>
       <label>Ambient occlusion<input aria-label="Ambient occlusion" type="checkbox"></label>

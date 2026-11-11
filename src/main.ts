@@ -70,6 +70,8 @@ import { XP_COCKPIT_B738, eyeFromObj, loadXpCockpit, type XpCockpit, type XpCock
 import { makeXpDatarefReader } from './render/xplane-datarefs'
 import { XP_GA_COCKPITS, gaCockpitFor } from './render/xplane-ga-cockpits'
 import { Scenery, sceneryUniforms } from './world/scenery'
+import { MOUNT_KINDS, MOUNT_LABELS, MountedCamera, type MountDims, type MountKind } from './render/mounted-camera'
+import { CabinWindow } from './ui/cabin-window'
 import { makeXpGaDatarefReader, type XpGaNav } from './render/xplane-ga-datarefs'
 import { mcpTexts, formatCom, formatNav } from './render/xplane-panel'
 import { XpInteraction, describeXpAction, type XpAction, type XpHover } from './render/xplane-interact'
@@ -623,6 +625,22 @@ const orbit = new OrbitCamera(camera)
 orbit.setSizeScale(Math.max(FLEET_ACTIVE.params.spanM / 11, 1))
 const freeCam = new FlyCamera(camera)
 const cockpitCam = new CockpitCamera(camera)
+/** The passenger's wing window and the tail camera (render/mounted-camera.ts). */
+const mountedCam = new MountedCamera(camera)
+const cabinWindow = new CabinWindow()
+const mountDims = ((): MountDims => {
+  const spec = ROSTER.find((r) => r.spec.designator === fleetKey)?.spec
+  const jet = !!DECK_PROFILE
+  const lengthM = fleetKey === '737' ? 39.5 : spec?.lengthM ?? Math.max(FLEET_ACTIVE.params.spanM * 0.75, 6)
+  return { lengthM, fuselageRadiusM: jet ? 0.0485 * lengthM : 0.55, jet }
+})()
+const isMountMode = (m: typeof cameraMode): m is MountKind => (MOUNT_KINDS as readonly string[]).includes(m)
+/** Switch to a wing or tail view: the mount is chosen for this airplane each time. */
+function setMountView(kind: MountKind): void {
+  mountedCam.set(kind, mountDims)
+  cameraMode = kind
+  toast(MOUNT_LABELS[kind].toUpperCase())
+}
 // Per-layout eyepoint (Slice 3): GA eye under the C172 cabin top;
 // transport eye above the re-seated 737/Airbus glareshield.
 if (DECK_PROFILE) {
@@ -630,7 +648,7 @@ if (DECK_PROFILE) {
   const e = EYE_BY_LAYOUT.boeing737, k = DECK_PROFILE.scale
   cockpitCam.setEyePoint({ x: e.x * k, y: e.y * k, up: e.up * k })
 } else cockpitCam.setEye('ga')
-let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' | 'showcase' = 'chase'
+let cameraMode: 'chase' | 'orbit' | 'free' | 'cockpit' | 'showcase' | MountKind = 'chase'
 /** Showcase camera clock, s. */
 let showcaseClock = 0
 /** Field of view, degrees — the camera window's slider (remembered). */
@@ -1430,9 +1448,12 @@ function handleDiscreteKeys(): void {
     }
   }
   if (input.wasPressed('KeyC')) {
-    cameraMode =
-      cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'showcase' : cameraMode === 'showcase' ? 'free' : cameraMode === 'free' ? 'cockpit' : 'chase'
+    const next = cameraMode === 'chase' ? 'orbit' : cameraMode === 'orbit' ? 'showcase' : cameraMode === 'showcase' ? 'free' : cameraMode === 'free' ? 'cockpit'
+      : cameraMode === 'cockpit' ? 'wingL' : cameraMode === 'wingL' ? 'wingR' : cameraMode === 'wingR' ? 'tail' : 'chase'
+    if (isMountMode(next)) setMountView(next); else cameraMode = next
   }
+  // 7 / 8 / 9: the left window seat over the wing, the right one, and the fin-top camera.
+  for (const [code, kind] of [['Digit7', 'wingL'], ['Digit8', 'wingR'], ['Digit9', 'tail']] as const) if (input.wasPressed(code)) setMountView(kind)
   if (input.wasPressed('KeyB') && (input.isHeld('ShiftLeft') || input.isHeld('ShiftRight'))) parkingBrake = !parkingBrake
   if (input.wasPressed('KeyF')) aircraft.selectFlaps(c.flapsIndex + 1)
   if (input.wasPressed('KeyG')) aircraft.selectFlaps(c.flapsIndex - 1)
@@ -3410,6 +3431,7 @@ function advanceFrame(elapsed: number, now: number): void {
     flapsDeg: aircraft.appliedControlSurfaces.flapsDeg,
     ...(aircraft.P.flaperons ? {flaperonLeftRad: aircraft.appliedControlSurfaces.flaperonLeftRad, flaperonRightRad: aircraft.appliedControlSurfaces.flaperonRightRad} : {}),
     spoilerFrac: aircraft.spoilerPos,
+    ...(aircraft.spoilerPanels ? { spoilerPanels: aircraft.spoilerPanels } : {}),
     roll: aircraft.appliedControlSurfaces.roll,
     pitch: aircraft.appliedControlSurfaces.pitch,
     yaw: rudderVisual(aircraft.appliedControlSurfaces.yaw),
@@ -3543,6 +3565,14 @@ function advanceFrame(elapsed: number, now: number): void {
       input,
       !cockpitInteraction.isDraggingControl && !xpInteraction.isDraggingControl,
     )
+  } else if (isMountMode(cameraMode)) {
+    // Inside the cabin or on the fin: the wing root and the window frame are within a metre of the eye.
+    xpHoverUi(null)
+    if (camera.near !== COCKPIT_NEAR) {
+      camera.near = COCKPIT_NEAR
+      camera.updateProjectionMatrix()
+    }
+    mountedCam.update(mesh.group.position, (d.headingDeg * Math.PI) / 180, (d.pitchDeg * Math.PI) / 180, (d.rollDeg * Math.PI) / 180, input, true)
   } else {
     xpHoverUi(null)
     if (camera.near !== DEFAULT_NEAR) {
@@ -3551,6 +3581,7 @@ function advanceFrame(elapsed: number, now: number): void {
     }
     freeCam.update(elapsed, input)
   }
+  cabinWindow.show(isMountMode(cameraMode) ? cameraMode : null)
 
   const switchStates: Record<SwitchId, boolean> = {
     masterBattery: systemsControls.masterBattery,
@@ -4090,7 +4121,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
   /** Open / close the free-flight start screen (verification). */
   __ohLauncher: (open: boolean) => { if (open) launcher?.open(); else launcher?.close() },
   /** Cockpit look direction (radians) for verification screenshots. */
-  __ohLook: (yaw: number, pitch: number) => cockpitCam.setLook(yaw, pitch),
+  __ohLook: (yaw: number, pitch: number) => { cockpitCam.setLook(yaw, pitch); mountedCam.setLook((yaw * 180) / Math.PI, (pitch * 180) / Math.PI) },
   /** 737NG aurals: inspect, or drive the FIRE WARN test / HORN CUTOUT. */
   __ohAurals: (o?: { fireTest?: boolean; hornCutout?: boolean }) => {
     if (o?.fireTest !== undefined) auralFireTest = o.fireTest
@@ -4254,7 +4285,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
     if (cmd !== undefined && Number.isFinite(n) && aircraft.P.spoilers) aircraft.spoilerCmd = Math.max(0, Math.min(1, n))
     if (!Number.isFinite(aircraft.spoilerCmd)) aircraft.spoilerCmd = 0
     if (!Number.isFinite(aircraft.spoilerPos)) aircraft.spoilerPos = 0
-    return { cmd: aircraft.spoilerCmd, pos: aircraft.spoilerPos, fitted: !!aircraft.P.spoilers }
+    const sp = aircraft.spoilerPanels
+    return { cmd: aircraft.spoilerCmd, pos: aircraft.spoilerPos, fitted: !!aircraft.P.spoilers, ...(sp ? { panels: { family: sp.layout.family, left: sp.left.map((a) => +a.toFixed(1)), right: sp.right.map((a) => +a.toFixed(1)), ground: sp.ground } } : {}) }
   },
   __ohCarbHeat: (on: boolean) => { carbHeatOn = on },
   __ohHandProp: () => { handPropRequested = true },
@@ -4291,6 +4323,7 @@ Object.assign(window as unknown as Record<string, unknown>, {
    *  a real keyboard event isn't reliable. */
   __ohCam: (mode: 'chase' | 'orbit' | 'free' | 'cockpit' | 'showcase') => {
     if (mode === 'chase' || mode === 'orbit' || mode === 'free' || mode === 'cockpit' || mode === 'showcase') cameraMode = mode
+    else if (isMountMode(mode as typeof cameraMode)) setMountView(mode as MountKind)
   },
   __ohSpawn: (q: string) => { if (typeof q === 'string') handleSearch(q) },
   /** Park the free camera at a world offset from the aircraft (east, up, south metres) looking along yaw/pitch degrees (0 = north). */
@@ -4478,7 +4511,7 @@ const graphicsActions: GraphicsActions = {
   },
   clearInput: () => input.clearHeld(),
   quality: mode => { clouds.setQuality(mode); tiles.setDetailEnabled(mode !== 'performance'); postFx.setQuality(mode) },
-  camera: mode => { cameraMode = mode },
+  camera: mode => { if (isMountMode(mode)) setMountView(mode); else cameraMode = mode },
   lighting: mode => {
     const ll = frame.fromLocal(aircraft.posNed.x,aircraft.posNed.y)
     const noon = new Date(baseDate)

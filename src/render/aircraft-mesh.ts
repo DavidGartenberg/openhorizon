@@ -32,6 +32,9 @@ export interface SurfaceState {
   flapFrac: number
   /** Spoiler/speedbrake actuator position [0,1]. */
   spoilerFrac: number
+  /** An airliner's spoiler panels, each at its own angle in degrees (inboard first), from sim/spoilers.ts; absent for
+   *  types with a single airbrake, which then move as one by `spoilerFrac`. */
+  spoilerPanels?: { left: readonly number[]; right: readonly number[] }
   /** Roll input −1..1 for spoileron mixing (optional). */
   roll?: number
   /** Effective pull/nose-up and right-pedal commands, −1..1. */

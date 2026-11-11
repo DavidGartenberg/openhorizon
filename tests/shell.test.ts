@@ -60,12 +60,15 @@ describe('notification banners', () => {
 
 describe('camera window tabs', () => {
   it('every camera mode lives under exactly one tab', () => {
-    const modes: CameraMode[] = ['cockpit', 'chase', 'orbit', 'showcase', 'free']
+    const modes: CameraMode[] = ['cockpit', 'chase', 'orbit', 'showcase', 'free', 'wingL', 'wingR', 'tail']
     for (const m of modes) expect(CAMERA_TABS.filter((t) => t.views.some((v) => v.mode === m))).toHaveLength(1)
     expect(cameraTabFor('chase')).toBe('external')
     expect(cameraTabFor('orbit')).toBe('external')
     expect(cameraTabFor('cockpit')).toBe('cockpit')
     expect(cameraTabFor('showcase')).toBe('showcase')
     expect(cameraTabFor('free')).toBe('drone')
+    expect(cameraTabFor('wingL')).toBe('passenger')
+    expect(cameraTabFor('wingR')).toBe('passenger')
+    expect(cameraTabFor('tail')).toBe('external')
   })
 })
