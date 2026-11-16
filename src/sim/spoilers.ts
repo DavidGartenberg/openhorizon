@@ -89,15 +89,20 @@ export interface SpoilerPanels {
   groundTimerS: number
   /** They have just been released and are still coming down: that stowing runs at the ground rate, not the speedbrake's. */
   stowing: boolean
+  /** Reverse thrust was selected on the roll and holds the ground spoilers out until the reversers are stowed or the lever is lowered. */
+  reverseHold: boolean
+  /** The highest the lever has been since the hold began (lowering it from there releases the hold) and the reverse selection last step. */
+  reverseHoldLever: number
+  reversePrev: boolean
 }
 
 export function makeSpoilerPanels(layout: SpoilerLayout): SpoilerPanels {
   const n = layout.panels.length
-  return { layout, left: new Array<number>(n).fill(0), right: new Array<number>(n).fill(0), ground: false, groundTimerS: 0, stowing: false }
+  return { layout, left: new Array<number>(n).fill(0), right: new Array<number>(n).fill(0), ground: false, groundTimerS: 0, stowing: false, reverseHold: false, reverseHoldLever: 0, reversePrev: false }
 }
 
 export function resetSpoilerPanels(s: SpoilerPanels): void {
-  s.left.fill(0); s.right.fill(0); s.ground = false; s.groundTimerS = 0; s.stowing = false
+  s.left.fill(0); s.right.fill(0); s.ground = false; s.groundTimerS = 0; s.stowing = false; s.reverseHold = false; s.reverseHoldLever = 0; s.reversePrev = false
 }
 
 export interface SpoilerInputs {
@@ -122,8 +127,10 @@ const smooth = (a: number, b: number, x: number): number => { const t = clamp((x
 export const ROLL_SPOILER_DEADBAND = 0.12
 /** Ground spoilers retract when the thrust levers are advanced past this on the ground (a go-around or a takeoff). */
 export const GROUND_SPOILER_THRUST_CUTOFF = 0.7
-/** Reverse thrust on the roll (above this ground speed) raises the ground spoilers even if they were not armed. */
+/** Selecting reverse thrust on the roll (above this ground speed) raises the ground spoilers even if they were not armed. */
 export const REVERSE_GROUND_SPOILER_KT = 40
+/** The lever must come down this far from its highest point to release spoilers that reverse thrust is holding out. */
+export const REVERSE_HOLD_RELEASE = 0.3
 
 /**
  * Advance the panels by `dt`. Returns the share of the airplane's aerodynamic spoiler effect they give, 0…1 (1 = full
@@ -132,8 +139,21 @@ export const REVERSE_GROUND_SPOILER_KT = 40
 export function stepSpoilers(s: SpoilerPanels, i: SpoilerInputs, dt: number): { aeroFrac: number; ground: boolean } {
   const L = s.layout
   const lever = clamp(Number.isFinite(i.lever) ? i.lever : 0, 0, 1)
-  const wantGround = i.onGround && i.throttle < GROUND_SPOILER_THRUST_CUTOFF
-    && (lever >= 0.5 || (i.reverse && i.groundSpeedKt > REVERSE_GROUND_SPOILER_KT))
+  // With reverse selected the thrust lever's travel is reverse power, not forward thrust: pulling it back to full reverse must
+  // never read as a go-around and put the spoilers away. (They are what lets the wheels brake and the reversers work.)
+  const forwardThrust = i.reverse && i.onGround ? 0 : i.throttle
+  // Reverse selected on the roll raises the ground spoilers and holds them for as long as reverse stays selected. The hold is the
+  // pilot's, not the logic's: lowering the lever from where it was lets them down, and so does stowing the reversers.
+  if (!i.reverse || !i.onGround) s.reverseHold = false
+  else {
+    if (!s.reversePrev && i.groundSpeedKt > REVERSE_GROUND_SPOILER_KT) { s.reverseHold = true; s.reverseHoldLever = lever }
+    if (s.reverseHold) {
+      s.reverseHoldLever = Math.max(s.reverseHoldLever, lever)
+      if (lever < s.reverseHoldLever - REVERSE_HOLD_RELEASE) s.reverseHold = false
+    }
+  }
+  s.reversePrev = i.reverse
+  const wantGround = i.onGround && forwardThrust < GROUND_SPOILER_THRUST_CUTOFF && (lever >= 0.5 || s.reverseHold)
   if (wantGround && !s.ground) s.groundTimerS = 0
   if (!wantGround && s.ground) s.stowing = true
   if (wantGround) s.stowing = false

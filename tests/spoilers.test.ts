@@ -71,6 +71,39 @@ describe('ground spoilers', () => {
     expect(slow.ground).toBe(false); expect(slow.left.every((a) => a === 0)).toBe(true)
   })
 
+  it('stay up when the thrust lever is pulled into reverse: reverse power is not forward thrust, at any depth', () => {
+    for (const depth of [0.2, 0.5, 0.75, 1]) {
+      const s = makeSpoilerPanels(spoilerLayoutFor('a330'))
+      run(s, { ...ground, lever: 1 }, 3)                                          // armed, out at touchdown
+      run(s, { ...ground, lever: 1, reverse: true, throttle: depth }, 3)          // the quadrant's reverse zone reads as throttle = depth
+      expect(s.ground).toBe(true); expect(s.left.every((a) => a === 50)).toBe(true)
+    }
+    // …and the same thrust forward is a go-around: that still puts them away
+    const g = makeSpoilerPanels(spoilerLayoutFor('a330'))
+    run(g, { ...ground, lever: 1 }, 3); run(g, { ...ground, lever: 1, throttle: 0.9 }, 3)
+    expect(g.ground).toBe(false); expect(g.left.every((a) => a === 0)).toBe(true)
+  })
+
+  it('reverse that raised them holds them out while it stays selected, at any speed, and the lever or the reversers let them down', () => {
+    const s = makeSpoilerPanels(spoilerLayoutFor('a330'))
+    run(s, { ...ground, reverse: true, groundSpeedKt: 120, throttle: 0.6 }, 3)    // lever never touched
+    expect(s.ground).toBe(true)
+    run(s, { ...ground, reverse: true, groundSpeedKt: 25, throttle: 0.4 }, 3)     // slow, still in reverse: still up
+    expect(s.ground).toBe(true); expect(s.left.every((a) => a === 50)).toBe(true)
+    run(s, { ...ground, reverse: false, groundSpeedKt: 20, throttle: 0 }, 3)      // reversers stowed, lever never raised: down
+    expect(s.left.every((a) => a === 0)).toBe(true)
+
+    const t = makeSpoilerPanels(spoilerLayoutFor('a330'))
+    run(t, { ...ground, reverse: true, groundSpeedKt: 120, throttle: 0.5, lever: 1 }, 3)
+    run(t, { ...ground, reverse: true, groundSpeedKt: 90, throttle: 0.5, lever: 0 }, 3)   // lever lowered from full while reversing: down
+    expect(t.ground).toBe(false); expect(t.left.every((a) => a === 0)).toBe(true)
+    run(t, { ...ground, reverse: true, groundSpeedKt: 90, throttle: 0.5, lever: 0 }, 2)   // and they do not come back by themselves
+    expect(t.ground).toBe(false)
+    run(t, { ...ground, reverse: false, groundSpeedKt: 80, throttle: 0 }, 1)
+    run(t, { ...ground, reverse: true, groundSpeedKt: 80, throttle: 0.5, lever: 0 }, 2)   // selecting reverse again does raise them
+    expect(t.ground).toBe(true)
+  })
+
   it('retract when the thrust levers go forward (a go-around or takeoff), faster than a speedbrake moves, and all the way', () => {
     const s = makeSpoilerPanels(spoilerLayoutFor('a330'))
     run(s, { ...ground, lever: 1 }, 3)
@@ -187,6 +220,24 @@ describe('in the airplane', () => {
     expect(a.spoilerPanels!.ground).toBe(true)
     expect(a.spoilerPos).toBeCloseTo(1, 3)
     expect(hist.some((v) => v > 0.1 && v < 0.9)).toBe(true)
+    a.spoilerCmd = 0
+    for (let i = 0; i < 480; i++) a.step(1 / 120)
+    expect(a.spoilerPos).toBeLessThan(0.05)
+  })
+
+  it('landing: autospoilers out at touchdown stay out through full reverse thrust on the quadrant, then come down with the lever', () => {
+    const a = new Aircraft(rosterParams('A333')!)
+    a.spawnOnGround(0, 0, 0)
+    a.engineRunning = true
+    a.controls.throttle = 0
+    a.spoilerCmd = 1
+    for (let i = 0; i < 240; i++) a.step(1 / 120)
+    expect(a.spoilerPos).toBeCloseTo(1, 3)
+    // pulled into reverse: the hardware lever reads as reverse depth in `controls.throttle`
+    a.reverseCmd = true; a.controls.throttle = 1
+    for (let i = 0; i < 600; i++) a.step(1 / 120)
+    expect(a.spoilerPos).toBeCloseTo(1, 3)
+    expect(a.spoilerPanels!.left.every((v) => v === a.spoilerPanels!.layout.groundMaxDeg)).toBe(true)
     a.spoilerCmd = 0
     for (let i = 0; i < 480; i++) a.step(1 / 120)
     expect(a.spoilerPos).toBeLessThan(0.05)
