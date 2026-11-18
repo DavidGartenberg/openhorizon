@@ -761,6 +761,8 @@ function cycleAutobrake(dir: 1 | -1): void {
 }
 const controllerRuntime = new ControllerRuntime()
 let keyboardReverse = false
+/** The gear lever's last read position (true = DOWN), null until it has been read. */
+let gearLeverPrev: boolean | null = null
 let hardwareReverseOwned = false
 let pilotBrake = 0
 
@@ -1334,6 +1336,7 @@ function saveJoyMap(): void {
 }
 function clearControllerTransient(): void {
   controllerRuntime.reset()
+  gearLeverPrev=null
   captainCommands = {}
   shaped.pitch=shaped.roll=shaped.yaw=0
   aircraft.controls.pitch=aircraft.controls.roll=aircraft.controls.yaw=0
@@ -1529,7 +1532,18 @@ function pollControls(dt: number): void {
   const js=joyRead('speedbrake');if(js!==null && aircraft.P.spoilers){aircraft.spoilerCmd=calibratedUnipolar(js,gamepadMap.speedbrake);aircraft.spoilerArmed=false}
   const latched=(fn:BindableButton):boolean|null=>readButton(gamepadMap,fn,pads)
   if(pressed('gear') && aircraft.P.gearRetractable)aircraft.gearDownCommanded=!aircraft.gearDownCommanded
-  if(aircraft.P.gearRetractable){if(latched('gearDown')===true)aircraft.gearDownCommanded=true;else if(latched('gearUp')===true)aircraft.gearDownCommanded=false}
+  if(aircraft.P.gearRetractable){
+    if(latched('gearDown')===true)aircraft.gearDownCommanded=true;else if(latched('gearUp')===true)aircraft.gearDownCommanded=false
+    // The gear lever is a latched switch: its button ON means gear UP and OFF means gear DOWN. It acts when the lever changes, so
+    // the keyboard's U still works, and a lever read for the first time on the ground (a load, a reconnect) only records where it
+    // is, rather than retracting the gear under the airplane.
+    const up=latched('gearLever')
+    if(up!==null){
+      const down=!up
+      if(down!==gearLeverPrev&&(gearLeverPrev!==null||!aircraft.data.onGround)&&aircraft.gearDownCommanded!==down){aircraft.gearDownCommanded=down;toast(down?'GEAR DOWN':'GEAR UP')}
+      gearLeverPrev=down
+    }
+  }
   if(pressed('flapsDown'))aircraft.selectFlaps(c.flapsIndex+1)
   if(pressed('flapsUp'))aircraft.selectFlaps(c.flapsIndex-1)
   for(const [i,fn] of (['flaps0','flaps1','flaps2','flaps3','flapsFull'] as const).entries())if(latched(fn)===true)aircraft.selectFlaps(Math.round(i/4*(aircraft.P.flapDetentsDeg.length-1)),false)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AXIS_SETTLE_ANYWHERE_MS, AXIS_SETTLE_MS, CONFIRM_MS, QUADRANT_STEPS, QuadrantWizard } from '../src/input/quadrant-wizard'
+import { AXIS_SETTLE_ANYWHERE_MS, AXIS_SETTLE_MS, CONFIRM_MS, QUADRANT_STEPS, QuadrantWizard, STICK_STEPS, THROTTLE_STEPS } from '../src/input/quadrant-wizard'
 import { calibratedUnipolar, readAxis, readButton, type GamepadMap, type PadReading } from '../src/sim/gamepad-map'
 
 const QUAD_ID = 'TCA Q-Eng 1&2 (Vendor: 044f Product: 0407)'
@@ -115,15 +115,15 @@ describe('guided quadrant binding: buttons and switches', () => {
   it('binds the button pressed, not one on the sidestick, and moves on after the confirmation', () => {
     const r = rig()
     const pads = [stick(), quad(REST)]
-    r.w.start(pads, true); stepsTo(r, 'gearDown', pads)
+    r.w.start(pads, true); stepsTo(r, 'gearLever', pads)
     hold(r, [stick([3]), quad(REST)], 300)                                                         // a stick button: nothing
-    expect(r.map.btn?.gearDown).toBeUndefined()
+    expect(r.map.btn?.gearLever).toBeUndefined()
     hold(r, [stick(), quad(REST, [12])], 100)
-    expect(r.map.btn?.gearDown).toMatchObject({ pad: 1, btn: 12, deviceId: QUAD_ID, source: 'user' })
-    expect(r.w.step?.fn).toBe('gearDown')
+    expect(r.map.btn?.gearLever).toMatchObject({ pad: 1, btn: 12, deviceId: QUAD_ID, source: 'user' })
+    expect(r.w.step?.fn).toBe('gearLever')
     hold(r, [stick(), quad(REST, [12])], CONFIRM_MS + 100)
-    expect(r.w.step?.fn).toBe('gearUp')
-    expect(readButton(r.map, 'gearDown', [stick(), quad(REST, [12])])).toBe(true)
+    expect(r.w.step?.fn).toBe('autobrakeLow')
+    expect(readButton(r.map, 'gearLever', [stick(), quad(REST, [12])])).toBe(true)
   })
 
   it('a button that was down when its step began has to be released and pressed again (a latched switch)', () => {
@@ -165,9 +165,9 @@ describe('guided quadrant binding: buttons and switches', () => {
   it('takes over a button that only carried a key alias and drops that alias, so the press is not also a keystroke', () => {
     const r = rig({ devices: { 1: QUAD_ID }, btnKeys: { '1:9': 'KeyB', '1:14': 'KeyR' } })
     const pads = [stick(), quad(REST)]
-    r.w.start(pads, true); stepsTo(r, 'gearUp', pads)
+    r.w.start(pads, true); stepsTo(r, 'autobrakeMax', pads)
     hold(r, [stick(), quad(REST, [9])], 100)
-    expect(r.map.btn?.gearUp?.btn).toBe(9)
+    expect(r.map.btn?.autobrakeMax?.btn).toBe(9)
     expect(r.map.btnKeys?.['1:9']).toBeUndefined()
     expect(r.map.btnKeys?.['1:14']).toBe('KeyR')
   })
@@ -175,7 +175,7 @@ describe('guided quadrant binding: buttons and switches', () => {
 
 describe('guided quadrant binding: the pass as a whole', () => {
   it('leaves out the detent buttons of a lever whose axis was bound, and asks only about what is unbound unless told otherwise', () => {
-    const r = rig({ throttle: { pad: 1, axis: 0, sign: 1, deviceId: QUAD_ID }, btn: { gearUp: { pad: 1, btn: 3, deviceId: QUAD_ID, source: 'user' } } })
+    const r = rig({ throttle: { pad: 1, axis: 0, sign: 1, deviceId: QUAD_ID }, btn: { gearLever: { pad: 1, btn: 3, deviceId: QUAD_ID, source: 'user' } } })
     const pads = [stick(), quad(REST)]
     r.w.start(pads, true)
     const asked: string[] = []
@@ -188,12 +188,12 @@ describe('guided quadrant binding: the pass as a whole', () => {
     while (r.w.step) { const f = r.w.step.fn; if (seen.has(f)) break; seen.add(f); asked.push(f); r.w.skip(pads) }
     expect(asked).toContain('speedbrakeArm')
     expect(asked).not.toContain('flaps0'); expect(asked).not.toContain('flapsFull'); expect(asked).not.toContain('speedbrakeDown')
-    expect(asked).not.toContain('gearUp')                                                             // already bound
-    expect(asked).toContain('gearDown')
-    const all = rig({ btn: { gearUp: { pad: 1, btn: 3, deviceId: QUAD_ID, source: 'user' } } })
+    expect(asked).not.toContain('gearLever')                                                          // already bound
+    expect(asked).toContain('autobrakeLow')
+    const all = rig({ btn: { gearLever: { pad: 1, btn: 3, deviceId: QUAD_ID, source: 'user' } } })
     all.w.start(pads, false)
-    let n = 0; while (all.w.step && n++ < 99) { if (all.w.step.fn === 'gearUp') break; all.w.skip(pads) }
-    expect(all.w.step?.fn).toBe('gearUp')
+    let n = 0; while (all.w.step && n++ < 99) { if (all.w.step.fn === 'gearLever') break; all.w.skip(pads) }
+    expect(all.w.step?.fn).toBe('gearLever')
   })
 
   it('waits for the quadrant to appear (the browser lists a device only after it is touched) and skip / back / stop work', () => {
@@ -212,7 +212,7 @@ describe('guided quadrant binding: the pass as a whole', () => {
   it('every step is a function the simulator can act on, and each is asked for once', () => {
     const keys = QUADRANT_STEPS.map((s) => `${s.kind}:${s.fn}`)
     expect(new Set(keys).size).toBe(keys.length)
-    for (const need of ['axis:speedbrake', 'axis:flaps', 'button:speedbrakeArm', 'button:gearDown', 'button:gearUp', 'button:parkingBrake', 'button:engineMaster1', 'button:engineMaster2', 'button:ignitionCrank', 'button:ignitionNorm', 'button:ignitionStart', 'button:rudderTrimLeft', 'button:rudderTrimRight', 'button:rudderTrimReset', 'button:autobrakeLow', 'button:autobrakeMedium', 'button:autobrakeMax']) expect(keys).toContain(need)
+    for (const need of ['axis:speedbrake', 'axis:flaps', 'button:speedbrakeArm', 'button:gearLever', 'button:parkingBrake', 'button:engineMaster1', 'button:engineMaster2', 'button:ignitionCrank', 'button:ignitionNorm', 'button:ignitionStart', 'button:rudderTrimLeft', 'button:rudderTrimRight', 'button:rudderTrimReset', 'button:autobrakeLow', 'button:autobrakeMedium', 'button:autobrakeMax']) expect(keys).toContain(need)
   })
 
   it('finishes and says how many it bound', () => {
@@ -221,5 +221,50 @@ describe('guided quadrant binding: the pass as a whole', () => {
     r.w.start(pads, true)
     for (let i = 0; i < 40 && r.w.active; i++) r.w.skip(pads)
     expect(r.w.active).toBe(false); expect(r.w.message).toMatch(/finished: 0 controls bound/)
+  })
+})
+
+describe('guided binding of the throttles, the reverse lifts and the red button', () => {
+  const Q34 = 'TCA Q-Eng 3&4 (Vendor: 044f Product: 0408)'
+  const q34 = (axes: number[], down: number[] = []): PadReading => pad(0, Q34, axes, down)
+  const q12 = (axes: number[], down: number[] = []): PadReading => pad(2, QUAD_ID, axes, down)
+
+  it('re-binds both thrust levers to the unit whose lever moves, with the lower quarter as reverse, replacing a binding on the 3&4 unit', () => {
+    const stale: GamepadMap = { throttle: { pad: 0, axis: 0, sign: 1, deviceId: Q34, source: 'user', calibration: { min: -0.5, max: 0.625, idle: -0.21875 } }, throttle2: { pad: 0, axis: 1, sign: 1, deviceId: Q34, source: 'user' } }
+    const r = rig(stale)
+    const pads = [q34(REST), stick(), q12(REST)]
+    r.w.start(pads, false, THROTTLE_STEPS)
+    expect(r.w.step?.fn).toBe('throttle')
+    for (const v of [-0.7, 0, 0.7, 1]) hold(r, [q34(REST), stick(), q12(withAxis(0, v))], 100)
+    hold(r, [q34(REST), stick(), q12(withAxis(0, 1))], AXIS_SETTLE_MS + 100)
+    expect(r.map.throttle).toMatchObject({ axis: 0, deviceId: QUAD_ID, sign: 1, calibration: { min: -1, max: 1, idle: -0.5 } })
+    settle(r, [q34(REST), stick(), q12(withAxis(0, 1))])
+    expect(r.w.step?.fn).toBe('throttle2')
+    hold(r, [q34(REST), stick(), q12(withAxis(0, 1))], 300)                                  // lever 1 is still forward: taken, not offered again
+    for (const v of [-0.6, 0.2, 1]) hold(r, [q34(REST), stick(), q12(REST.map((x, i) => (i === 1 ? v : i === 0 ? 1 : x)))], 100)
+    hold(r, [q34(REST), stick(), q12(REST.map((x, i) => (i === 1 ? 1 : i === 0 ? 1 : x)))], AXIS_SETTLE_MS + 100)
+    expect(r.map.throttle2).toMatchObject({ axis: 1, deviceId: QUAD_ID })
+    expect(readAxis(r.map, 'throttle', [q34(REST), stick(), q12(withAxis(0, 1))])).toBe(1)
+  })
+
+  it('binds the reverse lifts as held buttons, and the red button on the sidestick only', () => {
+    const r = rig()
+    const pads = [stick(), q12(REST)]
+    r.w.start(pads, false, THROTTLE_STEPS)
+    r.w.skip(pads); r.w.skip(pads)                                                           // → reverse lifts
+    expect(r.w.step?.fn).toBe('reverse')
+    hold(r, [stick([1]), q12(REST)], 300)                                                    // the stick's red button: not for a lift
+    expect(r.map.btn?.reverse).toBeUndefined()
+    hold(r, [stick(), q12(REST, [0])], 100)
+    expect(r.map.btn?.reverse).toMatchObject({ btn: 0, deviceId: QUAD_ID })
+
+    const red = rig({ btn: { apDisconnect: { pad: 0, btn: 1, deviceId: STICK_ID, source: 'preset' } } })
+    red.w.start(pads, false, STICK_STEPS)
+    expect(red.w.step?.fn).toBe('apDisconnect')
+    hold(red, [stick(), q12(REST, [0, 5])], 300)                                             // quadrant buttons: ignored
+    expect(red.map.btn?.apDisconnect?.btn).toBe(1)
+    hold(red, [stick([4]), q12(REST)], 100)                                                  // the red button turns out to be 4 on this unit
+    expect(red.map.btn?.apDisconnect).toMatchObject({ btn: 4, deviceId: STICK_ID, source: 'user' })
+    expect(readButton(red.map, 'apDisconnect', [stick([4]), q12(REST)])).toBe(true)
   })
 })

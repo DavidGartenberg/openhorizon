@@ -1,4 +1,4 @@
-import { AXIS_FUNCTIONS, validCalibration, type AxisBinding, type BindableAxis, type BindableButton, type ButtonBinding, type GamepadMap, type PadReading } from '../sim/gamepad-map'
+import { AXIS_FUNCTIONS, validCalibration, withReverseZone, type AxisBinding, type BindableAxis, type BindableButton, type ButtonBinding, type GamepadMap, type PadReading } from '../sim/gamepad-map'
 
 /**
  * One guided pass over the TCA quadrant: every lever and switch the simulator has a function for, asked for in turn, found by
@@ -11,11 +11,13 @@ import { AXIS_FUNCTIONS, validCalibration, type AxisBinding, type BindableAxis, 
  * latched switch is bound by flipping it to the position asked for.
  */
 export interface QuadrantStep {
+  /** Which device is listened to: the quadrant (the default) or the sidestick. */
+  device?: 'quadrant' | 'stick'
   kind: 'axis' | 'button'
   fn: BindableAxis | BindableButton
   /** What to do with the hardware, one line. */
   prompt: string
-  /** Not asked when one of these ('axis:flaps', 'button:gearDown' …) has already been bound in this pass (a detent button is another face of the lever's axis). */
+  /** Not asked when one of these ('axis:flaps', 'axis:speedbrake' …) has already been bound in this pass (a detent button is another face of the lever's axis). */
   skipWhenBound?: readonly string[]
 }
 
@@ -30,8 +32,7 @@ export const QUADRANT_STEPS: readonly QuadrantStep[] = [
   { kind: 'button', fn: 'flaps2', prompt: 'FLAPS lever: position 2 (detent button).', skipWhenBound: ['axis:flaps'] },
   { kind: 'button', fn: 'flaps3', prompt: 'FLAPS lever: position 3 (detent button).', skipWhenBound: ['axis:flaps'] },
   { kind: 'button', fn: 'flapsFull', prompt: 'FLAPS lever: FULL (detent button).', skipWhenBound: ['axis:flaps'] },
-  { kind: 'button', fn: 'gearDown', prompt: 'GEAR lever: put it DOWN (if it is down now, raise it and lower it again).' },
-  { kind: 'button', fn: 'gearUp', prompt: 'GEAR lever: put it UP.' },
+  { kind: 'button', fn: 'gearLever', prompt: 'GEAR lever: flip it UP (its button turns ON). OFF means gear down, ON means gear up. If it is up now, put it down and up again.' },
   { kind: 'button', fn: 'autobrakeLow', prompt: 'AUTO BRAKE: press LO.' },
   { kind: 'button', fn: 'autobrakeMedium', prompt: 'AUTO BRAKE: press MED.' },
   { kind: 'button', fn: 'autobrakeMax', prompt: 'AUTO BRAKE: press MAX.' },
@@ -47,6 +48,22 @@ export const QUADRANT_STEPS: readonly QuadrantStep[] = [
   { kind: 'button', fn: 'trimUp', prompt: 'PITCH TRIM wheel: roll it NOSE UP (skip if it is not a button on yours).' },
   { kind: 'button', fn: 'trimDown', prompt: 'PITCH TRIM wheel: roll it NOSE DOWN.' },
 ]
+
+/** The thrust levers (engines 1 and 2) and their reverse lifts: the part of the quadrant that has to work before anything else does. */
+export const THROTTLE_STEPS: readonly QuadrantStep[] = [
+  { kind: 'axis', fn: 'throttle', prompt: 'ENG 1 thrust lever: pull it fully back, push it to TOGA, then pull it back again.' },
+  { kind: 'axis', fn: 'throttle2', prompt: 'ENG 2 thrust lever: pull it fully back, push it to TOGA, then pull it back again.' },
+  { kind: 'button', fn: 'reverse', prompt: 'ENG 1 REVERSE: lift the reverse lever and hold it for a moment.' },
+  { kind: 'button', fn: 'reverse2', prompt: 'ENG 2 REVERSE: lift the reverse lever and hold it for a moment.' },
+]
+
+/** The sidestick's red autopilot-disconnect button. */
+export const STICK_STEPS: readonly QuadrantStep[] = [
+  { device: 'stick', kind: 'button', fn: 'apDisconnect', prompt: 'SIDESTICK: press the red autopilot DISCONNECT button.' },
+]
+
+/** The sidestick, for the steps that listen to it. */
+export const isStickPad = (p: PadReading | null | undefined): p is PadReading => !!p && p.connected !== false && /stick|t\.a320/i.test(p.id) && !/Q-?Eng|Quadrant/i.test(p.id)
 
 /** The quadrant is the device whose name says so (`TCA Q-Eng 1&2`, `TCA Quadrant …`). */
 export const isQuadrantPad = (p: PadReading | null | undefined): p is PadReading => !!p && p.connected !== false && /Q-?Eng|Quadrant/i.test(p.id)
@@ -81,12 +98,12 @@ export class QuadrantWizard {
   get total(): number { return this.steps.length }
   get boundCount(): number { return this.bound.size }
 
-  /** Begin. `onlyUnbound` leaves out the functions that already have a binding. */
-  start(pads: readonly (PadReading | null)[], onlyUnbound: boolean): void {
+  /** Begin. `onlyUnbound` leaves out the functions that already have a binding; `steps` picks a part of the pass. */
+  start(pads: readonly (PadReading | null)[], onlyUnbound: boolean, steps: readonly QuadrantStep[] = QUADRANT_STEPS): void {
     const m = this.getMap()
     const has = (s: QuadrantStep): boolean => (s.kind === 'axis' ? !!m[s.fn as BindableAxis] : !!m.btn?.[s.fn as BindableButton])
-    this.steps = QUADRANT_STEPS.filter((s) => !(onlyUnbound && has(s)))
-    this.bound = new Set(QUADRANT_STEPS.filter(has).filter(() => onlyUnbound).map(bindingKey))
+    this.steps = steps.filter((s) => !(onlyUnbound && has(s)))
+    this.bound = new Set(steps.filter(has).filter(() => onlyUnbound).map(bindingKey))
     this.taken.clear()
     this.index = -1
     this.active = this.steps.length > 0
@@ -115,10 +132,14 @@ export class QuadrantWizard {
     }
   }
 
+  private pool(pads: readonly (PadReading | null)[]): PadReading[] {
+    const listen = this.step?.device === 'stick' ? isStickPad : isQuadrantPad
+    return pads.filter(listen)
+  }
+
   private snapshot(pads: readonly (PadReading | null)[]): void {
     this.baseline.clear()
-    for (const p of pads) {
-      if (!isQuadrantPad(p)) continue
+    for (const p of this.pool(pads)) {
       this.baseline.set(p.index, { axes: [...p.axes], free: new Set(p.buttons.flatMap((b, i) => (b.pressed ? [] : [i]))) })
     }
   }
@@ -134,8 +155,8 @@ export class QuadrantWizard {
     const step = this.step
     if (!step) return
     if (this.state.phase === 'confirm') { if (now >= this.state.until) this.advance(pads); return }
-    const quad = pads.filter(isQuadrantPad)
-    if (!quad.length) { this.message = 'No TCA quadrant is exposed yet: move a lever or press a button on it, so the browser lists it.'; return }
+    const quad = this.pool(pads)
+    if (!quad.length) { this.message = step.device === 'stick' ? 'No TCA sidestick is exposed yet: press a button on it, so the browser lists it.' : 'No TCA quadrant is exposed yet: move a lever or press a button on it, so the browser lists it.'; return }
     for (const p of quad) if (!this.baseline.has(p.index)) this.baseline.set(p.index, { axes: [...p.axes], free: new Set(p.buttons.flatMap((b, i) => (b.pressed ? [] : [i]))) })
     this.message = ''
     if (step.kind === 'button') this.pollButton(step, quad, now)
@@ -208,7 +229,8 @@ export class QuadrantWizard {
     if (!validCalibration(calibration)) { this.message = `${step.fn}: that axis barely moved; move the lever through its whole travel.`; this.state = { phase: 'waiting' }; this.snapshot(quad); return }
     const m = this.getMap()
     const binding: AxisBinding = { pad: st.pad, axis: st.axis, sign: st.sign, deviceId: st.deviceId, source: 'user', calibration }
-    m[own] = binding
+    // A thrust lever's lower quarter is reverse (the rest of the simulator's convention for the quadrant): IDLE sits a quarter up.
+    m[own] = own === 'throttle' || own === 'throttle2' ? withReverseZone(binding) : binding
     this.save(m)
     this.taken.add(`${st.deviceId}:a${st.axis}`)
     this.bound.add(bindingKey(step))

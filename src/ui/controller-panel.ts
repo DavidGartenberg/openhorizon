@@ -1,8 +1,8 @@
 import { mountFlightPanel } from './flight-panel-dock'
 import { AXIS_FUNCTIONS, BUTTON_FUNCTIONS, readAxis, readButton, leverWithReverse, calibratedUnipolar, reverseAxisBinding, withReverseZone, hasReverseZone, REVERSE_ZONE, UNIPOLAR, type GamepadMap, type PadReading, type BindableAxis, type BindableButton, type AxisBinding, type ButtonBinding } from '../sim/gamepad-map'
 import { ControllerCapture } from '../input/controller-capture'
-import { QuadrantWizard } from '../input/quadrant-wizard'
-const LABELS:Partial<Record<BindableAxis|BindableButton,string>>={throttle:'ENG 1 throttle',throttle2:'ENG 2 throttle',reverse:'ENG 1 reverse lift (hold)',reverse2:'ENG 2 reverse lift (hold)',ptt:'Push to talk (hold)',parkingBrake:'Parking brake (latched ON; released = OFF)',engineMaster1:'ENG 1 master (latched ON; released = OFF)',engineMaster2:'ENG 2 master (latched ON; released = OFF)',gearDown:'Gear DOWN position',gearUp:'Gear UP position',speedbrake:'Speedbrake lever',speedbrakeArm:'Speedbrake ARM position'}
+import { QuadrantWizard, STICK_STEPS, THROTTLE_STEPS, type QuadrantStep } from '../input/quadrant-wizard'
+const LABELS:Partial<Record<BindableAxis|BindableButton,string>>={gearLever:'Gear lever (switch ON = gear UP, OFF = gear DOWN)',throttle:'ENG 1 throttle',throttle2:'ENG 2 throttle',reverse:'ENG 1 reverse lift (hold)',reverse2:'ENG 2 reverse lift (hold)',ptt:'Push to talk (hold)',parkingBrake:'Parking brake (latched ON; released = OFF)',engineMaster1:'ENG 1 master (latched ON; released = OFF)',engineMaster2:'ENG 2 master (latched ON; released = OFF)',gearDown:'Gear DOWN position',gearUp:'Gear UP position',speedbrake:'Speedbrake lever',speedbrakeArm:'Speedbrake ARM position'}
 const label=(fn:BindableAxis|BindableButton):string=>LABELS[fn]??fn.replace(/([A-Z0-9])/g,' $1')
 export class ControllerPanel {
   readonly root=document.createElement('details')
@@ -38,14 +38,14 @@ export class ControllerPanel {
     this.root.append(this.endpointRow,action('Reverse throttle axes',()=>this.reverseThrottles()),action(`Reverse zone: lower ${REVERSE_ZONE*100}% (toggle)`,()=>this.toggleReverseZone()),action('Save / Next',()=>this.accept()),action('Retry',()=>{if(this.capture)this.capture=new ControllerCapture(this.capture.kind,this.capture.fn,this.latest)}),action('Skip',()=>this.next()),action('Cancel',()=>{this.capture=null;this.queue=[];this.feedback.textContent='Capture cancelled; saved bindings retained.'}),this.live)
     this.guide.style.cssText='white-space:pre-wrap;margin:6px 0;padding:6px;border:1px solid #53717e;border-radius:4px;display:none;font-weight:bold'
     const guided=document.createElement('div');guided.style.cssText='margin:6px 0;display:flex;flex-wrap:wrap;gap:4px'
-    guided.append(action('Bind quadrant controls (guided)',()=>this.startWizard(true)),action('Rebind all quadrant controls',()=>this.startWizard(false)),action('Skip',()=>this.wizard.skip(this.latest)),action('Back',()=>this.wizard.back(this.latest)),action('Stop',()=>this.wizard.stop()))
+    guided.append(action('Bind throttles + reverse (guided)',()=>this.startWizard(false,THROTTLE_STEPS)),action('Bind red AP-disconnect button',()=>this.startWizard(false,STICK_STEPS)),action('Bind quadrant controls (guided)',()=>this.startWizard(true)),action('Rebind all quadrant controls',()=>this.startWizard(false)),action('Skip',()=>this.wizard.skip(this.latest)),action('Back',()=>this.wizard.back(this.latest)),action('Stop',()=>this.wizard.stop()))
     this.root.prepend(this.guide);this.root.insertBefore(guided,this.status.nextSibling)
     mountFlightPanel(this.root)
   }
   /** One guided pass over the whole TCA quadrant: speed brake, flaps, gear, autobrake, parking brake, engine masters, ignition mode, trims. */
-  private startWizard(onlyUnbound:boolean):void {
+  private startWizard(onlyUnbound:boolean,steps?:readonly QuadrantStep[]):void {
     this.capture=null;this.queue=[];this.error='';this.root.open=true
-    this.wizard.start(this.latest,onlyUnbound);this.onCapture()
+    this.wizard.start(this.latest,onlyUnbound,steps);this.onCapture()
   }
   start(kind:'axis'|'button',functions:readonly(BindableAxis|BindableButton)[]):void {
     this.error='';this.root.open=true;this.queue=functions.map(fn=>({kind,fn}));this.next();this.onCapture()

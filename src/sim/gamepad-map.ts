@@ -16,7 +16,7 @@ export type BindableButton =
   | 'gear' | 'flapsUp' | 'flapsDown' | 'trimUp' | 'trimDown'
   | 'apDisconnect' | 'brakes' | 'reverse' | 'reverse2' | 'ptt'
   | 'parkingBrake' | 'engineMaster1' | 'engineMaster2' | 'ignitionCrank' | 'ignitionNorm' | 'ignitionStart'
-  | 'gearDown' | 'gearUp' | 'autobrakeOff' | 'autobrakeLow' | 'autobrakeMedium' | 'autobrakeMax' | 'autobrakeRto'
+  | 'gearDown' | 'gearUp' | 'gearLever' | 'autobrakeOff' | 'autobrakeLow' | 'autobrakeMedium' | 'autobrakeMax' | 'autobrakeRto'
   | 'rudderTrimLeft' | 'rudderTrimRight' | 'rudderTrimReset' | 'speedbrakeArm'
   | 'flaps0' | 'flaps1' | 'flaps2' | 'flaps3' | 'flapsFull' | 'speedbrakeDown' | 'speedbrakeFull'
 
@@ -51,7 +51,8 @@ export type GamepadMap = Partial<Record<BindableAxis, AxisBinding>> & {
   unverifiedBtnKeys?: Record<string, string>
 }
 
-export const TCA_PRESET_VERSION = 8
+/** v9: the gear lever is one latched switch (`gearLever`: ON = gear UP, OFF = gear DOWN); a `gearDown` binding from before moves to it. */
+export const TCA_PRESET_VERSION = 9
 
 /** Key aliases that act while HELD (everything else is edge-triggered). */
 export const HELD_ALIASES: ReadonlySet<string> = new Set(['KeyT', 'KeyB', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'Comma', 'Period'])
@@ -181,7 +182,7 @@ export function combineLevers(levers: LeverCommand[]): LeverCommand & { mixed: b
     reverse: !mixed && levers.some(l=>l.reverse), mixed }
 }
 export const AXIS_FUNCTIONS: BindableAxis[] = ['pitch','roll','yaw','throttle','throttle2','mixture','brakes','flaps','speedbrake']
-export const BUTTON_FUNCTIONS: BindableButton[] = ['gear','flapsUp','flapsDown','trimUp','trimDown','apDisconnect','brakes','reverse','reverse2','ptt','parkingBrake','engineMaster1','engineMaster2','ignitionCrank','ignitionNorm','ignitionStart','gearDown','gearUp','autobrakeOff','autobrakeLow','autobrakeMedium','autobrakeMax','autobrakeRto','rudderTrimLeft','rudderTrimRight','rudderTrimReset','speedbrakeArm','flaps0','flaps1','flaps2','flaps3','flapsFull','speedbrakeDown','speedbrakeFull']
+export const BUTTON_FUNCTIONS: BindableButton[] = ['gear','flapsUp','flapsDown','trimUp','trimDown','apDisconnect','brakes','reverse','reverse2','ptt','parkingBrake','engineMaster1','engineMaster2','ignitionCrank','ignitionNorm','ignitionStart','gearDown','gearUp','autobrakeOff','autobrakeLow','autobrakeMedium','autobrakeMax','autobrakeRto','rudderTrimLeft','rudderTrimRight','rudderTrimReset','speedbrakeArm','flaps0','flaps1','flaps2','flaps3','flapsFull','speedbrakeDown','speedbrakeFull','gearLever']
 const validIndex = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n < 256
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 export function validCalibration(c: unknown): c is AxisCalibration {
@@ -315,6 +316,20 @@ export function mergePreset(saved: GamepadMap, incoming: GamepadMap): GamepadMap
     }
   }
   for(const fn of BUTTON_FUNCTIONS){const p=preset.btn?.[fn],s=saved.btn?.[fn];if(!p)continue;const occupied=Object.entries(saved.btn??{}).some(([other,b])=>other!==fn && b.deviceId===p.deviceId && b.btn===p.btn);if(!occupied && (!s || !s.deviceId && s.pad===p.pad && s.btn===p.btn))out.btn![fn]={...p,...s,deviceId:p.deviceId}}
+  // The throttle levers and reverse lifts are engines 1 and 2. A binding that an earlier preset left on the engines 3 & 4 unit
+  // (it was listed first) is moved to the engines 1 & 2 unit when that unit is connected; the lever calibration is the preset's.
+  for(const fn of ['throttle','throttle2'] as const){
+    const p=preset[fn],s=out[fn]
+    if(p && s && TCA_ENGINES_12.test(p.deviceId??'') && TCA_ENGINES_34.test(s.deviceId??''))out[fn]=p
+  }
+  for(const fn of ['reverse','reverse2'] as const){
+    const p=preset.btn?.[fn],s=out.btn![fn]
+    const occupied=Object.entries(out.btn??{}).some(([other,b])=>other!==fn && b.deviceId===p?.deviceId && b.btn===p?.btn)
+    if(p && s && !occupied && TCA_ENGINES_12.test(p.deviceId??'') && TCA_ENGINES_34.test(s.deviceId??''))out.btn![fn]=p
+  }
+  // v9: the quadrant's gear lever is a latched switch whose button is ON with the lever UP. Before, it was bound as `gearDown`
+  // (pressed = gear down), which left the gear where it was when the lever came back; the binding moves to `gearLever` once.
+  if((saved.v??0)<9 && out.btn!.gearDown && !out.btn!.gearLever){out.btn!.gearLever={...out.btn!.gearDown};delete out.btn!.gearDown}
   // Never give a captured physical button a second preset action on reconnect.
   for(const [k,v] of Object.entries(preset.btnKeys??{})){
     const [slot,btn]=k.split(':');const id=devices[slot!]
@@ -338,12 +353,18 @@ export function mergePreset(saved: GamepadMap, incoming: GamepadMap): GamepadMap
  *  J wizard rebinds from real movement if they weren't. */
 export const TCA_DEVICE = /(?:tca.*(?:sidestick|stick.*airbus|q-eng)|t\.a320)/i
 export const TCA_QUADRANT = /quadrant|q-eng|throttle/i
+/** The quadrant with the thrust levers for engines 1 and 2 (the base unit) and the one with levers 3 and 4 (the add-on). The
+ *  simulator's two throttle functions are engines 1 and 2, so with both connected the first is the one they belong on. */
+export const TCA_ENGINES_12 = /q-?eng\s*1\s*&\s*2/i
+export const TCA_ENGINES_34 = /q-?eng\s*3\s*&\s*4/i
 
 export function tcaPresetFor(pads: ReadonlyArray<{ id: string; axes: number; index: number }>): GamepadMap | null {
   const tca = pads.filter((p) => TCA_DEVICE.test(p.id))
   if (!tca.length) return null
-  const quadrant = tca.find((p) => TCA_QUADRANT.test(p.id)) ?? tca.find((p) => p.axes <= 3 && p.axes >= 2)
-  const stick = tca.find((p) => p !== quadrant && p.axes >= 4) ?? tca.find((p) => p !== quadrant)
+  // With two quadrant units connected the throttles belong on the engines 1 & 2 unit, whatever order the browser lists them in
+  // (the first listed used to win, which put the throttle and reverse lifts on the engines 3 & 4 add-on).
+  const quadrant = tca.find((p) => TCA_ENGINES_12.test(p.id)) ?? tca.find((p) => TCA_QUADRANT.test(p.id)) ?? tca.find((p) => p.axes <= 3 && p.axes >= 2)
+  const stick = tca.find((p) => p !== quadrant && !TCA_QUADRANT.test(p.id) && p.axes >= 4) ?? tca.find((p) => p !== quadrant && !TCA_QUADRANT.test(p.id)) ?? tca.find((p) => p !== quadrant && p.axes >= 4) ?? tca.find((p) => p !== quadrant)
   const map: GamepadMap = {}
   if (stick) {
     map.roll = { pad: stick.index, axis: 0, sign: 1 }
