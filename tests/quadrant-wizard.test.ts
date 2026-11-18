@@ -247,17 +247,9 @@ describe('guided binding of the throttles, the reverse lifts and the red button'
     expect(readAxis(r.map, 'throttle', [q34(REST), stick(), q12(withAxis(0, 1))])).toBe(1)
   })
 
-  it('binds the reverse lifts as held buttons, and the red button on the sidestick only', () => {
-    const r = rig()
+  it('asks for the two thrust levers only (their reverse is their travel), and binds the red button on the sidestick only', () => {
+    expect(THROTTLE_STEPS.map((x) => x.fn)).toEqual(['throttle', 'throttle2'])
     const pads = [stick(), q12(REST)]
-    r.w.start(pads, false, THROTTLE_STEPS)
-    r.w.skip(pads); r.w.skip(pads)                                                           // → reverse lifts
-    expect(r.w.step?.fn).toBe('reverse')
-    hold(r, [stick([1]), q12(REST)], 300)                                                    // the stick's red button: not for a lift
-    expect(r.map.btn?.reverse).toBeUndefined()
-    hold(r, [stick(), q12(REST, [0])], 100)
-    expect(r.map.btn?.reverse).toMatchObject({ btn: 0, deviceId: QUAD_ID })
-
     const red = rig({ btn: { apDisconnect: { pad: 0, btn: 1, deviceId: STICK_ID, source: 'preset' } } })
     red.w.start(pads, false, STICK_STEPS)
     expect(red.w.step?.fn).toBe('apDisconnect')

@@ -49,12 +49,11 @@ export const QUADRANT_STEPS: readonly QuadrantStep[] = [
   { kind: 'button', fn: 'trimDown', prompt: 'PITCH TRIM wheel: roll it NOSE DOWN.' },
 ]
 
-/** The thrust levers (engines 1 and 2) and their reverse lifts: the part of the quadrant that has to work before anything else does. */
+/** The thrust levers (engines 1 and 2). Their reverse is the lower 25% of their travel (throttleCalibration), so the reverse-lift
+ *  buttons are not bound here: they only unlatch the lever, and a lift bound to the wrong button used to force reverse. */
 export const THROTTLE_STEPS: readonly QuadrantStep[] = [
-  { kind: 'axis', fn: 'throttle', prompt: 'ENG 1 thrust lever: pull it fully back, push it to TOGA, then pull it back again.' },
-  { kind: 'axis', fn: 'throttle2', prompt: 'ENG 2 thrust lever: pull it fully back, push it to TOGA, then pull it back again.' },
-  { kind: 'button', fn: 'reverse', prompt: 'ENG 1 REVERSE: lift the reverse lever and hold it for a moment.' },
-  { kind: 'button', fn: 'reverse2', prompt: 'ENG 2 REVERSE: lift the reverse lever and hold it for a moment.' },
+  { kind: 'axis', fn: 'throttle', prompt: 'ENG 1 thrust lever: pull it fully back (full reverse), push it to TOGA, then pull it back again.' },
+  { kind: 'axis', fn: 'throttle2', prompt: 'ENG 2 thrust lever: pull it fully back (full reverse), push it to TOGA, then pull it back again.' },
 ]
 
 /** The sidestick's red autopilot-disconnect button. */
