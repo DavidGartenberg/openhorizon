@@ -1,6 +1,7 @@
 import { mountFlightPanel } from './flight-panel-dock'
 import { AXIS_FUNCTIONS, BUTTON_FUNCTIONS, readAxis, readButton, leverWithReverse, calibratedUnipolar, reverseAxisBinding, withReverseZone, hasReverseZone, REVERSE_ZONE, UNIPOLAR, type GamepadMap, type PadReading, type BindableAxis, type BindableButton, type AxisBinding, type ButtonBinding } from '../sim/gamepad-map'
 import { ControllerCapture } from '../input/controller-capture'
+import { QuadrantWizard } from '../input/quadrant-wizard'
 const LABELS:Partial<Record<BindableAxis|BindableButton,string>>={throttle:'ENG 1 throttle',throttle2:'ENG 2 throttle',reverse:'ENG 1 reverse lift (hold)',reverse2:'ENG 2 reverse lift (hold)',ptt:'Push to talk (hold)',parkingBrake:'Parking brake (latched ON; released = OFF)',engineMaster1:'ENG 1 master (latched ON; released = OFF)',engineMaster2:'ENG 2 master (latched ON; released = OFF)',gearDown:'Gear DOWN position',gearUp:'Gear UP position',speedbrake:'Speedbrake lever',speedbrakeArm:'Speedbrake ARM position'}
 const label=(fn:BindableAxis|BindableButton):string=>LABELS[fn]??fn.replace(/([A-Z0-9])/g,' $1')
 export class ControllerPanel {
@@ -15,8 +16,11 @@ export class ControllerPanel {
   private latest:readonly(PadReading|null)[]=[]
   private lastRender=0
   private error=''
-  get capturing():boolean{return this.capture!==null}
+  private readonly wizard:QuadrantWizard
+  private readonly guide=document.createElement('pre')
+  get capturing():boolean{return this.capture!==null || this.wizard.active}
   constructor(private readonly getMap:()=>GamepadMap,private readonly save:(map:GamepadMap)=>void,private readonly onCapture:()=>void) {
+    this.wizard=new QuadrantWizard(getMap,save)
     this.root.id='controller-panel';this.root.style.cssText='position:fixed;right:8px;top:54px;z-index:28;width:min(440px,90vw);max-height:75vh;overflow:auto;background:#071923f2;color:#def;padding:10px;border:1px solid #53717e;border-radius:6px;font:12px/1.5 monospace'
     const summary=document.createElement('summary');summary.textContent='Controllers · TCA Captain · J';this.root.append(summary,this.status)
     const help=document.createElement('p');help.textContent='Pause, select a function, then Capture. Move only that control, record endpoints and Save. If you connected after Capture, click Retry.'
@@ -32,7 +36,16 @@ export class ControllerPanel {
     this.root.append(help,limits,this.selector,action('Capture',()=>{const[k,f]=this.selector.value.split(':');this.start(k as 'axis'|'button',[f as BindableAxis|BindableButton])}),this.feedback)
     for(const [point,title] of [['min','Record minimum / full reverse'],['max','Record maximum / TOGA'],['idle','Record IDLE'],['cl','Record CL (optional)'],['flex','Record FLEX (optional)']] as const)this.endpointRow.append(action(title,()=>{if(!this.capture?.record(point,this.latest))this.feedback.textContent='No finite connected axis reading.'}))
     this.root.append(this.endpointRow,action('Reverse throttle axes',()=>this.reverseThrottles()),action(`Reverse zone: lower ${REVERSE_ZONE*100}% (toggle)`,()=>this.toggleReverseZone()),action('Save / Next',()=>this.accept()),action('Retry',()=>{if(this.capture)this.capture=new ControllerCapture(this.capture.kind,this.capture.fn,this.latest)}),action('Skip',()=>this.next()),action('Cancel',()=>{this.capture=null;this.queue=[];this.feedback.textContent='Capture cancelled; saved bindings retained.'}),this.live)
+    this.guide.style.cssText='white-space:pre-wrap;margin:6px 0;padding:6px;border:1px solid #53717e;border-radius:4px;display:none;font-weight:bold'
+    const guided=document.createElement('div');guided.style.cssText='margin:6px 0;display:flex;flex-wrap:wrap;gap:4px'
+    guided.append(action('Bind quadrant controls (guided)',()=>this.startWizard(true)),action('Rebind all quadrant controls',()=>this.startWizard(false)),action('Skip',()=>this.wizard.skip(this.latest)),action('Back',()=>this.wizard.back(this.latest)),action('Stop',()=>this.wizard.stop()))
+    this.root.prepend(this.guide);this.root.insertBefore(guided,this.status.nextSibling)
     mountFlightPanel(this.root)
+  }
+  /** One guided pass over the whole TCA quadrant: speed brake, flaps, gear, autobrake, parking brake, engine masters, ignition mode, trims. */
+  private startWizard(onlyUnbound:boolean):void {
+    this.capture=null;this.queue=[];this.error='';this.root.open=true
+    this.wizard.start(this.latest,onlyUnbound);this.onCapture()
   }
   start(kind:'axis'|'button',functions:readonly(BindableAxis|BindableButton)[]):void {
     this.error='';this.root.open=true;this.queue=functions.map(fn=>({kind,fn}));this.next();this.onCapture()
@@ -73,7 +86,8 @@ export class ControllerPanel {
     this.save(m);this.next()
   }
   update(pads:readonly(PadReading|null)[],summary:string,now=performance.now()):void {
-    this.latest=pads;this.capture?.poll(pads)
+    this.latest=pads;this.capture?.poll(pads);this.wizard.poll(pads,now)
+    {const w=this.wizard,s=w.step;this.guide.style.display=s||w.message?'block':'none';this.guide.textContent=s?`Quadrant · step ${w.index+1} of ${w.total}\n${s.prompt}\n${w.message}`:w.message}
     if(now-this.lastRender<100)return;this.lastRender=now
     this.status.textContent=pads.filter(Boolean).map(p=>`${p!.index}: ${p!.id}`).join('\n')||'No controller exposed. Press a device button.'
     if(!this.root.open)return
