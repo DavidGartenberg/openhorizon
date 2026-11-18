@@ -28,12 +28,30 @@ it('main applies flap/speedbrake axes, absolute parking brake and both master sw
  h.pad.axes[0]=1;h.poll();expect(h.aircraft.controls.brakeLeft).toBe(1)
  h.pad.buttons[2]!.pressed=false;expect(h.poll().parkingBrake).toBe(false);expect(h.aircraft.controls.brakeLeft).toBe(0)
 })
-it('main releases either lift symmetrically, rejects opposing levers and preserves keyboard reverse without hardware ownership',()=>{
- const h=harness();h.poll();h.pad.buttons[0]!.pressed=true;h.pad.buttons[1]!.pressed=true;h.poll();expect(h.aircraft.reverseCmd).toBe(true)
- h.pad.buttons[0]!.pressed=false;h.poll();expect(h.aircraft.reverseCmd).toBe(true)
- h.pad.buttons[1]!.pressed=false;h.poll();expect(h.aircraft.reverseCmd).toBe(false)
- h.pad.buttons[0]!.pressed=true;h.pad.axes[1]=1;h.poll();expect(h.aircraft.controls.throttle).toBe(0);expect(h.aircraft.reverseCmd).toBe(false)
+it('quadrant levers reverse by their travel alone: lift buttons are not read for them, opposing levers idle, keyboard reverse still works',()=>{
+ const h=harness();h.poll()
+ h.pad.buttons[0]!.pressed=true;h.pad.buttons[1]!.pressed=true;h.poll();expect(h.aircraft.reverseCmd).toBe(false)   // lifts alone: no reverse
+ h.pad.axes[0]=h.pad.axes[1]=-.9;h.poll();expect(h.aircraft.reverseCmd).toBe(true)                                 // levers in the lower quarter: reverse
+ h.pad.buttons[0]!.pressed=h.pad.buttons[1]!.pressed=false;h.poll();expect(h.aircraft.reverseCmd).toBe(true)
+ h.pad.axes[0]=-.9;h.pad.axes[1]=1;h.poll();expect(h.aircraft.controls.throttle).toBe(0);expect(h.aircraft.reverseCmd).toBe(false)
  h.pads.length=0;h.presses.add('KeyZ');h.poll();expect(h.aircraft.reverseCmd).toBe(true)
+})
+
+it('a stuck or mis-bound reverse-lift button cannot take a forward lever into reverse and idle the engines',()=>{
+ const h=harness();h.poll()
+ h.pad.buttons[1]!.pressed=true                                                     // ENG 2 lift reads ON at rest
+ h.pad.axes[0]=h.pad.axes[1]=.5;h.poll()
+ expect(h.aircraft.reverseCmd).toBe(false);expect(h.aircraft.controls.throttle).toBeCloseTo(1/1.5,6)           // 0.5 on a lever with IDLE at -0.5: two thirds of forward travel
+})
+
+it('the lower 25% is reverse even when a saved calibration lost its zone, and two levers pulled back not quite together still reverse',()=>{
+ const h=harness()
+ h.m.throttle={...h.m.throttle!,calibration:{min:-1,max:1}};h.m.throttle2={...h.m.throttle2!,calibration:{min:-1,max:1,idle:-1}}   // zone forgotten / IDLE at the end
+ h.pad.axes[0]=h.pad.axes[1]=-.75;h.poll()
+ expect(h.aircraft.reverseCmd).toBe(true);expect(h.aircraft.controls.throttle).toBeCloseTo(.5,6)
+ h.pad.axes[0]=-.6;h.pad.axes[1]=-.45;h.poll()                                       // 20% (reverse) and 27.5% (a hair above idle)
+ expect(h.aircraft.reverseCmd).toBe(true);expect(h.aircraft.controls.throttle).toBeGreaterThan(0)
+ h.pad.axes[0]=h.pad.axes[1]=-.5;h.poll();expect(h.aircraft.reverseCmd).toBe(false);expect(h.aircraft.controls.throttle).toBe(0)   // 25%: idle
 })
 
 it('main cycles non-auto airbrakes directly DOWN/FULL and rejects their ARM binding',()=>{

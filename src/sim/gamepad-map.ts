@@ -176,7 +176,8 @@ export interface LeverCommand { power: number; reverse: boolean }
 /** One common thrust/reverser model: opposing levers command idle, never
  * convert reverse power into forward thrust. Individual readings remain visible. */
 export function combineLevers(levers: LeverCommand[]): LeverCommand & { mixed: boolean } {
-  const powered = levers.filter(l => l.power > .02)
+  // A lever a hair above its idle detent is at idle, not opposing the other one's reverse (two levers are never pulled back exactly together).
+  const powered = levers.filter(l => l.power > .08)
   const mixed = levers.some(l => l.reverse) && powered.some(l => !l.reverse)
   return { power: mixed || !levers.length ? 0 : levers.reduce((s,l)=>s+l.power,0)/levers.length,
     reverse: !mixed && levers.some(l=>l.reverse), mixed }
@@ -243,6 +244,21 @@ export function calibratedUnipolar(raw:number,b?:AxisBinding):number {
 /** Share of a throttle lever's travel, measured from its idle end, that commands reverse thrust. */
 export const REVERSE_ZONE = 0.25
 const zoneIdle = (c: AxisCalibration, zone: number): number => c.min + zone * (c.max - c.min)
+/**
+ * The calibration a thrust lever is read with. A quadrant lever's lower REVERSE_ZONE (a quarter) of its travel is ALWAYS reverse
+ * thrust, whatever IDLE a capture, a preset or a toggle left in the saved binding: the pilot asked for that and for it never to
+ * be lost again. Only the lever's two ends are taken from the binding. Other throttles (a stick's slider) keep their own.
+ */
+export function throttleCalibration(b: AxisBinding | undefined): AxisCalibration | undefined {
+  if (!b) return undefined
+  if (!TCA_QUADRANT.test(b.deviceId ?? '')) return b.calibration
+  return withReverseZone(b).calibration
+}
+/** Whether a lever's reverse comes from its own travel (so a reverse-lift button adds nothing and is not read). */
+export function leverReversesByTravel(b: AxisBinding | undefined): boolean {
+  const c = throttleCalibration(b)
+  return !!c && c.idle !== undefined && c.idle > c.min + 0.05
+}
 /** True when the lever's IDLE sits `zone` of the way along its travel, so everything below it is reverse. */
 export function hasReverseZone(b: AxisBinding | undefined, zone = REVERSE_ZONE): boolean {
   const c = b?.calibration

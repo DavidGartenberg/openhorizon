@@ -330,4 +330,17 @@ describe('two quadrant units (engines 1 & 2 and the 3 & 4 add-on) with the sides
     expect(again.btn?.gearDown).toMatchObject({ btn: 21 }); expect(again.btn?.gearLever).toMatchObject({ btn: 20 })
     expect(mapping.parseGamepadMap(JSON.stringify(again))).not.toBeNull()
   })
+
+  it('a quadrant lever always reads its lower 25% as reverse, whatever IDLE the saved binding has; a stick slider keeps its own', () => {
+    for (const calibration of [undefined, { min: -1, max: 1 }, { min: -1, max: 1, idle: -1 }, { min: -1, max: 0.56, idle: -0.2 }]) {
+      const b = { pad: 0, axis: 0, sign: 1 as const, deviceId: Q12, ...(calibration ? { calibration } : {}) }
+      const c = mapping.throttleCalibration(b)!
+      expect((c.idle! - c.min) / (c.max - c.min)).toBeCloseTo(0.25, 6)
+      expect(mapping.leverReversesByTravel(b)).toBe(true)
+      expect(mapping.leverWithReverse(c.min, c)).toEqual({ power: 1, reverse: true })
+      expect(mapping.leverWithReverse(c.idle!, c)).toEqual({ power: 0, reverse: false })
+    }
+    const slider = { pad: 0, axis: 3, sign: -1 as const, deviceId: 'Logitech Extreme 3D', calibration: { min: -1, max: 1 } }
+    expect(mapping.throttleCalibration(slider)).toEqual({ min: -1, max: 1 }); expect(mapping.leverReversesByTravel(slider)).toBe(false)
+  })
 })

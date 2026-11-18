@@ -114,7 +114,7 @@ import { WorldFrame, TileManager } from './world/tiles'
 import { Airports, type AirportData, type RunwayData } from './world/airports'
 import { makeElectricalState, stepElectrical } from './sim/systems/electrical'
 import { c172WeightBalance, C172S_ENVELOPE } from './sim/weight-balance'
-import { applyDeadzone, leverWithReverse, parseGamepadMap, serializeGamepadMap, tcaPresetFor, HELD_ALIASES, readAxis, readButton, readAlias, calibratedUnipolar, mergePreset, combineLevers, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
+import { applyDeadzone, leverWithReverse, throttleCalibration, leverReversesByTravel, parseGamepadMap, serializeGamepadMap, tcaPresetFor, HELD_ALIASES, readAxis, readButton, readAlias, calibratedUnipolar, mergePreset, combineLevers, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
 import { ControllerPanel } from './ui/controller-panel'
 import { ControllerRuntime } from './input/controller-runtime'
 import { armSpeedbrake, cycleSpeedbrake } from './input/speedbrake-control'
@@ -1510,9 +1510,16 @@ function pollControls(dt: number): void {
   if(jp!==null)shaped.pitch=applyDeadzone(jp)
   if(jy!==null)shaped.yaw=applyDeadzone(jy)
   const levers:ReturnType<typeof leverWithReverse>[]=[]
+  // The lower quarter of a quadrant lever's travel is reverse thrust (throttleCalibration), and the lever's position alone says so:
+  // a reverse-lift button only unlatches the lever, so it is not read for such a lever (a mis-bound or latched one would force
+  // reverse on a lever that is forward and idle both engines). A lift button still works for a throttle without that zone.
+  const liftsRead=new Set<'reverse'|'reverse2'>()
   for(const [axis,button] of [['throttle','reverse'],['throttle2','reverse2']] as const){
-    const value=joyRead(axis)
-    if(value!==null){const lever=leverWithReverse(value,gamepadMap[axis]?.calibration);if(down(button))lever.reverse=true;levers.push(lever)}
+    const value=joyRead(axis),b=gamepadMap[axis]
+    if(value===null){liftsRead.add(button);continue}
+    const lever=leverWithReverse(value,throttleCalibration(b))
+    if(!leverReversesByTravel(b)){liftsRead.add(button);if(down(button))lever.reverse=true}
+    levers.push(lever)
   }
   const aggregate=combineLevers(levers)
   if(levers.length){
@@ -1522,7 +1529,7 @@ function pollControls(dt: number): void {
     // it takes over (and disconnects the A/T) only when actually moved.
     if(!autothrottle.engaged||!Number.isFinite(atHwRef)||Math.abs(hw-atHwRef)>0.04||aggregate.reverse){c.throttle=hw;atHwRef=hw}
   }else atHwRef=NaN
-  const heldReverse=down('reverse')||down('reverse2')
+  const heldReverse=(liftsRead.has('reverse')&&down('reverse'))||(liftsRead.has('reverse2')&&down('reverse2'))
   const ownsReverse=aggregate.reverse||aggregate.mixed||heldReverse
   if(aircraft.P.reversers && (ownsReverse||hardwareReverseOwned))aircraft.reverseCmd=ownsReverse?aggregate.reverse&&!aggregate.mixed || heldReverse&&!aggregate.mixed:keyboardReverse
   hardwareReverseOwned=ownsReverse
