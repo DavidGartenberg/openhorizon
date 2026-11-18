@@ -131,7 +131,8 @@ export function stepAutobrake(prev: AutobrakeState, i: AutobrakeInput): Autobrak
   if (rto && i.onGround && throttle >= POWER) s.powerSeen = true
   if (i.onGround && i.spoilerPos > 0.5) s.spoilerSeen = true
 
-  const idle = throttle <= IDLE
+  // Reverse selected counts as the levers at idle: a pilot who pulls reverse right at touchdown still gets the autobrake.
+  const idle = throttle <= IDLE || i.reverse
   const wantsApply = i.onGround && idle && (rto ? s.powerSeen && speed >= RTO_MIN_SPEED_MS : s.airborneSeen)
   if (s.phase === 'armed') {
     if (wantsApply) {

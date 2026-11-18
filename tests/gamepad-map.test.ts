@@ -112,7 +112,7 @@ describe('TCA Captain Pack support (16a-b)', () => {
     expect(m.yaw).toMatchObject({ pad: 0, axis: 5, sign: 1 }) // twist is axis 5 on the real unit
     expect(m.throttle).toMatchObject({ pad: 1, axis: 0, sign: 1 }) // idle=-1, TOGA=+1 (live-verified)
     expect(m.throttle2).toMatchObject({ pad: 1, axis: 1, sign: 1 })
-    expect(m.v).toBe(9)
+    expect(m.v).toBe(10)
     // Full face bound: trigger = PTT, red = AP disconnect, base buttons = gear/flaps/spoilers…
     expect(m.btnKeys?.['0:0']).toBe('KeyT')
     expect(m.btn?.apDisconnect).toMatchObject({ pad: 0, btn: 1 })
@@ -257,7 +257,7 @@ describe('the quadrant ships with a reverse zone', () => {
       expect(lever(merged, fn, 1)).toEqual({ power: 1, reverse: true })     // sign -1: the raw top is this lever's reverse end
       expect(lever(merged, fn, -1)).toEqual({ power: 1, reverse: false })
     }
-    expect(merged.v).toBe(9)
+    expect(merged.v).toBe(10)
     const off: GamepadMap = { ...merged, throttle: withReverseZone(merged.throttle!, 0) }
     expect(mergePreset(off, tcaPresetFor(pads)!).throttle?.calibration).toEqual({ min: -1, max: 1 })
   })
@@ -323,7 +323,7 @@ describe('two quadrant units (engines 1 & 2 and the 3 & 4 add-on) with the sides
     old.btn = { ...old.btn, gearDown: { pad: 0, btn: 20, deviceId: Q12, source: 'user' } }
     const migrated = mapping.mergePreset(old, mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!)
     expect(migrated.btn?.gearLever).toMatchObject({ btn: 20, deviceId: Q12 }); expect(migrated.btn?.gearDown).toBeUndefined()
-    expect(migrated.v).toBe(9)
+    expect(migrated.v).toBe(10)
     // a GEAR DOWN position button bound afterwards (v is 9 now) stays what it is
     migrated.btn = { ...migrated.btn, gearDown: { pad: 0, btn: 21, deviceId: Q12, source: 'user' } }
     const again = mapping.mergePreset(migrated, mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!)
@@ -342,5 +342,17 @@ describe('two quadrant units (engines 1 & 2 and the 3 & 4 add-on) with the sides
     }
     const slider = { pad: 0, axis: 3, sign: -1 as const, deviceId: 'Logitech Extreme 3D', calibration: { min: -1, max: 1 } }
     expect(mapping.throttleCalibration(slider)).toEqual({ min: -1, max: 1 }); expect(mapping.leverReversesByTravel(slider)).toBe(false)
+  })
+
+  it('drops a gear UP button bound beside the gear lever switch (it was another control: the autobrake selector 2), once', () => {
+    const old = mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!
+    old.v = 9
+    old.btn = { ...old.btn, gearLever: { pad: 0, btn: 20, deviceId: Q12, source: 'user' }, gearUp: { pad: 0, btn: 22, deviceId: Q12, source: 'user' }, autobrakeLow: { pad: 0, btn: 21, deviceId: Q12, source: 'user' } }
+    const m = mapping.mergePreset(old, mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!)
+    expect(m.btn?.gearUp).toBeUndefined(); expect(m.btn?.gearLever?.btn).toBe(20); expect(m.btn?.autobrakeLow?.btn).toBe(21)
+    m.btn = { ...m.btn, gearUp: { pad: 0, btn: 30, deviceId: Q12, source: 'user' } }                      // bound on purpose afterwards: kept
+    expect(mapping.mergePreset(m, mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!).btn?.gearUp?.btn).toBe(30)
+    const withAb3 = { ...m, btn: { ...m.btn, autobrake3: { pad: 0, btn: 23, deviceId: Q12, source: 'user' as const } } }
+    expect(mapping.parseGamepadMap(JSON.stringify(withAb3))?.btn?.autobrake3?.btn).toBe(23)
   })
 })

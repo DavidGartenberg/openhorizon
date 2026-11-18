@@ -16,7 +16,7 @@ export type BindableButton =
   | 'gear' | 'flapsUp' | 'flapsDown' | 'trimUp' | 'trimDown'
   | 'apDisconnect' | 'brakes' | 'reverse' | 'reverse2' | 'ptt'
   | 'parkingBrake' | 'engineMaster1' | 'engineMaster2' | 'ignitionCrank' | 'ignitionNorm' | 'ignitionStart'
-  | 'gearDown' | 'gearUp' | 'gearLever' | 'autobrakeOff' | 'autobrakeLow' | 'autobrakeMedium' | 'autobrakeMax' | 'autobrakeRto'
+  | 'gearDown' | 'gearUp' | 'gearLever' | 'autobrakeOff' | 'autobrakeLow' | 'autobrakeMedium' | 'autobrake3' | 'autobrakeMax' | 'autobrakeRto'
   | 'rudderTrimLeft' | 'rudderTrimRight' | 'rudderTrimReset' | 'speedbrakeArm'
   | 'flaps0' | 'flaps1' | 'flaps2' | 'flaps3' | 'flapsFull' | 'speedbrakeDown' | 'speedbrakeFull'
 
@@ -56,7 +56,8 @@ export type GamepadMap = Partial<Record<BindableAxis, AxisBinding>> & {
 }
 
 /** v9: the gear lever is one latched switch (`gearLever`: ON = gear UP, OFF = gear DOWN); a `gearDown` binding from before moves to it. */
-export const TCA_PRESET_VERSION = 9
+/** v10: with a gear lever switch bound, a separate gear UP button on the same unit is dropped (it was a stray capture). */
+export const TCA_PRESET_VERSION = 10
 
 /** Key aliases that act while HELD (everything else is edge-triggered). */
 export const HELD_ALIASES: ReadonlySet<string> = new Set(['KeyT', 'KeyB', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'Comma', 'Period'])
@@ -187,7 +188,7 @@ export function combineLevers(levers: LeverCommand[]): LeverCommand & { mixed: b
     reverse: !mixed && levers.some(l=>l.reverse), mixed }
 }
 export const AXIS_FUNCTIONS: BindableAxis[] = ['pitch','roll','yaw','throttle','throttle2','mixture','brakes','flaps','speedbrake']
-export const BUTTON_FUNCTIONS: BindableButton[] = ['gear','flapsUp','flapsDown','trimUp','trimDown','apDisconnect','brakes','reverse','reverse2','ptt','parkingBrake','engineMaster1','engineMaster2','ignitionCrank','ignitionNorm','ignitionStart','gearDown','gearUp','autobrakeOff','autobrakeLow','autobrakeMedium','autobrakeMax','autobrakeRto','rudderTrimLeft','rudderTrimRight','rudderTrimReset','speedbrakeArm','flaps0','flaps1','flaps2','flaps3','flapsFull','speedbrakeDown','speedbrakeFull','gearLever']
+export const BUTTON_FUNCTIONS: BindableButton[] = ['gear','flapsUp','flapsDown','trimUp','trimDown','apDisconnect','brakes','reverse','reverse2','ptt','parkingBrake','engineMaster1','engineMaster2','ignitionCrank','ignitionNorm','ignitionStart','gearDown','gearUp','autobrakeOff','autobrakeLow','autobrakeMedium','autobrakeMax','autobrakeRto','rudderTrimLeft','rudderTrimRight','rudderTrimReset','speedbrakeArm','flaps0','flaps1','flaps2','flaps3','flapsFull','speedbrakeDown','speedbrakeFull','gearLever','autobrake3']
 const validIndex = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n < 256
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 export function validCalibration(c: unknown): c is AxisCalibration {
@@ -353,6 +354,9 @@ export function mergePreset(saved: GamepadMap, incoming: GamepadMap): GamepadMap
   // v9: the quadrant's gear lever is a latched switch whose button is ON with the lever UP. Before, it was bound as `gearDown`
   // (pressed = gear down), which left the gear where it was when the lever came back; the binding moves to `gearLever` once.
   if((saved.v??0)<9 && out.btn!.gearDown && !out.btn!.gearLever){out.btn!.gearLever={...out.btn!.gearDown};delete out.btn!.gearDown}
+  // v10: the gear lever is one switch (ON = UP). A gear UP button on the same unit as it came from the old two-step capture, in
+  // which the pilot, seeing nothing happen for UP, moved some other control (on the live unit: the autobrake selector's 2).
+  if((saved.v??0)<10){const lever=out.btn!.gearLever,up=out.btn!.gearUp;if(lever&&up&&up.deviceId===lever.deviceId)delete out.btn!.gearUp}
   // Never give a captured physical button a second preset action on reconnect.
   for(const [k,v] of Object.entries(preset.btnKeys??{})){
     const [slot,btn]=k.split(':');const id=devices[slot!]

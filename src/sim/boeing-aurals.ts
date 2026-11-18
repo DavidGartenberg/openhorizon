@@ -6,7 +6,7 @@
  * `audio/boeing-aurals-audio.ts` (no Boeing recordings are shipped).
  *
  *  - Takeoff configuration: INTERMITTENT horn — on the ground, a forward
- *    thrust lever advanced for takeoff while flaps are outside the takeoff
+ *    thrust lever (never reverse) advanced for takeoff while flaps are outside the takeoff
  *    range (1–25), the speedbrake lever is not DOWN, the parking brake is
  *    set, or the stabilizer trim is outside the green band.
  *  - Landing gear configuration: STEADY horn — airborne, any gear not down
@@ -18,7 +18,8 @@
  *  - Autopilot disconnect: two-tone WAILER, minimum two seconds after any
  *    disengagement (a second disconnect press silences it early).
  *  - Altitude alert: momentary TONE when the airplane deviates more than
- *    300 ft from the selected altitude after having captured it.
+ *    300 ft from the selected altitude after having captured it; inhibited
+ *    with the glideslope captured or the gear down and locked (the approach).
  *  - Fire: BELL — no engine-fire model exists, so only the FIRE WARN TEST
  *    sounds it (never faked from an unmodeled condition).
  */
@@ -37,6 +38,10 @@ export interface AuralObs {
   alphaDeg: number
   /** Thrust lever position 0..1 (forward thrust; reverse is separate). */
   throttle: number
+  /** Reverse thrust selected: the lever's travel is then reverse power, never a takeoff advance. */
+  reverse?: boolean
+  /** Glideslope captured (the altitude alert is inhibited on the approach). */
+  gsCaptured?: boolean
   flapsDeg: number
   /** All gear down and locked. */
   gearDownLocked: boolean
@@ -88,7 +93,9 @@ export function boeingAurals(o: AuralObs, L: AuralLatches, nowS: number): AuralO
   if (o.fireTest) continuous.add('fireBell')
 
   // Takeoff configuration warning.
-  if (o.onGround && o.throttle >= TAKEOFF_LEVER) {
+  // Reverse thrust is not a takeoff: pulling the levers into reverse on the landing roll, with the speedbrake out, must not
+  // sound the takeoff configuration horn.
+  if (o.onGround && !o.reverse && o.throttle >= TAKEOFF_LEVER) {
     const flapsOk = o.flapsDeg >= 0.5 && o.flapsDeg <= 25.5
     if (!flapsOk || !o.speedbrakeStowed || o.parkingBrake || !o.stabInGreenBand) continuous.add('configHorn')
   }
@@ -126,8 +133,11 @@ export function boeingAurals(o: AuralObs, L: AuralLatches, nowS: number): AuralO
     L.altAlertFired = false
   }
   const dev = Math.abs(o.altitudeFt - o.selectedAltFt)
+  // Inhibited on the approach (as on the 737): glideslope captured, or the gear down and locked. Leaving the last selected
+  // altitude to fly the glidepath is not a deviation and must not chime on every approach.
+  const approach = !!o.gsCaptured || (o.gearRetractable && o.gearDownLocked)
   if (!o.onGround && dev <= 200) { L.capturedAltFt = o.selectedAltFt; L.altAlertFired = false }
-  else if (Number.isFinite(L.capturedAltFt) && dev > 300 && !L.altAlertFired && !o.onGround) {
+  else if (Number.isFinite(L.capturedAltFt) && dev > 300 && !L.altAlertFired && !o.onGround && !approach) {
     L.altAlertFired = true
     oneShots.push('altAlert')
   }

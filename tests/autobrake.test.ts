@@ -164,3 +164,18 @@ describe('robustness', () => {
     stepAutobrake(s, { ...base, pilotBrake: 1 }); expect(JSON.stringify(s)).toBe(copy)
   })
 })
+
+describe('autobrake with reverse thrust', () => {
+  it('applies when reverse is already selected at touchdown (the levers read reverse power, not idle)', () => {
+    let s = selectAutobrake(makeAutobrake(), '2')
+    s = step(s, { onGround: false }, 5)
+    s = step(s, { throttle: 0.9, reverse: true }, 5)
+    expect(s.phase).toBe('active'); expect(s.demand).toBeGreaterThan(0)
+  })
+  it('stays on through full reverse and back to idle, and still disarms if the levers go forward for thrust', () => {
+    let s = landed('3')
+    s = step(s, { throttle: 1, reverse: true }, 20); expect(s.phase).toBe('active')
+    s = step(s, { throttle: 0, reverse: false }, 5); expect(s.phase).toBe('active')
+    s = step(s, { throttle: 0.5, reverse: false }, 1); expect(s.phase).toBe('disarmed'); expect(s.reason).toBe('THRUST LEVERS ADVANCED')
+  })
+})

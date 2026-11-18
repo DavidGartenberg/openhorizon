@@ -148,3 +148,13 @@ it('separate GEAR UP / GEAR DOWN position buttons still act when pressed',()=>{
  h.pad.buttons[5]!.pressed=false;h.pad.buttons[6]!.pressed=true;h.poll();expect(gear.gearDownCommanded).toBe(true)
  h.pad.buttons[6]!.pressed=false;h.poll();expect(gear.gearDownCommanded).toBe(true)             // releasing a position button changes nothing
 })
+
+it('the autobrake selector positions 1, 2, 3 and MAX each select their setting',()=>{
+ const h=harness()
+ h.m.btn={...h.m.btn,autobrakeLow:{pad:1,deviceId:h.pad.id,btn:4},autobrakeMedium:{pad:1,deviceId:h.pad.id,btn:5},autobrake3:{pad:1,deviceId:h.pad.id,btn:6},autobrakeMax:{pad:1,deviceId:h.pad.id,btn:7}}
+ for(const [btn,mode] of [[4,'low'],[5,'medium'],[6,'3'],[7,'max']] as const){
+  for(const b of h.pad.buttons)b.pressed=false
+  h.pad.buttons[btn]!.pressed=true
+  expect(h.poll().captainCommands.autobrakeMode).toBe(mode)
+ }
+})

@@ -1567,7 +1567,7 @@ function pollControls(dt: number): void {
   for(const fn of ['engineMaster1','engineMaster2'] as const){const v=latched(fn);if(v!==null)captainCommands[fn]=v}
   if(latched('ignitionCrank')===false && latched('ignitionStart')===false)captainCommands.ignitionMode='norm'
   for(const [fn,mode] of [['ignitionCrank','crank'],['ignitionNorm','norm'],['ignitionStart','start']] as const)if(latched(fn)===true)captainCommands.ignitionMode=mode
-  for(const [fn,mode] of [['autobrakeOff','off'],['autobrakeLow','low'],['autobrakeMedium','medium'],['autobrakeMax','max'],['autobrakeRto','rto']] as const)if(latched(fn)===true)captainCommands.autobrakeMode=mode
+  for(const [fn,mode] of [['autobrakeOff','off'],['autobrakeLow','low'],['autobrakeMedium','medium'],['autobrake3','3'],['autobrakeMax','max'],['autobrakeRto','rto']] as const)if(latched(fn)===true)captainCommands.autobrakeMode=mode
   const heldCodes=new Set<string>()
   for(const [key,state] of runtime.aliases){const code=gamepadMap.btnKeys![key]!;if(HELD_ALIASES.has(code)){if(state.held)heldCodes.add(code)}else if(state.pressed)input.injectPress(code)}
   for(const code of HELD_ALIASES)input.setVirtualHeld(code,heldCodes.has(code))
@@ -3473,7 +3473,8 @@ function advanceFrame(elapsed: number, now: number): void {
     const aurals = boeingAurals({
       onGround: d.onGround, kias: d.kias, vmoKt: aircraft.P.vSpeeds.vne,
       mach: (d.ktas * KT) / isa(altM).speedOfSoundMs, ...(MMO_BY_TYPE[fleetKey] ? { mmo: MMO_BY_TYPE[fleetKey] } : {}),
-      stallFraction: d.stallFraction, alphaDeg: d.alphaDeg, throttle: aircraft.controls.throttle, flapsDeg: aircraft.flapsDeg,
+      stallFraction: d.stallFraction, alphaDeg: d.alphaDeg, throttle: aircraft.controls.throttle, reverse: aircraft.reverseCmd, flapsDeg: aircraft.flapsDeg,
+      gsCaptured: apState.verticalMode === 'GS' && !apState.verticalArmed,
       gearDownLocked: aircraft.gearPos >= 0.999, gearRetractable: !!aircraft.P.gearRetractable, radioAltFt: d.aglFt,
       speedbrakeStowed: aircraft.spoilerCmd < 0.02, parkingBrake,
       // Green band needs a CG-scheduled trim limit this sim doesn't model:
