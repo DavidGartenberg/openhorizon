@@ -27,7 +27,11 @@ export interface ButtonBinding {
   btn: number
 }
 
-export interface AxisCalibration { min: number; max: number; idle?: number; cl?: number; flex?: number }
+export interface AxisCalibration {
+  min: number; max: number; idle?: number; cl?: number; flex?: number
+  /** IDLE was taken at the lever's real idle detent by the guided detent calibration: below it is reverse, and it is kept. */
+  measuredIdle?: boolean
+}
 export interface AxisBinding {
   deviceId?: string
   source?: 'preset' | 'user'
@@ -245,13 +249,16 @@ export function calibratedUnipolar(raw:number,b?:AxisBinding):number {
 export const REVERSE_ZONE = 0.25
 const zoneIdle = (c: AxisCalibration, zone: number): number => c.min + zone * (c.max - c.min)
 /**
- * The calibration a thrust lever is read with. A quadrant lever's lower REVERSE_ZONE (a quarter) of its travel is ALWAYS reverse
- * thrust, whatever IDLE a capture, a preset or a toggle left in the saved binding: the pilot asked for that and for it never to
- * be lost again. Only the lever's two ends are taken from the binding. Other throttles (a stick's slider) keep their own.
+ * The calibration a thrust lever is read with. Everything below a quadrant lever's IDLE is reverse thrust. IDLE is where the
+ * pilot's guided detent calibration found the lever's idle detent; without one it is a quarter of the way up the travel
+ * (REVERSE_ZONE), whatever a capture, a preset or a toggle left in the saved binding: the pilot asked for that and for it never
+ * to be lost again. Other throttles (a stick's slider) keep their own calibration.
  */
 export function throttleCalibration(b: AxisBinding | undefined): AxisCalibration | undefined {
   if (!b) return undefined
   if (!TCA_QUADRANT.test(b.deviceId ?? '')) return b.calibration
+  // The pilot's own detent calibration (IDLE taken where the lever really idles) is kept as it is; anything else idles at 25%.
+  if (b.calibration?.measuredIdle && validCalibration(b.calibration)) return b.calibration
   return withReverseZone(b).calibration
 }
 /** Whether a lever's reverse comes from its own travel (so a reverse-lift button adds nothing and is not read). */

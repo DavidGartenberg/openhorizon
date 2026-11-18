@@ -27,7 +27,7 @@ export class ControllerCapture {
     const v=matches.length===1?matches[0]?.axes[c.axis]:undefined
     return typeof v==='number' && Number.isFinite(v)?v*c.sign:null
   }
-  record(point:keyof AxisCalibration,pads:readonly(PadReading|null)[]):boolean {
+  record(point:Exclude<keyof AxisCalibration,'measuredIdle'>,pads:readonly(PadReading|null)[]):boolean {
     const raw=this.raw(pads);if(raw===null)return false
     this.points[point]=raw;return true
   }

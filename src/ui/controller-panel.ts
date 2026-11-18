@@ -2,6 +2,7 @@ import { mountFlightPanel } from './flight-panel-dock'
 import { AXIS_FUNCTIONS, BUTTON_FUNCTIONS, readAxis, readButton, leverWithReverse, throttleCalibration, calibratedUnipolar, reverseAxisBinding, REVERSE_ZONE, UNIPOLAR, type GamepadMap, type PadReading, type BindableAxis, type BindableButton, type AxisBinding, type ButtonBinding } from '../sim/gamepad-map'
 import { ControllerCapture } from '../input/controller-capture'
 import { QuadrantWizard, STICK_STEPS, THROTTLE_STEPS, type QuadrantStep } from '../input/quadrant-wizard'
+import { ThrottleDetentCalibration } from '../input/throttle-detents'
 const LABELS:Partial<Record<BindableAxis|BindableButton,string>>={gearLever:'Gear lever (switch ON = gear UP, OFF = gear DOWN)',throttle:'ENG 1 throttle',throttle2:'ENG 2 throttle',reverse:'ENG 1 reverse lift (hold)',reverse2:'ENG 2 reverse lift (hold)',ptt:'Push to talk (hold)',parkingBrake:'Parking brake (latched ON; released = OFF)',engineMaster1:'ENG 1 master (latched ON; released = OFF)',engineMaster2:'ENG 2 master (latched ON; released = OFF)',gearDown:'Gear DOWN position',gearUp:'Gear UP position',speedbrake:'Speedbrake lever',speedbrakeArm:'Speedbrake ARM position'}
 const label=(fn:BindableAxis|BindableButton):string=>LABELS[fn]??fn.replace(/([A-Z0-9])/g,' $1')
 export class ControllerPanel {
@@ -18,9 +19,11 @@ export class ControllerPanel {
   private error=''
   private readonly wizard:QuadrantWizard
   private readonly guide=document.createElement('pre')
-  get capturing():boolean{return this.capture!==null || this.wizard.active}
+  private readonly detents:ThrottleDetentCalibration
+  get capturing():boolean{return this.capture!==null || this.wizard.active || this.detents.active}
   constructor(private readonly getMap:()=>GamepadMap,private readonly save:(map:GamepadMap)=>void,private readonly onCapture:()=>void) {
     this.wizard=new QuadrantWizard(getMap,save)
+    this.detents=new ThrottleDetentCalibration(getMap,save)
     this.root.id='controller-panel';this.root.style.cssText='position:fixed;right:8px;top:54px;z-index:28;width:min(440px,90vw);max-height:75vh;overflow:auto;background:#071923f2;color:#def;padding:10px;border:1px solid #53717e;border-radius:6px;font:12px/1.5 monospace'
     const summary=document.createElement('summary');summary.textContent='Controllers · TCA Captain · J';this.root.append(summary,this.status)
     const help=document.createElement('p');help.textContent=`Thrust levers: the lower ${REVERSE_ZONE*100}% of each quadrant lever is always reverse thrust (on the ground, with reversers). Pause, select a function, then Capture. Move only that control, record endpoints and Save. If you connected after Capture, click Retry.`
@@ -38,9 +41,14 @@ export class ControllerPanel {
     this.root.append(this.endpointRow,action('Reverse throttle axes',()=>this.reverseThrottles()),action('Save / Next',()=>this.accept()),action('Retry',()=>{if(this.capture)this.capture=new ControllerCapture(this.capture.kind,this.capture.fn,this.latest)}),action('Skip',()=>this.next()),action('Cancel',()=>{this.capture=null;this.queue=[];this.feedback.textContent='Capture cancelled; saved bindings retained.'}),this.live)
     this.guide.style.cssText='white-space:pre-wrap;margin:6px 0;padding:6px;border:1px solid #53717e;border-radius:4px;display:none;font-weight:bold'
     const guided=document.createElement('div');guided.style.cssText='margin:6px 0;display:flex;flex-wrap:wrap;gap:4px'
-    guided.append(action('Bind thrust levers (guided)',()=>this.startWizard(false,THROTTLE_STEPS)),action('Bind red AP-disconnect button',()=>this.startWizard(false,STICK_STEPS)),action('Bind quadrant controls (guided)',()=>this.startWizard(true)),action('Rebind all quadrant controls',()=>this.startWizard(false)),action('Skip',()=>this.wizard.skip(this.latest)),action('Back',()=>this.wizard.back(this.latest)),action('Stop',()=>this.wizard.stop()))
+    guided.append(action('Calibrate thrust levers: IDLE, REV, CL, FLX, TOGA',()=>this.startDetents()),action('Bind thrust levers (guided)',()=>this.startWizard(false,THROTTLE_STEPS)),action('Bind red AP-disconnect button',()=>this.startWizard(false,STICK_STEPS)),action('Bind quadrant controls (guided)',()=>this.startWizard(true)),action('Rebind all quadrant controls',()=>this.startWizard(false)),action('Skip',()=>this.wizard.skip(this.latest)),action('Back',()=>{if(this.detents.active)this.detents.back(performance.now());else this.wizard.back(this.latest)}),action('Stop',()=>{this.wizard.stop();this.detents.stop()}))
     this.root.prepend(this.guide);this.root.insertBefore(guided,this.status.nextSibling)
     mountFlightPanel(this.root)
+  }
+  /** Thrust levers at their detents, one after the other, kept with the binding (throttle-detents.ts). */
+  private startDetents():void {
+    this.capture=null;this.queue=[];this.error='';this.root.open=true;this.wizard.stop()
+    this.detents.start(performance.now());this.onCapture()
   }
   /** One guided pass over the whole TCA quadrant: speed brake, flaps, gear, autobrake, parking brake, engine masters, ignition mode, trims. */
   private startWizard(onlyUnbound:boolean,steps?:readonly QuadrantStep[]):void {
@@ -77,8 +85,8 @@ export class ControllerPanel {
     this.save(m);this.next()
   }
   update(pads:readonly(PadReading|null)[],summary:string,now=performance.now()):void {
-    this.latest=pads;this.capture?.poll(pads);this.wizard.poll(pads,now)
-    {const w=this.wizard,s=w.step;this.guide.style.display=s||w.message?'block':'none';this.guide.textContent=s?`Quadrant · step ${w.index+1} of ${w.total}\n${s.prompt}\n${w.message}`:w.message}
+    this.latest=pads;this.capture?.poll(pads);this.wizard.poll(pads,now);this.detents.poll(pads,now)
+    {const w=this.wizard,s=w.step,d=this.detents,ds=d.step;this.guide.style.display=s||w.message||ds||d.message?'block':'none';this.guide.textContent=ds?`Thrust levers · ${d.index+1} of 5 · ${ds.label}\n${ds.prompt}\n${d.message}`:d.message&&!s?d.message:s?`Quadrant · step ${w.index+1} of ${w.total}\n${s.prompt}\n${w.message}`:w.message}
     if(now-this.lastRender<100)return;this.lastRender=now
     this.status.textContent=pads.filter(Boolean).map(p=>`${p!.index}: ${p!.id}`).join('\n')||'No controller exposed. Press a device button.'
     if(!this.root.open)return
