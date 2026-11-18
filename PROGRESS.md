@@ -3381,3 +3381,10 @@ See `docs/atc-radio.md`. What changed:
 ### Thrust-lever detent calibration (2026-11-17)
 
 - User request: find where the idle is, then full reverse, CL, FLEX, TOGA, and keep it. Controllers panel (J) → "Calibrate thrust levers: IDLE, REV, CL, FLX, TOGA" (`input/throttle-detents.ts`, `83b8697`): one instruction at a time, each position taken when both levers rest there (IDLE only from levers moved after the step began; each later detent must lie in the right direction from the last). Saved per lever as its calibration with `measuredIdle`; `throttleCalibration()` keeps it, so reverse is everything below the measured idle detent. Without it, IDLE stays forced at 25% of travel. Verified with tests (9) and in a browser with scripted levers; the user still has to run it once on the real quadrant.
+
+### Landing with reverse: warnings, autobrake, autobrake 2 / gear (2026-11-17)
+
+- User report: warnings in reverse, autobrake should stay on, autobrake 2 raises the gear, fix warning and approach sounds (`70899d8`).
+- Takeoff config horn no longer reads reverse power as a takeoff advance; the altitude alert is inhibited with G/S captured or gear down and locked (it chimed on every approach); the autobrake treats reverse as idle so it applies when reverse is selected at touchdown; a stray gear UP binding beside the gear lever switch is dropped (v10) and the autobrake selector has position 3.
+- The user's saved map at localhost:5173 was corrected in place (backup kept in localStorage `oh-gamepad-map.backup-2026-11-17`): selector 1/2/3/MAX = buttons 21/22/23/24 (22 was gear UP; 1 and MAX were already 21 and 24, and the user named 22 as "autobrake 2"; 23 = 3 is inferred from the knob order). Checked that it parses with the new code, merges to v10 and keeps the detent calibration.
+- Not verified by ear: which sound the user meant by "the approach sound" is a guess (the altitude-alert chime on the descent); the user is asked to say if another sound is still wrong.
