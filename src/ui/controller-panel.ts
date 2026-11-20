@@ -29,7 +29,7 @@ export class ControllerPanel {
     const help=document.createElement('p');help.textContent=`Thrust levers: the lower ${REVERSE_ZONE*100}% of each quadrant lever is always reverse thrust (on the ground, with reversers). Pause, select a function, then Capture. Move only that control, record endpoints and Save. If you connected after Capture, click Retry.`
     const limits=document.createElement('details'),limitsSummary=document.createElement('summary'),limitsText=document.createElement('p')
     limitsSummary.textContent='Controller and engine model notes'
-    limitsText.textContent='Add-on indices require capture. Detent buttons are alternatives to lever axes. Jet masters drive two equal groups in one aggregate thrust/N1 model; opposing directions command idle and engine-out yaw is not modeled. Ignition returns to NORM when mapped CRANK and START are both released.'
+    limitsText.textContent='Add-on indices require capture. Detent buttons are alternatives to lever axes. Each thrust lever drives its own engine side (differential thrust: split levers, one side in reverse, or an engine master off yaw the airplane); one bound lever drives both. Ignition returns to NORM when mapped CRANK and START are both released.'
     limits.append(limitsSummary,limitsText)
 
     for(const [kind,fns] of [['axis',AXIS_FUNCTIONS],['button',BUTTON_FUNCTIONS]] as const)for(const fn of fns){const option=document.createElement('option');option.value=`${kind}:${fn}`;option.textContent=`${kind} · ${label(fn)}`;this.selector.append(option)}
