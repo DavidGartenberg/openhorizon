@@ -144,3 +144,13 @@ it('moves each spoiler panel of an installed wing by its own angle, left and rig
  const other=localDatarefReader({flapFrac:0,gearPos:1,spoilerFrac:.4,spoilerPanels:panels},0,0,new Map([['sim/flightmodel2/wing/speedbrake1_deg[0]',50]]),'MD82')
  expect(other('sim/flightmodel2/wing/speedbrake1_deg[0]')).toBeCloseTo(20)
 })
+
+it('opens each engine\'s reverser with its own side: one side reversing shows only its sleeves (twin and quad)',()=>{
+ const twin=localDatarefReader({flapFrac:0,gearPos:1,spoilerFrac:0,reverseFrac:1,reverseSides:[1,0],engineCount:2},0,0,new Map())
+ expect(twin('sim/flightmodel2/engines/thrust_reverser_deploy_ratio[0]')).toBe(1)
+ expect(twin('sim/flightmodel2/engines/thrust_reverser_deploy_ratio[1]')).toBe(0)
+ const quad=localDatarefReader({flapFrac:0,gearPos:1,spoilerFrac:0,reverseFrac:1,reverseSides:[0,1],engineCount:4},0,0,new Map())
+ expect([0,1,2,3].map(i=>quad(`sim/flightmodel2/engines/thrust_reverser_deploy_ratio[${i}]`))).toEqual([0,0,1,1])
+ const legacy=localDatarefReader({flapFrac:0,gearPos:1,spoilerFrac:0,reverseFrac:.6},0,0,new Map())
+ expect(legacy('sim/flightmodel2/engines/thrust_reverser_deploy_ratio[1]')).toBeCloseTo(.6)
+})

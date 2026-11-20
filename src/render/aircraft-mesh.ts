@@ -55,6 +55,10 @@ export interface SurfaceState {
   gearPos: number
   /** Reverser sleeve position: 0 stowed … 1 deployed. */
   reverseFrac?: number
+  /** Each side's reverser sleeves (engine 1 side, engine 2 side), and the engine count they split over: with differential
+   *  reverse only one side's sleeves open. Absent = every engine at reverseFrac. */
+  reverseSides?: readonly [number, number]
+  engineCount?: number
   /** Signed DG-800S common-mode flap position, trailing-edge down positive. */
   flapsDeg?: number
   /** Explicit final DG-800S mixed flaperon angles; down is positive. */

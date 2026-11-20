@@ -49,7 +49,11 @@ export function localDatarefReader(state: SurfaceState, angle: number, rpm: numb
     if (/\/prop_is_disc\[/.test(ref)) return rpm > 900 && !(key && BLADES_ONLY.has(modelKey(key))) ? 1 : 0
     // Blade angle: the sim has no propeller governor, so a turning prop shows a typical cruise pitch (cosmetic).
     if (/\/prop_pitch_deg\[/.test(ref)) return PROP_BLADE_PITCH_DEG
-    if (/\/thrust_reverser_deploy_ratio\[/.test(ref)) return unit(state.reverseFrac ?? 0)
+    if (/\/thrust_reverser_deploy_ratio\[/.test(ref)) {
+      // Engine i belongs to the left side for the first half of the engines (1 / 2 on twins, 1-2 / 3-4 on quads).
+      const i = Number(/\[(\d+)\]/.exec(ref)?.[1] ?? 0), n = state.engineCount ?? 2
+      return unit(state.reverseSides ? state.reverseSides[i < n / 2 ? 0 : 1] : state.reverseFrac ?? 0)
+    }
     if (ref === 'sim/cockpit2/controls/flap_handle_deploy_ratio') return unit(state.flapFrac)
     if (/\/flap[12]_deg\[/.test(ref)) return unit(state.flapFrac) * travel
     if (/\/slat[12]_deploy_ratio$/.test(ref) || ref === 'sim/flightmodel/controls/flaprat') return unit(state.flapFrac)

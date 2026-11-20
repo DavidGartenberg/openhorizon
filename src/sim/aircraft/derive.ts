@@ -144,6 +144,17 @@ function gearLegs(spec: RosterSpec): AircraftParams['gear'] {
   }
 }
 
+/** Rear-fuselage engines (business jets, the CRJ / ERJ-145 / DC-9 / MD-80 / 717 / 727 / Fokker family): their thrust lines are
+ *  only a little outboard of the fuselage. */
+const REAR_ENGINES = /^(CRJ|CL3|CL6|E13|E14|E35|E45|DC9|MD8|MD9|B712|B72|F28|F70|F100|GLF|GL[57XF]|FA[0-9]|F2TH|F900|FA7X|FA8X|LJ|C25|C5[0-9]|C6|C7|E50|E55|HDJT|H25|ASTR|G280|PRM1|BE40|SF50)/i
+/** How far each side's thrust line is from the centreline (differential thrust yaws by it): wing-mounted twins ~14.5 % of the
+ *  span (737-800 4.9 m, A330 9.4 m), four-engine types the mean of inner and outer ~25 % (747, A380), rear-mounted ~6 %.
+ *  Approximations from published planforms, not per-type data. */
+export function engineArmM(designator: string, spanM: number, engines: number): number {
+  if (REAR_ENGINES.test(designator)) return 0.06 * spanM
+  return (engines >= 4 ? 0.25 : 0.145) * spanM
+}
+
 export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftParams {
   const AR = (spec.spanM * spec.spanM) / spec.wingAreaM2
   const jet = spec.powerplant.kind === 'jet'
@@ -337,6 +348,7 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
             // gave a Williams FJ44 bizjet a CFM56's dead-engine drag and
             // a Trent-class widebody a quarter of its real value.
             windmillCdA: 0.47 * (pp.staticThrustN / 117_000),
+            armM: engineArmM(spec.designator, spec.spanM, pp.count),
           },
           machModel: { mdd: 0.82, dragRiseK: 20 },
           trimIsStabilizer: true,

@@ -111,7 +111,8 @@ export const B738: AircraftParams = {
   // N1 (class figure), ~1.5 s sleeve transit, weight-on-wheels interlock.
   reversers: { effectiveness: 0.45, transitS: 1.5 },
 
-  jet: CFM56_7B26,
+  // CFM56-7B nacelle centrelines sit 4.9 m either side of the fuselage centreline (737-800 planform).
+  jet: { ...CFM56_7B26, armM: 4.9 },
   machModel: { mdd: 0.82, dragRiseK: 20 },
   gearRetractable: { transitS: 9, dCdExtended: 0.02 },
   trimIsStabilizer: true, // jackscrew stab: authority beyond elevator stops

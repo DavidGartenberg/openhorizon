@@ -28,12 +28,16 @@ it('main applies flap/speedbrake axes, absolute parking brake and both master sw
  h.pad.axes[0]=1;h.poll();expect(h.aircraft.controls.brakeLeft).toBe(1)
  h.pad.buttons[2]!.pressed=false;expect(h.poll().parkingBrake).toBe(false);expect(h.aircraft.controls.brakeLeft).toBe(0)
 })
-it('quadrant levers reverse by their travel alone: lift buttons are not read for them, opposing levers idle, keyboard reverse still works',()=>{
+it('quadrant levers reverse by their travel alone: lift buttons are not read for them, each lever is its own side, keyboard reverse still works',()=>{
  const h=harness();h.poll()
  h.pad.buttons[0]!.pressed=true;h.pad.buttons[1]!.pressed=true;h.poll();expect(h.aircraft.reverseCmd).toBe(false)   // lifts alone: no reverse
  h.pad.axes[0]=h.pad.axes[1]=-.9;h.poll();expect(h.aircraft.reverseCmd).toBe(true)                                 // levers in the lower quarter: reverse
  h.pad.buttons[0]!.pressed=h.pad.buttons[1]!.pressed=false;h.poll();expect(h.aircraft.reverseCmd).toBe(true)
- h.pad.axes[0]=-.9;h.pad.axes[1]=1;h.poll();expect(h.aircraft.controls.throttle).toBe(0);expect(h.aircraft.reverseCmd).toBe(false)
+ h.pad.axes[0]=-.9;h.pad.axes[1]=1;h.poll()                                                                          // ENG 1 in reverse, ENG 2 forward: differential
+ expect(h.aircraft.reverseCmd).toBe(true)
+ expect((h.aircraft as unknown as {throttleSplit:unknown}).throttleSplit).toMatchObject({reverseLeft:true,reverseRight:false,right:1})
+ expect((h.aircraft as unknown as {throttleSplit:{left:number}}).throttleSplit.left).toBeCloseTo(.8,6)
+ expect(h.aircraft.controls.throttle).toBeCloseTo(.9,6)
  h.pads.length=0;h.presses.add('KeyZ');h.poll();expect(h.aircraft.reverseCmd).toBe(true)
 })
 
@@ -157,4 +161,16 @@ it('the autobrake selector positions 1, 2, 3 and MAX each select their setting',
   h.pad.buttons[btn]!.pressed=true
   expect(h.poll().captainCommands.autobrakeMode).toBe(mode)
  }
+})
+
+it('differential thrust: each lever is its own engine side, one lever alone drives both, and an engaged A/T keeps both together',()=>{
+ const h=harness();const a=h.aircraft as unknown as {throttleSplit:{left:number;right:number;reverseLeft:boolean;reverseRight:boolean}|null}
+ h.pad.axes[0]=.25;h.pad.axes[1]=1;h.poll()                                              // ENG 1 half forward, ENG 2 at TOGA
+ expect(a.throttleSplit).toMatchObject({left:.5,right:1,reverseLeft:false,reverseRight:false})
+ expect(h.aircraft.controls.throttle).toBeCloseTo(.75,6)
+ h.aircraft.data.onGround=false;h.pad.axes[0]=-.9;h.poll()                               // airborne: the reverse range is idle on that side
+ expect(a.throttleSplit).toMatchObject({left:0,right:1,reverseLeft:false})
+ h.aircraft.data.onGround=true
+ delete h.m.throttle2;h.pad.axes[0]=.25;h.poll()                                         // one lever bound: it drives both sides
+ expect(a.throttleSplit).toMatchObject({left:.5,right:.5})
 })

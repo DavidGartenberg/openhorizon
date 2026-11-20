@@ -114,7 +114,7 @@ import { WorldFrame, TileManager } from './world/tiles'
 import { Airports, type AirportData, type RunwayData } from './world/airports'
 import { makeElectricalState, stepElectrical } from './sim/systems/electrical'
 import { c172WeightBalance, C172S_ENVELOPE } from './sim/weight-balance'
-import { applyDeadzone, leverWithReverse, throttleCalibration, leverReversesByTravel, parseGamepadMap, serializeGamepadMap, tcaPresetFor, HELD_ALIASES, readAxis, readButton, readAlias, calibratedUnipolar, mergePreset, combineLevers, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
+import { applyDeadzone, leverWithReverse, throttleCalibration, leverReversesByTravel, parseGamepadMap, serializeGamepadMap, tcaPresetFor, HELD_ALIASES, readAxis, readButton, readAlias, calibratedUnipolar, mergePreset, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
 import { ControllerPanel } from './ui/controller-panel'
 import { ControllerRuntime } from './input/controller-runtime'
 import { armSpeedbrake, cycleSpeedbrake } from './input/speedbrake-control'
@@ -1514,24 +1514,33 @@ function pollControls(dt: number): void {
   // a reverse-lift button only unlatches the lever, so it is not read for such a lever (a mis-bound or latched one would force
   // reverse on a lever that is forward and idle both engines). A lift button still works for a throttle without that zone.
   const liftsRead=new Set<'reverse'|'reverse2'>()
+  // Differential thrust: lever 1 drives the engine 1 side and lever 2 the engine 2 side (one lever alone drives both).
+  const sides:Array<ReturnType<typeof leverWithReverse>|null>=[]
   for(const [axis,button] of [['throttle','reverse'],['throttle2','reverse2']] as const){
     const value=joyRead(axis),b=gamepadMap[axis]
-    if(value===null){liftsRead.add(button);continue}
+    if(value===null){liftsRead.add(button);sides.push(null);continue}
     const lever=leverWithReverse(value,throttleCalibration(b))
     if(!leverReversesByTravel(b)){liftsRead.add(button);if(down(button))lever.reverse=true}
-    levers.push(lever)
+    levers.push(lever);sides.push(lever)
   }
-  const aggregate=combineLevers(levers)
+  const heldReverse=(liftsRead.has('reverse')&&down('reverse'))||(liftsRead.has('reverse2')&&down('reverse2'))
   if(levers.length){
-    // Reverse depth is only a thrust command where there are reversers to deploy, on the ground; anywhere else the lever's reverse zone is idle.
-    const hw=aggregate.reverse&&!(aircraft.P.reversers&&aircraft.data.onGround)?0:aggregate.power
+    // Reverse depth is only a thrust command where there are reversers to deploy, on the ground; anywhere else a lever's
+    // reverse range is idle. Each side is its own: one lever in reverse and the other forward is differential, not idle.
+    const groundReverse=!!aircraft.P.reversers&&aircraft.data.onGround
+    const side=(l:ReturnType<typeof leverWithReverse>)=>({power:l.reverse&&!groundReverse?0:l.power,reverse:l.reverse&&groundReverse})
+    const L=side(sides[0]??sides[1]!),R=side(sides[1]??sides[0]!)
+    const hw=(L.power+R.power)/2
     // A/T engaged: an unmotorized hardware lever must not fight the servo —
     // it takes over (and disconnects the A/T) only when actually moved.
-    if(!autothrottle.engaged||!Number.isFinite(atHwRef)||Math.abs(hw-atHwRef)>0.04||aggregate.reverse){c.throttle=hw;atHwRef=hw}
-  }else atHwRef=NaN
-  const heldReverse=(liftsRead.has('reverse')&&down('reverse'))||(liftsRead.has('reverse2')&&down('reverse2'))
-  const ownsReverse=aggregate.reverse||aggregate.mixed||heldReverse
-  if(aircraft.P.reversers && (ownsReverse||hardwareReverseOwned))aircraft.reverseCmd=ownsReverse?aggregate.reverse&&!aggregate.mixed || heldReverse&&!aggregate.mixed:keyboardReverse
+    if(!autothrottle.engaged||!Number.isFinite(atHwRef)||Math.abs(hw-atHwRef)>0.04||L.reverse||R.reverse){
+      c.throttle=hw;atHwRef=hw
+      aircraft.throttleSplit={left:L.power,right:R.power,reverseLeft:L.reverse,reverseRight:R.reverse}
+    }else aircraft.throttleSplit=null
+  }else{atHwRef=NaN;aircraft.throttleSplit=null}
+  const leverReverse=levers.some(l=>l.reverse)
+  const ownsReverse=leverReverse||heldReverse
+  if(aircraft.P.reversers && (ownsReverse||hardwareReverseOwned))aircraft.reverseCmd=ownsReverse?true:keyboardReverse
   hardwareReverseOwned=ownsReverse
   const jm=joyRead('mixture');if(jm!==null)c.mixture=calibratedUnipolar(jm,gamepadMap.mixture)
   const jb=joyRead('brakes');if(jb!==null)c.brakeLeft=c.brakeRight=Math.max(c.brakeLeft,calibratedUnipolar(jb,gamepadMap.brakes))
@@ -2931,6 +2940,8 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
   // inboard/outboard onto them); turboprops share the one engine model.
   const running: boolean[] = Array.from({ length: engineCount }, (_, i) => (P.jet ? (i < Math.ceil(engineCount / 2) ? captainSystems.engine1Running : captainSystems.engine2Running) : aircraft.engineRunning))
   const n1 = d.n1Pct, ffPer = (aircraft.prop.fuelFlowKgS * 3600) / Math.max(1, running.filter(Boolean).length)
+  // Each engine reads its own side's N1 (differential thrust, an engine out): 1 / 2 on twins, inboard + outboard per side on quads.
+  const n1Of = (i: number): number => (P.jet ? d.n1SidesPct[i < Math.ceil(engineCount / 2) ? 0 : 1] : n1)
   const jet = P.jet
   const tatC = (oatC + 273.15) * (1 + 0.2 * mach * mach) - 273.15
   // Turboprop engine display: torque % (shaft power over prop speed) and NP.
@@ -2944,10 +2955,10 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
         labels: { primary: 'TRQ', secondary: 'NP', secondaryMax: 110, secondaryRed: 104 },
       }
     : {
-        n1Pct: running.map((r) => (r ? n1 : 0)),
+        n1Pct: running.map((r, i) => (r ? n1Of(i) : 0)),
         n1RedlinePct: jet?.n1MaxPct ?? 104,
         n1CommandPct: jet ? jet.n1IdlePct + aircraft.controls.throttle * (jet.n1MaxPct - jet.n1IdlePct) : 0,
-        egtC: running.map((r) => egtFromN1(r ? n1 : 0, oatC)),
+        egtC: running.map((r, i) => egtFromN1(r ? n1Of(i) : 0, oatC)),
         ffKgH: running.map((r) => (r ? ffPer : 0)),
         fuelKg: [fuelState.leftKg, fuelState.rightKg], tatC,
         reverse: aircraft.reversePos > 0.05,
@@ -3334,7 +3345,7 @@ function advanceFrame(elapsed: number, now: number): void {
           else if(ab.phase==='active'&&lastAutobrakePhase==='armed')toast(ab.setting==='rto'?'AUTOBRAKE RTO — MAXIMUM BRAKING':`AUTOBRAKE ${ab.setting.toUpperCase()} — BRAKING`)
           lastAutobrakePhase=ab.phase
         }}
-      if(aircraft.P.jet){aircraft.jetPowerFactor=captainSystems.enginePowerFraction;aircraft.engineRunning=captainSystems.enginePowerFraction>0}
+      if(aircraft.P.jet){aircraft.jetPowerFactor=captainSystems.enginePowerFraction;aircraft.jetSidePower=[captainSystems.engine1Running?1:0,captainSystems.engine2Running?1:0];aircraft.engineRunning=captainSystems.enginePowerFraction>0}
       stepEngineStart(engineStartState, dt, {
         masterBattery: systemsControls.masterBattery,
         starterEngaged: systemsControls.starterEngaged,
@@ -3464,6 +3475,8 @@ function advanceFrame(elapsed: number, now: number): void {
     rudderTrim: captainSystems.rudderTrim,
     gearPos: aircraft.gearPos,
     reverseFrac: aircraft.reversePos,
+    reverseSides: aircraft.reversePosSides,
+    ...(aircraft.P.jet ? { engineCount: aircraft.P.jet.engines } : {}),
   })
 
   if (cockpitLayout === 'boeingNG') {
@@ -3869,7 +3882,13 @@ function advanceFrame(elapsed: number, now: number): void {
       ...(apState.masterEnabled && apTargets.altitudeBugFt > 0 ? { selAltFt: apTargets.altitudeBugFt } : {}),
       baroInHg: baroSetInHg,
       verticalSpeedFpm: f.verticalSpeedFpm,
-      engines: hasEngine ? Array.from({ length: nEng }, () => ({ lever, value: power, redline })) : [],
+      engines: hasEngine ? Array.from({ length: nEng }, (_, i) => {
+        // Differential thrust: a jet's engines on each side show that side's lever and N1.
+        if (!P.jet) return { lever, value: power, redline }
+        const k = i < Math.ceil(nEng / 2) ? 0 : 1, split = aircraft.throttleSplit
+        const sideLever = split && Math.abs((split.left + split.right) / 2 - aircraft.controls.throttle) < 0.02 ? (k === 0 ? split.left : split.right) * 100 : lever
+        return { lever: sideLever, value: f.n1SidesPct[k], redline }
+      }) : [],
       ...(hasEngine ? { fuelPct: Math.min(100, Math.max(0, (aircraft.fuelKg / Math.max(1, P.fuelCapacityKg)) * 100)) } : {}),
       aoaDeg: f.alphaDeg,
       aoaStallDeg: stallDeg,
@@ -3990,6 +4009,8 @@ Object.assign(window as unknown as Record<string, unknown>, {
       pitch: aircraft.data.pitchDeg,
       roll: aircraft.data.rollDeg,
       gnd: aircraft.data.onGround,
+      // Differential thrust: each engine side's N1, thrust, reverser sleeves and lever.
+      n1Sides: [...aircraft.data.n1SidesPct], thrustSides: [...aircraft.thrustSidesN], reverseSides: [...aircraft.reversePosSides], split: aircraft.throttleSplit,
       crashed: aircraft.crashed,
       throttle: aircraft.controls.throttle,
       trim: aircraft.controls.trim,
