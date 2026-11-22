@@ -144,7 +144,7 @@ describe('jet/retract/Mach plumbing (11e, synthetic jet)', () => {
     expect(cdFast - cdSlow).toBeGreaterThan(0.005) // 18·(0.04)² ≈ 0.029 minus PG-induced shifts
   })
 
-  it('a dead jet windmills as drag (negative thrust), and belly contact crashes', () => {
+  it('a dead jet windmills as drag (negative thrust), and belly contact is a belly landing, not a stop', () => {
     const ac = jetAt(60_000)
     const tas = 200 * KT
     const altM = 3000 * FT
@@ -155,12 +155,14 @@ describe('jet/retract/Mach plumbing (11e, synthetic jet)', () => {
     ac.engineRunning = false
     for (let i = 0; i < 2 * 120; i++) ac.step(DT)
     expect(ac.data.thrustN).toBeLessThan(0)
-    // Belly contact gear-up = crash (recorded simplification).
+    // Belly contact gear-up is a belly landing, held at the surface and sliding; the sim does not stop (user request).
     const ac2 = jetAt(60_000)
     ac2.gearPos = 0
     ac2.gearDownCommanded = false
     ac2.applyTrimState(80, 0.05, 1, 0, 0, 0, 0.3, 40)
-    for (let i = 0; i < 3 * 120 && !ac2.crashed; i++) ac2.step(DT)
-    expect(ac2.crashed).toBe(true)
+    for (let i = 0; i < 3 * 120; i++) ac2.step(DT)
+    expect(ac2.crashed).toBe(false)
+    expect(ac2.lastImpact?.kind).toBe('belly')
+    expect(ac2.data.onGround).toBe(true)
   })
 })

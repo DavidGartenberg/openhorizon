@@ -262,6 +262,8 @@ export class Aircraft {
     this.reverseCmd = false
     this.reversePos = 0
     this.reversePosSides[0] = this.reversePosSides[1] = 0
+    this.inHardContact = false
+    this.lastImpact = null
     this.throttleSplit = null
     for(const key of Object.keys(this.appliedControlSurfaces) as Array<keyof typeof this.appliedControlSurfaces>)this.appliedControlSurfaces[key]=0
     this.alphaDotFilt = 0
@@ -272,8 +274,14 @@ export class Aircraft {
     this.data.verticalSpeedFpm = 0
   }
 
-  /** Set on structural-impact or numeric blowup; freezes physics until reset. */
+  /** Set only on a numeric blowup or an absurd ground speed; freezes physics until reset. Hitting the ground hard never does:
+   *  the pilot asked for the sim to keep going (see lastImpact). */
   crashed = false
+  /** Hard ground contacts so far (a strut driven past its travel, or the belly on the ground with the gear up), and the latest
+   *  one with its sink rate: reported to the pilot, never a stop. */
+  impactCount = 0
+  lastImpact: { kind: 'hard' | 'belly'; fpm: number } | null = null
+  private inHardContact = false
 
   step(dt: number): void {
     if (this.crashed) return
@@ -460,15 +468,15 @@ export class Aircraft {
       this.moment.y += this.gearOut.moment.y
       this.moment.z += this.gearOut.moment.z
     } else {
-      // Gear not down: no wheel forces. Surface contact gear-up is a crash
-      // (no belly-slide model — honest simplification, recorded).
+      // Gear not down: no wheel forces. Surface contact gear-up is a belly landing: held at the surface and sliding on
+      // friction (a simple model: no damage, no fire).
       this.gearOut.onGround = false
       this.gearOut.maxCompressionM = 0
       // Belly height, not CG height: a heavy's CG sits metres above its
       // skin, so the old 0.3 m CG test let it sink visibly through the
       // runway before "crashing". Belly ≈ 45% of the main-gear leg below
       // the origin (737: 1.28 m vs 2.9 m legs).
-      if (ai.heightAglM < Math.max(this.P.gear.mainL.z * 0.45, 0.3)) this.crashed = true
+      // On the belly the airplane is held at the surface and slides (below, after the integration); it is not a stop.
     }
 
     // ---- gravity ----
@@ -499,8 +507,40 @@ export class Aircraft {
     this.posNed.y += this.velNed.y * dt
     this.posNed.z += this.velNed.z * dt
 
-    // Crash guard: structural impact (deep gear strike / absurd ground
-    // speed) or numeric blowup freezes the sim honestly instead of exploding.
+    // ---- hard ground contact: the sim keeps going ----
+    // A strut pushed past its travel (a very hard landing) or the belly on the ground (gear up): the airplane is held at the
+    // surface and the part of the descent the gear could not absorb is taken out (an inelastic stop), and on its belly it
+    // slides on friction. It is counted and reported (lastImpact), never frozen.
+    {
+      const STRUT_TRAVEL_M = 0.45
+      let floorM = 0
+      let kind: 'hard' | 'belly' | null = null
+      if (this.gearPos > 0.95) {
+        const pen = this.gearOut.maxCompressionM + Math.max(this.velNed.z, 0) * dt
+        if (this.gearOut.maxCompressionM > 0 && pen > STRUT_TRAVEL_M) { floorM = pen - STRUT_TRAVEL_M; kind = 'hard' }
+      } else {
+        const bellyM = Math.max(this.P.gear.mainL.z * 0.45, 0.3)
+        const h = -this.posNed.z - this.safeGroundElev(this.posNed.x, this.posNed.y)
+        if (h < bellyM) { floorM = bellyM - h; kind = 'belly' }
+      }
+      if (kind) {
+        if (!this.inHardContact) { this.impactCount++; this.lastImpact = { kind, fpm: Math.max(this.velNed.z, 0) * 196.850394 } }
+        this.inHardContact = true
+        this.posNed.z -= floorM
+        if (this.velNed.z > 0) this.velNed.z = 0
+        if (kind === 'belly') {
+          const h = Math.hypot(this.velNed.x, this.velNed.y), dv = 0.5 * G * dt
+          const keep = h > dv ? (h - dv) / h : 0
+          this.velNed.x *= keep; this.velNed.y *= keep
+          this.rates.x *= 0.9; this.rates.y *= 0.9; this.rates.z *= 0.95
+          this.gearOut.onGround = true
+        }
+        qrotateInv(this.velBody, this.quat, this.velNed)
+      } else this.inHardContact = false
+    }
+
+    // Crash guard: an absurd ground speed on the wheels or a numeric blowup freezes the sim honestly instead of exploding. A
+    // hard touchdown no longer does (held at the surface above).
     const finite =
       isFinite(this.posNed.x + this.posNed.y + this.posNed.z) &&
       isFinite(this.velBody.x + this.velBody.y + this.velBody.z) &&
@@ -509,9 +549,7 @@ export class Aircraft {
     // 105 m/s ≈ 204 kt GS on wheels: past every fleet tire limit (B737
     // Vtire 195 kt) yet clear of every legitimate rotation/touchdown.
     // The old C172-era 75 m/s froze 737 takeoffs mid-roll at ~140 KIAS.
-    const impact =
-      this.gearOut.maxCompressionM > 0.45 ||
-      (this.gearOut.onGround && Math.hypot(this.velNed.x, this.velNed.y, this.velNed.z) > 105)
+    const impact = this.gearOut.onGround && this.gearPos > 0.95 && Math.hypot(this.velNed.x, this.velNed.y, this.velNed.z) > 105
     if (!finite || impact) {
       this.crashed = true
       v3set(this.velBody, 0, 0, 0)

@@ -114,6 +114,7 @@ import { WorldFrame, TileManager } from './world/tiles'
 import { Airports, type AirportData, type RunwayData } from './world/airports'
 import { makeElectricalState, stepElectrical } from './sim/systems/electrical'
 import { c172WeightBalance, C172S_ENVELOPE } from './sim/weight-balance'
+import { pilotBindings } from './sim/pilot-bindings'
 import { applyDeadzone, leverWithReverse, throttleCalibration, leverReversesByTravel, parseGamepadMap, serializeGamepadMap, tcaPresetFor, HELD_ALIASES, readAxis, readButton, readAlias, calibratedUnipolar, mergePreset, type BindableAxis, type BindableButton, type GamepadMap } from './sim/gamepad-map'
 import { ControllerPanel } from './ui/controller-panel'
 import { ControllerRuntime } from './input/controller-runtime'
@@ -761,6 +762,8 @@ function cycleAutobrake(dir: 1 | -1): void {
 }
 const controllerRuntime = new ControllerRuntime()
 let keyboardReverse = false
+/** Hard ground contacts already reported to the pilot (Aircraft.impactCount). */
+let reportedImpacts = 0
 /** The gear lever's last read position (true = DOWN), null until it has been read. */
 let gearLeverPrev: boolean | null = null
 let hardwareReverseOwned = false
@@ -1322,10 +1325,11 @@ function restoreSimInputIfNoEditorFocused(): void {
 // brakes max-combined with the B key). Capture convention: move the
 // axis to the function's POSITIVE extreme — that direction becomes +1,
 // so inverted hardware never needs a checkbox.
-let gamepadMap: GamepadMap = {}
+// With nothing saved in this browser (a new address, cleared site data), start from the pilot's own saved bindings.
+let gamepadMap: GamepadMap = pilotBindings()
 try {
   const storedJoy = localStorage.getItem('oh-gamepad-map')
-  if (storedJoy) gamepadMap = parseGamepadMap(storedJoy) ?? {}
+  if (storedJoy) gamepadMap = parseGamepadMap(storedJoy) ?? pilotBindings()
 } catch { /* private mode */ }
 const controllerPanel = new ControllerPanel(()=>gamepadMap, map=>{gamepadMap=map;saveJoyMap();controllerRuntime.reset()},()=>{clearControllerTransient();voicePtt?.reset();shell?.open('controls')})
 let lastPadIdentity = ''
@@ -1886,6 +1890,12 @@ function updateRecorder(ll: { lat: number; lon: number }): void {
     // nearest TOWERED airport and logged 'KSFO' for a KHAF departure).
     flightFrom = airports.nearestField(ll.lat, ll.lon, 5000)?.i ?? spawnDesc.split(' ')[0] ?? '?'
     debriefLine = ''
+  }
+  // A hard ground contact keeps the sim running (the pilot asked for that): it is only reported.
+  if (aircraft.impactCount !== reportedImpacts) {
+    reportedImpacts = aircraft.impactCount
+    const hit = aircraft.lastImpact
+    if (hit) toast(hit.kind === 'belly' ? 'BELLY LANDING — gear up' : `HARD LANDING — ${Math.round(hit.fpm)} fpm`)
   }
   if (!lastOnGround && d.onGround && flightStartSimS !== null && !aircraft.crashed) {
     const near = nearestRunwayRef(ll.lat, ll.lon, aircraft.data.headingDeg)
