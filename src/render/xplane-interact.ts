@@ -14,15 +14,18 @@ import type { Obj8Manip } from './xplane-obj8'
  */
 
 export type XpAction =
+  | { kind: 'localizer' }
   | { kind: 'ap'; button: 'ap' | 'hdg' | 'nav' | 'apr' | 'alt' | 'vs' | 'flc' }
   | { kind: 'speed' }
   | { kind: 'disengage' }
   | { kind: 'apTurn'; knob: 'heading' | 'altitude' | 'ias' | 'vs'; steps: number }
   | { kind: 'atSwitch'; arm: boolean }
+  | { kind: 'atToggle' }
   | { kind: 'atDisconnect' }
   | { kind: 'flaps'; steps: number }
   | { kind: 'gear' }
   | { kind: 'speedbrake' }
+  | { kind: 'armSpeedbrake' }
   | { kind: 'parking' }
   | { kind: 'autobrake'; steps: number }
   | { kind: 'landingLights' }
@@ -68,6 +71,9 @@ const PRESS_BUTTONS: Record<string, XpAction> = {
   'laminar/B738/autopilot/disconnect_toggle': { kind: 'disengage' },
   'laminar/B738/autopilot/capt_autothro_disco_press': { kind: 'atDisconnect' },
   'laminar/B738/autopilot/fo_autothro_disco_press': { kind: 'atDisconnect' },
+  'laminar/A333/autopilot/a_thr_toggle': { kind: 'atToggle' },
+  'laminar/A333/autopilot/a_thr_off_eng1': { kind: 'atDisconnect' },
+  'laminar/A333/autopilot/a_thr_off_eng2': { kind: 'atDisconnect' },
   'sim/flight_controls/park_brake_valve_toggle': { kind: 'parking' },
   // ---- the light airplanes' panels (X-Plane's stock commands)
   'sim/flight_controls/brakes_toggle_max': { kind: 'parking' },
@@ -96,6 +102,7 @@ const PRESS_BUTTONS: Record<string, XpAction> = {
 
 /** Knob command pairs, first = up/clockwise, second = down/counter-clockwise. */
 const KNOBS: Array<[string, (steps: number) => XpAction]> = [
+  ['laminar/A333/switch/parking_brake_right', () => ({ kind: 'parking' })],
   ['sim/autopilot/heading_up', (steps) => ({ kind: 'apTurn', knob: 'heading', steps })],
   ['sim/autopilot/altitude_up', (steps) => ({ kind: 'apTurn', knob: 'altitude', steps })],
   ['sim/autopilot/airspeed_up', (steps) => ({ kind: 'apTurn', knob: 'ias', steps })],
@@ -136,10 +143,11 @@ export const dragControlOf = (m: Obj8Manip): DragControl | null => (m.type === '
 const wheelSteps = (wheel: number): number => -Math.sign(wheel) * Math.max(1, Math.round(Math.abs(wheel)))
 
 /** What clicking (or wheeling over) this manipulator does in this simulator. */
-export function xpActionFor(m: Obj8Manip, press: XpPress): XpAction {
+export function xpActionFor(m: Obj8Manip, press: XpPress, family: 'boeing' | 'airbus' = 'boeing'): XpAction {
   const unsimulated: XpAction = { kind: 'unsimulated', tooltip: m.tooltip || m.commands[0] || m.datarefs[0] || 'control' }
   const cmd = m.commands[0] ?? ''
   const dr = m.datarefs[0] ?? ''
+  if (family === 'airbus' && cmd === 'sim/autopilot/NAV') return { kind: 'localizer' }
   switch (m.type) {
     case 'noop': return { kind: 'none' }
     case 'command':
@@ -159,6 +167,12 @@ export function xpActionFor(m: Obj8Manip, press: XpPress): XpAction {
       if (cmd === 'sim/autopilot/autothrottle_arm') return { kind: 'atSwitch', arm: press.upper }
       if (cmd === 'sim/autopilot/vertical_speed_down') return { kind: 'apTurn', knob: 'vs', steps: press.upper ? -1 : 1 }
       if (cmd === 'sim/autopilot/vertical_speed_up') return { kind: 'apTurn', knob: 'vs', steps: press.upper ? 1 : -1 }
+      if (cmd === 'laminar/A333/autopilot/heading_knob_push') return { kind: 'ap', button: press.upper ? 'nav' : 'hdg' }
+      // Selected (pulled) modes have equivalents here. Managed vertical/speed
+      // scheduling is not implemented, so pushing those knobs remains explicit INOP.
+      if (cmd === 'laminar/A333/autopilot/altitude_knob_push' && !press.upper) return { kind: 'ap', button: 'flc' }
+      if (cmd === 'laminar/A333/autopilot/vertical_knob_push' && !press.upper) return { kind: 'ap', button: 'vs' }
+      if (cmd === 'laminar/A333/autopilot/speed_knob_push' && !press.upper) return { kind: 'speed' }
       if (GA_SWITCHES[cmd]) return { kind: 'gaSwitch', id: GA_SWITCHES[cmd], on: press.upper }
       if (cmd === 'sim/lights/landing_lights_on') return { kind: 'landingLights' }
       return unsimulated
@@ -168,17 +182,18 @@ export function xpActionFor(m: Obj8Manip, press: XpPress): XpAction {
       return unsimulated
     case 'drag_rotate': {
       if (dragControlOf(m)) return { kind: 'none' }        // held-drag levers act while the button is down, not on the click itself
-      if (dr === 'sim/cockpit2/controls/flap_ratio') {
+      if (dr === 'sim/cockpit2/controls/flap_ratio' || dr === 'sim/cockpit2/controls/flap_handle_request_ratio') {
         // The lever moves down to extend: the lower half and scrolling down give a gate more flap.
         if (press.wheel) return { kind: 'flaps', steps: Math.sign(press.wheel) * Math.max(1, Math.round(Math.abs(press.wheel))) }
         return { kind: 'flaps', steps: press.upper ? -1 : 1 }
       }
       if (dr === 'sim/cockpit2/controls/gear_handle_animation') return { kind: 'gear' }
-      if (dr === 'laminar/B738/flt_ctrls/speedbrake_lever') return { kind: 'speedbrake' }
+      if (dr === 'laminar/B738/flt_ctrls/speedbrake_lever' || dr === 'sim/cockpit2/controls/speedbrake_ratio') return { kind: 'speedbrake' }
       return unsimulated
     }
     case 'drag_axis':
       if (dragControlOf(m)) return { kind: 'none' }        // a throttle or mixture plunger follows the pointer while held
+      if (dr === 'sim/cockpit2/controls/speedbrake_ratio') return { kind: 'armSpeedbrake' }
       // A light airplane's flap lever slides: the lower half and scrolling down give a notch more flap.
       if (dr === 'sim/cockpit2/controls/flap_ratio') return { kind: 'flaps', steps: press.wheel ? Math.sign(press.wheel) * Math.max(1, Math.round(Math.abs(press.wheel))) : press.upper ? -1 : 1 }
       return unsimulated
@@ -247,19 +262,19 @@ export class XpInteraction {
   }
 
   /** One frame: returns the hovered control and the actions for presses and wheel turns on it. */
-  update(p: XpPointer, hits: readonly THREE.Object3D[]): { hover: XpHover | null; actions: XpAction[] } {
+  update(p: XpPointer, hits: readonly THREE.Object3D[], family: 'boeing' | 'airbus' = 'boeing'): { hover: XpHover | null; actions: XpAction[] } {
     const hover = this.pick(p, hits)
     const actions: XpAction[] = []
     if (p.pressed && hover) {
       this.grabbed = hover
       this.dragLastY = p.y
-      actions.push(xpActionFor(hover.manip, this.half(p, hover.mesh)))
+      actions.push(xpActionFor(hover.manip, this.half(p, hover.mesh), family))
     } else if (this.grabbed && p.down && dragControlOf(this.grabbed.manip)) {
       const dy = p.y - this.dragLastY
       this.dragLastY = p.y
       if (dy !== 0) actions.push({ kind: 'drag', control: dragControlOf(this.grabbed.manip)!, dyPx: dy })
     } else if (p.wheel !== 0 && hover) {
-      actions.push(xpActionFor(hover.manip, { ...this.half(p, hover.mesh), wheel: p.wheel }))
+      actions.push(xpActionFor(hover.manip, { ...this.half(p, hover.mesh), wheel: p.wheel }, family))
     }
     if (p.released || !p.down) this.grabbed = null
     return { hover, actions: actions.filter((a) => a.kind !== 'none') }

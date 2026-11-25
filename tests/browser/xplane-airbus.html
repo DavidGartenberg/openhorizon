@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenHorizon Airbus deck QA</title>
+  <style>
+    body{margin:0;background:#142131;color:#f1f7fc;font:15px system-ui}
+    header{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px;background:#182535}
+    select,button{font:inherit} output{min-width:12em} canvas{display:block;width:100vw;height:calc(100vh - 63px)}
+  </style>
+</head>
+<body>
+  <header>
+    <strong>Airbus deck QA</strong>
+    <label>Variant <select id="variant"><option>A333</option><option>A320</option><option>A388</option></select></label>
+    <button id="load">Load cockpit</button>
+    <button id="night" disabled>Toggle night</button>
+    <button id="panel" disabled>Toggle panel view</button>
+    <output id="status" aria-live="polite">Ready</output>
+  </header>
+  <div id="viewport"></div>
+  <script type="module" src="./xplane-airbus.ts"></script>
+</body>
+</html>

@@ -1,5 +1,10 @@
 # Phase 4 acceptance verification report
 
+> Historical initial acceptance attempt. Its blocked finding predates the
+> [later four-round fix](phase-4-autopilot-oscillation-fix-report.md) and current
+> regression coverage. For the present checkout and verified limitations, start
+> with [CURRENT-STATE](../CURRENT-STATE.md); retain this report as failure evidence.
+
 Verified against commit `0d2cfe1` (Phase 4 Task 6 fix, the most recent commit at the
 time of this session). This is a verification-only pass: no `src/`, `tests/`, or config
 files were modified. Driven via `npm run dev:client` (Vite, port 5173; `/api/*` served

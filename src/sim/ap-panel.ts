@@ -174,6 +174,20 @@ export function pressApr(p0: ApPanel, s: ApSnapshot, a: ApAvailability): ApResul
   return { panel: p, message: a.gs ? 'APPROACH ARMED — LOC + GS' : 'APPROACH — LOC ONLY' }
 }
 
+/** LOC uses the angular approach law without arming/capturing glideslope.
+ * Selecting LOC after a coupled descent holds the current vertical speed. */
+export function pressLoc(p0: ApPanel, s: ApSnapshot, a: ApAvailability): ApResult {
+  const p = clone(p0)
+  if (p.master && a.loc && p.vertical === 'GS') {
+    // Re-select the approach lateral law as LOC-only after dropping glideslope.
+    p.lateral = 'ROL'
+    p.vertical = 'VS'
+    p.sel.vsFpm = round100(s.verticalSpeedFpm)
+    p.autoland = false
+  }
+  return pressApr(p, s, { ...a, gs: false })
+}
+
 /** LAND: one press arms the whole autoland — engages the autopilot if it is
  *  off, arms the localizer and glideslope, and arms the flare / rollout. A
  *  second press cancels autoland and leaves the approach flying. */

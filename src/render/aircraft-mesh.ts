@@ -9,6 +9,7 @@ import { tailFlagMaterial } from './jet-finish'
 import { buildJetShell } from './jet-shell'
 import { buildDetailedCub } from './cub-mesh'
 import { createHingeFrame, attachSkin, type HingeFrame } from './procedural-surfaces'
+import { markBoeingNacelle, markBoeingSurface, markBoeingWheel } from './boeing-surface-fit'
 
 /**
  * Primitive aircraft exteriors, proportioned from published dimensions
@@ -395,6 +396,7 @@ export function buildB738(): AircraftMesh {
     const chordAt = (fy: number): number => rootChord - (rootChord - tipChord) * (fy - y0) / (y1 - y0)
     const teX = (fy: number): number => 3.1 - Math.tan(0.436) * (fy - y0) - chordAt(fy)
     const panel = taperedPanel(3.1, rootChord, 3.1 - Math.tan(0.436) * (y1 - y0), tipChord, side * y0, side * y1, 0.3, BELLY)
+    markBoeingSurface(panel,'wing',side)
     panel.position.y = -1.25 // low wing: plane near the belly line
     wingGroup.add(panel)
     // Blended winglet: a 2.4 m blade standing at the tip, canted ~15° out.
@@ -414,6 +416,7 @@ export function buildB738(): AircraftMesh {
     const wlGeo = new THREE.ExtrudeGeometry(wlShape, { depth: 0.1, bevelEnabled: false })
     wlGeo.rotateY(-Math.PI / 2) // (x,y,z)→(−z,y,x): thickness, height ↑, chord
     const wl = new THREE.Mesh(wlGeo, BELLY)
+    markBoeingSurface(wl,'winglet',side,'box')
     wl.castShadow = true
     wl.position.set(side * 16.55, -1.25, 0)
     wl.rotation.z = side * -0.26 // ~15° outward cant
@@ -437,6 +440,7 @@ export function buildB738(): AircraftMesh {
       const leX = teX(fy0) + chord * 0.9
       placeBody(pivot, leX, 0, 1.05)
       const flap = taperedPanel(0, chord, teX(fy1) - teX(fy0), chord * 0.85, side * fy0, side * fy1, 0.16, SURFACE)
+      markBoeingSurface(flap,'flap',side)
       flap.position.y = -0.30 // real clearance below the wing skin (N5)
       pivot.add(flap)
       // Aft canoe halves ride the flap (split-fairing realism).
@@ -473,6 +477,7 @@ export function buildB738(): AircraftMesh {
       const leX = 3.1 - Math.tan(0.436) * (sy - 1.7) - 4.0
       placeBody(pivot, leX, side * sy, 0.88)
       const panel = new THREE.Mesh(new THREE.BoxGeometry(8.6, 0.05, 0.9), SURFACE)
+      markBoeingSurface(panel,'spoiler',side,'box')
       panel.position.set(0, 0.09, 0.45) // clear of the wing top skin (N5)
       panel.castShadow = true
       pivot.add(panel)
@@ -482,6 +487,7 @@ export function buildB738(): AircraftMesh {
 
     // ---- engines: CFM pods slung forward and below on pylons ----
     const engine=buildTurbofan(1.34,4.5,WHITE)
+    markBoeingNacelle(engine,side)
     engine.scale.y=.92
     add(engine,4.475,side*5.75,1.15)
     reverserSleeves.push(engine.userData.reverserSleeve as THREE.Mesh)
@@ -492,6 +498,7 @@ export function buildB738(): AircraftMesh {
 
   // ---- empennage: swept fin to 12.55 m, swept stabs ----
   const fin = taperedPanel(-12.6, 6.4, -18.8, 1.9, 0, 7.7, 0.26, WHITE)
+  markBoeingSurface(fin,'fin',1)
   // +π/2 stands the span UP — the original −π/2 pointed it down into the
   // belly; the "fin" every screenshot showed was just the red flash box
   // at the fin-top position (user: "make the tail upright").
@@ -501,6 +508,7 @@ export function buildB738(): AircraftMesh {
   fin.material = tailFlagMaterial()
   for (const side of [-1, 1]) {
     const stab = taperedPanel(-15.6, 3.4, -18.9, 1.2, side * 0.4, side * 7.2, 0.16, BELLY)
+    markBoeingSurface(stab,'stabilizer',side)
     stab.position.y = 0.9
     g.add(stab)
   }
@@ -528,6 +536,7 @@ export function buildB738(): AircraftMesh {
     grp.add(strut)
     for (const wy of isNose ? [-0.25, 0.25] : [-0.3, 0.3]) {
       const wheel = mkWheel(r, 0.34)
+      markBoeingWheel(wheel)
       wheel.position.set(wy, -(1.9 - r), 0)
       grp.add(wheel)
     }

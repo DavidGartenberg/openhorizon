@@ -354,7 +354,9 @@ export interface BoeingNdInput {
   glideRingNm?: number
 }
 
-export function drawBoeingNd(c: Ctx, S: number, d: BoeingNdInput): void {
+export function drawBoeingNd(c: Ctx, S: number, d: BoeingNdInput, style: 'boeing' | 'airbus' = 'boeing'): void {
+  const activeRoute = style === 'airbus' ? C.green : C.magenta
+  const selectedHeading = style === 'airbus' ? C.cyan : C.magenta
   const k = S / 768
   c.fillStyle = C.black
   c.fillRect(0, 0, S, S)
@@ -410,14 +412,14 @@ export function drawBoeingNd(c: Ctx, S: number, d: BoeingNdInput): void {
     if (i > 0) {
       const q = d.route[i - 1]!
       const [qx, qy] = toXY(q.nN, q.nE)
-      c.strokeStyle = p.active ? C.magenta : C.white; c.lineWidth = 3 * k
+      c.strokeStyle = p.active ? activeRoute : C.white; c.lineWidth = 3 * k
       c.beginPath(); c.moveTo(qx, qy); c.lineTo(x, y); c.stroke()
     }
-    c.strokeStyle = p.active ? C.magenta : C.white; c.lineWidth = 2 * k
+    c.strokeStyle = p.active ? activeRoute : C.white; c.lineWidth = 2 * k
     c.beginPath()
     for (let j = 0; j < 8; j++) { const r = j % 2 ? 4 * k : 11 * k, a = (j * Math.PI) / 4; j ? c.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r) : c.moveTo(x + r, y) }
     c.closePath(); c.stroke()
-    txt(c, p.id, x + 14 * k, y - 12 * k, 17 * k, p.active ? C.magenta : C.white, 'left')
+    txt(c, p.id, x + 14 * k, y - 12 * k, 17 * k, p.active ? activeRoute : C.white, 'left')
   }
   // Traffic (TCAS symbology).
   for (const t of d.traffic) {
@@ -437,7 +439,7 @@ export function drawBoeingNd(c: Ctx, S: number, d: BoeingNdInput): void {
     c.beginPath(); c.moveTo(ox, oy); c.lineTo(ox + Math.cos(a) * R, oy + Math.sin(a) * R); c.stroke()
     c.setLineDash([])
   }
-  line(d.selHdgDeg, C.magenta, true)
+  line(d.selHdgDeg, selectedHeading, true)
   line(d.trackDeg, C.white, false)
   c.restore()
   // Compass arc.
@@ -453,7 +455,7 @@ export function drawBoeingNd(c: Ctx, S: number, d: BoeingNdInput): void {
   }
   const sa = ((d.selHdgDeg - d.hdgDeg - 90) * Math.PI) / 180
   if (Math.abs((((d.selHdgDeg - d.hdgDeg) % 360) + 540) % 360 - 180) <= 50) {
-    c.strokeStyle = C.magenta; c.lineWidth = 3 * k
+    c.strokeStyle = selectedHeading; c.lineWidth = 3 * k
     c.beginPath(); c.rect(ox + Math.cos(sa) * R - 9 * k, oy + Math.sin(sa) * R - 6 * k, 18 * k, 12 * k); c.stroke()
   }
   // Heading box + pointer.

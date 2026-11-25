@@ -11,6 +11,7 @@ import { standardGearZ } from '../sim/aircraft/derive'
 import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
 import { createHingeFrame, attachSkin, cutSkin, type HingeFrame } from './procedural-surfaces'
 import { profiledPanelGeometry } from './aircraft-components'
+import { markBoeingNacelle, markBoeingSurface, markBoeingWheel } from './boeing-surface-fit'
 
 /**
  * Config-driven airliner exteriors (night-shift N2): the study 737's
@@ -64,6 +65,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   const R = cfg.fuseRadiusM
   const halfSpan = cfg.spanM / 2
   const sweep = (cfg.sweepDeg * Math.PI) / 180
+  const boeing = /^B[37]/.test(cfg.designator ?? '')
 
   // One fair loft from radome to tail, including any upper deck.
   const profile = cfg.profile
@@ -99,10 +101,12 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     const chordAt = (fy: number): number => rootChord - (rootChord - tipChord) * (fy - y0) / (y1 - y0)
     const teXAt = (fy: number): number => wingRootX - Math.tan(sweep) * (fy - y0) - chordAt(fy)
     const panel = taperedPanel(wingRootX, rootChord, tipLeX, tipChord, side * y0, side * y1, R * 0.16, BELLY)
+    if (boeing) markBoeingSurface(panel,'wing',side)
     panel.position.y = -wingDrop
     wingGroup.add(panel)
     if (cfg.winglet === 'raked') {
       const tip = taperedPanel(tipLeX, tipChord, tipLeX - tipChord*.65, tipChord*.18, side*y1, side*halfSpan, R*.045, BELLY)
+      if (boeing) markBoeingSurface(tip,'wing',side,'panel',false,[.9,1])
       tip.position.y = -wingDrop
       wingGroup.add(tip)
     } else if (cfg.winglet !== 'none') {
@@ -117,6 +121,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
         wlShape.closePath()
         const geo = new THREE.ExtrudeGeometry(wlShape,{depth:R*.035,bevelEnabled:false});geo.rotateY(-Math.PI/2)
         const wl = new THREE.Mesh(geo,BELLY);wl.name='winglet';wl.castShadow=true
+        if (boeing) markBoeingSurface(wl,'winglet',side,'box')
         wl.position.set(side*y1,-wingDrop,0)
         wl.rotation.z = -side * .15
         wingGroup.add(wl)
@@ -157,6 +162,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       const pivot = new THREE.Group()
       placeBody(pivot, leX, 0, wingDrop * 0.82)
       const flap = taperedPanel(0, chord, teXAt(fy1) - teXAt(fy0), chord * 0.85, side * fy0, side * fy1, R * 0.085, SURFACE)
+      if (boeing) markBoeingSurface(flap,'flap',side)
       flap.position.y = -R * 0.16
       pivot.add(flap)
       // Aft canoe halves ride the flap.
@@ -214,6 +220,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
         // were tuned for gear twice as tall — pods touched the ground).
         const engZ = wingDrop * 0.35 + engR * 0.45
         const eng = buildTurbofan(engR, engLen * .92, WHITE)
+        if (boeing) markBoeingNacelle(eng,side)
         eng.scale.y = .92
         eng.userData.jetEngine = true
         add(eng, ex, side * ey, engZ)
@@ -284,10 +291,12 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     return geo
   }
   const fin = new THREE.Mesh(restoreUv(cutSkin(finGeo, cutPlane.clone().negate())), finMat)
+  if (boeing) markBoeingSurface(fin,'fin',1)
   fin.name = 'verticalFin'
   fin.castShadow = fin.receiveShadow = true
   finGroup.add(fin)
   const rudderSkin = new THREE.Mesh(restoreUv(cutSkin(finGeo, cutPlane)), finMat)
+    if (boeing) markBoeingSurface(rudderSkin,'fin',1)
   rudderSkin.name = 'rudder'
   rudderSkin.castShadow = rudderSkin.receiveShadow = true
   finGroup.add(rudderSkin)
@@ -306,6 +315,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   const stabX = tailHeight ? finRootX-L*.065*tailHeight/.92 : -L*.36
   for (const side of [-1, 1]) {
     const stab = taperedPanel(stabX, L * 0.085, stabX - L * 0.075, L * 0.032, side * R * 0.2, side * halfSpan * 0.38, R * 0.09, BELLY)
+    if (boeing) markBoeingSurface(stab,'stabilizer',side)
     stab.position.y = -stabZ
     g.add(stab)
   }
@@ -339,6 +349,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     grp.add(strut)
     for (let axle=0;axle<leg.axles;axle++) for (const wy of leg.nose ? [-R * 0.13, R * 0.13] : [-R * 0.16, R * 0.16]) {
       const wheel = buildAircraftWheel(wheelR, R * .18)
+      if (boeing) markBoeingWheel(wheel)
       wheel.position.set(wy, -wheelArm, (axle-(leg.axles-1)/2)*wheelR*2.3)
       wheel.castShadow = true
       grp.add(wheel)

@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { withSurfaceFinish } from './material-finish'
 
 // Native model geometries are expressed in meters. Triplanar skin coordinates
 // follow each moving part, without UV seams, textures, or extra draw calls.
@@ -96,7 +97,7 @@ float skinDet = dot(skinDx, skinR1);
 vec3 skinGradient = sign(skinDet) * (dFdx(skinHeight) * skinR1 + dFdy(skinHeight) * skinR2);
 normal = normalize(abs(skinDet) * normal - skinGradient + normal * 1e-10);`)
   }
-  return material
+  return withSurfaceFinish(material, finish)
 }
 
 /** Gloss-coated painted aluminum; caller overrides are preserved. */
@@ -109,7 +110,7 @@ export function aircraftMetal(color = 0xbcc5cc, roughness = 0.24): THREE.MeshPhy
 }
 
 export function aircraftRubber(): THREE.MeshPhysicalMaterial {
-  return new THREE.MeshPhysicalMaterial({ color: 0x191c20, roughness: 0.91, metalness: 0, sheen: 0.08, sheenRoughness: 0.9 })
+  return withSurfaceFinish(new THREE.MeshPhysicalMaterial({ color: 0x191c20, roughness: 0.91, metalness: 0, sheen: 0.08, sheenRoughness: 0.9 }), 'rubber')
 }
 
 export function aircraftFabric(color: number): THREE.MeshPhysicalMaterial {

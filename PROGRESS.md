@@ -1,6 +1,53 @@
 # OpenHorizon — PROGRESS
 
-Contract: `../FLIGHT-SIM-MASTER-PROMPT.md`. One phase per session (§24).
+Contract: [docs/FLIGHT-SIM-MASTER-PROMPT.md](docs/FLIGHT-SIM-MASTER-PROMPT.md).
+Original phase workflow: one phase per session (§24).
+
+**New sessions:** read [docs/START-HERE.md](docs/START-HERE.md) and
+[docs/CURRENT-STATE.md](docs/CURRENT-STATE.md) first. This file is historical
+milestone evidence, not a fresh acceptance result. Entries are not strictly
+chronological; later work can supersede earlier limits and "next phase" directions.
+
+## Session documentation refresh — 2026-11-10
+
+- Refreshed START-HERE, CURRENT-STATE, architecture, development, README/index
+  and X-Plane integration against `7ac72cf` and the local Airbus/material work.
+  Documented frame pacing, local flight-deck ownership and controls, scaled donor
+  limits, installed airport data, streamed scenery, material quality/finish,
+  persistence keys, CI behavior and resource-bounded verification.
+- CURRENT-STATE records the published commits, local implementation, unfinished
+  Boeing artwork, native detail-decal warnings, independent review findings,
+  exact failures and next-session actions. The DG800 WIP remains preserved.
+- Fresh full working-tree run, `npm test -- --maxWorkers=2`, failed with 2,466
+  passes, 5 DG800 failures, 4 skips, an unfinished Boeing suite import failure,
+  and one unhandled Vitest worker timeout. Validation passed 547 cases with 4
+  skips. Build failed on 11 TypeScript diagnostics in those unfinished tests.
+  The full checkout requires further work.
+- PR #9 at `7ac72cf` has a successful completed Ubuntu CI check. PR #8 is
+  mergeable and subsumed by that branch. PR #6 at `3c9008b3` passes isolated clean
+  install/build, 1,181 tests with 4 skips and 547 validation cases with 4 skips.
+  PRs #6/#8 have no configured GitHub checks. No merge was performed.
+- This documentation refresh used code inspection and CLI checks. Earlier
+  Airbus diagnostic-page evidence and the remaining browser/hardware acceptance
+  limits are retained explicitly in CURRENT-STATE.
+
+## Documentation and code-health audit — 2026-10-21
+
+- Added a root AGENTS entry point, session reading order/handoff checklist,
+  current-state snapshot, architecture/code map, development/runbook and topic
+  index. Updated setup, contributor links and inconsistent voice documentation.
+- Inspected source/configuration and later reports rather than using the old
+  Phase 4 memory/handoff as today's work queue. Preserved historical reports and
+  linked the later resolutions; no new browser or whole-project acceptance claimed.
+- Fresh working-tree gates: `npm test` **1,912 passed, 5 failed, 4 skipped**
+  (145 passing files, 2 failing files); `npm run validate` **547 passed, 4 skipped**;
+  `npm run build` fails with five TS2353/TS2339 errors about `flapNeutralIndex`.
+  The failures are in two pre-existing untracked DG800 regression files, preserved
+  untouched. Exact test names, observed values, reproduction and next actions are
+  in CURRENT-STATE. The four skips are generic powered-approach cases for gliders.
+- Concurrent edits appeared in main/post-fx/sky and `public/__tmpcmp/` while this
+  audit ran; those edits were preserved and are not certified by these results.
+  This pass changed documentation only and did not open the simulator or commit.
 
 ## Commands
 
@@ -13,6 +60,11 @@ Node v24.18.0 (installed user-locally at `~/.local/node` — machine had no
 Node; add `~/.local/node/bin` to PATH).
 
 ## Phase status
+
+Historical phase milestones follow. Their completion labels do not supersede the
+current verification failures above. In particular, the old consolidated
+deviation ledger contains limits later superseded by AP/A/T/autoland, OSM,
+imagery, cockpit and voice work; consult CURRENT-STATE and owning source/reports.
 
 | Phase | Status | Notes |
 |---|---|---|
@@ -3400,3 +3452,11 @@ See `docs/atc-radio.md`. What changed:
 - `2d07a80`: a strut driven past its travel or a gear-up touchdown no longer freezes the sim: held at the surface (inelastic), belly slides on friction, toast "HARD LANDING — n fpm" / "BELLY LANDING — gear up". Only a numeric blowup or wheels past 105 m/s still freeze.
 - The pilot's bindings (read from their sim on request) are `src/sim/pilot-bindings.ts`: the start map when the browser has none, and "Restore my saved bindings" in the Controllers panel.
 - Workflow, at the pilot's request ("stop resetting my sim"): never reload or `preview_start` the pilot's localhost:5173 tab; work in a separate worktree with its own server/origin. `.claude/launch.json` now starts the sim with `OPENHORIZON_HMR=0` (no hot reload); the server running that day predates the change.
+
+### X-Plane cockpits, Boeing paint and material packs (2026-11-24)
+
+- Airbus types use the installed A330-300 flight deck: the A333 at its authored eye, other variants at their fitted position, with live OpenHorizon displays and supported controls. The geometry and display UV faces are X-Plane's; canvas instruments are recreated and are not yet pixel-identical to X-Plane's running screens. AP2 and managed speed/vertical modes remain unsupported.
+- Exact 737-800 remains the installed model. Other Boeing variants keep their own geometry and animated parts while ten surface classes receive projected local B738 texture charts. Removed procedural color, roughness and bump maps from those materials after the user reported seeing a mix. The B744 and source B738 browser views show the same American Airlines marking because it is also in the installed donor texture. Native installed-OBJ/DDS tests cover all ten chart types at 65–100% atlas coverage.
+- Added seven bounded shared material packs, Performance/High/Ultra and finish presets, plus OBJ8 normal-decal support. Core implementation tests and a quiet full committed test run pass. Browser screenshots: `/tmp/openhorizon-a333-flight.jpg`, `/tmp/openhorizon-b744-artwork-clean.jpg` and `/tmp/openhorizon-b738-source.jpg`.
+- Verification on the working tree: strict TypeScript over tracked source/tests excluding preserved DG800 WIP passed; Vite build passed with the existing 850 kB chunk warning; `npm run validate` passed 547 with 4 skips; 191 committed test files passed 2,538 with 4 skips. `npm run build` still sees five type errors in the two untracked DG800 tests. No installed X-Plane assets or derived charts are added to Git.
+- GitHub PR #9 still points at `7ac72cf`, while the local branch is at `72c033a` plus uncommitted work. The visual changes and onboarding docs have not yet been published or checked by CI. Keep the goal active until the reviewed changes are committed/pushed and the exact remote head's checks and open PRs are audited.

@@ -1,24 +1,39 @@
 # X-Plane assets in OpenHorizon
 
-The simulator reads the user's own X-Plane 12 install **at run time** and never copies any of it
-into the repository. Two read-only server routes expose it; everything else is client code.
+Source audit updated 2026-11-24 at local `72c033a` plus uncommitted aircraft,
+material and OBJ8 work. See [CURRENT-STATE](CURRENT-STATE.md) for exact checks,
+known limits and the publication queue.
+
+The simulator reads the user's X-Plane 12 installation **at run time**. The
+repository contains the loaders and mappings. The server exposes these
+read-only route families.
 
 | Route | Serves | Code |
 | --- | --- | --- |
 | `GET /xp/manifest.json`, `GET /xp/aircraft/<path>` | `.obj` `.png` `.dds` `.txt` from `Aircraft/Laminar Research/` (path-checked) | `server/xp-static.mjs` |
 | `GET /api/apt/<ICAO>.json` | one airport's real layout parsed from `Global Scenery/Global Airports/Earth nav data/apt.dat` (+ Custom Scenery packs, which override) | `server/apt.mjs`, `server/apt-parse.mjs` |
 
-`XPLANE_DIR` (the "Laminar Research" aircraft folder) and `XPLANE_ROOT` (the X-Plane root) override the
-default `/Users/davidgartenberg/X-Plane 12`. With no install, every route answers "not found" and the
-procedural airplanes, cockpit and OpenStreetMap airports stay.
+`XPLANE_DIR` sets the Laminar Research aircraft folder, defaulting to
+`/Users/davidgartenberg/X-Plane 12/Aircraft/Laminar Research`. `XPLANE_ROOT` sets
+the airport-data installation root, which otherwise derives from `XPLANE_DIR`.
+Without an install, `/xp/manifest.json` returns `available:false`, asset files
+return 404, and procedural airplanes/cockpits and airport fallbacks remain.
 
 ## What is drawn from X-Plane, and what drives it
 
-**Exteriors** (`src/render/local-aircraft.ts`, `xplane-manifest.ts`, `xplane-obj8.ts`): nine installed
-models (172, 737-800, A330-300, MD-82, SR22, Baron 58, Super Cub, ASK 21, Citation X) are exact for their types.
-`xplane-proxy.ts` picks the closest installed model, scaled to the type's real length, for every other
-flyable roster aircraft (twin-engine only) and for all traffic (`traffic-model.ts`: one load per model, shared
-geometry, gear / flaps / prop disc from observed kinematics, nearest 8 to the camera).
+**Exteriors** (`src/render/local-aircraft.ts`, `xplane-manifest.ts`, `xplane-obj8.ts`): ten installed
+models (172, 737-800, A330-300, MD-82, SR22, Baron 58, Super Cub, ASK 21, Citation X,
+King Air C90B) are exact for their types.
+`xplane-proxy.ts` selects a scaled installed donor for many other player types
+with up to two engines. Traffic also uses donor selection (`traffic-model.ts`),
+with shared geometry and gear/flap/prop appearance inferred from kinematics.
+
+The local Airbus work exempts non-A333 Airbus player types from exterior
+replacement. Their own shape remains while the flight deck uses the fitted A330
+donor. Boeing variants other than the exact 737-800 keep their geometry and
+receive projected texture charts from the installed B738. Projection replaces
+their old procedural color, roughness and bump maps on marked surfaces. Check
+`localModelFor(key).exact` and the actual upgrade path when reporting fidelity.
 
 **737 flight deck** (`xplane-cockpit.ts`, `xplane-datarefs.ts`, `xplane-panel.ts`, `xplane-interact.ts`):
 - 14 shell objects + the panel mesh `b738_cockpit.obj`, posed every frame from a *dataref reader*
@@ -38,7 +53,8 @@ holes and Bézier edges draped on the ground (rebuilt when the fine terrain has 
 taxi lights and signs, displaced thresholds, blast pads / overruns with chevrons, PAPI and windsocks, decorative parked
 airplanes at the gates, concrete versus asphalt, the taxi network (names real taxiways for ground control) and a level
 terrain area sized from X-Plane's real pavement extent. Terminals are OpenStreetMap footprints (X-Plane has none).
-Three more routes carry what the old OurAirports database gets wrong or lacks, all read from `apt.dat` and cached on disk:
+Four additional airport routes supply runway and layout data from `apt.dat`.
+The server caches derived data on disk.
 
 | Route | Serves |
 | --- | --- |
@@ -51,8 +67,9 @@ Fields below sea level keep the elevation data's negative heights as land within
 
 ## How to look at it (verification recipes)
 
-- Use a separate browser origin so the user's saved flight and settings are untouched: `http://[::1]:5173/`
-  (Vite listens on IPv6 loopback; `localhost` is the user's).
+- Start an isolated Vite server with `OPENHORIZON_HMR=0 PORT=5174 npm run dev:client`.
+  Open that port so the user's saved flight and settings are untouched. See
+  [DEVELOPMENT](DEVELOPMENT.md) for the startup checks and other ports.
 - Hooks on `window` (all verification only): `__ohXp` (status, eye), `__ohXpRead([...datarefs])` (what the deck is
   being told), `__ohXpRef(name, value)` (force one), `__ohXpPick(x, y)`, `__ohAptInfo(icao)`, `__ohAptShow`,
   `__ohAi`, `__ohLocal(lat, lon)`, `__ohPlayerPos`, `__ohFreeCam({e,u,s,yaw,pitch})`, `__ohGround(lat, lon)`,
@@ -60,10 +77,15 @@ Fields below sea level keep the elevation data's negative heights as land within
 - Analysis scripts (read the install, print facts): `scripts/xplane/list-datarefs.ts` (every dataref the cockpit
   animates), `find-screens.ts` (display openings), `audit-acf.ts` (masses and speeds versus the sim).
 
-## Cockpits across the fleet (2026-11-08)
+## Cockpits across the fleet
 
-- **Transports** (every jet and the airliner turboprops, `cockpitProfile(...).deck`) fly the X-Plane 737-800 deck. In any
-  type but the 737 it is placed at that type's own design eye and scaled to its cabin (`loadXpCockpit(..., { place })`).
+- **Airbus transports** use the installed A330-300 cockpit. The A333 uses its
+  ACF eye and native model placement. Other Airbus types keep their own exterior
+  and fit the A330 deck to cockpit width and eye-to-nose distance.
+- **Other transports at committed HEAD** (Boeing and airliner turboprops,
+  `cockpitProfile(...).deck`) use the X-Plane 737-800 deck. In any type but the
+  737 it is placed at that type's own design eye and scaled to its cabin
+  (`loadXpCockpit(..., { place })`).
 - **Light airplanes** fly an X-Plane light-airplane cockpit (`xplane-ga-cockpits.ts`): their own when X-Plane has it
   (C172 SP, SR22, Baron 58, PA-18, ASK 21, King Air C90B), else the closest by how they are flown (`gaCockpitFor`:
   gliders the ASK 21, side-yoke Cirruses the SR22, turboprops the King Air, piston twins the Baron, stick singles the
@@ -80,6 +102,39 @@ Fields below sea level keep the elevation data's negative heights as land within
 - Limits: X-Plane paints its 2D instruments into the panel art at run time, so those faces are dark here (the King Air's
   EFIS and attitude indicator, the radios' frequency windows). `C90B_lights.obj` (light points only) is left out.
 - `__ohXpHits('throttle')` lists where matching hit boxes project on screen; `__ohXpRead([...])` what the deck is told.
+
+### Airbus deck and screens
+
+`xplane-airbus.ts` routes all Airbus-labelled roster types to the installed
+A330-300 cockpit. The native A333 uses the ACF eyepoint. Other Airbus types fit
+its width and eye-to-nose distance to their own procedural exterior. Their panel
+layout remains the A330 donor layout.
+
+`XpAirbusPanel` draws into the measured 2048 × 1024 screen atlas. Main supplies
+live aircraft/AP/navigation/engine/fuel state to dedicated Airbus PFD, ND, EWD,
+systems and standby draws. The FO screens copy the captain's view. The systems
+page covers implemented fuel/configuration data. MCDU geometry currently uses
+the shared flight-information display. AP2 and managed speed/vertical schedules
+remain unsupported. Selected heading, altitude, speed and VS controls use the
+existing AP and autothrottle paths. LOC has its own localizer-only action.
+
+The screen faces and UVs are measured from the installed mesh, but dynamic
+screen graphics are OpenHorizon canvas drawings rather than X-Plane's running
+instrument pixels. They use the donor layout and integrated simulator state;
+do not claim pixel-identical instruments. AP2 and unsupported managed modes
+must remain visibly unmodeled.
+
+The local reader maps sidesticks, flap and spoiler handles, parking brake,
+throttle, FCU windows, AP/A/THR lamps and panel brightness from simulator state.
+Unsupported controls report their own name. Add mappings only when the simulator
+has the underlying state and action.
+
+`tests/browser/xplane-airbus.html` is an isolated diagnostic scene with selectable
+A333/A320/A388 placement and day/night lighting. Its display values are deterministic
+test inputs. Actual flight integration requires the main simulator scenario.
+OBJ8 authored `NORMAL_DECAL`, `NORMAL_DECAL_KEYED`, and
+`NORMAL_DECAL_PARAMS` forms are supported with bounded repeat sampling.
+Projected `NORMAL_DECAL_PARAMS_PROJ` UVs remain unsupported and warn explicitly.
 
 ## Adding things
 

@@ -1,5 +1,9 @@
 # Handoff: Phase 4 CLOSED (round 4 succeeded) → next session starts Phase 5
 
+> Historical session handoff; the “next session” queue below is superseded by
+> later implementation. Start new sessions with [START-HERE](../../START-HERE.md)
+> and [CURRENT-STATE](../../CURRENT-STATE.md), then follow the relevant evidence.
+
 Round 4 fixed the coupled-descent AP bug for real: range-normalized
 localizer tracking (`AutopilotInputs.navRangeM`), plus two app-side wiring
 defects found by independent adversarial review (sign-inverted LOC feed;

@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { applyObj8Anim, applyObj8Lights, applyObj8Visibility, loadObj8, type DatarefReader, type LightLevelGroup, type LoadedObj8 } from './xplane-obj8'
 import { disposeAircraftGeometry } from './local-aircraft'
 import { XpPanel } from './xplane-panel'
+import { XpAirbusPanel } from './xplane-airbus'
 
 /**
  * The real X-Plane 12 Boeing 737-800 flight deck, loaded at run time from the
@@ -30,6 +31,8 @@ export interface XpCockpitModel {
   cgFt: [number, number, number]
   /** Captain's eye in OBJ/ACF metres (x right, y up, z aft). */
   eyeObj: [number, number, number]
+  /** Uses the A330's authored atlas layout instead of the 737's. */
+  panelKind?: 'airbus'
   /**
    * A light airplane (xplane-ga-cockpits.ts): there is no 737 panel bitmap. Panel-texture draws show X-Plane's own
    * panel art (null: none), avionics screens show the textures given to the loader, and the objects sit at
@@ -78,6 +81,7 @@ export interface XpCockpit {
   parts: LoadedObj8[]
   /** The 737's panel bitmap behind every display and MCP window: draw into it, then commit(). Null in a light airplane. */
   panel: XpPanel | null
+  airbusPanel: XpAirbusPanel | null
   /** Invisible hit boxes of every manipulator (button, knob, switch, lever), moving with the controls they sit on. */
   hits: THREE.Mesh[]
   /** Re-pose every animated node from this reader. */
@@ -137,9 +141,12 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
   const parts: LoadedObj8[] = []
   const textureCache = new Map<string, Promise<THREE.Texture | null>>()
   const url = (rel: string): string => '/xp/aircraft/' + `${model.folder}/${rel}`.split('/').map(encodeURIComponent).join('/')
-  const panel = model.ga ? null : new XpPanel(`/xp/aircraft/${encodeURIComponent(model.folder)}/`)
+  const airbusPanel = model.panelKind === 'airbus' ? new XpAirbusPanel() : null
+  const panel = model.ga || airbusPanel ? null : new XpPanel(`/xp/aircraft/${encodeURIComponent(model.folder)}/`)
+  const authoredPanel = model.ga || airbusPanel
   const owned: Array<{ dispose(): void }> = []
-  const panelMaterial = panel ? new THREE.MeshBasicMaterial({ map: panel.texture, toneMapped: false }) : new THREE.MeshStandardMaterial({ color: 0x2b2e31, roughness: 0.85 })
+  const livePanel = panel ?? airbusPanel
+  const panelMaterial = livePanel ? new THREE.MeshBasicMaterial({ map: livePanel.texture, toneMapped: false }) : new THREE.MeshStandardMaterial({ color: 0x2b2e31, roughness: 0.85 })
   owned.push(panelMaterial)
   const panelLoaded = panel ? panel.load() : Promise.resolve()
   if (model.ga?.panelBackground) {
@@ -177,21 +184,22 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
     group.removeFromParent(); group.clear()
     for (const o of owned) o.dispose()
     panel?.dispose()
+    airbusPanel?.dispose()
     void Promise.all(textureCache.values()).then((maps) => new Set(maps).forEach((m) => m?.dispose()))
   }
   try {
     for (const entry of model.objs.map(objEntry)) {
       const path = entry.path
+      const see = entry.glass ?? /glass|fuzz/i.test(path)
       signal?.throwIfAborted()
       const u = url(path)
       const cdu = /FMS_screens/.test(path) && opts.cduTexture
         ? new THREE.MeshBasicMaterial({ map: opts.cduTexture, toneMapped: false }) : undefined
       if (cdu) owned.push(cdu)
-      const part = await loadObj8(u, { textureBase: u.slice(0, u.lastIndexOf('/') + 1), textureCache, lightLevels: true, ...(cdu ? { cockpitMaterial: cdu } : model.ga ? { cockpitMaterial: screenFor } : {}) })
+      const part = await loadObj8(u, { textureBase: u.slice(0, u.lastIndexOf('/') + 1), textureCache, lightLevels: true, finish: see ? false : 'cockpit', ...(airbusPanel ? { normalMaxSize: 2048 } : {}), ...(cdu ? { cockpitMaterial: cdu } : authoredPanel ? { cockpitMaterial: screenFor } : {}) })
       signal?.throwIfAborted()
       if (!part.parsed.draws.length || !part.parsed.vertices.every(Number.isFinite)) throw new Error(`Invalid cockpit object ${path}`)
       if (part.parsed.albedo && !part.material.map) throw new Error(`Missing cockpit texture for ${path}`)
-      const see = entry.glass ?? /glass|fuzz/i.test(path)
       if (see) { part.material.transparent = true; part.material.depthWrite = false }
       part.material.emissiveIntensity = 0
       for (const l of part.lights) { l.material.transparent = part.material.transparent; l.material.depthWrite = part.material.depthWrite; l.material.emissiveIntensity = 0 }
@@ -204,13 +212,13 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
     // carries real geometry (the King Air's whole panel) with its own textures.
     signal?.throwIfAborted()
     const pu = url(model.panelObj)
-    const panelPart = await loadObj8(pu, { textureBase: pu.slice(0, pu.lastIndexOf('/') + 1), textureCache, loadTextures: !!model.ga, cockpitMaterial: model.ga ? screenFor : panelMaterial, hitBoxes: true, ...(model.ga ? { lightLevels: true } : {}) })
+    const panelPart = await loadObj8(pu, { textureBase: pu.slice(0, pu.lastIndexOf('/') + 1), textureCache, loadTextures: !!authoredPanel, finish: authoredPanel ? 'cockpit' : false, cockpitMaterial: authoredPanel ? screenFor : panelMaterial, hitBoxes: true, ...(authoredPanel ? { lightLevels: true } : {}) })
     signal?.throwIfAborted()
     if (!panelPart.parsed.vertices.every(Number.isFinite) || (!model.ga && !panelPart.parsed.draws.some((d) => d.cockpit))) throw new Error(`Invalid panel mesh ${model.panelObj}`)
     panelPart.group.name = 'panel'
     panelPart.group.position.set(...offset)
-    if (model.ga) panelPart.material.emissiveIntensity = 0
-    panelPart.group.traverse((o) => { if (o instanceof THREE.Mesh) { o.frustumCulled = false; o.castShadow = !!model.ga; o.receiveShadow = !!model.ga } })
+    if (authoredPanel) panelPart.material.emissiveIntensity = 0
+    panelPart.group.traverse((o) => { if (o instanceof THREE.Mesh) { o.frustumCulled = false; o.castShadow = !!authoredPanel && o.material !== panelMaterial; o.receiveShadow = !!authoredPanel } })
     parts.push(panelPart); group.add(panelPart.group)
     await panelLoaded
   } catch (error) { dispose(); throw error }
@@ -222,14 +230,14 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
   const lamps: LightLevelGroup[] = parts.flatMap((p) => p.lights)
   const cabinFill = { value: 0 }
   for (const p of parts) {
-    if (/glass|fuzz/i.test(p.group.name) || (p.group.name === 'panel' && !model.ga)) continue
+    if (/glass|fuzz/i.test(p.group.name) || (p.group.name === 'panel' && !authoredPanel)) continue
     addCabinFill(p.material, cabinFill)
     for (const l of p.lights) addCabinFill(l.material, cabinFill)
   }
   const datarefs = [...new Set(parts.filter((p) => p.group.name !== 'panel').flatMap((p) => p.parsed.anims.flatMap((n) => n.specs.map((s) => s.dataref))))]
   const eye = opts.place ? { ...opts.place.eye } : eyeFromObj(model)
   return {
-    group, parts, panel, hits, dispose,
+    group, parts, panel, airbusPanel, hits, dispose,
     evidence: {
       objects: parts.length,
       triangles: parts.reduce((n, p) => n + p.parsed.draws.filter((d) => d.lod === 0).reduce((m, d) => m + d.count / 3, 0), 0),

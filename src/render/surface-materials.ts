@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { patchAtmosphere } from './atmosphere-materials'
 import { snowUniforms, wetnessUniforms } from './wetness'
+import { withSurfaceFinish } from './material-finish'
 
 /** Pavement detail in geometry-local metres: survives floating-origin moves.
  * No texture requests or extra passes. Fine detail fades at its pixel footprint
@@ -124,5 +125,5 @@ normal = normalize(abs(pavementDet) * normal - sign(pavementDet) *
   (dFdx(pavementHeight) * pavementR1 + dFdy(pavementHeight) * pavementR2) + normal * 1e-10);`)
     patchAtmosphere(shader)
   }
-  return material
+  return withSurfaceFinish(material, kind === 'concrete' ? 'concrete' : 'asphalt')
 }

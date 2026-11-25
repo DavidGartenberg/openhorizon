@@ -4,6 +4,8 @@ import { XP_MODELS, XP_PLACEMENT, XP_CONTROL_LIMITS, XP_SURFACE_CALIBRATION, XP_
 import { panelAngleAt } from '../sim/spoilers'
 import { applyObj8Anim, applyObj8Visibility, loadObj8, type LoadedObj8 } from './xplane-obj8'
 import { resolveLocalModel } from './xplane-proxy'
+import { airbusCockpitFor } from './xplane-airbus'
+import { isBoeingPlayer, upgradeBoeingArtwork } from './boeing-artwork'
 
 /** A cheap copy of a loaded exterior that shares its geometry, materials and textures (traffic). */
 export interface LocalAircraftInstance {
@@ -227,6 +229,12 @@ export async function upgradePlayerAircraft(ship: AircraftMesh, key: string, loa
   if (ship.group.userData.localUpgradeStarted) return
   ship.group.userData.localUpgradeStarted = true
   ship.group.userData.visualSource = 'procedural'
+  // A Boeing variant keeps its own geometry and takes X-Plane's texture detail on it; the 737-800 itself is the installed
+  // model, drawn whole with its own textures (the geometry, paint, normal / material / lit maps exactly as X-Plane has them).
+  if (isBoeingPlayer(key) && !exactLocalModel(key)) return upgradeBoeingArtwork(ship, key)
+  // The non-native Airbus decks are fitted to their own variant geometry.
+  // Do not replace that nose with the scaled 737/A330 traffic proxy.
+  if (key !== 'A333' && airbusCockpitFor(key)) return
   const exterior = new THREE.Group()
   exterior.name = 'player-exterior'
   exterior.userData.exteriorCabin = true

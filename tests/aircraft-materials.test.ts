@@ -39,7 +39,10 @@ describe('aircraft surface materials', () => {
     expect(fragmentShader).toMatch(/float skinGrain = skinBrushedGrain\(vAircraftSkinPosition\.yz\)/)
     expect(fragmentShader).toMatch(/skinHeight \+= [\d.]+ \* skinGrain/)
     expect(fragmentShader).toMatch(/roughnessFactor = clamp\([^;]+skinGrain/)
-    expect(fragmentShader).not.toMatch(/texture2D\(|texture\(/)
+    // The authored detail-pack layer samples a shared triplanar tile. Metal's
+    // directional grain itself still does not need UVs or an asset download.
+    expect(fragmentShader).toContain('ohFinishSample(vOhFinishPosition / uOhFinishTile')
+    expect(fragmentShader.slice(fragmentShader.indexOf('float skinBrushedGrain'), fragmentShader.indexOf('vec3 skinDetail'))).not.toMatch(/texture2D\(|texture\(/)
     expect(vertexShader).toContain('vAircraftSkinPosition = position;')
     expect(vertexShader).toContain('#include <project_vertex>')
   })

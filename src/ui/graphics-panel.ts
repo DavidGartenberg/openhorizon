@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { materialDetailSettings, setMaterialDetailQuality, setMaterialFinishPreset, type MaterialFinishPreset } from '../render/material-packs'
 import type { FrameMode } from '../render/frame-pacer'
 
 export interface GraphicsActions {
@@ -49,6 +50,7 @@ export class GraphicsPanel {
     panel.innerHTML = `<summary>View & graphics</summary><div class="controls">
       <label>Camera<select aria-label="Camera view"><option value="chase">Chase</option><option value="cockpit">Cockpit</option><option value="wingL">Wing (left window)</option><option value="wingR">Wing (right window)</option><option value="tail">Tail camera</option><option value="orbit">Orbit</option><option value="free">Free camera</option></select></label>
       <label>Quality<select aria-label="Graphics quality"><option value="1">Performance</option><option value="1.5" selected>High</option><option value="2">Ultra</option></select></label>
+      <label>Material finish<select aria-label="Material finish"><option value="factory">Factory fresh</option><option value="in-service" selected>In service</option><option value="weathered">Weathered</option></select></label>
       <label>Frame rate<select aria-label="Frame rate"><option value="uncapped">Uncapped (vsync off)</option><option value="vsync">Display synced</option></select></label>
       <label>Ambient occlusion<input aria-label="Ambient occlusion" type="checkbox"></label>
       <label>Lens effects<input aria-label="Lens effects" type="checkbox"></label>
@@ -69,6 +71,7 @@ export class GraphicsPanel {
     this.view.onchange = () => actions.camera(this.view.value as Parameters<GraphicsActions['camera']>[0])
     const quality = panel.querySelector<HTMLSelectElement>('[aria-label="Graphics quality"]')!
     quality.onchange = () => {
+      setMaterialDetailQuality(quality.value === '1' ? 'performance' : quality.value === '2' ? 'ultra' : 'high')
       actions.quality(quality.value === '1' ? 'performance' : quality.value === '2' ? 'ultra' : 'high')
       renderer.setPixelRatio(Math.min(window.devicePixelRatio,Number(quality.value)))
       renderer.setSize(window.innerWidth,window.innerHeight)
@@ -88,6 +91,16 @@ export class GraphicsPanel {
     buildings.checked = initial.buildings; trees.checked = initial.trees
     ao.onchange = lens.onchange = shadows.onchange = buildings.onchange = trees.onchange = () => actions.effects({ ao: ao.checked, lens: lens.checked, cloudShadows: shadows.checked, buildings: buildings.checked, trees: trees.checked })
     const weather = panel.querySelector<HTMLSelectElement>('[aria-label="Weather"]')!
+    const finish = panel.querySelector<HTMLSelectElement>('[aria-label="Material finish"]')!
+    try {
+      const saved = localStorage.getItem('oh-material-finish')
+      if (saved === 'factory' || saved === 'in-service' || saved === 'weathered') setMaterialFinishPreset(saved)
+    } catch { /* private storage */ }
+    finish.value = materialDetailSettings().finish
+    finish.onchange = () => {
+      setMaterialFinishPreset(finish.value as MaterialFinishPreset)
+      try { localStorage.setItem('oh-material-finish', finish.value) } catch { /* private storage */ }
+    }
     weather.onchange = () => actions.weather(weather.value as Parameters<GraphicsActions['weather']>[0])
     panel.querySelectorAll<HTMLButtonElement>('[data-light]').forEach(b => {
       b.onclick = () => actions.lighting(b.dataset.light as Parameters<GraphicsActions['lighting']>[0])

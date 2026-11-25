@@ -24,6 +24,7 @@ import { atFitment, atGainsFor, makeAutothrottle, stepAutothrottle } from './sim
 import { autolandConfigFor, makeAutolandState, stepAutoland, radioAltitudeFt, type AutolandConfig, type AutolandOutput } from './sim/autoland'
 import { jetSecondary } from './cockpit/jet-secondary'
 import { drawBoeingNd, drawBoeingEicas, drawBoeingLowerDu, drawIsfd, boeingFma, egtFromN1, drawSquareFitted, drawMfdWithEngines, type BoeingEicasInput, type BoeingNdInput, type BoeingPfdInput } from './cockpit/boeing-displays'
+import { drawAirbusEwd, drawAirbusPfd, drawAirbusSystems } from './cockpit/airbus-displays'
 import { animate737, setInteriorFillScale, update737Live } from './render/cockpit-737'
 import { BoeingAuralsAudio } from './audio/boeing-aurals-audio'
 import { loadCustomPack } from './audio/custom-audio-pack'
@@ -66,7 +67,8 @@ import { interpretTransmission } from './sim/atc/freetext'
 import { ApproachController, HANDOFF_GATE_M } from './sim/atc/approach'
 import { buildPlayerAircraft } from './render/player-aircraft'
 import { upgradePlayerAircraft } from './render/local-aircraft'
-import { XP_COCKPIT_B738, eyeFromObj, loadXpCockpit, type XpCockpit, type XpCockpitModel } from './render/xplane-cockpit'
+import { XP_COCKPIT_B738, loadXpCockpit, type LoadXpCockpitOptions, type XpCockpit, type XpCockpitModel } from './render/xplane-cockpit'
+import { airbusCockpitFit, airbusCockpitFor, makeAirbusDatarefReader } from './render/xplane-airbus'
 import { makeXpDatarefReader } from './render/xplane-datarefs'
 import { XP_GA_COCKPITS, gaCockpitFor } from './render/xplane-ga-cockpits'
 import { Scenery, sceneryUniforms } from './world/scenery'
@@ -135,6 +137,7 @@ import {
   ilsOnFinal, NO_NAV_RESULT, type TunedNavResult,
 } from './sim/nav/tuning'
 import { finiteOr } from './sim/guards'
+import { pressLoc } from './sim/ap-panel'
 import { COPILOT_CALLOUTS, copilotCallouts, copilotSpeedsFor, makeCopilotLatches, type CopilotObs } from './sim/copilot'
 
 const KHAF = { lat: 37.5134, lon: -122.5011 }
@@ -423,19 +426,19 @@ function toggleGear(): void {
   aircraft.gearDownCommanded = !aircraft.gearDownCommanded
   toast(aircraft.gearDownCommanded ? 'GEAR DOWN' : 'GEAR UP')
 }
-/** The real X-Plane cockpit, when X-Plane is installed (render/xplane-cockpit.ts): the 737-800's flight deck in every
- *  transport (the jets and the airliner turboprops), and in every light airplane its own X-Plane cockpit or the
- *  closest one (render/xplane-ga-cockpits.ts). Until it has loaded — or when it cannot — the procedural deck is used. */
+/** Use the installed Airbus deck for Airbus types, the 737 deck for the remaining transports,
+ * and the nearest available GA deck for light types. Missing local assets keep the procedural deck. */
+const AIRBUS_DECK = airbusCockpitFor(fleetKey)
 const XP_DECK: { model: XpCockpitModel; ga: boolean; key: string } = COCKPIT_PROFILE.ga
   ? (() => { const key = gaCockpitFor(fleetKey, COCKPIT_PROFILE.ga); return { model: XP_GA_COCKPITS[key]!, ga: true, key } })()
-  : { model: XP_COCKPIT_B738, ga: false, key: 'B738' }
+  : { model: AIRBUS_DECK ?? XP_COCKPIT_B738, ga: false, key: AIRBUS_DECK ? 'A333' : 'B738' }
 let xpCockpit: XpCockpit | null = null
 let xpCockpitStatus = 'loading'
 /** Verification only: force any X-Plane dataref to a value (see __ohXpRef). */
 const xpOverrides: Record<string, number> = {}
 /** The X-Plane deck's datarefs as this airplane's state right now (what every lever and needle is posed from). */
 function xpDatarefs(): (ref: string) => number {
-  return makeXpDatarefReader({
+  const state: import('./render/xplane-datarefs').XpCockpitInputs = {
     pitch: aircraft.controls.pitch, roll: aircraft.controls.roll, yaw: aircraft.controls.yaw,
     brakeLeft: pilotBrake, brakeRight: pilotBrake, parkingBrake,
     trim: aircraft.controls.trim, rudderTrim: captainSystems.rudderTrim,
@@ -454,7 +457,10 @@ function xpDatarefs(): (ref: string) => number {
     atDisconnect: autothrottle.disconnectLight && Math.floor(performance.now() / 250) % 2 === 0,
     panelLight: xpNightLevel(),
     landingLights: aircraftLights.landingOn,
-  }, xpOverrides)
+  }
+  return AIRBUS_DECK ? makeAirbusDatarefReader(state, {
+    flapIndex: aircraft.controls.flapsIndex, flapCount: aircraft.P.flapDetentsDeg.length, headingDeg: aircraft.data.headingDeg,
+  }, xpOverrides) : makeXpDatarefReader(state, xpOverrides)
 }
 /** A light airplane's gauges as they read this frame (set where the pitot-static and nav readings are made). */
 const xpGaGauges = { iasKt: 0, altitudeFt: 0, vsiFpm: 0, turnRateDegS: 0, headingDeg: NaN, nav: null as XpGaNav | null, lonDeg: 0 }
@@ -512,11 +518,20 @@ let lastUnsimulatedAt = 0
 /** Carry out what a click on the X-Plane deck means: the same functions the keyboard uses. */
 function xpAct(a: XpAction): void {
   switch (a.kind) {
+    case 'localizer': {
+      const available = apAvailability()
+      if (!available.loc) { apSay('NO ILS TUNED — TUNE NAV1 TO A LOCALIZER'); break }
+      if (!apPanel.master) apPress('ap')
+      const r = pressLoc(apPanel, apSnapshot(), available)
+      apPanel = r.panel; apSay(r.message)
+      break
+    }
     case 'ap': apPress(a.button); break
     case 'speed': atSpeedPressed = true; break
     case 'disengage': systemsControls.apMaster = false; apDisconnectPressedFlag = true; break
     case 'apTurn': apTurn(a.knob, a.steps); break
     case 'atSwitch': if (atArmSwitch !== a.arm) apPress('at'); break
+    case 'atToggle': apPress('at'); break
     case 'atDisconnect': atDisconnectPressed = true; break
     case 'flaps': {
       const before = aircraft.controls.flapsIndex
@@ -527,6 +542,7 @@ function xpAct(a: XpAction): void {
     }
     case 'gear': toggleGear(); break
     case 'speedbrake': toast(cycleSpeedbrake(aircraft)); break
+    case 'armSpeedbrake': if (armSpeedbrake(aircraft)) toast('SPEEDBRAKE ARMED — auto-deploys on touchdown'); break
     case 'parking': parkingBrake = !parkingBrake; toast(parkingBrake ? 'PARKING BRAKE SET' : 'PARKING BRAKE RELEASED'); break
     case 'autobrake': for (let i = 0; i < Math.abs(a.steps); i++) cycleAutobrake(a.steps > 0 ? 1 : -1); break
     case 'landingLights':
@@ -603,9 +619,11 @@ function xpMcpInputs(): import('./render/xplane-datarefs').XpMcpInputs {
   // A light airplane's avionics show this simulator's own PFD and moving map; every transport other than the 737 flies
   // its deck where that type's procedural deck sits (its eye, scaled to its cabin).
   const map = cockpit.mfdTexture, e = EYE_BY_LAYOUT.boeing737, k = DECK_PROFILE?.scale ?? 1
-  const opts = XP_DECK.ga
+  const opts: LoadXpCockpitOptions = XP_DECK.ga
     ? { screens: { G1000_PFD1: cockpit.pfdTexture, G1000_MFD: map, GNS530_1: map, GNS530_2: map, GNS430_1: map, GNS430_2: map } }
-    : { cduTexture: cockpit.deck737?.cdu.texture, ...(fleetKey === '737' ? {} : { place: { eye: { x: e.x * k, y: e.y * k, up: e.up * k }, scale: k } }) }
+    : AIRBUS_DECK
+      ? { screens: { '*': cockpit.deck737!.cdu.texture }, place: airbusCockpitFit(fleetKey, ROSTER.find(r => r.spec.designator === fleetKey)!.spec.lengthM) }
+      : { cduTexture: cockpit.deck737?.cdu.texture, ...(fleetKey === '737' ? {} : { place: { eye: { x: e.x * k, y: e.y * k, up: e.up * k }, scale: k } }) }
   void loadXpCockpit(XP_DECK.model, opts).then((c) => {
     if (!c) { xpCockpitStatus = 'X-Plane not installed'; return }
     xpCockpit = c
@@ -3017,6 +3035,17 @@ function update737Deck(d: typeof aircraft.data, nav: ReturnType<typeof computeTu
     panel.clock('capt', zulu.getUTCHours(), zulu.getUTCMinutes()); panel.clock('fo', zulu.getUTCHours(), zulu.getUTCMinutes())
     panel.commit()
   }
+  if (xpCockpit?.airbusPanel) {
+    const p = xpCockpit.airbusPanel
+    p.display('captPfd', (c, size) => drawAirbusPfd(c, size, makeBoeingPfdInput(d, nav, iasKt, altFt, vsFpm), apState.lateralMode === 'NAV' ? lastGpsLegCourse === undefined ? 'vor' : 'gps' : 'loc'))
+    p.display('captNd', (c, size) => drawBoeingNd(c, size, ndIn, 'airbus'))
+    p.display('upper', (c, size) => drawAirbusEwd(c, size, eng))
+    p.display('lower', (c, size) => drawAirbusSystems(c, size, {
+      fuelKg: eng.fuelKg, gearPosition: aircraft.gearPos, flapDegrees: aircraft.flapsDeg, speedbrake: aircraft.spoilerPos, tatC: eng.tatC,
+    }))
+    p.display('standby', (c, size) => drawIsfd(c, size, { iasKt, altFt, pitchDeg: d.pitchDeg, rollDeg: d.rollDeg, baroInHg: baroSetInHg }))
+    p.copy('captPfd', 'foPfd'); p.copy('captNd', 'foNd'); p.fcu(mcpState()); p.commit()
+  }
   const gearPos = aircraft.P.gearRetractable ? aircraft.gearPos : 1
   const fireTest = auralFireTest || cockpitInteraction.heldDeckControl === 'fireTest'
   const destWp = wps.length ? wps[wps.length - 1] : undefined
@@ -3561,7 +3590,7 @@ function advanceFrame(elapsed: number, now: number): void {
       // The real deck is on screen: its own manipulators take the clicks (the procedural deck is hidden and inert).
       const { x, y } = input.pointerPixels()
       const { w, h } = input.targetSize()
-      const step = xpInteraction.update({ x, y, w, h, pressed: input.wasMousePressed(), down: input.isMouseDown(), released: input.wasMouseReleased(), wheel: input.consumeWheel() }, xpCockpit.hits)
+      const step = xpInteraction.update({ x, y, w, h, pressed: input.wasMousePressed(), down: input.isMouseDown(), released: input.wasMouseReleased(), wheel: input.consumeWheel() }, xpCockpit.hits, AIRBUS_DECK ? 'airbus' : 'boeing')
       for (const a of step.actions) xpAct(a)
       xpHoverUi(step.hover)
     } else {
@@ -4107,12 +4136,15 @@ Object.assign(window as unknown as Record<string, unknown>, {
   /** Post-processing controls (verification): enable, strengths. */
   /** X-Plane cockpit (verification): status, evidence, and recalibrating the eye (OBJ metres: x right, y up, z aft). */
   __ohXp: (o?: { eye?: [number, number, number] }) => {
-    if (o?.eye && o.eye.every(Number.isFinite) && xpCockpit) cockpitCam.setEyePoint(eyeFromObj(XP_DECK.model, o.eye))
-    return { status: xpCockpitStatus, evidence: xpCockpit ? { ...xpCockpit.evidence, datarefs: xpCockpit.evidence.datarefs.length, warnings: xpCockpit.evidence.warnings.slice(0, 5) } : null }
+    if (o?.eye && o.eye.every(Number.isFinite) && xpCockpit) {
+      const { position, scale } = xpCockpit.group
+      cockpitCam.setEyePoint({ x: -(position.z + o.eye[2] * scale.z), y: position.x + o.eye[0] * scale.x, up: position.y + o.eye[1] * scale.y })
+    }
+    return { status: xpCockpitStatus, model: XP_DECK.key, fitted: !!AIRBUS_DECK && fleetKey !== 'A333', evidence: xpCockpit ? { ...xpCockpit.evidence, datarefs: xpCockpit.evidence.datarefs.length, warnings: xpCockpit.evidence.warnings.slice(0, 5) } : null }
   },
   /** Which X-Plane cockpit mesh is under a pixel (verification): part, mesh name, draw range, triangle vertices (object frame), UV. */
   /** The X-Plane panel bitmap as it is drawn right now (verification): shows it in a corner overlay, or removes the overlay. */
-  __ohXpPanelShow: (on: boolean) => { document.getElementById('xp-panel-view')?.remove(); if (!on || !xpCockpit?.panel) return !!xpCockpit?.panel; const c = xpCockpit.panel.canvas; const img = new Image(); img.id = 'xp-panel-view'; img.src = c.toDataURL('image/png'); img.style.cssText = 'position:fixed;left:0;top:0;width:100%;z-index:99999;background:#000'; document.body.appendChild(img); return true },
+  __ohXpPanelShow: (on: boolean) => { document.getElementById('xp-panel-view')?.remove(); const p = xpCockpit?.panel ?? xpCockpit?.airbusPanel; if (!on || !p) return !!p; const img = new Image(); img.id = 'xp-panel-view'; img.src = p.canvas.toDataURL('image/png'); img.style.cssText = 'position:fixed;left:0;top:0;width:100%;z-index:99999;background:#000'; document.body.appendChild(img); return true },
   __ohXpPick: (px: number, py: number) => {
     if (!xpCockpit) return null
     const rect = renderer.domElement.getBoundingClientRect()

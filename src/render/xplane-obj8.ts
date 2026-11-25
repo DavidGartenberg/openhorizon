@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 import { DDSLoader } from 'three/examples/jsm/loaders/DDSLoader.js'
+import { withSurfaceFinish } from './material-finish'
+import { parseObj8NormalDecal, patchObj8NormalDecals, type LoadedObj8NormalDecal, type Obj8NormalDecal } from './xplane-normal-decals'
 
 /**
  * X-Plane OBJ8 loader.
@@ -116,6 +118,8 @@ export interface ParsedObj8 {
   normal?: string
   materialGloss?: string
   gloss?: string
+  textureModulator?: string
+  normalDecals?: Obj8NormalDecal[]
   splitNormal?: boolean
   /** GLOBAL_specular ratio, when present. */
   specular?: number
@@ -223,6 +227,9 @@ export function parseObj8(text: string, opts: { hitBoxes?: boolean } = {}): Pars
   let lit: string | undefined
   let materialGloss: string | undefined
   let gloss: string | undefined
+  let textureModulator: string | undefined
+  const normalDecals: Obj8NormalDecal[] = []
+  let normalDecalSlot = 0
   let splitNormal = false
   let normal: string | undefined
   let specular: number | undefined
@@ -371,6 +378,25 @@ export function parseObj8(text: string, opts: { hitBoxes?: boolean } = {}): Pars
         if (t[1] === 'material_gloss') materialGloss = addTexture(rest(2))
         if (t[1] === 'gloss') gloss = addTexture(rest(2))
         break
+      case 'TEXTURE_MODULATOR': {
+        const texture = rest(1)
+        if (texture) textureModulator = addTexture(texture)
+        else warn('ignored invalid TEXTURE_MODULATOR')
+        break
+      }
+      case 'NORMAL_DECAL':
+      case 'NORMAL_DECAL_KEYED':
+      case 'NORMAL_DECAL_PARAMS':
+      case 'NORMAL_DECAL_PARAMS_PROJ': {
+        const slot = normalDecalSlot++
+        if (slot !== 0 && slot !== 1) { warn('ignored normal decal beyond the two normal decals supported by OBJ8'); break }
+        if (cmd === 'NORMAL_DECAL_PARAMS_PROJ') { warn('unsupported NORMAL_DECAL_PARAMS_PROJ (projected UVs)'); break }
+        const decal = parseObj8NormalDecal(t, slot)
+        if (!decal) { warn(`ignored invalid ${cmd}`); break }
+        decal.texture = addTexture(decal.texture)
+        normalDecals.push(decal)
+        break
+      }
       case 'GLOBAL_specular':
         specular = n(1)
         break
@@ -516,6 +542,8 @@ export function parseObj8(text: string, opts: { hitBoxes?: boolean } = {}): Pars
   if (normal !== undefined) out.normal = normal
   if (materialGloss !== undefined) out.materialGloss = materialGloss
   if (gloss !== undefined) out.gloss = gloss
+  if (textureModulator !== undefined) out.textureModulator = textureModulator
+  if (normalDecals.length) out.normalDecals = normalDecals
   if (splitNormal) out.splitNormal = true
   if (specular !== undefined) out.specular = specular
   if (noBlend !== undefined) out.noBlend = noBlend
@@ -812,7 +840,7 @@ function shrinkTexture(tex: THREE.Texture, maxSize: number): void {
   tex.image = c
 }
 
-async function loadTexture(url: string, srgb: boolean, maxSize?: number): Promise<THREE.Texture> {
+async function loadTexture(url: string, srgb: boolean, maxSize?: number, repeat = false): Promise<THREE.Texture> {
   const dds = /\.dds$/i.test(url)
   const tex: THREE.Texture = dds
     ? await new DDSLoader().loadAsync(url)
@@ -820,6 +848,7 @@ async function loadTexture(url: string, srgb: boolean, maxSize?: number): Promis
   if (!dds && maxSize) shrinkTexture(tex, maxSize)
   tex.flipY = !dds
   if (dds) { tex.repeat.y = -1; tex.offset.y = 1 }
+  if (repeat) tex.wrapS = tex.wrapT = THREE.RepeatWrapping
   tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace
   tex.anisotropy = 8
   tex.needsUpdate = true
@@ -840,9 +869,9 @@ export function textureCandidates(name: string, base: string, overrideBase?: str
   return [...(overrideBase ? names.map((n) => overrideBase + n) : []), ...names.map((n) => base + n)]
 }
 
-async function firstTexture(urls: string[], srgb: boolean, maxSize?: number): Promise<THREE.Texture | null> {
+async function firstTexture(urls: string[], srgb: boolean, maxSize?: number, repeat = false): Promise<THREE.Texture | null> {
   for (const url of urls) {
-    try { return await loadTexture(url, srgb, maxSize) } catch { /* try the next candidate */ }
+    try { return await loadTexture(url, srgb, maxSize, repeat) } catch { /* try the next candidate */ }
   }
   return null
 }
@@ -855,22 +884,24 @@ async function loadTextureWithFallback(
   cache?: Map<string, Promise<THREE.Texture | null>>,
   overrideBase?: string,
   maxSize?: number,
+  repeat = false,
 ): Promise<THREE.Texture | null> {
   if (!name) return null
+  const samplingKey = repeat ? ':repeat' : ''
   if (overrideBase) {
     // A livery paints only some textures; the others are the airplane's own, loaded once and shared through the cache.
-    const key = `${overrideBase}${name}:${srgb}:${maxSize ?? 0}`
-    const own = (): Promise<THREE.Texture | null> => firstTexture(textureCandidates(name, base, overrideBase).slice(0, alternateName(name) ? 2 : 1), srgb, maxSize)
-      .then((t) => t ?? loadTextureWithFallback(name, base, srgb, warnings, cache, undefined, maxSize))
+    const key = `${overrideBase}${name}:${srgb}:${maxSize ?? 0}${samplingKey}`
+    const own = (): Promise<THREE.Texture | null> => firstTexture(textureCandidates(name, base, overrideBase).slice(0, alternateName(name) ? 2 : 1), srgb, maxSize, repeat)
+      .then((t) => t ?? loadTextureWithFallback(name, base, srgb, warnings, cache, undefined, maxSize, repeat))
     if (!cache) return own()
     let pending = cache.get(key)
     if (!pending) { pending = own(); cache.set(key, pending) }
     return pending
   }
   if (cache) {
-    const key = `${base}${name}:${srgb}:${maxSize ?? 0}`
+    const key = `${base}${name}:${srgb}:${maxSize ?? 0}${samplingKey}`
     let pending = cache.get(key)
-    if (!pending) { pending = loadTextureWithFallback(name, base, srgb, warnings, undefined, undefined, maxSize); cache.set(key, pending) }
+    if (!pending) { pending = loadTextureWithFallback(name, base, srgb, warnings, undefined, undefined, maxSize, repeat); cache.set(key, pending) }
     return pending
   }
   // An OBJ names its textures .png; X-Plane ships most of them as .dds. Which of the two a folder holds is learned
@@ -880,7 +911,7 @@ async function loadTextureWithFallback(
   if (swapped) urls.reverse()
   for (let i = 0; i < urls.length; i++) {
     try {
-      const texture = await loadTexture(urls[i]!, srgb, maxSize)
+      const texture = await loadTexture(urls[i]!, srgb, maxSize, repeat)
       if (urls.length === 2) alternateFirst.set(base, (i === 1) !== swapped)
       return texture
     } catch { /* try the next candidate */ }
@@ -897,10 +928,14 @@ export interface Obj8MaterialMaps {
   normalMap?: THREE.Texture | null
   materialGlossMap?: THREE.Texture | null
   glossMap?: THREE.Texture | null
+  normalDecals?: LoadedObj8NormalDecal[]
+  textureModulator?: THREE.Texture | null
 }
 
+type Obj8Finish = 'authored-paint' | 'cockpit' | false
+
 /** Single-sided MeshStandardMaterial per the OBJ's texture set. */
-export function makeObj8Material(maps: Obj8MaterialMaps, parsed?: Partial<Pick<ParsedObj8, 'noBlend' | 'normalMetalness' | 'specular' | 'splitNormal'>>): THREE.MeshStandardMaterial {
+export function makeObj8Material(maps: Obj8MaterialMaps, parsed?: Partial<Pick<ParsedObj8, 'noBlend' | 'normalMetalness' | 'specular' | 'splitNormal'>>, finish: Obj8Finish = 'authored-paint'): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({
     roughness: 0.6,
     metalness: 0.1,
@@ -930,16 +965,20 @@ export function makeObj8Material(maps: Obj8MaterialMaps, parsed?: Partial<Pick<P
   const gain = Math.max(0, Math.min(1, parsed?.specular ?? 0))
   const gainGLSL = Number.isInteger(gain) ? gain.toFixed(1) : String(gain)
   const reconstruct = !!(parsed?.normalMetalness || parsed?.splitNormal)
-  m.customProgramCacheKey = () => `obj8-pbr-v2:${glossChannel}:${reflectanceChannel}:${gainGLSL}:${reconstruct}`
-  m.onBeforeCompile = shader => {
+  const decals = maps.normalDecals ?? []
+  const decalKey = decals.length ? `:normal-decals:${decals.map(d => d.slot).join(',')}:${!!maps.textureModulator}` : ''
+  m.customProgramCacheKey = () => `obj8-pbr-v2:${glossChannel}:${reflectanceChannel}:${gainGLSL}:${reconstruct}${decalKey}`
+  m.onBeforeCompile = (shader, renderer) => {
+    patchObj8NormalDecals(shader, decals, maps.textureModulator)
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <roughnessmap_fragment>', THREE.ShaderChunk.roughnessmap_fragment.replace('texelRoughness.g;', `clamp(1.0 - texelRoughness.${glossChannel} * ${gainGLSL}, 0.045, 1.0);`))
       // X-Plane stores F0; Three uses a metallic fraction with dielectric F0=.04.
       .replace('#include <metalnessmap_fragment>', THREE.ShaderChunk.metalnessmap_fragment.replace('texelMetalness.b;', `clamp( ( texelMetalness.${reflectanceChannel} - 0.04 ) / 0.96, 0.0, 1.0 );`))
     if (reconstruct) shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>', THREE.ShaderChunk.normal_fragment_maps.replace('mapN.xy *= normalScale;', 'mapN.z = sqrt( max( 1.0 - dot( mapN.xy, mapN.xy ), 0.0 ) );\nmapN.xy *= normalScale;'))
+    THREE.Material.prototype.onBeforeCompile.call(m, shader, renderer)
   }
   m.alphaTest = parsed?.noBlend ?? (maps.map ? .01 : 0)
-  return m
+  return finish ? withSurfaceFinish(m, finish) : m
 }
 
 // ----------------------------------------------------------------- load --
@@ -965,6 +1004,8 @@ export interface LoadObj8Options {
   lightLevels?: boolean
   /** Parse and build the manipulators' hit boxes (see parseObj8). */
   hitBoxes?: boolean
+  /** Optional fine-detail finish. Glass and distant traffic need no procedural layer. */
+  finish?: Obj8Finish
 }
 
 export interface LoadedObj8 {
@@ -992,7 +1033,12 @@ export async function loadObj8(url: string, opts: LoadObj8Options): Promise<Load
   const base = opts.textureBase.endsWith('/') ? opts.textureBase : `${opts.textureBase}/`
   const overrideBase = opts.textureOverrideBase ? (opts.textureOverrideBase.endsWith('/') ? opts.textureOverrideBase : `${opts.textureOverrideBase}/`) : undefined
   const want = opts.loadTextures ?? true
-  const [map, emissiveMap, normalMap, materialGlossMap, glossMap] = want
+  const decalSpecs = want && !opts.distant ? parsed.normalDecals ?? [] : []
+  // The mask needs placement precision but not 4K color detail; tiles repeat
+  // many times per atlas, so both share small, cached data textures.
+  const decalLimit = Math.min(1024, opts.normalMaxSize ?? 1024)
+  const maskLimit = Math.min(512, decalLimit)
+  const [map, emissiveMap, normalMap, materialGlossMap, glossMap, textureModulator, loadedDecals] = want
     ? await Promise.all([
         loadTextureWithFallback(parsed.albedo, base, true, warnings, opts.textureCache, overrideBase, opts.distant?.maxTextureSize),
         loadTextureWithFallback(parsed.lit, base, true, warnings, opts.textureCache, undefined, opts.distant?.maxTextureSize),
@@ -1001,10 +1047,16 @@ export async function loadObj8(url: string, opts: LoadObj8Options): Promise<Load
         opts.distant ? Promise.resolve(null) : loadTextureWithFallback(parsed.normal, base, false, warnings, opts.textureCache, undefined, opts.normalMaxSize),
         opts.distant ? Promise.resolve(null) : loadTextureWithFallback(parsed.materialGloss, base, false, warnings, opts.textureCache, undefined, opts.normalMaxSize),
         opts.distant ? Promise.resolve(null) : loadTextureWithFallback(parsed.gloss, base, false, warnings, opts.textureCache, undefined, opts.normalMaxSize),
+        loadTextureWithFallback(decalSpecs.some(d => d.modulator !== 0) ? parsed.textureModulator : undefined, base, false, warnings, opts.textureCache, undefined, maskLimit),
+        Promise.all(decalSpecs.map(async spec => {
+          const decalMap = await loadTextureWithFallback(spec.texture, base, false, warnings, opts.textureCache, undefined, decalLimit, true)
+          return decalMap ? { ...spec, map: decalMap } : null
+        })),
       ])
-    : [null, null, null, null, null]
+    : [null, null, null, null, null, null, []]
 
-  const material = makeObj8Material({ map, emissiveMap, normalMap, materialGlossMap, glossMap }, parsed)
+  const normalDecals = loadedDecals.filter((d): d is LoadedObj8NormalDecal => d !== null)
+  const material = makeObj8Material({ map, emissiveMap, normalMap, materialGlossMap, glossMap, textureModulator, normalDecals }, parsed, opts.distant ? false : opts.finish)
   const name = url.split('?')[0]!.split('/').pop() || 'obj8'
   const built = buildObj8(parsed, material, { name, ...(opts.lod !== undefined ? { lod: opts.lod } : {}), ...(opts.cockpitMaterial ? { cockpitMaterial: opts.cockpitMaterial } : {}), ...(opts.lightLevels ? { lightLevels: true } : {}), ...(opts.hitBoxes ? { hitBoxes: true } : {}) })
   return { ...built, textures: parsed.textures, material, parsed, warnings }
