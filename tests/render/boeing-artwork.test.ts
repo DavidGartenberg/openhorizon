@@ -93,6 +93,8 @@ describe('Boeing artwork preserves the actual player airplane', () => {
     const material=shell.material as THREE.MeshStandardMaterial
     material.onBeforeCompile(shader as Parameters<typeof material.onBeforeCompile>[0],{} as THREE.WebGLRenderer)
     expect(shader.fragmentShader).not.toContain('skinData')
+    expect(shader.fragmentShader).toContain('uBoeingArt')
+    expect(shader.fragmentShader).toContain('boeingPaint')
     expect(shader.fragmentShader).toContain('uOhFinishMap')
     expect(ship.group.userData.visualSource).toBe('procedural-xplane-artwork')
     expect((shell.material as THREE.Material).userData.boeingArtwork).toMatchObject({ donor: 'B738', surface: 'body' })

@@ -103,7 +103,7 @@ Commands used the repo Node toolchain (`~/.local/node/bin` on PATH).
 | PR #6 `npm run build` | PASS | TypeScript and Vite production build; existing large-chunk warning |
 | PR #6 `npm run validate` | PASS | 6 files, 547 passed and 4 skipped |
 | PR #6 `npm audit` | PASS | Zero advisories after compatible updates; commit `ab9489fc414b48cd7199f1ad6c0f22368217ea57` |
-| Clean feature branch `npm test` | PASS | Vitest 4.1.12, four-worker default; 192 files, 2,542 passed and 4 skipped in 102.36 seconds |
+| Clean feature branch `npm test` | PASS | Vitest 4.1.12, four-worker default; 192 files, 2,542 passed and 4 skipped in 96.59 seconds |
 | Clean feature branch `npm run build` | PASS | TypeScript and Vite; 206 modules, 994.73 kB app chunk exceeds the existing 850 kB warning threshold |
 | Clean feature branch `npm run validate` | PASS | 6 files, 547 passed and 4 skipped |
 | Clean feature branch `npm audit` | PASS | Zero advisories after `npm ci` |
