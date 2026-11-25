@@ -122,7 +122,7 @@ Queried with `gh pr list` on 2026-11-25:
 
 | PR | Remote head | State/checks | Required next step |
 |---|---|---|---|
-| #9, simulator work | `610e5b3498160c70830378ae0aba84893ef7d696` | CLEAN; CI verify passed with install, type-check, full tests, validation and production build | Continue the documented full-screen and fleet-wide texture work; do not merge without reviewing PR #8 dependency |
+| #9, simulator work | Source head `610e5b3`; docs-only CI follow-up `5cb8085` | CLEAN; CI verify passed with install, type-check, full tests, validation and production build | Continue the documented full-screen and fleet-wide texture work; do not merge without reviewing PR #8 dependency |
 | #8, shell UI | `dd97d411e12a29ad867b65f5a9da3a39f4288d66` | CLEAN; no checks | Confirm it remains an ancestor/subset of #9; no merge requested |
 | #6, Vitest 4 update | `ab9489fc414b48cd7199f1ad6c0f22368217ea57` | MERGEABLE; no checks configured on its `main` base | Isolated full gates and zero-vulnerability audit passed before push; review before merge |
 
@@ -130,7 +130,10 @@ The follow-up's successful CI run is
 [here](https://github.com/DavidGartenberg/openhorizon/actions/runs/45652722425/job/139341195721).
 The earlier baseline run is [here](https://github.com/DavidGartenberg/openhorizon/actions/runs/45518536711/job/138884185757).
 PRs #6 and #8 also had no blocking reviews and were MERGEABLE in this audit.
-PR #6 has no hosted checks on its `main` base. Do not merge PRs by default. Never commit
+PR #6 has no hosted checks on its `main` base. GitHub reports ten open
+Dependabot alerts on default `main`; the updated PR #6 lockfile audits clean,
+but the default-branch alerts remain until that PR is reviewed and merged. Do
+not merge PRs by default. Never commit
 installed X-Plane asset bytes or derived artwork; they stream locally through
 `/xp/`.
 
