@@ -1,11 +1,13 @@
 # Current state and session handoff
 
-Audited **2026-11-25** on branch `msfs-hud-graphics-autopilot`. The published
+Audited **2026-11-25** on branch `msfs-hud-graphics-autopilot`, at the tested
+follow-up head `610e5b3498160c70830378ae0aba84893ef7d696`. The published
 baseline `a3d3879d16be7cad2a463071a0c034f698a532a7` includes the aircraft,
 material and onboarding documentation work and all 20 earlier Claude commits
-after `7ac72cf`. Its complete GitHub CI gate passed. This snapshot also describes
-the following FCU glyph and Boeing spoiler/material corrections; use `git log -1`
-and `git status --short` to identify the accompanying commit and any later edits.
+after `7ac72cf`. Its complete GitHub CI gate passed. The follow-up head also
+passed the full GitHub CI gate. This snapshot records the FCU glyph and Boeing
+spoiler/material corrections; use `git log -1` and `git status --short` to
+identify any later edits.
 Read [START-HERE](START-HERE.md), [ARCHITECTURE](ARCHITECTURE.md), and
 [DEVELOPMENT](DEVELOPMENT.md) before changing code. Inspect `git status --short`
 first. Preserve the two untracked DG800 tests; they contain separate user WIP.
@@ -120,14 +122,15 @@ Queried with `gh pr list` on 2026-11-25:
 
 | PR | Remote head | State/checks | Required next step |
 |---|---|---|---|
-| #9, simulator work | `a3d3879d16be7cad2a463071a0c034f698a532a7` | CLEAN; baseline CI verify passed with install, type-check, full tests, validation and production build | Publish and inspect CI for the following FCU/spoiler/test-runner correction |
+| #9, simulator work | `610e5b3498160c70830378ae0aba84893ef7d696` | CLEAN; CI verify passed with install, type-check, full tests, validation and production build | Continue the documented full-screen and fleet-wide texture work; do not merge without reviewing PR #8 dependency |
 | #8, shell UI | `dd97d411e12a29ad867b65f5a9da3a39f4288d66` | CLEAN; no checks | Confirm it remains an ancestor/subset of #9; no merge requested |
-| #6, Vitest 4 update | `ab9489fc414b48cd7199f1ad6c0f22368217ea57` | Updated and mergeability recalculating; no checks configured on its `main` base | Hosted checks are absent because that base has no workflow; isolated full gates and zero-vulnerability audit passed before push |
+| #6, Vitest 4 update | `ab9489fc414b48cd7199f1ad6c0f22368217ea57` | MERGEABLE; no checks configured on its `main` base | Isolated full gates and zero-vulnerability audit passed before push; review before merge |
 
-The published baseline's successful CI run is
-[here](https://github.com/DavidGartenberg/openhorizon/actions/runs/45518536711/job/138884185757).
-It does not verify later edits. PRs #6 and #8 also had no blocking reviews and
-were MERGEABLE in this audit. Do not merge PRs by default. Never commit
+The follow-up's successful CI run is
+[here](https://github.com/DavidGartenberg/openhorizon/actions/runs/45652722425/job/139341195721).
+The earlier baseline run is [here](https://github.com/DavidGartenberg/openhorizon/actions/runs/45518536711/job/138884185757).
+PRs #6 and #8 also had no blocking reviews and were MERGEABLE in this audit.
+PR #6 has no hosted checks on its `main` base. Do not merge PRs by default. Never commit
 installed X-Plane asset bytes or derived artwork; they stream locally through
 `/xp/`.
 
