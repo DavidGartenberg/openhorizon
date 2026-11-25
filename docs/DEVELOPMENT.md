@@ -1,7 +1,7 @@
 # Development, verification and troubleshooting
 
-Inspected against source `72c033a` and the local work described in CURRENT-STATE,
-2026-11-24. See
+Inspected against published baseline `a3d3879` and the following work described
+in CURRENT-STATE, 2026-11-25. See
 [CURRENT-STATE.md](CURRENT-STATE.md) for the latest recorded results, including
 known failures. Commands below run from the repository root.
 
@@ -78,10 +78,11 @@ under `tests/render/` may inspect real geometry without exercising a GPU; some
 read installed X-Plane assets and skip when those assets are absent. Report skips
 and dependency availability when moving to another machine.
 
-For resource-constrained verification, append `-- --maxWorkers=2` to `npm test`
-or `npm run validate`. Run build and full tests sequentially. The cloud-shadow
-and mesh suites consume significant CPU. An unhandled worker error makes the run
-fail even if its case summary lists passing tests.
+Vitest caps concurrency at four workers in `vite.config.ts`; the full fleet
+geometry suite passed with this setting after unrestricted workers starved two
+heavy tests until their 60-second timeouts. Run build and full tests sequentially.
+The cloud-shadow and mesh suites consume significant CPU. An unhandled worker
+error makes the run fail even if its case summary lists passing tests.
 
 GitHub CI uses Node 24 and a clean lockfile install on Ubuntu. It runs type-check,
 full tests, validation and a production Vite build. Verify the PR's exact head SHA

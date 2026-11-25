@@ -194,6 +194,8 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       placeBody(pivot, leX, side * sy, wingDrop - R * 0.16 * 0.7)
       const depth = chord * 0.19
       const panel = new THREE.Mesh(new THREE.BoxGeometry(Math.max(sy1 - sy0 - 0.1, 0.2), 0.05, depth), SURFACE)
+      panel.name = `spoilerPanel-${side < 0 ? 'left' : 'right'}-${i + 1}`
+      if (boeing) markBoeingSurface(panel, 'spoiler', side, 'box')
       panel.position.set(0, 0.02, depth / 2)
       panel.castShadow = true
       pivot.add(panel)
@@ -296,7 +298,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   fin.castShadow = fin.receiveShadow = true
   finGroup.add(fin)
   const rudderSkin = new THREE.Mesh(restoreUv(cutSkin(finGeo, cutPlane)), finMat)
-    if (boeing) markBoeingSurface(rudderSkin,'fin',1)
+  if (boeing) markBoeingSurface(rudderSkin,'fin',1)
   rudderSkin.name = 'rudder'
   rudderSkin.castShadow = rudderSkin.receiveShadow = true
   finGroup.add(rudderSkin)

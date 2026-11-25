@@ -1,7 +1,7 @@
 # Architecture and code map
 
-Source inspected on 2026-11-24 at local `72c033a` plus the current uncommitted
-aircraft/material work. Paths below are relative to the repository root. Check
+Source inspected on 2026-11-25 at published baseline `a3d3879` plus subsequent
+FCU and Boeing paint corrections. Paths below are relative to the repository root. Check
 [CURRENT-STATE.md](CURRENT-STATE.md) for exact verification evidence and limits.
 
 ## Boundaries and runtime
@@ -125,7 +125,9 @@ Unsupported actions display their own control name. Boeing decks use `XpPanel`,
 GA decks use their authored instruments/device screens, and the local Airbus
 work uses `XpAirbusPanel` with measured A330 screen UVs. The A330 deck is fitted
 to other Airbus noses by cabin width and eye-to-nose distance. Those fits share
-the donor's layout and have explicit systems limits. See
+the donor's layout and have explicit systems limits. `src/cockpit/airbus-fcu.ts`
+uses original installed glyphs and ACF positions for the selected flight-guidance
+windows; the main DU renderers are still custom canvas drawings. See
 [X-Plane integration](xplane-integration.md) for mappings and asset requirements.
 
 **Material ownership.** The local material work shares seven generated 256²

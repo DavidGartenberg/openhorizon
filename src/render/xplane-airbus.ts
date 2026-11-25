@@ -4,6 +4,7 @@ import { jetProfileFor } from './jet-profiles'
 import type { LoadXpCockpitOptions, XpCockpitModel } from './xplane-cockpit'
 import { makeXpDatarefReader, type XpCockpitInputs } from './xplane-datarefs'
 import type { PanelRect } from './xplane-panel'
+import { A333_FCU_ART, drawAirbusFcu, type AirbusFcuArt, type AirbusFcuState } from '../cockpit/airbus-fcu'
 
 // A330.acf attachments 17–31, 35, 37–38 are on the aircraft datum.
 // Attachment 36 (cockpit_OUT) is for the outside view, not the flight deck.
@@ -59,6 +60,9 @@ export class XpAirbusPanel {
   readonly canvas = document.createElement('canvas')
   readonly texture: THREE.CanvasTexture
   private readonly ctx: CanvasRenderingContext2D
+  private readonly fcuArt: AirbusFcuArt = {}
+  readonly warnings: string[] = []
+  private disposed = false
 
   constructor() {
     this.canvas.width = 2048; this.canvas.height = 1024
@@ -69,6 +73,19 @@ export class XpAirbusPanel {
     this.texture = new THREE.CanvasTexture(this.canvas)
     this.texture.colorSpace = THREE.SRGBColorSpace
     this.texture.anisotropy = 8
+  }
+
+  /** Load original FCU glyphs; failed assets keep readable live-value fallbacks. */
+  async load(base: string): Promise<void> {
+    await Promise.all(Object.entries(A333_FCU_ART).map(async ([key, spec]) => {
+      const img = new Image()
+      const ready = new Promise<void>((resolve, reject) => { img.onload = () => resolve(); img.onerror = reject })
+      img.src = base + spec.path.split('/').map(encodeURIComponent).join('/')
+      try {
+        await ready
+        if (!this.disposed) this.fcuArt[key as keyof AirbusFcuArt] = img
+      } catch { if (!this.disposed) this.warnings.push(`Airbus FCU art missing: ${spec.path}`) }
+    }))
   }
 
   display(name: keyof typeof XP_A333_DISPLAYS, draw: (ctx: CanvasRenderingContext2D, size: number) => void): void {
@@ -84,18 +101,10 @@ export class XpAirbusPanel {
   }
 
   /** FCU digits use the A330.acf panel positions (canvas y = 768 − POS y). */
-  fcu(s: { iasKt: number; hdgDeg: number; altFt: number; vsFpm: number; vsActive: boolean }): void {
-    const c = this.ctx
-    c.fillStyle = '#050706'; c.fillRect(1029, 897, 747, 50)
-    c.fillStyle = '#ffc961'; c.font = 'bold 25px monospace'; c.textBaseline = 'middle'; c.textAlign = 'center'
-    c.fillText(String(Math.round(s.iasKt)).padStart(3, '0'), 1088, 931)
-    c.fillText(String(Math.round(s.hdgDeg) % 360).padStart(3, '0'), 1231, 931)
-    c.fillText(String(Math.round(s.altFt)).padStart(5, '0'), 1559, 931)
-    c.fillText(s.vsActive ? `${s.vsFpm >= 0 ? '+' : '−'}${String(Math.abs(Math.round(s.vsFpm))).padStart(4, '0')}` : '----', 1705, 931)
-  }
+  fcu(s: AirbusFcuState): void { drawAirbusFcu(this.ctx, s, this.fcuArt) }
 
   commit(): void { this.texture.needsUpdate = true }
-  dispose(): void { this.texture.dispose() }
+  dispose(): void { this.disposed = true; this.texture.dispose() }
 }
 
 interface AirbusControls { flapIndex: number; flapCount: number; headingDeg: number }

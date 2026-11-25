@@ -1,7 +1,7 @@
 # OpenHorizon: start a new session
 
-Last audited on **2026-11-24**, source revision `72c033a` plus uncommitted aircraft,
-material and documentation work on `msfs-hud-graphics-autopilot`. Begin with the dated working-tree and
+Last audited on **2026-11-25**, published baseline `a3d3879` and subsequent FCU/
+Boeing paint corrections on `msfs-hud-graphics-autopilot`. Begin with the dated working-tree and
 verification snapshot in [CURRENT-STATE.md](CURRENT-STATE.md).
 
 ## First five minutes

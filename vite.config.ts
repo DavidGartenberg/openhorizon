@@ -43,6 +43,9 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts'],
     environment: 'node',
+    // Bound CPU-heavy fleet geometry suites so parallel workers cannot starve
+    // one another and exceed their per-test timeouts on small CI runners.
+    maxWorkers: 4,
     // The mesh-building suites are CPU-heavy: a cold cache on a small CI runner
     // pushed single tests past the 5 s default (found in a fresh-clone run).
     testTimeout: 30_000,

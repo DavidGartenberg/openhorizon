@@ -5,6 +5,7 @@ import { ROSTER } from '../../src/sim/aircraft/roster'
 import { airbusCockpitFit, makeAirbusDatarefReader, XP_COCKPIT_A333 } from '../../src/render/xplane-airbus'
 import { loadXpCockpit, type XpCockpit } from '../../src/render/xplane-cockpit'
 import { defaultXpInputs } from '../../src/render/xplane-datarefs'
+import { setMaterialDetailQuality, setMaterialFinishPreset, type MaterialDetailQuality, type MaterialFinishPreset } from '../../src/render/material-packs'
 
 // Deterministic display-only scenario, no player storage or flight loop.
 const host = document.querySelector('#viewport')!
@@ -29,6 +30,12 @@ function draw(): void {
   camera.aspect = innerWidth / h; camera.updateProjectionMatrix(); renderer.render(scene, camera)
 }
 window.addEventListener('resize', draw)
+document.querySelector<HTMLSelectElement>('#detail')!.onchange = event => {
+  setMaterialDetailQuality((event.target as HTMLSelectElement).value as MaterialDetailQuality); draw()
+}
+document.querySelector<HTMLSelectElement>('#finish')!.onchange = event => {
+  setMaterialFinishPreset((event.target as HTMLSelectElement).value as MaterialFinishPreset); draw()
+}
 night.onclick = () => {
   dark = !dark; ambient.intensity = dark ? .1 : 1.7; sun.intensity = dark ? .04 : 2.8
   ;(scene.background as THREE.Color).set(dark ? '#091726' : '#96c1e0')

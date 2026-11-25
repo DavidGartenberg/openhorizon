@@ -63,6 +63,7 @@ describe('Boeing artwork preserves the actual player airplane', () => {
     expect(engines).toHaveLength(key==='B744'?4:2)
     const bounds = new THREE.Box3().setFromObject(ship.group)
     const originalMaterial=shell.material as THREE.MeshStandardMaterial
+    const retiredPaint=vi.spyOn(originalMaterial,'dispose')
     expect(originalMaterial.map).not.toBeNull()
     expect(originalMaterial.roughnessMap).not.toBeNull()
     expect(originalMaterial.bumpMap).not.toBeNull()
@@ -73,6 +74,7 @@ describe('Boeing artwork preserves the actual player airplane', () => {
     expect((shell.material as THREE.MeshStandardMaterial).map).toBeNull()
     expect((shell.material as THREE.MeshStandardMaterial).roughnessMap).toBeNull()
     expect((shell.material as THREE.MeshStandardMaterial).bumpMap).toBeNull()
+    expect(retiredPaint).toHaveBeenCalledOnce()
     expect(tagged.every(o=>{
       const m=o.material as THREE.MeshStandardMaterial
       return !m.map&&!m.roughnessMap&&!m.bumpMap
@@ -81,6 +83,17 @@ describe('Boeing artwork preserves the actual player airplane', () => {
     expect(tagged.length).toBeGreaterThan(18)
     expect(tagged.every(o=>!!o.geometry.getAttribute('boeingUv'))).toBe(true)
     expect(ship.surfaces).toBe(s); expect(ship.propDisc).toBe(prop)
+    const spoilers:THREE.Mesh[]=[]
+    ship.group.traverse(o=>{if(o instanceof THREE.Mesh && typeof o.parent?.userData.rank==='number')spoilers.push(o)})
+    if(key!=='737') {
+      expect(spoilers.length).toBeGreaterThanOrEqual(10)
+      expect(spoilers.every(o=>(o.material as THREE.Material).userData.boeingArtwork?.surface==='spoiler')).toBe(true)
+    }
+    const shader={vertexShader:THREE.ShaderLib.physical.vertexShader,fragmentShader:THREE.ShaderLib.physical.fragmentShader,uniforms:{}}
+    const material=shell.material as THREE.MeshStandardMaterial
+    material.onBeforeCompile(shader as Parameters<typeof material.onBeforeCompile>[0],{} as THREE.WebGLRenderer)
+    expect(shader.fragmentShader).not.toContain('skinData')
+    expect(shader.fragmentShader).toContain('uOhFinishMap')
     expect(ship.group.userData.visualSource).toBe('procedural-xplane-artwork')
     expect((shell.material as THREE.Material).userData.boeingArtwork).toMatchObject({ donor: 'B738', surface: 'body' })
     expect(ship.group.userData.assetEvidence.donor).toBe('B738')

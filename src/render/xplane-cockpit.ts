@@ -148,7 +148,7 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
   const livePanel = panel ?? airbusPanel
   const panelMaterial = livePanel ? new THREE.MeshBasicMaterial({ map: livePanel.texture, toneMapped: false }) : new THREE.MeshStandardMaterial({ color: 0x2b2e31, roughness: 0.85 })
   owned.push(panelMaterial)
-  const panelLoaded = panel ? panel.load() : Promise.resolve()
+  const panelLoaded = panel ? panel.load() : airbusPanel ? airbusPanel.load(`/xp/aircraft/${encodeURIComponent(model.folder)}/`) : Promise.resolve()
   if (model.ga?.panelBackground) {
     // X-Plane paints its 2D instruments into the clear parts of this art at run time; with none painted here they
     // show as dark, unlit faces rather than the bitmap's empty white.
@@ -241,7 +241,7 @@ async function loadInSlot(model: XpCockpitModel, opts: LoadXpCockpitOptions): Pr
     evidence: {
       objects: parts.length,
       triangles: parts.reduce((n, p) => n + p.parsed.draws.filter((d) => d.lod === 0).reduce((m, d) => m + d.count / 3, 0), 0),
-      datarefs, warnings: [...parts.flatMap((p) => p.warnings), ...(panel?.warnings ?? [])],
+      datarefs, warnings: [...parts.flatMap((p) => p.warnings), ...(panel?.warnings ?? []), ...(airbusPanel?.warnings ?? [])],
     },
     pose(read) { for (const node of animated) { applyObj8Anim(node, read); applyObj8Visibility(node, read) } applyObj8Lights(lamps, read) },
     eyePoint: () => eye,

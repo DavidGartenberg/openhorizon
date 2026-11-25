@@ -17,6 +17,12 @@
   Run clean committed-suite, build, validation and performance checks.
 - [ ] Inspect and repair GitHub pull-request errors; verify current head SHA,
   mergeability and check results for each affected PR. Do not merge by default.
+- [ ] Finish pixel-faithful main cockpit display graphics using installed art
+  and live simulator values. The A330 FCU now uses the actual glyph atlases;
+  its PFD/ND/EWD/SD graphics are still custom drawings.
+- [ ] Extend X-Plane texture coverage across the remaining fleet and remove
+  prior surface maps from every successful texture replacement. Non-A333
+  Airbus exteriors currently still use procedural paint.
 
 Core implementation is present in the working tree. See
 [CURRENT-STATE.md](../CURRENT-STATE.md) for current checks and the material

@@ -12,12 +12,14 @@ Read [the session entry point](docs/START-HERE.md), then
 and [documentation index](docs/README.md) explain the code, commands and historical
 evidence without relying on chat context.
 
-The [current handoff](docs/CURRENT-STATE.md) is audited 2026-11-24 and records
+The [current handoff](docs/CURRENT-STATE.md) is audited 2026-11-25 and records
 the checkout, Airbus deck, Boeing texture fit, material work, browser evidence,
 GitHub state and remaining acceptance limits. The local Boeing projector now
 removes previous procedural paint maps on projected surfaces while retaining
-aircraft geometry. Do not treat this local work as published or accepted by CI
-until its exact commit is pushed and checked.
+aircraft geometry. The published `a3d3879` milestone passed the full GitHub CI
+gate; the following work uses authored A330 FCU glyphs and covers new Boeing
+spoiler panels. Full screen fidelity and fleet-wide texture coverage remain in
+progress. Read the handoff for the exact verification scope.
 
 ## Highlights
 

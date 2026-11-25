@@ -4,6 +4,7 @@ import type { AircraftMesh } from './aircraft-mesh'
 import { circumferentialU, type BoeingSurface } from './boeing-artwork-projector'
 import type { BoeingArtworkWorkerResult } from './boeing-artwork-worker'
 import type { BoeingSurfaceFit } from './boeing-surface-fit'
+import { withSurfaceFinish } from './material-finish'
 
 const BOEING_KEYS=new Set(['737','B738',...ROSTER.filter(r=>r.spec.label.startsWith('Boeing ')).map(r=>r.spec.designator)])
 export const isBoeingPlayer=(key:string)=>BOEING_KEYS.has(key)
@@ -109,11 +110,14 @@ function assignSurfaceCoordinates(mesh:THREE.Mesh,fit:BoeingSurfaceFit):void {
 }
 
 function paintExistingSurface(original:THREE.MeshStandardMaterial,fit:BoeingSurfaceFit,chart:Chart):THREE.MeshStandardMaterial {
-  const mat=original.clone(),compile=original.onBeforeCompile,programKey=original.customProgramCacheKey()
+  const mat=original.clone()
   // The procedural airline canvas can leak through gaps and mip transitions
   // when it remains bound beneath a projected X-Plane chart. Release every
   // old paint map on this material and use the donor chart as its sole image.
   mat.map=null;mat.roughnessMap=null;mat.bumpMap=null
+  // Authored panel joints already live in the donor image. Do not composite
+  // the old skin shader's second set of artificial seams/rivets over them.
+  delete mat.userData.surfaceFinish
   mat.userData.boeingArtwork={donor:'B738',surface:fit.kind}
   const rows=chart.slots===1?1:2,cols=chart.slots===4?2:1
   const image=chart.color.image as {width:number;height:number}
@@ -137,18 +141,15 @@ ${chart.finish?'vec2 boeingPbr = texture2D(uBoeingFinish, boeingSampleUv).rg;':'
     if(chart.finish)shader.fragmentShader=shader.fragmentShader
       .replace('#include <roughnessmap_fragment>','#include <roughnessmap_fragment>\nroughnessFactor = mix(roughnessFactor, boeingPbr.r, boeingPaint.a * 0.72);')
       .replace('#include <metalnessmap_fragment>','#include <metalnessmap_fragment>\nmetalnessFactor = mix(metalnessFactor, boeingPbr.g, boeingPaint.a * 0.72);')
-    // Compose in this order so the existing procedural microfinish shades
-    // the projected paint too. Never remove the aircraft's own material maps.
-    compile.call(mat,shader,renderer)
+    THREE.Material.prototype.onBeforeCompile.call(mat,shader,renderer)
   }
-  mat.customProgramCacheKey=()=>`${programKey}|boeing-chart:${rows}:${cols}:${+!!chart.finish}`
+  mat.customProgramCacheKey=()=>`boeing-chart:${rows}:${cols}:${+!!chart.finish}:v2`
   if(fit.ownsMaterial){
-    // The original livery owns references to its cached texture maps. Its
-    // lifetime follows this paint material, which still samples those maps.
-    const retire=()=>{mat.removeEventListener('dispose',retire);original.dispose()}
-    mat.addEventListener('dispose',retire)
+    // The new paint no longer samples the original cached livery maps.
+    // Release this aircraft's owner now; other cached users remain valid.
+    original.dispose()
   }
-  return mat
+  return withSurfaceFinish(mat,fit.kind==='tire'?'rubber':'authored-paint')
 }
 
 /** Material-only upgrade. Missing/invalid local files leave the existing

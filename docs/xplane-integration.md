@@ -1,7 +1,7 @@
 # X-Plane assets in OpenHorizon
 
-Source audit updated 2026-11-24 at local `72c033a` plus uncommitted aircraft,
-material and OBJ8 work. See [CURRENT-STATE](CURRENT-STATE.md) for exact checks,
+Source audit updated 2026-11-25 at published baseline `a3d3879` and subsequent
+FCU/Boeing paint work. See [CURRENT-STATE](CURRENT-STATE.md) for exact checks,
 known limits and the publication queue.
 
 The simulator reads the user's X-Plane 12 installation **at run time**. The
@@ -34,6 +34,8 @@ donor. Boeing variants other than the exact 737-800 keep their geometry and
 receive projected texture charts from the installed B738. Projection replaces
 their old procedural color, roughness and bump maps on marked surfaces. Check
 `localModelFor(key).exact` and the actual upgrade path when reporting fidelity.
+Projected Boeing surfaces also replace the old procedural seam/rivet shader
+with the shared fine-detail pack, so authored panel lines have a single source.
 
 **737 flight deck** (`xplane-cockpit.ts`, `xplane-datarefs.ts`, `xplane-panel.ts`, `xplane-interact.ts`):
 - 14 shell objects + the panel mesh `b738_cockpit.obj`, posed every frame from a *dataref reader*
@@ -123,6 +125,11 @@ screen graphics are OpenHorizon canvas drawings rather than X-Plane's running
 instrument pixels. They use the donor layout and integrated simulator state;
 do not claim pixel-identical instruments. AP2 and unsupported managed modes
 must remain visibly unmodeled.
+
+The FCU windows now use the installed A330's `cockpit_3d/generic/7segment/Autopilot`
+digit/sign/dash/label atlases, with ACF positions and per-digit rows. The simulator
+supplies the selected IAS, heading, altitude and VS. A missing image warns and
+falls back to readable live text; no X-Plane image is copied into the repository.
 
 The local reader maps sidesticks, flap and spoiler handles, parking brake,
 throttle, FCU windows, AP/A/THR lamps and panel brightness from simulator state.
