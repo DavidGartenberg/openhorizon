@@ -4,6 +4,12 @@ Thanks for your interest in contributing! This project has a strict engineering
 discipline (see `docs/FLIGHT-SIM-MASTER-PROMPT.md`), and contributions are
 expected to follow it.
 
+Start with [docs/START-HERE.md](docs/START-HERE.md) and
+[docs/CURRENT-STATE.md](docs/CURRENT-STATE.md) for the current checkout, baseline
+failures and relevant evidence. The [architecture map](docs/ARCHITECTURE.md) and
+[development guide](docs/DEVELOPMENT.md) cover ownership, setup, debugging and
+verification in detail.
+
 ## Ground rules
 
 1. **Never fake an instrument.** Every gauge, annunciator, and display must be
@@ -24,16 +30,24 @@ expected to follow it.
 ## Getting set up
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-This runs the Vite client (`:5173`) and the Express data server (`:8787`)
-together with live reload.
+This runs the Vite client (`:5173`, with HMR) and the Express data server
+(`:8787`) together. Express is a plain Node process; restart it after server edits.
+
+Vite mounts the same data handlers itself, so `npm run dev:client` can also run
+alone. On the current development machine, prepend `~/.local/node/bin` to PATH.
+Use a separate origin for browser experiments to preserve active flight state,
+saved settings and hardware calibration.
 
 ## Development workflow
 
-1. Fork the repo and create a branch off `main`.
+1. Inspect `git status --short` and the active branch. Preserve existing changes,
+   including untracked tests. For a standalone contribution, fork the repo and
+   create a branch off `main`; for an ongoing session, establish the correct base
+   from current work rather than resetting the user's checkout.
 2. Make your change. Keep it focused — a bug fix doesn't need to also
    refactor nearby code.
 3. Run the full gate locally:
@@ -46,7 +60,9 @@ together with live reload.
    behavior), verify it there — describe what you tested in your PR.
 5. Update `PROGRESS.md` with a short entry describing what changed and, if
    applicable, why (especially for anything that's a deliberate deviation
-   from "fully accurate").
+   from "fully accurate"). Refresh `docs/CURRENT-STATE.md` with exact verification,
+   remaining failures, pending checks and next steps. Update architecture/setup
+   references if their behavior changes. Preserve old evidence as history.
 6. Open a pull request against `main` with a clear description of what
    changed and why.
 

@@ -25,6 +25,7 @@ import { B738 } from './b738'
 import { CFM56_7B26 } from '../turbofan'
 import { G, RHO0, KT } from '../atmosphere'
 import { propEffectsYawNm } from '../prop-effects'
+import { spoilerFamilyFor } from '../spoilers'
 
 export type RosterPowerplant =
   | { kind: 'piston'; ratedPowerW: number; count: number; propDiameterM: number; redlineRpm: number; governed?: boolean }
@@ -141,6 +142,17 @@ function gearLegs(spec: RosterSpec): AircraftParams['gear'] {
     mainL: { x: -L * mainsAft, y: -track / 2, z: zMain, k, c, steerMaxRad: 0, maxNormalN },
     mainR: { x: -L * mainsAft, y: track / 2, z: zMain, k, c, steerMaxRad: 0, maxNormalN },
   }
+}
+
+/** Rear-fuselage engines (business jets, the CRJ / ERJ-145 / DC-9 / MD-80 / 717 / 727 / Fokker family): their thrust lines are
+ *  only a little outboard of the fuselage. */
+const REAR_ENGINES = /^(CRJ|CL3|CL6|E13|E14|E35|E45|DC9|MD8|MD9|B712|B72|F28|F70|F100|GLF|GL[57XF]|FA[0-9]|F2TH|F900|FA7X|FA8X|LJ|C25|C5[0-9]|C6|C7|E50|E55|HDJT|H25|ASTR|G280|PRM1|BE40|SF50)/i
+/** How far each side's thrust line is from the centreline (differential thrust yaws by it): wing-mounted twins ~14.5 % of the
+ *  span (737-800 4.9 m, A330 9.4 m), four-engine types the mean of inner and outer ~25 % (747, A380), rear-mounted ~6 %.
+ *  Approximations from published planforms, not per-type data. */
+export function engineArmM(designator: string, spanM: number, engines: number): number {
+  if (REAR_ENGINES.test(designator)) return 0.06 * spanM
+  return (engines >= 4 ? 0.25 : 0.145) * spanM
 }
 
 export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftParams {
@@ -325,7 +337,7 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
       : {}),
     ...(jet && pp.kind === 'jet'
       ? {
-          spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85, groundAutoDeploy: true },
+          spoilers: { dCd: 0.05, dCl: 0.35, ratePerS: 0.85, groundAutoDeploy: true, family: spoilerFamilyFor(spec.designator, pp.count) },
           reversers: { effectiveness: 0.45, transitS: 1.5 },
           jet: {
             ...CFM56_7B26,
@@ -336,6 +348,7 @@ export function deriveParams(spec: RosterSpec, opts: DeriveOptions): AircraftPar
             // gave a Williams FJ44 bizjet a CFM56's dead-engine drag and
             // a Trent-class widebody a quarter of its real value.
             windmillCdA: 0.47 * (pp.staticThrustN / 117_000),
+            armM: engineArmM(spec.designator, spec.spanM, pp.count),
           },
           machModel: { mdd: 0.82, dragRiseK: 20 },
           trimIsStabilizer: true,

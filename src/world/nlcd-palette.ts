@@ -52,3 +52,17 @@ export function classifyNlcdPixel(r: number, g: number, b: number, a: number): N
   if (!best || bestD > 1600) return null
   return { key: best.key, color: best.color }
 }
+
+/**
+ * Land cover as a small code, for the 3D scenery (trees stand where the land cover says forest): 0 = nothing to
+ * plant or unknown. Kept per land-cover pixel of the finest terrain tiles (tiles.ts `coverAt`).
+ */
+export const COVER = { none: 0, deciduous: 1, evergreen: 2, mixed: 3, woodyWetland: 4, shrub: 5, devOpen: 6, devLow: 7, devMed: 8, devHigh: 9 } as const
+const COVER_BY_KEY: Record<string, number> = {
+  deciduous: COVER.deciduous, evergreen: COVER.evergreen, 'mixed-forest': COVER.mixed, 'wetland-woody': COVER.woodyWetland,
+  shrub: COVER.shrub, 'dev-open': COVER.devOpen, 'dev-low': COVER.devLow, 'dev-med': COVER.devMed, 'dev-high': COVER.devHigh,
+}
+export function coverCode(r: number, g: number, b: number, a: number): number {
+  const cls = classifyNlcdPixel(r, g, b, a)
+  return (cls && COVER_BY_KEY[cls.key]) || 0
+}

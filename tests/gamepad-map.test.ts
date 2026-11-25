@@ -6,10 +6,12 @@
  * functions (throttle/mixture/brakes) map the signed axis onto [0,1].
  */
 import { describe, expect, it } from 'vitest'
+import * as mapping from '../src/sim/gamepad-map'
 import {
   applyDeadzone, axisToUnipolar, detectMovedAxis,
   parseGamepadMap, serializeGamepadMap, DEFAULT_SINGLE_STICK,
   detectPressedButton, leverWithReverse, tcaPresetFor, tcaButtonPreset, HELD_ALIASES,
+  reverseAxisBinding, withReverseZone, hasReverseZone, REVERSE_ZONE, readAxis, mergePreset, validCalibration, type AxisBinding, type GamepadMap,
 } from '../src/sim/gamepad-map'
 
 describe('applyDeadzone', () => {
@@ -110,7 +112,7 @@ describe('TCA Captain Pack support (16a-b)', () => {
     expect(m.yaw).toMatchObject({ pad: 0, axis: 5, sign: 1 }) // twist is axis 5 on the real unit
     expect(m.throttle).toMatchObject({ pad: 1, axis: 0, sign: 1 }) // idle=-1, TOGA=+1 (live-verified)
     expect(m.throttle2).toMatchObject({ pad: 1, axis: 1, sign: 1 })
-    expect(m.v).toBe(7)
+    expect(m.v).toBe(10)
     // Full face bound: trigger = PTT, red = AP disconnect, base buttons = gear/flaps/spoilers…
     expect(m.btnKeys?.['0:0']).toBe('KeyT')
     expect(m.btn?.apDisconnect).toMatchObject({ pad: 0, btn: 1 })
@@ -150,3 +152,207 @@ describe('9A: capture-time device guards', () => {
   })
 })
 it('sidestick PTT alias is held until trigger release',()=>{expect(tcaButtonPreset(0,null).keys['0:0']).toBe('KeyT');expect(HELD_ALIASES.has('KeyT')).toBe(true)})
+
+describe('reversing a throttle lever', () => {
+  const pad = (a: number) => [{ id: 'TCA Q-Eng 1&2', index: 1, connected: true, axes: [a, 0, 0, 0, 0, 0, 0], buttons: [] }]
+  const power = (map: GamepadMap, a: number) => leverWithReverse(readAxis(map, 'throttle', pad(a))!, map.throttle?.calibration).power
+  /** The preset's quadrant with plain, zone-free levers (how a binding looked before v8). */
+  const quadrant = () => {
+    const m = tcaPresetFor([{ id: 'TCA Q-Eng 1&2', index: 1, axes: 7 }])!
+    for (const fn of ['throttle', 'throttle2'] as const) m[fn] = { ...m[fn]!, calibration: undefined }
+    return m
+  }
+
+  it('swaps which physical end is idle for an uncalibrated preset binding, and swaps back', () => {
+    const m = quadrant()
+    expect([power(m, -1), power(m, 1)]).toEqual([0, 1])
+    const r: GamepadMap = { ...m, throttle: reverseAxisBinding(m.throttle!) }
+    expect(r.throttle).toMatchObject({ sign: -1, source: 'user' })
+    expect([power(r, -1), power(r, 1)]).toEqual([1, 0])
+    const back: GamepadMap = { ...r, throttle: reverseAxisBinding(r.throttle!) }
+    expect([power(back, -1), power(back, 1)]).toEqual([0, 1])
+  })
+
+  it('re-expresses a calibration so the old idle end becomes full power and stays valid', () => {
+    const b: AxisBinding = { pad: 1, axis: 0, sign: 1, deviceId: 'TCA Q-Eng 1&2', calibration: { min: -1, idle: -0.8, cl: -0.2, flex: 0.3, max: 0.9 } }
+    const r = reverseAxisBinding(b)
+    expect(r.sign).toBe(-1)
+    expect(r.calibration).toEqual({ min: -0.9, idle: -0.9, cl: -0.3, flex: 0.2, max: 0.8 })
+    expect(validCalibration(r.calibration)).toBe(true)
+    const m: GamepadMap = { throttle: r, devices: { '1': 'TCA Q-Eng 1&2' } }
+    expect(power(m, -0.8)).toBeCloseTo(1)   // where idle was
+    expect(power(m, 0.9)).toBeCloseTo(0)    // where full power was
+    expect(leverWithReverse(readAxis(m, 'throttle', pad(0.9))!, r.calibration).reverse).toBe(false)
+  })
+
+  it('keeps a single detent and drops the reverse travel below the old idle', () => {
+    const r = reverseAxisBinding({ pad: 1, axis: 0, sign: 1, calibration: { min: -1, idle: -0.3, flex: 0.4, max: 1 } })
+    expect(r.calibration).toEqual({ min: -1, idle: -1, flex: -0.4, max: 0.3 })
+    expect(validCalibration(r.calibration)).toBe(true)
+  })
+
+  it('treats the lower quarter of the travel as reverse and the rest as forward power', () => {
+    const m = quadrant()
+    m.throttle = withReverseZone(m.throttle!)
+    expect(REVERSE_ZONE).toBe(0.25)
+    expect(m.throttle.calibration).toEqual({ min: -1, idle: -0.5, max: 1 })
+    expect(validCalibration(m.throttle.calibration)).toBe(true)
+    const at = (a: number) => leverWithReverse(readAxis(m, 'throttle', pad(a))!, m.throttle!.calibration)
+    expect(at(-1)).toEqual({ power: 1, reverse: true })              // bottom of the lever: full reverse
+    expect(at(-0.75).reverse).toBe(true)                             // 12.5% of travel
+    expect(at(-0.75).power).toBeCloseTo(0.5)
+    expect(at(-0.5)).toEqual({ power: 0, reverse: false })           // exactly 25%: idle
+    expect(at(-0.4).reverse).toBe(false)
+    expect(at(1)).toEqual({ power: 1, reverse: false })
+    expect(hasReverseZone(m.throttle)).toBe(true)
+  })
+
+  it('removes the zone again, and drops detents that would fall inside it', () => {
+    const b = withReverseZone({ pad: 1, axis: 0, sign: 1, calibration: { min: -1, idle: -1, cl: -0.7, flex: 0.2, max: 1 } })
+    expect(b.calibration).toEqual({ min: -1, idle: -0.5, flex: 0.2, max: 1 })
+    expect(validCalibration(b.calibration)).toBe(true)
+    const off = withReverseZone(b, 0)
+    expect(hasReverseZone(off)).toBe(false)
+    expect(off.calibration).toEqual({ min: -1, flex: 0.2, max: 1 })
+  })
+
+  it('moves the reverse zone to the new idle end when the axis is reversed', () => {
+    const m = quadrant()
+    m.throttle = reverseAxisBinding(withReverseZone(m.throttle!))
+    expect(m.throttle).toMatchObject({ sign: -1, source: 'user' })
+    expect(hasReverseZone(m.throttle)).toBe(true)
+    const at = (a: number) => leverWithReverse(readAxis(m, 'throttle', pad(a))!, m.throttle!.calibration)
+    expect(at(1)).toEqual({ power: 1, reverse: true })               // physical top is now the reverse end
+    expect(at(-1)).toEqual({ power: 1, reverse: false })             // physical bottom is full power
+  })
+
+  it('is not undone when the preset is applied again on reconnect', () => {
+    const saved = quadrant()
+    saved.throttle = reverseAxisBinding(saved.throttle!)
+    const merged = mergePreset(saved, quadrant())
+    expect(merged.throttle).toMatchObject({ sign: -1, source: 'user' })
+  })
+})
+
+describe('the quadrant ships with a reverse zone', () => {
+  const pads = [{ id: 'TCA Q-Eng 1&2 (Vendor: 044f Product: 0407)', index: 0, axes: 7 }]
+  const lever = (m: GamepadMap, fn: 'throttle' | 'throttle2', a: number) => leverWithReverse(a * m[fn]!.sign, m[fn]!.calibration)
+
+  it('puts IDLE a quarter of the way up both preset levers', () => {
+    const m = tcaPresetFor(pads)!
+    for (const fn of ['throttle', 'throttle2'] as const) {
+      expect(m[fn]).toMatchObject({ sign: 1, source: 'preset', calibration: { min: -1, idle: -0.5, max: 1 } })
+      expect(lever(m, fn, -1)).toEqual({ power: 1, reverse: true })
+      expect(lever(m, fn, -0.5)).toEqual({ power: 0, reverse: false })
+      expect(lever(m, fn, 1)).toEqual({ power: 1, reverse: false })
+    }
+  })
+
+  it('adds the zone once to a quadrant lever bound before it, keeping its direction, and leaves a toggled-off zone off', () => {
+    const device = pads[0]!.id
+    const saved: GamepadMap = { v: 7, devices: { '0': device }, throttle: { pad: 0, axis: 0, sign: -1, deviceId: device, source: 'user' }, throttle2: { pad: 0, axis: 1, sign: -1, deviceId: device, source: 'user' } }
+    const merged = mergePreset(saved, tcaPresetFor(pads)!)
+    for (const fn of ['throttle', 'throttle2'] as const) {
+      expect(merged[fn]).toMatchObject({ sign: -1, source: 'user', calibration: { min: -1, idle: -0.5, max: 1 } })
+      expect(lever(merged, fn, 1)).toEqual({ power: 1, reverse: true })     // sign -1: the raw top is this lever's reverse end
+      expect(lever(merged, fn, -1)).toEqual({ power: 1, reverse: false })
+    }
+    expect(merged.v).toBe(10)
+    const off: GamepadMap = { ...merged, throttle: withReverseZone(merged.throttle!, 0) }
+    expect(mergePreset(off, tcaPresetFor(pads)!).throttle?.calibration).toEqual({ min: -1, max: 1 })
+  })
+
+  it('leaves a lever the pilot calibrated, and levers on other devices, alone', () => {
+    const cal = { min: -1, max: 0.9, idle: -0.6 }
+    const saved: GamepadMap = { v: 7, devices: { '0': pads[0]!.id }, throttle: { pad: 0, axis: 0, sign: 1, deviceId: pads[0]!.id, source: 'user', calibration: cal } }
+    expect(mergePreset(saved, tcaPresetFor(pads)!).throttle?.calibration).toEqual(cal)
+    const slider: GamepadMap = { v: 7, throttle: { pad: 0, axis: 3, sign: -1, deviceId: 'Generic Joystick', source: 'user' } }
+    expect(mergePreset(slider, tcaPresetFor(pads)!).throttle?.calibration).toBeUndefined()
+  })
+})
+
+describe('two quadrant units (engines 1 & 2 and the 3 & 4 add-on) with the sidestick', () => {
+  const Q12 = 'TCA Q-Eng 1&2 (Vendor: 044f Product: 0407)', Q34 = 'TCA Q-Eng 3&4 (Vendor: 044f Product: 0408)', STICK = 'TCA Sidestick X Copilot (Vendor: 044f Product: 040f)'
+  const pad = (id: string, index: number, axes: number) => ({ id, index, axes })
+  const orders: Array<[string, ReturnType<typeof pad>[]]> = [
+    ['3&4 first', [pad(Q34, 0, 7), pad(STICK, 1, 10), pad(Q12, 2, 7)]],
+    ['1&2 first', [pad(Q12, 0, 7), pad(Q34, 1, 7), pad(STICK, 2, 10)]],
+    ['stick first', [pad(STICK, 0, 10), pad(Q34, 1, 7), pad(Q12, 2, 7)]],
+  ]
+
+  it.each(orders)('puts the throttle levers and reverse lifts on the engines 1 & 2 unit and the stick axes on the sidestick (%s)', (_, pads) => {
+    const m = mapping.tcaPresetFor(pads)!
+    expect(m.throttle).toMatchObject({ deviceId: Q12, axis: 0 }); expect(m.throttle2).toMatchObject({ deviceId: Q12, axis: 1 })
+    expect(m.btn?.reverse).toMatchObject({ deviceId: Q12, btn: 0 }); expect(m.btn?.reverse2).toMatchObject({ deviceId: Q12, btn: 1 })
+    for (const fn of ['roll', 'pitch', 'yaw'] as const) expect(m[fn]?.deviceId).toBe(STICK)
+    expect(m.btn?.apDisconnect).toMatchObject({ deviceId: STICK, btn: 1 })
+  })
+
+  it('a lone engines 3 & 4 unit still gets the throttles (it is all there is)', () => {
+    const m = mapping.tcaPresetFor([pad(STICK, 0, 10), pad(Q34, 1, 7)])!
+    expect(m.throttle?.deviceId).toBe(Q34)
+  })
+
+  it('moves a throttle and reverse binding that an earlier preset left on the 3 & 4 unit to the 1 & 2 unit once it is connected, keeping what else was bound', () => {
+    const stale = mapping.tcaPresetFor([pad(Q34, 0, 7), pad(STICK, 1, 10)])!            // the earlier outcome: levers on 3&4
+    stale.throttle = { ...stale.throttle!, source: 'user', calibration: { min: -0.5, max: 0.625, idle: -0.21875 } }
+    stale.flaps = { pad: 2, axis: 2, sign: 1, deviceId: Q12, source: 'user', calibration: { min: -1, max: 1 } }
+    stale.btn = { ...stale.btn, parkingBrake: { pad: 2, btn: 19, deviceId: Q12, source: 'user' } }
+    const healed = mapping.mergePreset(stale, mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!)
+    expect(healed.throttle).toMatchObject({ deviceId: Q12, axis: 0 }); expect(healed.throttle2).toMatchObject({ deviceId: Q12, axis: 1 })
+    expect(healed.throttle?.calibration?.idle).toBeCloseTo(-0.5, 6)                      // the preset's quarter-travel reverse zone
+    expect(healed.btn?.reverse).toMatchObject({ deviceId: Q12, btn: 0 }); expect(healed.btn?.reverse2).toMatchObject({ deviceId: Q12, btn: 1 })
+    expect(healed.flaps).toMatchObject({ axis: 2, deviceId: Q12 }); expect(healed.btn?.parkingBrake).toMatchObject({ btn: 19 })
+    // and it reads: the lever on the 1&2 unit moves the throttle, while the 3&4 unit's lever does nothing
+    const pads = [{ id: Q12, index: 0, connected: true, axes: [1, -1, -1, 0, 0, -1, 0], buttons: [{ pressed: false }] }, { id: Q34, index: 1, connected: true, axes: [-1, -1, 0, 0, 0, 0, 0], buttons: [] }]
+    expect(mapping.readAxis(healed, 'throttle', pads)).toBe(1)
+    expect(mapping.leverWithReverse(1, healed.throttle?.calibration).power).toBeCloseTo(1, 6)
+  })
+
+  it('does not move a throttle that is already on the 1 & 2 unit, or one bound while only the 3 & 4 unit is connected', () => {
+    const onTwelve = mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!
+    onTwelve.throttle = { ...onTwelve.throttle!, calibration: { min: -0.9, max: 0.9, idle: -0.4 }, source: 'user' }
+    expect(mapping.mergePreset(onTwelve, mapping.tcaPresetFor([pad(Q12, 0, 7), pad(Q34, 1, 7), pad(STICK, 2, 10)])!).throttle?.calibration).toEqual({ min: -0.9, max: 0.9, idle: -0.4 })
+    const alone = mapping.tcaPresetFor([pad(Q34, 0, 7), pad(STICK, 1, 10)])!
+    expect(mapping.mergePreset(alone, mapping.tcaPresetFor([pad(Q34, 0, 7), pad(STICK, 1, 10)])!).throttle?.deviceId).toBe(Q34)
+  })
+
+  it('moves a gear button bound as GEAR DOWN (before v9) to the gear lever switch once, and leaves later bindings alone', () => {
+    const old = mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!
+    old.v = 8
+    old.btn = { ...old.btn, gearDown: { pad: 0, btn: 20, deviceId: Q12, source: 'user' } }
+    const migrated = mapping.mergePreset(old, mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!)
+    expect(migrated.btn?.gearLever).toMatchObject({ btn: 20, deviceId: Q12 }); expect(migrated.btn?.gearDown).toBeUndefined()
+    expect(migrated.v).toBe(10)
+    // a GEAR DOWN position button bound afterwards (v is 9 now) stays what it is
+    migrated.btn = { ...migrated.btn, gearDown: { pad: 0, btn: 21, deviceId: Q12, source: 'user' } }
+    const again = mapping.mergePreset(migrated, mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!)
+    expect(again.btn?.gearDown).toMatchObject({ btn: 21 }); expect(again.btn?.gearLever).toMatchObject({ btn: 20 })
+    expect(mapping.parseGamepadMap(JSON.stringify(again))).not.toBeNull()
+  })
+
+  it('a quadrant lever always reads its lower 25% as reverse, whatever IDLE the saved binding has; a stick slider keeps its own', () => {
+    for (const calibration of [undefined, { min: -1, max: 1 }, { min: -1, max: 1, idle: -1 }, { min: -1, max: 0.56, idle: -0.2 }]) {
+      const b = { pad: 0, axis: 0, sign: 1 as const, deviceId: Q12, ...(calibration ? { calibration } : {}) }
+      const c = mapping.throttleCalibration(b)!
+      expect((c.idle! - c.min) / (c.max - c.min)).toBeCloseTo(0.25, 6)
+      expect(mapping.leverReversesByTravel(b)).toBe(true)
+      expect(mapping.leverWithReverse(c.min, c)).toEqual({ power: 1, reverse: true })
+      expect(mapping.leverWithReverse(c.idle!, c)).toEqual({ power: 0, reverse: false })
+    }
+    const slider = { pad: 0, axis: 3, sign: -1 as const, deviceId: 'Logitech Extreme 3D', calibration: { min: -1, max: 1 } }
+    expect(mapping.throttleCalibration(slider)).toEqual({ min: -1, max: 1 }); expect(mapping.leverReversesByTravel(slider)).toBe(false)
+  })
+
+  it('drops a gear UP button bound beside the gear lever switch (it was another control: the autobrake selector 2), once', () => {
+    const old = mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!
+    old.v = 9
+    old.btn = { ...old.btn, gearLever: { pad: 0, btn: 20, deviceId: Q12, source: 'user' }, gearUp: { pad: 0, btn: 22, deviceId: Q12, source: 'user' }, autobrakeLow: { pad: 0, btn: 21, deviceId: Q12, source: 'user' } }
+    const m = mapping.mergePreset(old, mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!)
+    expect(m.btn?.gearUp).toBeUndefined(); expect(m.btn?.gearLever?.btn).toBe(20); expect(m.btn?.autobrakeLow?.btn).toBe(21)
+    m.btn = { ...m.btn, gearUp: { pad: 0, btn: 30, deviceId: Q12, source: 'user' } }                      // bound on purpose afterwards: kept
+    expect(mapping.mergePreset(m, mapping.tcaPresetFor([pad(Q12, 0, 7), pad(STICK, 1, 10)])!).btn?.gearUp?.btn).toBe(30)
+    const withAb3 = { ...m, btn: { ...m.btn, autobrake3: { pad: 0, btn: 23, deviceId: Q12, source: 'user' as const } } }
+    expect(mapping.parseGamepadMap(JSON.stringify(withAb3))?.btn?.autobrake3?.btn).toBe(23)
+  })
+})

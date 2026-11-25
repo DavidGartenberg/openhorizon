@@ -38,7 +38,7 @@ function stallKcasFlaps30(massKg: number): number {
   const t = trim({ tasMs: tas, altM, massKg, flapsDeg: 30, gammaRad: 0, params: B738, extraCd: 0.02 })
   expect(t.converged).toBe(true)
   ac.flapsDeg = 30
-  ac.controls.flapsIndex = 5
+  ac.controls.flapsIndex = B738.flapDetentsDeg.indexOf(30)
   ac.applyTrimState(tas, t.alphaRad, altM, 0, t.gammaRad, t.elevatorRad, t.throttle, t.rpm)
   // 1-g level deceleration (the certification technique): hold VS near zero
   // with pitch as speed bleeds; the stabilizer supplies the authority to

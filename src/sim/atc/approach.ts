@@ -11,7 +11,8 @@
  * speed assignments, and altitudes are the standard 3,000 ft platform
  * rather than per-airport published values.
  */
-import type { Transmission } from './comms'
+import type { RadioArgs, RadioKind, Transmission } from './comms'
+import { contactInstruction } from './phraseology'
 
 export interface ApproachView {
   distanceM: number // from the airport reference point
@@ -38,8 +39,8 @@ export class ApproachController {
     },
   ) {}
 
-  private say(text: string, atSimS: number): Transmission {
-    return { freqMhz: this.cfg.freqMhz, from: this.cfg.facility, text, atSimS }
+  private say(text: string, atSimS: number, to?: string, kind?: RadioKind, args?: RadioArgs): Transmission {
+    return { freqMhz: this.cfg.freqMhz, from: this.cfg.facility, text, atSimS, ...(to ? { to } : {}), ...(kind ? { kind } : {}), ...(args ? { args } : {}) }
   }
 
   /** Inbound check-in: radar contact + expected approach + platform
@@ -51,8 +52,8 @@ export class ApproachController {
     const miles = Math.max(1, Math.round(view.distanceM / 1852))
     return [
       this.say(
-        `${callsign}, radar contact ${miles} miles from the field, expect ILS runway ${this.cfg.activeRunway}, descend and maintain 3,000`,
-        atSimS,
+        `${callsign}, ${this.cfg.facility}, radar contact ${miles} miles from the field, expect ILS runway ${this.cfg.activeRunway}, descend and maintain 3,000`,
+        atSimS, callsign, 'descend', { altitudeFt: 3000, runway: this.cfg.activeRunway },
       ),
     ]
   }
@@ -70,12 +71,12 @@ export class ApproachController {
         out.push(
           this.say(
             `${callsign}, ${Math.max(1, Math.round(view.distanceM / 1852))} miles from the field, cleared ILS runway ${this.cfg.activeRunway} approach, maintain 3,000 until established`,
-            atSimS,
+            atSimS, callsign, 'approach', { runway: this.cfg.activeRunway, altitudeFt: 3000 },
           ),
         )
       } else if (s.phase === 'clearedApproach' && view.distanceM < HANDOFF_GATE_M) {
         s.phase = 'handedOff'
-        out.push(this.say(`${callsign}, contact tower ${this.cfg.towerFreqMhz.toFixed(2)}, good day`, atSimS))
+        out.push(this.say(`${callsign}, ${contactInstruction('tower', this.cfg.towerFreqMhz)}, good day`, atSimS, callsign, 'contact', { facility: 'tower', freqMhz: this.cfg.towerFreqMhz }))
       }
     }
     return out

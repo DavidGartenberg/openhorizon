@@ -1,4 +1,5 @@
 import { flapIndex, airbrakeFlapFloor, mixFlaperons } from './flaperons'
+import { makeSpoilerPanels, resetSpoilerPanels, spoilerLayoutFor, stepSpoilers, type SpoilerPanels } from './spoilers'
 /**
  * The aircraft (§5): 6-DOF rigid body integrating aero + propulsion + gear +
  * gravity at the fixed timestep. Body axes x fwd / y right / z down; world is
@@ -9,7 +10,7 @@ import { C172S } from './aircraft/c172s'
 import type { AircraftParams } from './aircraft/params'
 import { computeAero, makeAeroOutput, type AeroInput } from './aero'
 import { stepPropulsion, makePropulsionState, type PropulsionState } from './propulsion'
-import { makeTurbofanState, stepTurbofan, windmillDragN, type TurbofanState } from './turbofan'
+import { makeTurbofanState, stepTurbofan, windmillDragN, type JetParams, type TurbofanState } from './turbofan'
 import { computeGear, makeGearOutput, type GearInput } from './gear'
 import { isa, casFromTas, kiasFromKcas, G, KT, FT, R_AIR, type AirState } from './atmosphere'
 import {
@@ -58,6 +59,8 @@ export interface FlightData {
   thrustN: number
   /** Jet N1 % (0 for piston aircraft). */
   n1Pct: number
+  /** Each side's N1 (engine 1 side, engine 2 side), %: they differ with differential thrust or an engine out. */
+  n1SidesPct: [number, number]
   /** Landing gear position, 1 = down/locked (fixed gear is always 1). */
   gearPos: number
 }
@@ -92,19 +95,42 @@ export class Aircraft {
   spoilerPos = 0
   /** Speedbrake ARM: on touchdown the ground spoilers auto-deploy. */
   spoilerArmed = false
+  /** An airliner's wing panels, each at its own angle (spoilers.ts); null for types with a single airbrake actuator. */
+  readonly spoilerPanels: SpoilerPanels | null
   /** Reverse thrust: commanded by the pilot, deploy INTERLOCKED to
    *  weight-on-wheels (real airplane behavior). */
   reverseCmd = false
+  /** Reverser sleeves, the furthest-out side (what a single-sleeve consumer shows). */
   reversePos = 0
+  /** Each side's reverser sleeves, engine 1 side and engine 2 side, 0 stowed … 1 deployed. */
+  readonly reversePosSides: [number, number] = [0, 0]
+
+  /**
+   * Differential thrust: each side's thrust lever (engine 1 side = left, engine 2 side = right) from hardware levers that move
+   * separately, and whether that side is in reverse. It is used only while its mean is still `controls.throttle`: anything else
+   * that sets the throttle (autothrottle, autoland, the keyboard) drives both sides together, so a stale split never overrides it.
+   */
+  throttleSplit: { left: number; right: number; reverseLeft: boolean; reverseRight: boolean } | null = null
+  /** Each engine side's running power share (engine 1 side, engine 2 side), set by the systems layer from the engine masters;
+   *  null = both sides follow jetPowerFactor (symmetric). An engine out then yaws the airplane toward it. */
+  jetSidePower: [number, number] | null = null
+  /** Each side's turbofan (half the engines each). */
+  readonly jetSides: [TurbofanState, TurbofanState] | null
+  private readonly jetHalf: JetParams | null
+  /** Each side's thrust last step, N (engine 1 side, engine 2 side). */
+  readonly thrustSidesN: [number, number] = [0, 0]
 
   constructor(params: AircraftParams = C172S) {
     this.P = params
+    this.spoilerPanels = params.spoilers?.family ? makeSpoilerPanels(spoilerLayoutFor(params.spoilers.family)) : null
     this.resetFlaps()
     this.fuelKg = params.fuelCapacityKg
     // Preserve the established 250 kg default where it fits, while small
     // aircraft and gliders cannot boot heavier than their published MTOW.
     this.payloadKg = Math.min(250, Math.max(params.mtowKg - params.emptyMassKg - this.fuelKg, 0))
     this.jetState = params.jet ? makeTurbofanState(params.jet) : null
+    this.jetHalf = params.jet ? { ...params.jet, engines: params.jet.engines / 2 } : null
+    this.jetSides = this.jetHalf ? [makeTurbofanState(this.jetHalf), makeTurbofanState(this.jetHalf)] : null
   }
 
   readonly controls: Controls = {
@@ -137,8 +163,7 @@ export class Aircraft {
    *  to the engine this step, same mechanism as running the tank dry. */
   engineRunning = true
 
-  /** Fraction of jet engine groups running, set by Captain systems. Shared
-   * N1 remains an approximation: no independent spool or asymmetric yaw. */
+  /** Fraction of jet engine groups running, applied to both sides alike when jetSidePower is not set. */
   jetPowerFactor = 1
 
   /** Intake power multiplier from the carb-ice model (Phase 11b), set by
@@ -159,7 +184,7 @@ export class Aircraft {
     verticalSpeedFpm: 0, headingDeg: 0, pitchDeg: 0, rollDeg: 0,
     alphaDeg: 0, betaDeg: 0, rpm: 0, fuelFlowGph: 0, loadFactorG: 1,
     stallFraction: 0, onGround: false, flapsDeg: 0, shaftPowerW: 0, thrustN: 0,
-    n1Pct: 0, gearPos: 1,
+    n1Pct: 0, n1SidesPct: [0, 0], gearPos: 1,
   }
 
   // ---- scratch (no allocation in step) ----
@@ -233,18 +258,30 @@ export class Aircraft {
     this.spoilerCmd = 0
     this.spoilerPos = 0
     this.spoilerArmed = false
+    if (this.spoilerPanels) resetSpoilerPanels(this.spoilerPanels)
     this.reverseCmd = false
     this.reversePos = 0
+    this.reversePosSides[0] = this.reversePosSides[1] = 0
+    this.inHardContact = false
+    this.lastImpact = null
+    this.throttleSplit = null
     for(const key of Object.keys(this.appliedControlSurfaces) as Array<keyof typeof this.appliedControlSurfaces>)this.appliedControlSurfaces[key]=0
     this.alphaDotFilt = 0
     if (this.jetState && this.P.jet) Object.assign(this.jetState, makeTurbofanState(this.P.jet))
+    if (this.jetSides && this.jetHalf) for (const side of this.jetSides) Object.assign(side, makeTurbofanState(this.jetHalf))
     this.data.onGround = true
     this.data.kias = 0
     this.data.verticalSpeedFpm = 0
   }
 
-  /** Set on structural-impact or numeric blowup; freezes physics until reset. */
+  /** Set only on a numeric blowup or an absurd ground speed; freezes physics until reset. Hitting the ground hard never does:
+   *  the pilot asked for the sim to keep going (see lastImpact). */
   crashed = false
+  /** Hard ground contacts so far (a strut driven past its travel, or the belly on the ground with the gear up), and the latest
+   *  one with its sink rate: reported to the pilot, never a stop. */
+  impactCount = 0
+  lastImpact: { kind: 'hard' | 'belly'; fpm: number } | null = null
+  private inHardContact = false
 
   step(dt: number): void {
     if (this.crashed) return
@@ -279,8 +316,17 @@ export class Aircraft {
     if (this.P.spoilers) {
       // ARM → auto-deploy on touchdown (ground spoilers).
       if (this.P.spoilers.groundAutoDeploy && this.spoilerArmed && this.data.onGround) { this.spoilerCmd = 1; this.spoilerArmed = false }
-      const sRate = this.P.spoilers.ratePerS * dt
-      this.spoilerPos = clamp(this.spoilerPos + clamp(this.spoilerCmd - this.spoilerPos, -sRate, sRate), 0, 1)
+      if (this.spoilerPanels) {
+        const lastGate = this.P.flapDetentsDeg[this.P.flapDetentsDeg.length - 1] ?? 0
+        this.spoilerPos = stepSpoilers(this.spoilerPanels, {
+          lever: this.spoilerCmd, onGround: this.data.onGround, groundSpeedKt: this.data.groundSpeedKt,
+          throttle: c.throttle, reverse: this.reverseCmd, flapsFrac: lastGate > 0 ? this.flapsDeg / lastGate : 0,
+          roll: c.roll, kcas: this.data.kcas,
+        }, dt).aeroFrac
+      } else {
+        const sRate = this.P.spoilers.ratePerS * dt
+        this.spoilerPos = clamp(this.spoilerPos + clamp(this.spoilerCmd - this.spoilerPos, -sRate, sRate), 0, 1)
+      }
     }
     this.selectFlaps(c.flapsIndex, false)
     let flapTarget = this.P.flapDetentsDeg[c.flapsIndex]!
@@ -289,10 +335,17 @@ export class Aircraft {
       flapTarget = Math.max(flapTarget,this.heldFlapFloorDeg)
     }
     this.flapsDeg += clamp(flapTarget-this.flapsDeg,-this.P.flapRateDegS*dt,this.P.flapRateDegS*dt)
+    // Each side's lever and reverse: the hardware split while it is current, otherwise both sides together.
+    const split = this.throttleSplit && Math.abs((this.throttleSplit.left + this.throttleSplit.right) / 2 - c.throttle) < 0.02 ? this.throttleSplit : null
+    const sideThrottle: [number, number] = split ? [split.left, split.right] : [c.throttle, c.throttle]
+    const sideReverse: [boolean, boolean] = this.reverseCmd ? (split && (split.reverseLeft || split.reverseRight) ? [split.reverseLeft, split.reverseRight] : [true, true]) : [false, false]
     if (this.P.reversers) {
-      const tgt = this.reverseCmd && this.data.onGround ? 1 : 0
       const rRate = dt / this.P.reversers.transitS
-      this.reversePos = clamp(this.reversePos + clamp(tgt - this.reversePos, -rRate, rRate), 0, 1)
+      for (const k of [0, 1] as const) {
+        const tgt = sideReverse[k] && this.data.onGround ? 1 : 0
+        this.reversePosSides[k] = clamp(this.reversePosSides[k] + clamp(tgt - this.reversePosSides[k], -rRate, rRate), 0, 1)
+      }
+      this.reversePos = Math.max(this.reversePosSides[0], this.reversePosSides[1])
     }
     if (this.P.gearRetractable) {
       const rate = dt / this.P.gearRetractable.transitS
@@ -304,27 +357,44 @@ export class Aircraft {
     // C172S args exist for external callers/tests — if the 6-DOF relied on
     // the default, every fleet member would silently fly a C172 (§1).
     let mach = 0
-    if (this.P.jet && this.jetState) {
+    let thrustYawNm = 0
+    if (this.P.jet && this.jetState && this.jetSides && this.jetHalf) {
       // Jet path: turbofan drives the shared `prop` output struct so the
       // force assembly / fuel / data plumbing below is powerplant-agnostic.
+      // Two sides (engine 1 side, engine 2 side), half the engines each, each with its own lever, spool, reverser and running
+      // state: their total is what the old single model gave when they match, and their difference yaws the airplane.
       mach = vAir / this.air.speedOfSoundMs
-      const powerFactor = Number.isFinite(this.jetPowerFactor) ? clamp(this.jetPowerFactor, 0, 1) : 0
-      const running = this.fuelKg > 0.5 && this.engineRunning && powerFactor > 0
-      stepTurbofan(this.jetState, dt, c.throttle, rho, mach, running, this.P.jet)
-      this.prop.thrustN = running ? this.jetState.thrustN * powerFactor : 0
-      // Reversers: cascade redirect — effective thrust swings negative as
-      // the sleeves translate (weight-on-wheels interlocked upstream).
-      // RUNNING engines only: a dead engine's thrust is already negative
-      // windmill drag, and the negative reverse multiplier turned it into
-      // FORWARD thrust from a flamed-out engine.
-      if (this.P.reversers && this.reversePos > 0 && running) {
-        this.prop.thrustN *= 1 - this.reversePos * (1 + this.P.reversers.effectiveness)
+      const symmetric = Number.isFinite(this.jetPowerFactor) ? clamp(this.jetPowerFactor, 0, 1) : 0
+      let thrust = 0, fuel = 0, shaft = 0
+      for (const k of [0, 1] as const) {
+        const st = this.jetSides[k]
+        const sideFactor = this.jetSidePower ? this.jetSidePower[k] : symmetric
+        const powerFactor = Number.isFinite(sideFactor) ? clamp(sideFactor, 0, 1) : 0
+        const running = this.fuelKg > 0.5 && this.engineRunning && powerFactor > 0
+        stepTurbofan(st, dt, sideThrottle[k], rho, mach, running, this.jetHalf)
+        let t = running ? st.thrustN * powerFactor : 0
+        // Reversers: cascade redirect — effective thrust swings negative as
+        // the sleeves translate (weight-on-wheels interlocked upstream).
+        // RUNNING engines only: a dead engine's thrust is already negative
+        // windmill drag, and the negative reverse multiplier turned it into
+        // FORWARD thrust from a flamed-out engine.
+        if (this.P.reversers && this.reversePosSides[k] > 0 && running) t *= 1 - this.reversePosSides[k] * (1 + this.P.reversers.effectiveness)
+        // Dead engines drag in either reverser position; never reverse drag into thrust.
+        t -= windmillDragN(rho, vAir, this.jetHalf) * (running ? 1 - powerFactor : 1)
+        this.thrustSidesN[k] = t
+        thrust += t
+        fuel += st.fuelFlowKgS * powerFactor
+        shaft += Math.max(st.thrustN * powerFactor * vAir, 0)
       }
-      // Dead groups drag in either reverser position; never reverse drag into thrust.
-      this.prop.thrustN -= windmillDragN(rho, vAir, this.P.jet) * (running ? 1 - powerFactor : 1)
+      // Left side's thrust minus the right side's, on its arm: more thrust on the left swings the nose right (+z body moment).
+      thrustYawNm = (this.P.jet.armM ?? 0) * (this.thrustSidesN[0] - this.thrustSidesN[1])
+      this.jetState.n1Pct = (this.jetSides[0].n1Pct + this.jetSides[1].n1Pct) / 2
+      this.jetState.thrustN = this.jetSides[0].thrustN + this.jetSides[1].thrustN
+      this.jetState.fuelFlowKgS = this.jetSides[0].fuelFlowKgS + this.jetSides[1].fuelFlowKgS
+      this.prop.thrustN = thrust
       this.prop.torqueNm = 0
-      this.prop.fuelFlowKgS = this.jetState.fuelFlowKgS * powerFactor
-      this.prop.shaftPowerW = Math.max(this.jetState.thrustN * powerFactor * vAir, 0)
+      this.prop.fuelFlowKgS = fuel
+      this.prop.shaftPowerW = shaft
       this.prop.rpm = 0
       this.prop.omegaRadS = 0
     } else {
@@ -382,6 +452,7 @@ export class Aircraft {
     v3copy(this.force, this.aeroOut.force)
     this.force.x += this.prop.thrustN
     v3copy(this.moment, this.aeroOut.moment)
+    this.moment.z += thrustYawNm
 
     // ---- gear ----
     qrotate(this.velNed, this.quat, this.velBody)
@@ -397,15 +468,15 @@ export class Aircraft {
       this.moment.y += this.gearOut.moment.y
       this.moment.z += this.gearOut.moment.z
     } else {
-      // Gear not down: no wheel forces. Surface contact gear-up is a crash
-      // (no belly-slide model — honest simplification, recorded).
+      // Gear not down: no wheel forces. Surface contact gear-up is a belly landing: held at the surface and sliding on
+      // friction (a simple model: no damage, no fire).
       this.gearOut.onGround = false
       this.gearOut.maxCompressionM = 0
       // Belly height, not CG height: a heavy's CG sits metres above its
       // skin, so the old 0.3 m CG test let it sink visibly through the
       // runway before "crashing". Belly ≈ 45% of the main-gear leg below
       // the origin (737: 1.28 m vs 2.9 m legs).
-      if (ai.heightAglM < Math.max(this.P.gear.mainL.z * 0.45, 0.3)) this.crashed = true
+      // On the belly the airplane is held at the surface and slides (below, after the integration); it is not a stop.
     }
 
     // ---- gravity ----
@@ -436,8 +507,40 @@ export class Aircraft {
     this.posNed.y += this.velNed.y * dt
     this.posNed.z += this.velNed.z * dt
 
-    // Crash guard: structural impact (deep gear strike / absurd ground
-    // speed) or numeric blowup freezes the sim honestly instead of exploding.
+    // ---- hard ground contact: the sim keeps going ----
+    // A strut pushed past its travel (a very hard landing) or the belly on the ground (gear up): the airplane is held at the
+    // surface and the part of the descent the gear could not absorb is taken out (an inelastic stop), and on its belly it
+    // slides on friction. It is counted and reported (lastImpact), never frozen.
+    {
+      const STRUT_TRAVEL_M = 0.45
+      let floorM = 0
+      let kind: 'hard' | 'belly' | null = null
+      if (this.gearPos > 0.95) {
+        const pen = this.gearOut.maxCompressionM + Math.max(this.velNed.z, 0) * dt
+        if (this.gearOut.maxCompressionM > 0 && pen > STRUT_TRAVEL_M) { floorM = pen - STRUT_TRAVEL_M; kind = 'hard' }
+      } else {
+        const bellyM = Math.max(this.P.gear.mainL.z * 0.45, 0.3)
+        const h = -this.posNed.z - this.safeGroundElev(this.posNed.x, this.posNed.y)
+        if (h < bellyM) { floorM = bellyM - h; kind = 'belly' }
+      }
+      if (kind) {
+        if (!this.inHardContact) { this.impactCount++; this.lastImpact = { kind, fpm: Math.max(this.velNed.z, 0) * 196.850394 } }
+        this.inHardContact = true
+        this.posNed.z -= floorM
+        if (this.velNed.z > 0) this.velNed.z = 0
+        if (kind === 'belly') {
+          const h = Math.hypot(this.velNed.x, this.velNed.y), dv = 0.5 * G * dt
+          const keep = h > dv ? (h - dv) / h : 0
+          this.velNed.x *= keep; this.velNed.y *= keep
+          this.rates.x *= 0.9; this.rates.y *= 0.9; this.rates.z *= 0.95
+          this.gearOut.onGround = true
+        }
+        qrotateInv(this.velBody, this.quat, this.velNed)
+      } else this.inHardContact = false
+    }
+
+    // Crash guard: an absurd ground speed on the wheels or a numeric blowup freezes the sim honestly instead of exploding. A
+    // hard touchdown no longer does (held at the surface above).
     const finite =
       isFinite(this.posNed.x + this.posNed.y + this.posNed.z) &&
       isFinite(this.velBody.x + this.velBody.y + this.velBody.z) &&
@@ -446,9 +549,7 @@ export class Aircraft {
     // 105 m/s ≈ 204 kt GS on wheels: past every fleet tire limit (B737
     // Vtire 195 kt) yet clear of every legitimate rotation/touchdown.
     // The old C172-era 75 m/s froze 737 takeoffs mid-roll at ~140 KIAS.
-    const impact =
-      this.gearOut.maxCompressionM > 0.45 ||
-      (this.gearOut.onGround && Math.hypot(this.velNed.x, this.velNed.y, this.velNed.z) > 105)
+    const impact = this.gearOut.onGround && this.gearPos > 0.95 && Math.hypot(this.velNed.x, this.velNed.y, this.velNed.z) > 105
     if (!finite || impact) {
       this.crashed = true
       v3set(this.velBody, 0, 0, 0)
@@ -489,6 +590,7 @@ export class Aircraft {
     // 2.72 — jets read ~12% high on the old avgas constant.
     d.fuelFlowGph = (this.prop.fuelFlowKgS / (this.P.jet ? 3.03 : 2.72155)) * 3600
     d.n1Pct = this.jetState ? this.jetState.n1Pct : 0
+    d.n1SidesPct = this.jetSides ? [this.jetSides[0].n1Pct, this.jetSides[1].n1Pct] : [d.n1Pct, d.n1Pct]
     d.gearPos = this.gearPos
     d.stallFraction = this.aeroOut.stallFraction
     d.onGround = this.gearOut.onGround
@@ -513,6 +615,7 @@ export class Aircraft {
     )
     // For jets the trim solver's `rpm` slot carries N1 % — seed the spool.
     if (this.jetState) this.jetState.n1Pct = rpm
+    if (this.jetSides) for (const side of this.jetSides) side.n1Pct = rpm
     this.prop.omegaRadS = (rpm * Math.PI) / 30
     this.alphaPrev = alphaRad
     // Trim is an AIRMASS condition: the requested TAS is air-relative, so

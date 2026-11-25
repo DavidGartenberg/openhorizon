@@ -8,6 +8,7 @@ import { upgradePlayerAircraft, disposeAircraftGeometry } from '../../src/render
 import { XP_SURFACE_CALIBRATION } from '../../src/render/xplane-manifest'
 import { pavementMaterial } from '../../src/render/surface-materials'
 import type { AnimSpec } from '../../src/render/xplane-obj8'
+import { setMaterialDetailQuality, setMaterialFinishPreset, type MaterialDetailQuality, type MaterialFinishPreset } from '../../src/render/material-packs'
 
 const {scene,camera,renderer}=createScene(document.body)
 camera.fov=42;camera.near=.08;camera.updateProjectionMatrix()
@@ -18,6 +19,13 @@ const ground=new THREE.Mesh(new THREE.PlaneGeometry(20000,20000),pavementMateria
 ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;scene.add(ground)
 const chooser=document.querySelector('[aria-label="Aircraft"]') as HTMLSelectElement
 const surfaceChooser=document.querySelector('[aria-label="Inspect surface"]') as HTMLSelectElement
+const detail=document.createElement('select');detail.setAttribute('aria-label','Material detail')
+for(const value of ['performance','high','ultra'])detail.add(new Option(value,value))
+detail.value='high';detail.onchange=()=>setMaterialDetailQuality(detail.value as MaterialDetailQuality)
+const finish=document.createElement('select');finish.setAttribute('aria-label','Material finish')
+for(const value of ['factory','in-service','weathered'])finish.add(new Option(value,value))
+finish.value='in-service';finish.onchange=()=>setMaterialFinishPreset(finish.value as MaterialFinishPreset)
+document.querySelector('nav')!.append(detail,finish)
 chooser.replaceChildren(...PLAYER_AIRCRAFT.map(entry=>{
  const option=document.createElement('option');option.value=entry.key;option.textContent=`${entry.label} · ${entry.key}`;return option
 }))
@@ -148,7 +156,7 @@ function render(now:number){
  // Otherwise switching from deployed flaps to a flapless glider leaves a false full slider.
  for(const id of ['flaps','spoilers'])if(slider(id).disabled)slider(id).value='0'
  const state=surfaceState();ship.surfaces?.(state)
- const evidenceText=JSON.stringify({aircraft:chooser.value,source:ship.group.userData.visualSource??'procedural',controls:state,authored:native?.userData.surfaceValues??{}},null,2)
+ const evidenceText=JSON.stringify({aircraft:chooser.value,source:ship.group.userData.visualSource??'procedural',controls:state,artwork:ship.group.userData.assetEvidence?.donor?ship.group.userData.assetEvidence:undefined,authored:native?.userData.surfaceValues??{}},null,2)
  const evidenceOutput=document.getElementById('surface-state')!
  if(evidenceOutput.textContent!==evidenceText)evidenceOutput.textContent=evidenceText
  updateProp(ship,(document.getElementById('props') as HTMLInputElement).checked?1200:0,Math.min((now-lastFrame)/1000,.05));lastFrame=now

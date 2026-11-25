@@ -25,6 +25,9 @@ export interface CopilotObs {
   flapsDeg?: number
   glider?: boolean
   throttle: number
+  /** An ILS (localizer + glideslope) is tuned, received and being flown: the
+   *  minimums calls only make sense on a precision approach. */
+  ils?: boolean
 }
 
 export interface CopilotSpeeds {
@@ -46,8 +49,26 @@ export function makeCopilotLatches(): CopilotLatches {
   return { fired: new Set(), wasAirborne: false }
 }
 
-const TAKEOFF_KEYS = ['alive', 'eighty', 'v1', 'rotate', 'posRate', 'gearUp', 'flapsUp'] as const
-const LANDING_KEYS = ['oneThousand', 'sixty'] as const
+/** Everything the first officer can say (exported so the voice can render
+ *  these ahead of time — a callout must not wait on speech synthesis). */
+export const COPILOT_CALLOUT_TEXT = {
+  alive: 'airspeed alive',
+  eighty: 'eighty knots',
+  hundred: 'one hundred knots',
+  v1: 'vee one',
+  rotate: 'rotate',
+  posRate: 'positive rate',
+  gearUp: 'gear up',
+  flapsUp: 'flaps up speed',
+  oneThousand: 'one thousand',
+  approachingMins: 'approaching minimums',
+  minimums: 'minimums',
+  sixty: 'sixty knots',
+} as const
+export const COPILOT_CALLOUTS: readonly string[] = Object.values(COPILOT_CALLOUT_TEXT)
+
+const TAKEOFF_KEYS = ['alive', 'eighty', 'hundred', 'v1', 'rotate', 'posRate', 'gearUp', 'flapsUp'] as const
+const LANDING_KEYS = ['oneThousand', 'approachingMins', 'minimums', 'sixty'] as const
 
 /**
  * V-speeds from the type's real parameters. Vr = 1.15 × the TAKEOFF-detent
@@ -101,29 +122,41 @@ export function copilotCallouts(
   if (!prev.onGround && s.onGround) {
     for (const k of TAKEOFF_KEYS) L.fired.delete(k)
   }
+  // A go-around (climbing away from the field, well above the approach's
+  // 1000 ft point) re-arms the approach calls so the next approach gets them.
+  if (!s.onGround && s.vsFpm > 500 && s.aglFt > 1200) {
+    for (const k of ['oneThousand', 'approachingMins', 'minimums'] as const) L.fired.delete(k)
+  }
 
   if (s.onGround) {
     // Takeoff roll: power up AND accelerating — a landing rollout under
     // reverse thrust also reads high "throttle" but decelerates.
     if (!s.glider && s.throttle > 0.6 && s.kias >= prev.kias) {
-      if (s.kias >= 40) fire('alive', 'airspeed alive')
-      if (s.kias >= 80 && sp.vrKt > 90) fire('eighty', 'eighty knots')
-      if (sp.v1Kt >= 80 && s.kias >= sp.v1Kt) fire('v1', 'vee one')
-      if (s.kias >= sp.vrKt) fire('rotate', 'rotate')
+      if (s.kias >= 40) fire('alive', COPILOT_CALLOUT_TEXT.alive)
+      if (s.kias >= 80 && sp.vrKt > 90) fire('eighty', COPILOT_CALLOUT_TEXT.eighty)
+      if (s.kias >= 100 && sp.vrKt > 110) fire('hundred', COPILOT_CALLOUT_TEXT.hundred)
+      if (sp.v1Kt >= 80 && s.kias >= sp.v1Kt) fire('v1', COPILOT_CALLOUT_TEXT.v1)
+      if (s.kias >= sp.vrKt) fire('rotate', COPILOT_CALLOUT_TEXT.rotate)
     }
     // Rollout after a flight: sixty knots decelerating.
     if (L.wasAirborne && prev.kias > 60 && s.kias <= 60) {
-      fire('sixty', 'sixty knots')
+      fire('sixty', COPILOT_CALLOUT_TEXT.sixty)
       L.wasAirborne = false
     }
   } else {
-    if (!s.glider && s.vsFpm > 300 && s.aglFt > 20) fire('posRate', 'positive rate')
-    if (gearRetractable && prev.gearDown && !s.gearDown) fire('gearUp', 'gear up')
+    if (!s.glider && s.vsFpm > 300 && s.aglFt > 20) fire('posRate', COPILOT_CALLOUT_TEXT.posRate)
+    if (gearRetractable && prev.gearDown && !s.gearDown) fire('gearUp', COPILOT_CALLOUT_TEXT.gearUp)
     if (!s.glider && (s.flapsDeg !== undefined ? s.flapsDeg > 0 : s.flapsIndex > 0) && s.kias >= sp.flapsUpKt && s.vsFpm > 0 && s.aglFt > 400) {
-      fire('flapsUp', 'flaps up speed')
+      fire('flapsUp', COPILOT_CALLOUT_TEXT.flapsUp)
     }
     // Descending through 1000 AGL ("five hundred" belongs to TAWS).
-    if (s.vsFpm < -200 && prev.aglFt > 1000 && s.aglFt <= 1000) fire('oneThousand', 'one thousand')
+    if (s.vsFpm < -200 && prev.aglFt > 1000 && s.aglFt <= 1000) fire('oneThousand', COPILOT_CALLOUT_TEXT.oneThousand)
+    // Precision approach only: 300 ft "approaching minimums", 200 ft "minimums"
+    // (the standard Cat I decision height; this sim has no approach-plate DH).
+    if (s.ils && s.vsFpm < -200) {
+      if (prev.aglFt > 300 && s.aglFt <= 300) fire('approachingMins', COPILOT_CALLOUT_TEXT.approachingMins)
+      if (prev.aglFt > 200 && s.aglFt <= 200) fire('minimums', COPILOT_CALLOUT_TEXT.minimums)
+    }
   }
 
   return out

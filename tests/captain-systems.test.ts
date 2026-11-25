@@ -80,7 +80,7 @@ describe('autobrake', () => {
   it('manual brake disarms until selector is cycled', () => {
     let s = stepCaptainSystems(createCaptainSystems(), { ...ground, onGround: false, autobrakeMode: 'medium' }, 1)
     s = stepCaptainSystems(s, { ...ground, groundSpeedKt: 100 }, 1)
-    s = stepCaptainSystems(s, { ...ground, groundSpeedKt: 90, manualBrake: 0.2 }, 1)
+    s = stepCaptainSystems(s, { ...ground, groundSpeedKt: 90, manualBrake: 0.4 }, 1)
     expect(s.autobrakeDemand).toBe(0)
     expect(stepCaptainSystems(s, { ...ground, groundSpeedKt: 80, autobrakeMode: 'medium' }, 1).autobrakeDemand).toBe(0)
   })

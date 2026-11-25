@@ -18,9 +18,18 @@ describe('real taxi routes (night-shift N7)', () => {
     const { GroundController } = await import('../src/sim/atc/ground')
     const g = new GroundController({ facility: 'SFO Ground', freqMhz: 121.8, activeRunway: '28R' })
     const withRoute = g.request('Skyhawk 123AB', 'taxiOut', 0, ['A', 'F'])
-    expect(withRoute[0]!.text).toContain('taxi via A, F, hold short runway 28R')
+    expect(withRoute[0]!.text).toContain('taxi via A, F, hold short of runway 28R')
     const g2 = new GroundController({ facility: 'SFO Ground', freqMhz: 121.8, activeRunway: '28R' })
     const bare = g2.request('Skyhawk 123AB', 'taxiOut')
-    expect(bare[0]!.text).toContain('via the parallel')
+    expect(bare[0]!.text).toContain('taxi to runway 28R')
+  })
+  it('names the facility on the first call to an aircraft only, and tags the instruction for the readback', async () => {
+    const { GroundController } = await import('../src/sim/atc/ground')
+    const g = new GroundController({ facility: 'SFO Ground', freqMhz: 121.8, activeRunway: '28R' })
+    const first = g.request('Skyhawk 123AB', 'taxiOut', 0, ['A', 'F'])[0]!
+    expect(first.text.startsWith('Skyhawk 123AB, SFO Ground, runway 28R')).toBe(true)
+    expect(first).toMatchObject({ to: 'Skyhawk 123AB', kind: 'taxi', args: { runway: '28R', via: ['A', 'F'] } })
+    const again = g.request('Skyhawk 123AB', 'taxiOut', 5, ['A'])[0]!
+    expect(again.text.startsWith('Skyhawk 123AB, runway 28R')).toBe(true)
   })
 })

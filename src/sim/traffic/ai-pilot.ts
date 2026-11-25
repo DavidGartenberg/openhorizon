@@ -6,8 +6,9 @@
  */
 import { TrafficPlane } from './pointmass'
 import { makePatternLegs, DOWNWIND_LEG_INDEX, type PatternRunway } from './pattern'
-import { TowerController, pilotPhrase, type TrafficView } from '../atc/tower'
-import { CommsBus } from '../atc/comms'
+import { TowerController, pilotPhrase, type PilotCallContext, type TrafficView } from '../atc/tower'
+import { CommsBus, type Transmission } from '../atc/comms'
+import { isAddressedTo, readbackText } from '../atc/phraseology'
 
 export type AiPhase = 'waiting' | 'holdShort' | 'pattern' | 'landed' | 'taxiOff' | 'done'
 
@@ -29,6 +30,9 @@ export class AiPatternPilot {
       bus: CommsBus
       freqMhz: number
       startDelayS?: number
+      /** The tower's name and the ATIS letter held, spoken on every call ("Palo Alto Tower, Skyhawk 77GA, ..."). */
+      facility?: string
+      atis?: string
     },
   ) {
     this.startDelayS = cfg.startDelayS ?? 0
@@ -43,6 +47,7 @@ export class AiPatternPilot {
       if (t.text.startsWith(cfg.callsign) && t.text.toLowerCase().includes('cleared to land')) {
         this.clearedToLand = true
       }
+      this.hear(t)
     })
   }
 
@@ -63,12 +68,41 @@ export class AiPatternPilot {
     return { distanceM: d, aglFt: this.plane.altFt - this.cfg.runway.elevFt, onGround: this.onGround }
   }
 
-  private say(text: string, atSimS: number): void {
-    this.cfg.bus.transmit({ freqMhz: this.cfg.freqMhz, from: this.cfg.callsign, text, atSimS })
+  private say(text: string, atSimS: number, to?: string): void {
+    this.cfg.bus.transmit({ freqMhz: this.cfg.freqMhz, from: this.cfg.callsign, text, atSimS, ...(to ? { to } : {}) })
+  }
+
+  /** Readbacks waiting for their moment: a pilot answers a second or two after the controller finishes. */
+  private readonly readbacks: Array<{ dueS: number; text: string; freqMhz: number }> = []
+  private nextReadbackJitter = 0
+
+  /** An instruction addressed to this aircraft is read back, with the callsign last. */
+  private hear(t: Transmission): void {
+    if (t.from === this.cfg.callsign || !isAddressedTo(t, this.cfg.callsign)) return
+    const text = readbackText(t, this.cfg.callsign)
+    if (!text) return
+    // 1.2–2.6 s: varies call to call, deterministically (no random source in the sim core).
+    this.nextReadbackJitter = (this.nextReadbackJitter * 7 + 3) % 14
+    this.readbacks.push({ dueS: t.atSimS + 1.2 + this.nextReadbackJitter / 10, text, freqMhz: t.freqMhz })
+  }
+
+  private flushReadbacks(atSimS: number): void {
+    for (let i = this.readbacks.length - 1; i >= 0; i--) {
+      const r = this.readbacks[i]!
+      if (atSimS < r.dueS) continue
+      this.readbacks.splice(i, 1)
+      this.cfg.bus.transmit({ freqMhz: r.freqMhz, from: this.cfg.callsign, text: r.text, atSimS })
+    }
+  }
+
+  private call(kind: Parameters<typeof pilotPhrase>[1]): string {
+    const ctx: PilotCallContext = { ...(this.cfg.facility ? { facility: this.cfg.facility } : {}), ...(this.cfg.atis ? { atis: this.cfg.atis } : {}) }
+    return pilotPhrase(this.cfg.callsign, kind, this.cfg.runwayIdent, ctx)
   }
 
   step(dt: number, atSimS: number): void {
     const c = this.cfg
+    this.flushReadbacks(atSimS)
     if (this.phase === 'waiting') {
       if (atSimS >= this.startDelayS) this.phase = 'holdShort'
       return
@@ -76,7 +110,7 @@ export class AiPatternPilot {
     if (this.phase === 'holdShort') {
       if (atSimS - this.lastRequestAtS > 15) {
         this.lastRequestAtS = atSimS
-        this.say(pilotPhrase(c.callsign, 'readyTakeoff', c.runwayIdent), atSimS)
+        this.say(this.call('readyTakeoff'), atSimS)
         const replies = c.tower.request(c.callsign, 'readyTakeoff', this.view(), atSimS)
         for (const r of replies) c.bus.transmit(r)
         if (replies.some((r) => r.text.toLowerCase().includes('cleared for takeoff'))) {
@@ -96,13 +130,13 @@ export class AiPatternPilot {
       const legIdx = this.plane.currentLeg() === null ? Infinity : this.plane.legIndex
       if (!this.announcedDownwind && legIdx > DOWNWIND_LEG_INDEX) {
         this.announcedDownwind = true
-        this.say(`${c.callsign}, left downwind runway ${c.runwayIdent}, full stop`, atSimS)
+        this.say(`${c.facility ? `${c.facility}, ` : ''}${c.callsign}, left downwind runway ${c.runwayIdent}, full stop`, atSimS)
         c.tower.registerInbound(c.callsign, this.view())
       }
       // Short final without a clearance → go around.
       const v = this.view()
       if (!this.clearedToLand && !v.onGround && this.announcedDownwind && v.distanceM < 1400 && v.aglFt < 400) {
-        this.say(pilotPhrase(c.callsign, 'goAround', c.runwayIdent), atSimS)
+        this.say(this.call('goAround'), atSimS)
         for (const r of c.tower.request(c.callsign, 'goAround', v, atSimS)) c.bus.transmit(r)
         this.announcedDownwind = false
         this.clearedToLand = false
@@ -137,7 +171,7 @@ export class AiPatternPilot {
       if (this.plane.currentLeg() === null) {
         this.plane.gsKt = 0
         this.phase = 'done'
-        this.say(pilotPhrase(c.callsign, 'clearRunway', c.runwayIdent), atSimS)
+        this.say(this.call('clearRunway'), atSimS)
         for (const r of c.tower.request(c.callsign, 'clearRunway', this.view(), atSimS)) c.bus.transmit(r)
       }
       return

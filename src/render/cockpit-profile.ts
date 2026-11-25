@@ -85,6 +85,10 @@ function makerOf(d: string): Maker {
 }
 
 function duLayoutFor(d: string): DuLayoutName {
+  // The default Boeing 737-800 flies the MAX-style deck (four large landscape
+  // displays), as the pilot asked — recorded in PROGRESS.md. Other 737NG
+  // variants keep their real six-display arrangement.
+  if (d === '737' || d === 'B738') return 'fourWide'
   // 737 MAX, Gulfstream PlaneView, Falcon EASy, Challenger / Citation
   // Pro Line, and the four-tube EFIS turboprops.
   if (/^(B38M|B39M|GLF5|GLF6|CL30|CL35|F2TH|FA7X|C56X|C680|DH8A|SF34|JS41|E120|B190|C130|SW4|D228|L410)$/.test(d)) return 'fourWide'
@@ -177,7 +181,8 @@ export function cockpitProfile(designator: string, P: AircraftParams, info: Prof
 
 /** Manufacturer palettes: panel face, glareshield, sidewall lining. */
 export const PALETTES: Record<Maker, { panel: string; edge: string; glare: number; lining: number; ceiling: number; stand: number }> = {
-  boeing: { panel: '#565b60', edge: '#3f4347', glare: 0x232527, lining: 0xb4b3ab, ceiling: 0xc4c3bb, stand: 0x4f5459 },
+  // Boeing: dark padded glareshield, charcoal panel, cream sidewalls and headliner.
+  boeing: { panel: '#4a4f54', edge: '#34383c', glare: 0x151618, lining: 0xd9cfb6, ceiling: 0xe3dac6, stand: 0x3f4347 },
   airbus: { panel: '#55636f', edge: '#3c4650', glare: 0x283038, lining: 0xb9bdc1, ceiling: 0xc7cacd, stand: 0x4f5c68 },
   md: { panel: '#5d625e', edge: '#424643', glare: 0x262826, lining: 0xb2ad9f, ceiling: 0xc0bcaf, stand: 0x545955 },
   bombardier: { panel: '#545a61', edge: '#3d4247', glare: 0x24272b, lining: 0xbdb6a8, ceiling: 0xc9c3b6, stand: 0x4c5258 },

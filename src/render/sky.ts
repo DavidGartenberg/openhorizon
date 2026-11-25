@@ -54,7 +54,17 @@ export class SkyDome {
   readonly sunDir = new THREE.Vector3(0, 1, 0)
   elevationDeg = 0
   private cloudCover = 0
-  get directTransmission(): number { return Math.exp(-this.cloudCover * 2.7) }
+  private measuredTransmission: number | null = null
+  private sunDayness = 0
+  /** Direct sun at the shadow target: the measured cloud transmission when cloud-shadows.ts supplies one, else dimming by cloud cover. */
+  get directTransmission(): number { return this.measuredTransmission ?? this.coverTransmission }
+  /** The old uniform dimming by cloud cover alone: what is applied where no cloud shadow is drawn. */
+  get coverTransmission(): number { return Math.exp(-this.cloudCover * 2.7) }
+  /** Sun light scale from the cloud masses between the shadow target and the sun (null: back to cloud cover). */
+  setSunTransmission(t: number | null): void {
+    this.measuredTransmission = t
+    this.sunLight.intensity = 3.2 * this.sunDayness * this.directTransmission
+  }
   setCloudCover(cover: number): void { this.cloudCover = Math.max(0, Math.min(1, cover)) }
   private readonly lookup = new THREE.WebGLRenderTarget(512, 256, {
     type: THREE.HalfFloatType, depthBuffer: false,
@@ -77,15 +87,46 @@ export class SkyDome {
   private readonly shadowTarget = new THREE.Vector3()
   private shadowHalf = 120
 
+  private spanM = 12
+  private cockpitShadows = false
+
   /** Spend shadow texels on the selected airframe, not an empty 240m box. */
   setShadowSize(spanM: number): void {
-    this.shadowHalf = THREE.MathUtils.clamp(spanM*1.4, 24, 120)
-    const c = this.sunLight.shadow.camera
+    this.spanM = spanM
+    if (this.cockpitShadows) return
+    this.applyExteriorShadows()
+  }
+
+  private applyExteriorShadows(): void {
+    this.shadowHalf = THREE.MathUtils.clamp(this.spanM*1.4, 24, 120)
+    const sh = this.sunLight.shadow, c = sh.camera
     c.left = c.bottom = -this.shadowHalf
     c.right = c.top = this.shadowHalf
+    c.near = 10; c.far = 1600
     c.updateProjectionMatrix()
-    this.sunLight.shadow.normalBias = this.shadowHalf/1000
+    sh.bias = -0.00002
+    sh.normalBias = this.shadowHalf/1000
   }
+
+  /** In the cockpit the whole 2048² shadow map is spent on the flight deck
+   *  (a ±3 m box, ~3 mm texels), so window frames, seats and panel edges cast
+   *  crisp sunlight instead of 5 cm mush. The airframe's own ground shadow
+   *  returns the moment the camera leaves the cockpit. */
+  setCockpitShadows(on: boolean): void {
+    if (on === this.cockpitShadows) return
+    this.cockpitShadows = on
+    if (!on) { this.applyExteriorShadows(); return }
+    this.shadowHalf = COCKPIT_SHADOW_HALF_M
+    const sh = this.sunLight.shadow, c = sh.camera
+    c.left = c.bottom = -this.shadowHalf
+    c.right = c.top = this.shadowHalf
+    // The light sits 700 m from the target: bracket just the box depth.
+    c.near = 700 - 18; c.far = 700 + 18
+    c.updateProjectionMatrix()
+    sh.bias = -0.00006
+    sh.normalBias = 0.006
+  }
+  get inCockpitShadowMode(): boolean { return this.cockpitShadows }
 
   constructor(scene: THREE.Scene) {
     this.lookup.texture.name = 'Atmospheric radiance (linear HDR)'
@@ -155,6 +196,7 @@ export class SkyDome {
     this.sunLight.target.position.copy(this.shadowTarget)
     const dayness = THREE.MathUtils.smoothstep(angles.elevationDeg, -4, 10)
     const low = 1-THREE.MathUtils.smoothstep(angles.elevationDeg, 0, 25)
+    this.sunDayness = dayness
     this.sunLight.intensity = 3.2*dayness*this.directTransmission
     this.sunLight.color.setRGB(1, 1-0.35*low, 1-0.65*low)
     this.hemiLight.intensity = 0.025+(0.45+0.15*this.cloudCover)*dayness
@@ -172,5 +214,7 @@ export class SkyDome {
       .addScaledVector(_up, Math.round(u/texel)*texel-u)
   }
 }
+/** Half-width of the cockpit shadow box, metres. */
+export const COCKPIT_SHADOW_HALF_M = 3.2
 const _X = new THREE.Vector3(1,0,0), _Y = new THREE.Vector3(0,1,0)
 const _right = new THREE.Vector3(), _up = new THREE.Vector3()

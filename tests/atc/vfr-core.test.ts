@@ -30,8 +30,13 @@ describe('ATIS + active runway', () => {
     expect(atis.text).toContain('visibility 10')
     expect(atis.text).toContain('few clouds at 4000')
     expect(atis.text).toContain('altimeter 30.01')
-    expect(atis.text).toContain('runway 31 in use')
+    expect(atis.text).toContain('landing and departing runway 31')
     expect(atis.text.toLowerCase()).toContain('advise on initial contact')
+  })
+
+  it('gives the time of the report in zulu, after the information letter', () => {
+    const atis = buildAtis('Palo Alto', WX, KPAO_RUNWAYS, 1, new Date(Date.UTC(2026, 10, 2, 18, 5)))
+    expect(atis.text.startsWith('Palo Alto information Bravo, 1805 zulu.')).toBe(true)
   })
 
   it('is honest with no weather: ATIS reports wind/altimeter unavailable', () => {
@@ -51,7 +56,7 @@ describe('Ground + Tower: full towered VFR departure and arrival', () => {
   it('ground issues a taxi clearance and expects the readback', () => {
     const { ground } = mk()
     const replies = ground.request('N123AB', 'taxiOut')
-    expect(replies[0]!.text).toContain('runway 31, taxi')
+    expect(replies[0]!.text).toContain('taxi to runway 31')
     expect(ground.awaitingReadback('N123AB')).toBe(true)
     const ack = ground.readback('N123AB', 'taxiOut')
     expect(ack[0]!.text.toLowerCase()).toContain('readback correct')

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { liveryMaterial, isBusinessLivery } from './livery'
+import { markBoeingSurface } from './boeing-surface-fit'
 
 const NOSE: [number, number][] = [[0,1],[.13,.994],[.27,.935],[.43,.81],[.60,.63],[.76,.425],[.88,.245],[.96,.105],[1,0]]
 const smooth = (x: number): number => { x = THREE.MathUtils.clamp(x, 0, 1); return x*x*(3-2*x) }
@@ -51,6 +52,7 @@ export function buildJetShell(length: number, radius: number, paint: THREE.Mater
   }
   geometry.setAttribute('position',new THREE.Float32BufferAttribute(p,3));geometry.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));geometry.setIndex(idx);geometry.computeVertexNormals()
   const shell=new THREE.Mesh(geometry,designator?liveryMaterial(designator,barrelLength,radius):paint);shell.userData.exteriorCabin=true;shell.name='continuousJetSkin';shell.castShadow=shell.receiveShadow=true;group.add(shell)
+  if (designator && /^B[37]/.test(designator)) markBoeingSurface(shell,'body',1,'barrel',true)
   const glass=new THREE.MeshPhysicalMaterial({color:0x183344,roughness:.13,metalness:.08,clearcoat:1,transparent:true,opacity:.9,depthWrite:false,side:THREE.DoubleSide})
   // Three trapezoids per side. Solve the skin angle for a physical window
   // height, so upper-deck deformation cannot stretch glazing into an arch.

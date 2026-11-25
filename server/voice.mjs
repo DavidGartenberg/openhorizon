@@ -5,6 +5,8 @@ import path from 'node:path'
 import os from 'node:os'
 import {fileURLToPath} from 'node:url'
 import {execFile} from 'node:child_process'
+import {castVoice,parseSayVoices,parseSayVoiceList,betterVoices} from './voice-cast.mjs'
+import {createNeuralHelper,speakAgreed} from './voice-neural.mjs'
 
 const MAX_WAV = 44 + 16000 * 2 * 20 + 4096
 function failure(status,message) { return Object.assign(new Error(message),{status}) }
@@ -46,29 +48,76 @@ async function body(req,max,signal) {
   try {for await(const chunk of req){const b=Buffer.from(chunk);bytes+=b.length;if(bytes>max)throw failure(413,'Speech request too large');chunks.push(b)}return Buffer.concat(chunks,bytes)}
   finally{signal.removeEventListener('abort',abort)}
 }
-/** Aviation voices (macOS `say`): controllers are male US voices with a
- *  per-facility pick, the first officer is a distinct crew voice, and
- *  automated cockpit warnings keep the classic female GPWS voice. Real
- *  controllers talk fast; real crews are clipped — rates reflect that. */
-const VOICES = {
-  atc: {names:['Reed (English (US))','Eddy (English (US))','Rocko (English (US))','Daniel'],rate:195},
-  copilot: {names:['Rocko (English (US))'],rate:178},
-  warning: {names:['Samantha'],rate:165},
+/** Aviation voices (macOS `say`), cast per speaker in `voice-cast.mjs`: controllers, other aircraft's crews, the ATIS, the first officer and the cockpit warnings each sound like different people. */
+export function pickVoice(role,speaker='',style='faa',installed,extra={}) {
+  const cast=castVoice({role,speaker,style,installed,...extra})
+  return {voice:cast.voice,rate:cast.rate,...(cast.pbas?{pbas:cast.pbas}:{})}
 }
-export function pickVoice(role,speaker='') {
-  const set=VOICES[role]??VOICES.warning
-  let seed=0;for(const c of String(speaker))seed=(seed*31+c.charCodeAt(0))|0
-  return {voice:set.names[Math.abs(seed)%set.names.length],rate:set.rate}
-}
+const CAL_SENTENCE='Skyhawk one two three Alpha Bravo, Palo Alto Tower, wind two seven zero at niner, runway three one, cleared for takeoff, then contact departure one two zero point five, good day.'
+const CAL_WORDS=CAL_SENTENCE.split(/\s+/).length
+/** The user's text with the speech synthesizer's embedded commands defused: a transmission is only words. */
+/** For the neural voices: the words only (they have no speech commands). */
+export function neuralSpeech(text){return String(text).replace(/\[\[[^\]]*\]\]/g,'').replace(/\s+/g,' ').trim()}
+export function plainSpeech(text){return String(text).replace(/\[\[/g,'[ [')}
 export function createVoiceService(options={}) {
   const whisper=options.whisper??process.env.OPENHORIZON_WHISPER_BIN??'/opt/homebrew/bin/whisper-cli'
   const model=options.model??process.env.OPENHORIZON_WHISPER_MODEL??fileURLToPath(new URL('./cache/speech/ggml-base.en.bin',import.meta.url))
   const say=options.say??'/usr/bin/say'
   const available=options.available??(async(file,executable=false)=>{try{await fs.access(file,executable?constants.X_OK:constants.R_OK);return true}catch{return false}})
   const run=options.run??runCommand
+  // Neural voices (Siri natural, Premium) through a helper process; off in tests that fake `say`, unless one is injected.
+  const neural=options.neural??createNeuralHelper(options.say===undefined?{}:{enabled:false})
+  // The installed voices (and any Premium / Enhanced ones, which are used first and have their pace measured once, in the background).
+  const listVoices=options.listVoices??(()=>new Promise(resolve=>{execFile(say,['-v','?'],{timeout:5000,maxBuffer:256*1024},(error,stdout)=>resolve(error?undefined:stdout))}))
+  const measuredRates=new Map()
+  async function calibrate(voice) {
+    if(options.calibrate)return options.calibrate(voice)
+    if(options.say!==undefined)return undefined
+    let dir
+    try{
+      dir=await fs.mkdtemp(path.join(os.tmpdir(),'openhorizon-rate-'))
+      const points=[]
+      for(const rate of [150,250]){
+        const file=path.join(dir,`${rate}.wav`)
+        await run(say,['-v',voice,'-r',String(rate),'--file-format=WAVE','--data-format=LEI16@16000','-o',file,'--',CAL_SENTENCE],{timeout:25000})
+        points.push([rate,Math.round(CAL_WORDS/(((await fs.stat(file)).size-44)/32000)*60)])
+      }
+      return points[1][1]>points[0][1]?points:undefined
+    }catch{return undefined}finally{if(dir)await fs.rm(dir,{recursive:true,force:true}).catch(()=>{})}
+  }
+  let voiceInfo
+  const installed=()=>(voiceInfo??=Promise.resolve(listVoices()).then(text=>{
+    if(!text)return {}
+    const better=betterVoices(parseSayVoiceList(text))
+    ;(async()=>{for(const v of better.slice(0,8)){const pts=await calibrate(v.name);if(pts)measuredRates.set(v.name,pts)}})().catch(()=>{})
+    return {installed:parseSayVoices(text),better}
+  }).catch(()=>({})))
   let busy=false
-  async function status(){return {transcription:await available(whisper,true)&&await available(model),synthesis:(options.say!==undefined||process.platform==='darwin')&&await available(say,true),engine:'whisper.cpp',maxSeconds:20}}
-  return async function voiceRoute(url,res,method='GET',req) {
+  async function status(){neural.warm();return {transcription:await available(whisper,true)&&await available(model),synthesis:(options.say!==undefined||process.platform==='darwin')&&await available(say,true),engine:'whisper.cpp',maxSeconds:20,neural:neural.enabled}}
+  /** Speak one transmission to `audio` (mono 16 kHz PCM WAV): cast the voice, neural engine first, then `say`. Returns the cast that was used. */
+  async function renderSpeech({text,role,speaker,style,ambient},audio,signal) {
+    const voices=await installed()
+    const roleName=typeof role==='string'?role:'warning'
+    const castArgs={role:roleName,speaker:typeof speaker==='string'?speaker.slice(0,64):'',style:style==='icao'?'icao':'faa',installed:voices.installed,better:voices.better??[],rates:measuredRates,ambient:ambient===true}
+    let cast=castVoice({...castArgs,neural:await neural.voices()})
+    let rendered=false
+    if(cast.engine==='neural'){
+      // The neural voices are the most human on the radio; if one cannot be had the transmission still goes out, in a built-in voice.
+      try{const job={voice:cast.voice,rate:cast.rate,pitch:cast.pitch,text:neuralSpeech(text)};await(cast.verify?speakAgreed(neural,job,audio,signal):neural.speak(job,audio,signal));rendered=true}
+      catch(error){if(signal.aborted)throw error;cast=castVoice({...castArgs,neural:[]})}
+    }
+    if(!rendered){
+      const pick={voice:cast.voice,rate:cast.rate,pbas:cast.pbas,role:roleName}
+      // The ATIS reads item by item: a beat between sentences, as a recording does.
+      const words=pick.role==='atis'?plainSpeech(text).replace(/\.\s+/g,'. [[slnc 280]] '):plainSpeech(text)
+      // Pitch is a speech command in the text itself: a few semitones either way makes one voice several people.
+      const say1=(voice,pbas)=>run(say,['-v',voice,'-r',String(pick.rate),'--file-format=WAVE','--data-format=LEI16@16000','-o',audio,'--',pbas?`[[pbas ${pbas}]] ${words}`:words],{signal:signal,timeout:30000})
+      // A voice the user's Mac does not have must not silence the radio.
+      try{await say1(pick.voice,pick.pbas)}catch(error){if(signal.aborted||error.killed||pick.voice==='Samantha')throw error;await say1('Samantha')}
+    }
+    return cast
+  }
+  const voiceRoute=async function voiceRoute(url,res,method='GET',req) {
     const bare=url.split('?')[0]
     if(!['/api/voice/status','/api/voice/transcribe','/api/voice/speak'].includes(bare))return false
     res.removeHeader?.('Access-Control-Allow-Origin')
@@ -91,8 +140,8 @@ export function createVoiceService(options={}) {
       if(!(synth?ready.synthesis:ready.transcription))throw failure(503,synth?'Local speech output unavailable':'Local Whisper executable or English model missing')
       stage='upload'
       const data=await body(req,synth?4096:MAX_WAV,cancel.signal)
-      let text,role,speaker
-      if(synth){try{const j=JSON.parse(data.toString());text=j.text;role=j.role;speaker=j.speaker}catch{throw failure(400,'Invalid speech JSON')};if(typeof text!=='string'||!text.trim()||text.length>600||/[\x00-\x08\x0b-\x1f]/.test(text))throw failure(400,'Speech text must contain 1–600 printable characters')}
+      let text,role,speaker,style,ambient
+      if(synth){try{const j=JSON.parse(data.toString());text=j.text;role=j.role;speaker=j.speaker;style=j.style;ambient=j.ambient}catch{throw failure(400,'Invalid speech JSON')};if(typeof text!=='string'||!text.trim()||text.length>600||/[\x00-\x08\x0b-\x1f]/.test(text))throw failure(400,'Speech text must contain 1–600 printable characters')}
       else validateWav(data)
       if(cancel.signal.aborted)throw failure(408,'Speech request cancelled')
       stage='temporary-files'
@@ -100,10 +149,7 @@ export function createVoiceService(options={}) {
       const audio=path.join(dir,'audio.wav'),output=path.join(dir,'result')
       if(synth){
         stage='synthesis-process'
-        const pick=pickVoice(typeof role==='string'?role:'warning',typeof speaker==='string'?speaker.slice(0,64):'')
-        const say1=voice=>run(say,['-v',voice,'-r',String(pick.rate),'--file-format=WAVE','--data-format=LEI16@16000','-o',audio,'--',text],{signal:cancel.signal,timeout:30000})
-        // A voice the user's Mac does not have must not silence the radio.
-        try{await say1(pick.voice)}catch(error){if(cancel.signal.aborted||error.killed||pick.voice==='Samantha')throw error;await say1('Samantha')}
+        await renderSpeech({text,role,speaker,style,ambient},audio,cancel.signal)
         stage='synthesis-output'
         const info=await fs.stat(audio);if(info.size>32000*60+4096)throw failure(502,'Speech output exceeds duration limit')
         const wav=await fs.readFile(audio)
@@ -128,5 +174,8 @@ export function createVoiceService(options={}) {
     finally{clearTimeout(timer);req.removeListener('aborted',abort);res.removeListener('close',closed);try{if(dir)await fs.rm(dir,{recursive:true,force:true})}finally{busy=false}}
     return true
   }
+  voiceRoute.render=renderSpeech
+  voiceRoute.close=()=>neural.close?.()
+  return voiceRoute
 }
 export const voiceRoute=createVoiceService()

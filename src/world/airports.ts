@@ -1,3 +1,4 @@
+import { searchAirports as searchAirportsPure } from './airport-search'
 import { pavementMaterial } from '../render/surface-materials'
 import * as THREE from 'three'
 import { FT } from '../sim/atmosphere'
@@ -6,8 +7,11 @@ import type { WorldFrame, RunwayFlatten } from './tiles'
 import { buildRunwayMarkings, buildDistanceSigns, buildTaxiwayComplex, dimPaintForNight, type RunwayLocal } from './airport-detail'
 import { airportBeacon, rabbitOn } from '../sim/lights'
 import { lightGlowTexture } from '../render/light-glow'
-import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount } from './papi'
+import { PAPI_ANGLES_DEG, papiAngleDeg, papiWhiteCount, papiMaterial, type PapiArray } from './papi'
 import { enhanceAirportWithOsm, osmIdentSegs } from './osm-layout'
+import type { ParkedSource } from './parked-aircraft'
+import { enhanceAirportWithXplane, setAptNight, NIGHT_GLOW, sockDirection, sockDroop } from './apt-layout'
+import { airportFlatDisk, airportFieldElevationM, BELOW_SEA_FIELD_M, lowlandRadiusM, flattenEnds, applyRunwayExtras, applyAirportExtents, type RunwayExtras, type AirportExtents } from './airport-flatten'
 import { primaryRunway, planAirportFacilities, buildAirportFacilities, updateAirportServices, disposeAirportObject, mappedApronPlan, footprintObstacle, type SurfaceObstacle, type GroundPoint } from './airport-scenery'
 
 export interface RunwayData {
@@ -22,7 +26,14 @@ export interface RunwayData {
   l: number // ft
   w: number
   s: number // 0 hard, 1 soft
+  /** A helipad of a heliport: short, drawn by X-Plane's layout (pavement and H), not as a runway strip. */
+  pad?: boolean
+  /** A water lane of a seaplane base (always a `pad` too): neither drawn nor levelled. */
+  water?: boolean
   lt: number
+  /** Blast pad / overrun beyond the li (o1) and hi (o2) ends, metres (X-Plane's airport data); absent = none/unknown. */
+  o1?: number
+  o2?: number
 }
 
 export interface AirportData {
@@ -33,24 +44,31 @@ export interface AirportData {
   e: number
   t: number // 0 small, 1 medium, 2 large
   r: RunwayData[]
+  /** The box [minLat, minLon, maxLat, maxLon] of the airport's pavement in X-Plane's layout (airports over ~1.5 km across). */
+  x?: [number, number, number, number]
+  /** An airport X-Plane has and the old database lacks (added from X-Plane's own list). */
+  xo?: boolean
+  /** Runs [lat1, lon1, lat2, lon2] where X-Plane's pavement makes this field land (fields that lie low: polders, reclaimed land). */
+  land?: Array<[number, number, number, number]>
 }
 
+/** The runway strip stands this far above the ground plane. (0.1 m, above X-Plane's taxiway pavement, was tried: it blackened the runway markings in this renderer.) */
+export const RUNWAY_STRIP_LIFT_M = 0.06
+/** How long to wait before asking again for the X-Plane-only airports after a failed request. */
+const XPLANE_ONLY_RETRY_MS = 30_000
+/** Half width (m) of a run of a low field's land mask (its cells are 100 m). */
+const LAND_RUN_HALF_WIDTH_M = 75
 const ASPHALT = pavementMaterial(0x484b4d, 'xy', 'runway')
-const TURF = new THREE.MeshStandardMaterial({ color: 0x3c5233, roughness: 1, envMapIntensity: 0.25 })
+/** Concrete runways (X-Plane's surface codes 2 and 30–38) are paler than asphalt ones. */
+const CONCRETE_RUNWAY = pavementMaterial(0x8e908b, 'xy', 'runway')
+/** Mown grass: a little paler than the fields around it, so a turf runway reads as a strip rather than a hole. */
+const TURF = new THREE.MeshStandardMaterial({ color: 0x7a9a52, roughness: 1, envMapIntensity: 0.25 })
 const STRIPE = new THREE.MeshBasicMaterial({ color: 0xd8d8d0 })
 const EDGE_LIGHT = new THREE.MeshBasicMaterial({ color: 0xffffff })
 const STRIPE_BASE = 0xd8d8d0
 const EDGE_SPHERE_BASE = 0xffffff
 const SOCK_ORANGE = new THREE.MeshStandardMaterial({ color: 0xe8641b, roughness: 0.8 })
 const MAST = new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 0.9 })
-/** 13d PAPI boxes: constant-pixel additive glow points, on day and night. */
-const PAPI_MAT = new THREE.PointsMaterial({
-  map: lightGlowTexture(), size: 5, sizeAttenuation: false, vertexColors: true,
-  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-})
-
-PAPI_MAT.userData.airportShared = true
-
 /** 13c: one additive Points cloud per airport (edge white, threshold
  *  green / end red, floodlit windsock) faded in by night, plus the
  *  white/green rotating beacon flashed by sim/lights cadence. */
@@ -62,28 +80,28 @@ interface NightLights {
   rabbitStations: number[]
 }
 
-/** 13d: one 4-box PAPI array per qualifying runway end. Colors are
- *  recomputed each frame from the CAMERA's elevation angle to the
- *  array (what the lens sees is what a pilot's eye would see). */
-interface PapiArray {
-  colors: THREE.BufferAttribute
-  /** Array center in airport-group-local coords. */
-  baseX: number
-  baseY: number
-  baseZ: number
-  /** Unit vector (x,z) pointing from the array out along the approach. */
-  outX: number
-  outZ: number
-  /** Per-box setting angle, box order matching the vertex order. */
-  boxAngles: number[]
-  rwyIdent: string
-}
+export { searchAirports } from './airport-search'
 
 export class Airports {
   private all: AirportData[] = []
   private readonly cells = new Map<string, AirportData[]>()
   private readonly rendered = new Map<string, THREE.Group>()
   loaded = false
+  private runwayExtras: RunwayExtras = {}
+  private airportExtents: AirportExtents = {}
+  private xplaneOnlyAt: { lat: number; lon: number } | null = null
+  private xplaneOnlyBusy = false
+  private landAt: { lat: number; lon: number } | null = null
+  private landBusy = false
+  private landRetryAt = 0
+  /** Called with a position and radius (m) when land masks arrive, so the terrain there is built again. */
+  onLandMask: ((lat: number, lon: number, radiusM: number) => void) | null = null
+  /** Not before this time (ms) after a failed fetch. */
+  private xplaneOnlyRetryAt = 0
+  /** Rendered terrain height (m) at a position, 0 when its tile is not loaded: lets the airport's pavement follow the ground. */
+  terrainAt: ((lat: number, lon: number) => number) | null = null
+  /** Whether the finest terrain tile at a position has loaded: the layout is draped on it, so it is rebuilt once it has. */
+  terrainReady: ((lat: number, lon: number) => boolean) | null = null
 
   constructor(private readonly scene: THREE.Scene, private readonly frame: WorldFrame) {}
 
@@ -91,6 +109,13 @@ export class Airports {
     const res = await fetch('/api/airports.json')
     if (!res.ok) throw new Error(`airports: HTTP ${res.status}`)
     this.all = (await res.json()) as AirportData[]
+    // X-Plane's blast pads / overruns (best effort: without an X-Plane install there are none).
+    try {
+      const [extras, extents] = await Promise.all([fetch('/api/apt-runways.json'), fetch('/api/apt-extent.json')])
+      if (extras.ok) { this.runwayExtras = (await extras.json()) as RunwayExtras; applyRunwayExtras(this.all, this.runwayExtras) }
+      if (extents.ok) { this.airportExtents = (await extents.json()) as AirportExtents; applyAirportExtents(this.all, this.airportExtents) }
+    } catch { /* keep the database as it is */ }
+    this.lowFields = null
     for (const ap of this.all) {
       const key = `${Math.floor(ap.la * 2)},${Math.floor(ap.lo * 2)}`
       let arr = this.cells.get(key)
@@ -99,6 +124,80 @@ export class Airports {
     }
     this.loaded = true
   }
+
+  /**
+   * Airports that X-Plane has and the old database lacks (about 22,000, mostly small fields) are fetched for the region
+   * around the player (120 km) as they fly, and added to the database: they are drawn like any other airport.
+   */
+  async ensureXplaneOnlyNear(lat: number, lon: number): Promise<void> {
+    if (!this.loaded || this.xplaneOnlyBusy || Date.now() < this.xplaneOnlyRetryAt) return
+    if (this.xplaneOnlyAt && distanceM({ lat, lon }, this.xplaneOnlyAt) < 40_000) return
+    this.xplaneOnlyBusy = true
+    try {
+      const res = await fetch(`/api/apt-airports.json?lat=${lat.toFixed(3)}&lon=${lon.toFixed(3)}&r=120000`)
+      if (!res.ok) { this.xplaneOnlyRetryAt = Date.now() + XPLANE_ONLY_RETRY_MS; return }
+      this.xplaneOnlyAt = { lat, lon }
+      this.addAirports((await res.json()) as AirportData[])
+    } catch { this.xplaneOnlyRetryAt = Date.now() + XPLANE_ONLY_RETRY_MS /* the database as it is; ask again later, not every frame */ } finally { this.xplaneOnlyBusy = false }
+  }
+
+  /** Fetch the land masks of the low fields within 60 km (again after 20 km of travel); terrain near a new one is rebuilt. */
+  async ensureLandNear(lat: number, lon: number): Promise<void> {
+    if (!this.loaded || this.landBusy || Date.now() < this.landRetryAt) return
+    if (this.landAt && distanceM({ lat, lon }, this.landAt) < 20_000) return
+    this.landBusy = true
+    try {
+      const res = await fetch(`/api/apt-land.json?lat=${lat.toFixed(3)}&lon=${lon.toFixed(3)}&r=60000`)
+      if (!res.ok) { this.landRetryAt = Date.now() + XPLANE_ONLY_RETRY_MS; return }
+      this.landAt = { lat, lon }
+      this.applyLandMasks((await res.json()) as Record<string, unknown>)
+    } catch { this.landRetryAt = Date.now() + XPLANE_ONLY_RETRY_MS } finally { this.landBusy = false }
+  }
+
+  /** True unless the terrain under a land mask is already loaded and entirely land (so building it again would change nothing). */
+  private landMaskChangesTerrain(runs: ReadonlyArray<readonly [number, number, number, number]>): boolean {
+    if (!this.terrainAt || !this.terrainReady) return true
+    for (const [a, b, c, d] of runs) {
+      for (const [la, lo] of [[a, b], [(a + c) / 2, (b + d) / 2], [c, d]] as const) {
+        if (!this.terrainReady(la, lo) || this.terrainAt(la, lo) <= 0) return true
+      }
+    }
+    return false
+  }
+
+  /** Put land masks on their airports (those that have one already are left); returns how many were new. */
+  applyLandMasks(masks: Record<string, unknown>): number {
+    let added = 0
+    if (!masks || typeof masks !== 'object') return 0
+    for (const [icao, runs] of Object.entries(masks)) {
+      const ap = this.all.find((a) => a.i === icao)
+      if (!ap || ap.land || !Array.isArray(runs)) continue
+      const ok = runs.filter((r): r is [number, number, number, number] => Array.isArray(r) && r.length === 4 && r.every((v) => Number.isFinite(v) && Math.abs(v as number) <= 180)).slice(0, 1000)
+      if (!ok.length) continue
+      ap.land = ok; added++
+      if (this.landMaskChangesTerrain(ok)) this.onLandMask?.(ap.la, ap.lo, 6000)
+    }
+    return added
+  }
+
+  /** Add airports to the database (those already in it are skipped). */
+  addAirports(list: readonly AirportData[]): number {
+    const have = new Set(this.all.map((a) => a.i))
+    const fresh = list.filter((a) => a && typeof a.i === 'string' && !have.has(a.i) && Array.isArray(a.r) && a.r.length && Number.isFinite(a.la) && Number.isFinite(a.lo))
+    applyRunwayExtras(fresh, this.runwayExtras); applyAirportExtents(fresh, this.airportExtents)
+    this.lowFields = null
+    for (const ap of fresh) {
+      this.all.push(ap)
+      const key = `${Math.floor(ap.la * 2)},${Math.floor(ap.lo * 2)}`
+      let arr = this.cells.get(key)
+      if (!arr) this.cells.set(key, (arr = []))
+      arr.push(ap)
+    }
+    return fresh.length
+  }
+
+  /** The rendered group for an airport (verification hooks). */
+  groupFor(icao: string): THREE.Group | undefined { return this.rendered.get(icao) }
 
   near(lat: number, lon: number, radiusM: number): AirportData[] {
     const dCell = radiusM / 55_000 + 1
@@ -118,6 +217,35 @@ export class Airports {
     return out
   }
 
+  /**
+   * The airfield nearest a position within `radiusM`: the one whose runway (an end or the middle) is closest, never a
+   * heliport. `near()[0]` is only the first in cell order, which was good enough while the database held only the
+   * larger fields.
+   */
+  nearestField(lat: number, lon: number, radiusM: number): AirportData | undefined {
+    let best: AirportData | undefined
+    let bestD = Infinity
+    for (const ap of this.near(lat, lon, radiusM + 3000)) {
+      let d = Infinity
+      for (const r of ap.r) {
+        if (r.pad) continue
+        for (const [la, lo] of [[r.la1, r.lo1], [r.la2, r.lo2], [(r.la1 + r.la2) / 2, (r.lo1 + r.lo2) / 2]] as const) d = Math.min(d, distanceM({ lat, lon }, { lat: la, lon: lo }))
+      }
+      if (d <= radiusM && d < bestD) { best = ap; bestD = d }
+    }
+    return best
+  }
+
+  /** The runways (never helipads) of the airfields within `radiusM` of a position. */
+  runwaysNear(lat: number, lon: number, radiusM: number): RunwayData[] {
+    return this.near(lat, lon, radiusM).flatMap((ap) => ap.r.filter((r) => !r.pad))
+  }
+
+  /** Ranked matches for a departure search box (see searchAirports). */
+  search(query: string, limit = 8): AirportData[] {
+    return searchAirportsPure(this.all, query, limit)
+  }
+
   find(query: string): AirportData | undefined {
     const q = query.trim().toUpperCase()
     return (
@@ -131,11 +259,22 @@ export class Airports {
     const out: RunwayFlatten[] = []
     const cLat = (latS + latN) / 2
     const cLon = (lonW + lonE) / 2
+    // Land below sea level around a field that lies there keeps its true heights (the data's negative cells are land, not sea).
+    for (const ap of this.lowFieldList()) {
+      const radius = lowlandRadiusM(airportFieldElevationM(ap))
+      if (distanceM({ lat: cLat, lon: cLon }, { lat: ap.la, lon: ap.lo }) < distanceM({ lat: latS, lon: lonW }, { lat: latN, lon: lonE }) / 2 + radius + 500) out.push({ la1: ap.la, lo1: ap.lo, la2: ap.la, lo2: ap.lo, e1M: 0, e2M: 0, halfWidthM: radius, lowland: true })
+    }
     for (const ap of this.near(cLat, cLon, distanceM({ lat: latS, lon: lonW }, { lat: latN, lon: lonE }) / 2 + 4000)) {
+      // The level disk first (a zero-length runway); the runway corridors then override it.
+      const disk = airportFlatDisk(ap)
+      if (disk) out.push({ la1: disk.lat, lo1: disk.lon, la2: disk.lat, lo2: disk.lon, e1M: disk.elevM, e2M: disk.elevM, halfWidthM: disk.halfWidthM, disk: true })
+      if (ap.land) for (const [a, b, c, d] of ap.land) out.push({ la1: a, lo1: b, la2: c, lo2: d, e1M: airportFieldElevationM(ap), e2M: airportFieldElevationM(ap), halfWidthM: LAND_RUN_HALF_WIDTH_M, land: true })
       for (const r of ap.r) {
+        if (r.water) continue
+        const f = flattenEnds({ ...r, e1M: r.e1 * FT, e2M: r.e2 * FT })
         out.push({
-          la1: r.la1, lo1: r.lo1, la2: r.la2, lo2: r.lo2,
-          e1M: r.e1 * FT, e2M: r.e2 * FT,
+          la1: f.la1, lo1: f.lo1, la2: f.la2, lo2: f.lo2,
+          e1M: f.e1M!, e2M: f.e2M!,
           halfWidthM: Math.max((r.w * FT) / 2, 12),
         })
       }
@@ -143,19 +282,46 @@ export class Airports {
     return out
   }
 
+  private lowFields: AirportData[] | null = null
+  private lowFieldList(): AirportData[] { return (this.lowFields ??= this.all.filter((ap) => airportFieldElevationM(ap) < BELOW_SEA_FIELD_M)) }
+
+  /** The fields that lie below sea level, within `rangeM` of a point: their positions and the radius (m) of land that keeps its true heights around each. Nearest first. */
+  belowSeaFields(lat: number, lon: number, rangeM: number): Array<{ lat: number; lon: number; radiusM: number }> {
+    const out: Array<{ lat: number; lon: number; radiusM: number; d: number }> = []
+    for (const ap of this.lowFieldList()) {
+      const d = distanceM({ lat, lon }, { lat: ap.la, lon: ap.lo })
+      if (d <= rangeM) out.push({ lat: ap.la, lon: ap.lo, radiusM: lowlandRadiusM(airportFieldElevationM(ap)), d })
+    }
+    return out.sort((a, b) => a.d - b.d).map(({ d: _d, ...f }) => f)
+  }
+
   /** Physics-side flattening — must match the worker's mesh flattening. */
   flattenElevation(terrainM: number, lat: number, lon: number): number {
     let h = terrainM
     for (const ap of this.near(lat, lon, 6000)) {
+      const disk = airportFlatDisk(ap)
+      if (disk) {
+        const mLat = 111_319.5
+        const mLon = mLat * Math.cos((lat * Math.PI) / 180)
+        const x = (disk.lon - lon) * mLon, y = (disk.lat - lat) * mLat
+        if (terrainM > 0 || disk.elevM < BELOW_SEA_FIELD_M) h = flattenForRunway(h, 0, 0, x, y, x, y, disk.elevM, disk.elevM, disk.halfWidthM) // open water stays water (as in the terrain worker), except around a field below sea level
+      }
+      if (ap.land && terrainM <= 0) {
+        // A reclaimed field's land: levelled where the data says sea, as in the terrain worker.
+        const mLat = 111_319.5, mLon = mLat * Math.cos((lat * Math.PI) / 180), e = airportFieldElevationM(ap)
+        for (const [a, b, c, d] of ap.land) h = flattenForRunway(h, 0, 0, (b - lon) * mLon, (a - lat) * mLat, (d - lon) * mLon, (c - lat) * mLat, e, e, LAND_RUN_HALF_WIDTH_M)
+      }
       for (const r of ap.r) {
+        if (r.water) continue
         // Work in a small local meter frame around the sample.
         const mLat = 111_319.5
         const mLon = mLat * Math.cos((lat * Math.PI) / 180)
+        const f = flattenEnds({ ...r, e1M: r.e1 * FT, e2M: r.e2 * FT })
         h = flattenForRunway(
           h, 0, 0,
-          (r.lo1 - lon) * mLon, (r.la1 - lat) * mLat,
-          (r.lo2 - lon) * mLon, (r.la2 - lat) * mLat,
-          r.e1 * FT, r.e2 * FT,
+          (f.lo1 - lon) * mLon, (f.la1 - lat) * mLat,
+          (f.lo2 - lon) * mLon, (f.la2 - lat) * mLat,
+          f.e1M!, f.e2M!,
           Math.max((r.w * FT) / 2, 12),
         )
       }
@@ -166,6 +332,8 @@ export class Airports {
   /** Build/refresh runway visuals near the aircraft. */
   updateVisuals(lat: number, lon: number): void {
     if (!this.loaded) return
+    void this.ensureXplaneOnlyNear(lat, lon)
+    void this.ensureLandNear(lat, lon)
     const nearby = this.near(lat, lon, 60_000)
     const wanted = new Set(nearby.map((a) => a.i))
     for (const [icao, group] of this.rendered) {
@@ -181,11 +349,41 @@ export class Airports {
         this.rendered.set(ap.i, g)
         // N8: real ground layout (async; procedural stand-in retires when
         // real data lands, stays when the airport is unmapped).
-        const elevM = (ap.r[0]?.e1 ?? 0) * 0.3048
-        void enhanceAirportWithOsm(g, ap.i, ap.la, ap.lo, elevM, ap.r)
+        this.applyXplane(g, ap, true)
+      }
+    }
+    // A layout draped before the fine terrain had loaded sits on coarse heights: drape it again once the fine tiles are in.
+    for (const ap of nearby) {
+      const g = this.rendered.get(ap.i)
+      if (g && g.userData.aptApplied && g.userData.aptFine === false && !g.userData.aptRebuilt && this.fineTerrainAt(ap)) {
+        g.userData.aptRebuilt = true
+        for (const name of ['aptLayout', 'aptLights', 'aptSigns']) { const o = g.getObjectByName(name); if (o) disposeAirportObject(o) }
+        delete g.userData.aptApplied; delete g.userData.aptLights
+        this.applyXplane(g, ap, false)
       }
     }
     this.positionAll()
+  }
+
+  /** Whether the finest terrain tile has loaded under the airport's reference point and the corners of its pavement. */
+  private fineTerrainAt(ap: AirportData): boolean {
+    if (!this.terrainReady) return true
+    const pts: Array<[number, number]> = [[ap.la, ap.lo]]
+    if (ap.x) pts.push([ap.x[0], ap.x[1]], [ap.x[0], ap.x[3]], [ap.x[2], ap.x[1]], [ap.x[2], ap.x[3]])
+    return pts.every(([la, lo]) => this.terrainReady!(la, lo))
+  }
+
+  /** Draw X-Plane's layout for an airport on the ground; with `withOsm`, the OpenStreetMap terminals after it. */
+  private applyXplane(g: THREE.Group, ap: AirportData, withOsm: boolean): void {
+    const elevM = airportFieldElevationM(ap)
+    g.userData.aptFine = this.fineTerrainAt(ap)
+    // X-Plane's own layout (apt.dat) is the authority where it has the airport; OSM then only
+    // adds the terminal buildings. Unmapped there, the OSM / procedural layout stays as before.
+    void enhanceAirportWithXplane(g, ap.i, ap.la, ap.lo, elevM, (lat, lon) => { const t = this.terrainAt?.(lat, lon) ?? 0; return this.flattenElevation(t > 0 ? t : elevM, lat, lon) }).then((applied) => {
+      if (!withOsm || ap.xo) return          // X-Plane-only fields are small: no terminal buildings to look up
+      const extra = applied ? g.userData.aptApplied as { aprons: GroundPoint[][]; obstacles: SurfaceObstacle[] } | undefined : undefined
+      return enhanceAirportWithOsm(g, ap.i, ap.la, ap.lo, elevM, ap.r, extra ? { terminalsOnly: true, extra } : undefined)
+    })
   }
 
   private buildAirport(ap: AirportData): THREE.Group {
@@ -205,7 +403,11 @@ export class Airports {
     const rabbitPos: number[] = []
     const rabbitStations: number[] = []
     const primary = primaryRunway(ap)
+    /** Each marked runway's holder, so the X-Plane layout can redraw its markings with displaced thresholds. */
+    const runwayDetails: Array<{ li: string; hi: string; rl: RunwayLocal; detail: THREE.Group; setConcrete: (on: boolean) => void }> = []
+    group.userData.runwayDetails = runwayDetails
     for (const r of ap.r) {
+      if (r.pad) continue
       const lenM = r.l * FT
       const widM = Math.max(r.w * FT, 8)
       const hdg = (bearingDeg({ lat: r.la1, lon: r.lo1 }, { lat: r.la2, lon: r.lo2 }) * Math.PI) / 180
@@ -230,22 +432,27 @@ export class Airports {
       // shared pavement shader can align rubber wear without per-strip uniforms.
       if (r.s === 0) {
         const ends = new Float32Array(pos.count * 2)
+        const lat = new Float32Array(pos.count * 2)
         for (let v = 0; v < pos.count; v++) {
           ends[v * 2] = pos.getY(v) + lenM / 2
           ends[v * 2 + 1] = lenM / 2 - pos.getY(v)
+          lat[v * 2] = pos.getX(v) / (widM / 2) // −1…1 across the strip
+          lat[v * 2 + 1] = widM / 2
         }
         stripGeo.setAttribute('runwayEnds', new THREE.BufferAttribute(ends, 2))
+        stripGeo.setAttribute('runwayLat', new THREE.BufferAttribute(lat, 2))
       }
       stripGeo.computeVertexNormals()
       const strip = new THREE.Mesh(stripGeo, r.s === 0 ? ASPHALT : TURF)
       strip.receiveShadow = true // 13a: pavement catches the sun shadow
       strip.rotation.x = -Math.PI / 2
       strip.rotation.z = -hdg
-      strip.position.set(cx, elevM + 0.06, -cy)
+      strip.position.set(cx, elevM + RUNWAY_STRIP_LIFT_M, -cy)
       strip.renderOrder = 20
       group.add(strip)
-      if (r.s === 0) {
-        // Centerline dashes.
+      if (r.s === 0 && lenM < 900) {
+        // Centerline dashes (short runways only — longer ones get the FAA
+        // dash pattern from airport-detail's marking mesh).
         const nDash = Math.max(Math.floor(lenM / 60), 2)
         const dashes = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.9, 25), STRIPE, nDash)
         const m4 = new THREE.Matrix4()
@@ -271,7 +478,10 @@ export class Airports {
           elevAt: (t) => elevAt(Math.max(-0.5, Math.min(0.5, t))) - elevM,
         }
         const detail = new THREE.Group()
-        detail.add(buildRunwayMarkings(rl))
+        const markings = buildRunwayMarkings(rl)
+        markings.name = 'runwayMarkings'
+        detail.add(markings)
+        runwayDetails.push({ li: r.li, hi: r.hi, rl, detail, setConcrete: (on) => { strip.material = on ? CONCRETE_RUNWAY : ASPHALT } })
         detail.add(buildDistanceSigns(rl))
         if (r === primary && lenM >= 1100) {
           // 16c: collect taxiway blue-edge lights (detail-local frame)
@@ -333,7 +543,7 @@ export class Airports {
             geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
             const colors = new THREE.BufferAttribute(new Float32Array(12), 3)
             geo.setAttribute('color', colors)
-            const pts = new THREE.Points(geo, PAPI_MAT)
+            const pts = new THREE.Points(geo, papiMaterial())
             pts.frustumCulled = false // four points, colored per frame
             pts.renderOrder = 30
             group.add(pts)
@@ -351,6 +561,7 @@ export class Airports {
               outX: end * along.x, outZ: end * along.z,
               boxAngles,
               rwyIdent: end === -1 ? r.li : r.hi,
+              points: pts,
             })
           }
         }
@@ -405,14 +616,17 @@ export class Airports {
         }
       }
     }
-    // Windsock at the airport reference point.
+    // Windsock at the airport reference point (the stand-in; X-Plane's own windsocks replace it where its layout is known).
+    const stand = new THREE.Group()
+    stand.name = 'proceduralWindsock'
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 5, 6), EDGE_LIGHT)
     pole.position.set(30, ap.e * FT + 2.5, 30)
-    group.add(pole)
+    stand.add(pole)
     const sock = new THREE.Mesh(new THREE.ConeGeometry(0.32, 1.8, 8), SOCK_ORANGE)
     sock.position.set(30, ap.e * FT + 5, 30)
     sock.rotation.z = Math.PI / 2
-    group.add(sock)
+    stand.add(sock)
+    group.add(stand)
     if (anyLighted) addLight(30, ap.e * FT + 5.7, 30, 1, 0.85, 0.58) // floodlit sock
 
     // 13c: assemble the night layer.
@@ -564,7 +778,12 @@ export class Airports {
     const paintF = 1 - 0.78 * night
     STRIPE.color.setHex(STRIPE_BASE).multiplyScalar(paintF)
     EDGE_LIGHT.color.setHex(EDGE_SPHERE_BASE).multiplyScalar(1 - 0.55 * night)
+    // Night is never pitch black over an airport: a faint glow of its own colour (apron floodlight and city light spill).
+    for (const m of [ASPHALT, CONCRETE_RUNWAY]) m.emissive.set(m.color).multiplyScalar(NIGHT_GLOW * night)
+    setAptNight(night)
     for (const group of this.rendered.values()) {
+      const apl = group.userData.aptLights as THREE.Points | undefined
+      if (apl) (apl.material as THREE.PointsMaterial).opacity = night
       const nl = group.userData.night as NightLights | undefined
       if (!nl) continue
       if (nl.pts) (nl.pts.material as THREE.PointsMaterial).opacity = night
@@ -599,6 +818,27 @@ export class Airports {
   }
 
   /** Reposition all rendered airports (call every frame — cheap — and after rebase). */
+  /** Turn every windsock of X-Plane's layouts downwind: the wind blows from `fromDeg` (true) at `kt` knots. */
+  setWind(fromDeg: number, kt: number): void {
+    if (!Number.isFinite(fromDeg)) return
+    const d = sockDirection(fromDeg), droop = sockDroop(kt)
+    for (const g of this.rendered.values()) {
+      const pivots = g.userData.aptSocks as THREE.Object3D[] | undefined
+      if (!pivots) continue
+      for (const p of pivots) { p.rotation.set(0, -Math.atan2(d.z, d.x), -droop) }
+    }
+  }
+
+  /** Every rendered airport's parked-airplane spots (X-Plane's layout), with the group that places them. */
+  parkedSources(): ParkedSource[] {
+    const out: ParkedSource[] = []
+    for (const [icao, g] of this.rendered) {
+      const spots = g.userData.aptParked as ParkedSource['spots'] | undefined
+      if (spots?.length) out.push({ id: icao, group: g, spots })
+    }
+    return out
+  }
+
   positionAll(): void {
     for (const group of this.rendered.values()) {
       const ll = group.userData.latLon as LatLon

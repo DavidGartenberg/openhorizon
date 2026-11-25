@@ -7,12 +7,38 @@
  * subscriber, not part of the bus).
  */
 
+/** What an instruction was, so the aircraft it was given to can read it back. */
+export type RadioKind =
+  | 'taxi' | 'holdShort' | 'takeoff' | 'land' | 'goAround' | 'contact' | 'sequence' | 'approach' | 'descend' | 'climb' | 'turn' | 'squawk'
+
+/** The numbers and names an instruction carried (runway "31", taxiway idents, a frequency, an altitude …). */
+export interface RadioArgs {
+  runway?: string
+  via?: readonly string[]
+  /** `contact` / `approach`: the facility spoken ("departure", "tower", "ground") and its frequency. */
+  facility?: string
+  freqMhz?: number
+  altitudeFt?: number
+  headingDeg?: number
+  direction?: 'left' | 'right'
+  /** `sequence`: arrival number and what to report. */
+  number?: number
+  report?: string
+  squawk?: string
+}
+
 export interface Transmission {
   freqMhz: number
   /** Speaker: facility name ("Palo Alto Tower") or callsign ("N123AB"). */
   from: string
   text: string
   atSimS: number
+  /** The aircraft addressed (callsign as written in `text`); absent for broadcasts such as the ATIS. */
+  to?: string
+  kind?: RadioKind
+  args?: RadioArgs
+  /** Background traffic: audible on the frequency, but never delaying or replacing a transmission to or from the player. */
+  ambient?: boolean
 }
 
 export type CommsListener = (t: Transmission) => void

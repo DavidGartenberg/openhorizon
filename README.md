@@ -1,14 +1,31 @@
 # OpenHorizon
 
-A browser-based flight simulator built with **Three.js** and **TypeScript** — real US terrain, real airports and airspace, live weather and traffic, a working ATC voice loop, and a small fleet of study-level aircraft, all running client-side against a small Express data server.
+A browser-based flight simulator built with **Three.js** and **TypeScript** — a headless flight model, streamed terrain, global airport/navigation loaders, weather and traffic feeds, ATC voice, aircraft systems and a selectable fleet, backed by a small Node data service. Fidelity and data coverage vary by subsystem and aircraft.
 
 No native install, no plugin: open a tab and fly.
 
+## New session or contributor? Start here
+
+Read [the session entry point](docs/START-HERE.md), then
+[current state and verified blockers](docs/CURRENT-STATE.md). The
+[architecture map](docs/ARCHITECTURE.md), [development guide](docs/DEVELOPMENT.md)
+and [documentation index](docs/README.md) explain the code, commands and historical
+evidence without relying on chat context.
+
+The [current handoff](docs/CURRENT-STATE.md) is audited 2026-11-25 and records
+the checkout, Airbus deck, Boeing texture fit, material work, browser evidence,
+GitHub state and remaining acceptance limits. The local Boeing projector now
+removes previous procedural paint maps on projected surfaces while retaining
+aircraft geometry. The published `a3d3879` milestone passed the full GitHub CI
+gate; the following work uses authored A330 FCU glyphs and covers new Boeing
+spoiler panels. Full screen fidelity and fleet-wide texture coverage remain in
+progress. Read the handoff for the exact verification scope.
+
 ## Highlights
 
-- **Real world data** — USGS elevation for the continental US, real airport/runway/frequency/navaid/airspace data, live METAR weather and NEXRAD radar, real satellite imagery and land cover.
+- **World data** — Terrarium elevation tiles; global airport/runway/frequency/navaid/ILS loaders; US airspace, imagery and land cover; METAR weather and NEXRAD radar. External data availability and cache age affect results.
 - **Physics-driven flight model** — a 6-DOF rigid-body sim validated against real POH performance numbers, not scripted animations. Every gauge and annunciator reads live simulation state.
-- **Small validated fleet** — Cessna 172S (full G1000 glass cockpit), Piper J-3 Cub, and Boeing 737-800, plus a wider roster of derived aircraft types for live traffic and AI.
+- **Selectable fleet** — Cessna 172S, Piper J-3 Cub and Boeing 737-800 baseline models, plus 120 derived roster entries. Player models have dedicated procedural builders and optional exact or scaled-donor local X-Plane exteriors. Validation tiers and cockpit fidelity differ by aircraft.
 - **ATC and traffic** — tower/ground/approach controllers with real frequencies and phraseology, free-text ATC you can type anything to, speech synthesis, AI pattern traffic, and live ADS-B traffic overlaid on the world.
 - **Safety systems** — TCAS traffic advisories and TAWS/GPWS terrain warnings driven by the same flight data as the cockpit instruments.
 - **Autopilot** — heading/nav/approach lateral modes, altitude/VS/FLC/glideslope vertical modes, coupled ILS approaches.
@@ -20,11 +37,17 @@ No native install, no plugin: open a tab and fly.
 Requires Node 20+.
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
 This starts the Vite client (`:5173`) and the Express data server (`:8787`) together. Open `http://localhost:5173`.
+
+Vite also mounts the shared data service directly: `npm run dev:client` alone is
+sufficient for development. Use `PORT=5174 npm run dev:client` for an isolated
+test origin. On this machine prepend `~/.local/node/bin` to PATH before Node/npm
+commands. Optional local speech tools and X-Plane assets are documented in the
+[development guide](docs/DEVELOPMENT.md).
 
 For a production-style single-process run:
 
@@ -33,11 +56,14 @@ npm run build
 node server/index.mjs
 ```
 
+After a successful build, open `http://localhost:8787`. A failed build can leave
+an older `dist/`; check the build result before interpreting standalone behavior.
+
 ## Scripts
 
 | Command | Description |
 |---|---|
-| `npm run dev` | Vite client + Express data server, both with live reload |
+| `npm run dev` | Vite client with HMR + Express data server; restart Express after server edits |
 | `npm run build` | Type-check and produce a production build in `dist/` |
 | `npm test` | Full Vitest test suite |
 | `npm run validate` | POH/fleet validation harness (physics accuracy gate) |
@@ -49,10 +75,12 @@ node server/index.mjs
 - `src/world/` — world data plumbing: terrain tiles, airports/navaids/airspace, live traffic.
 - `src/cockpit/`, `src/ui/` — PFD/MFD/MCP canvas-drawn instruments and the debug HUD.
 - `server/` — small Express server (and matching Vite dev middleware) proxying/caching terrain, imagery, weather, traffic, and airport data from public sources.
-- `tests/` — ~80 Vitest suites covering the pure simulation layer, including a dedicated `tests/validate/` gate that checks flight performance against real POH numbers.
+- `tests/` — headless Vitest suites for simulation, app wiring, geometry, parsers and services; `tests/validate/` checks baseline POH and derived fleet criteria. `tests/browser/` contains separate manual browser inspection pages.
 - `docs/` — the project's build contract (`FLIGHT-SIM-MASTER-PROMPT.md`) and phase-by-phase development plans.
 
-`PROGRESS.md` is a running log of what's been built, what's been verified, and every honest deviation from "real" that was made along the way.
+`PROGRESS.md` is the milestone/evidence history; `docs/CURRENT-STATE.md` is the
+dated session handoff. Historical plans and old test counts do not establish
+current acceptance. See the architecture map for the complete subsystem layout.
 
 ## Honesty policy
 

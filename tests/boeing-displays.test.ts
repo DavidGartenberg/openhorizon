@@ -23,6 +23,13 @@ describe('Boeing display logic', () => {
     const base = { master: true, fdOn: true, lateralArmed: false, verticalArmed: false, speedMode: false, onGround: false }
     expect(boeingFma({ ...base, lateral: 'HDG', vertical: 'ALT' })).toMatchObject({ roll: 'HDG SEL', pitch: 'ALT HOLD', ap: 'CMD' })
     expect(boeingFma({ ...base, lateral: 'APR', lateralArmed: true, vertical: 'GS', verticalArmed: true })).toMatchObject({ rollArmed: 'VOR/LOC', pitchArmed: 'G/S' })
+    // autoland: LAND ARM → LAND (the flare is not shown) → ROLLOUT (roll box)
+    const al = { ...base, lateral: 'APR', vertical: 'GS' }
+    expect(boeingFma({ ...al, autoland: 'ARMED' }).land).toBe('LAND ARM')
+    expect(boeingFma({ ...al, autoland: 'LAND' })).toMatchObject({ land: 'LAND', roll: 'VOR/LOC', pitch: 'G/S' })
+    expect(boeingFma({ ...al, autoland: 'FLARE' })).toMatchObject({ land: 'LAND', pitch: 'G/S', at: 'RETARD' })
+    expect(boeingFma({ ...al, autoland: 'ROLLOUT' })).toMatchObject({ roll: 'ROLLOUT', pitch: '' })
+    expect(boeingFma({ ...al }).land).toBe('')
     expect(boeingFma({ ...base, master: false, fdOn: true, lateral: 'HDG', vertical: 'VS' })).toMatchObject({ ap: 'FD', pitch: 'V/S' })
     expect(boeingFma({ ...base, master: false, fdOn: false, lateral: 'ROL', vertical: 'PIT' })).toMatchObject({ roll: '', pitch: '', ap: '' })
     expect(boeingFma({ ...base, lateral: 'HDG', vertical: 'FLC', atMode: 'N1' })).toMatchObject({ at: 'N1', pitch: 'MCP SPD' })

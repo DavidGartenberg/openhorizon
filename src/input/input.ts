@@ -36,6 +36,10 @@ export class Input {
 
     target.addEventListener('mousedown', (e) => {
       if (e.button === 0) {
+        // The press carries its own position: a touch or a very quick click can arrive with no mousemove first.
+        const rect = target.getBoundingClientRect()
+        this.ptrX = e.clientX - rect.left
+        this.ptrY = e.clientY - rect.top
         this.dragging = true
         this.mouseDownSinceLastFrame = true
       }

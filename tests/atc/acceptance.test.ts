@@ -45,8 +45,8 @@ describe('§24 VFR acceptance: KPAO → KSQL, full phraseology', () => {
 
     const log = bus.log.map((t) => `${t.from}: ${t.text}`)
     const seq = [
-      'request taxi runway 31',
-      'runway 31, taxi via the parallel',
+      'request taxi for departure',
+      'taxi to runway 31',
       'readback correct',
       'ready for departure',
       'runway 31, cleared for takeoff',

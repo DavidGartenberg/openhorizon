@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest'
-import {applyRadioFilter,encodeWav16,softClipCurve,voiceRoleFor} from '../src/audio/radio-voice'
+import {applyRadioFilter,chainFor,encodeWav16,softClipCurve,voiceRoleFor} from '../src/audio/radio-voice'
 // @ts-expect-error server ESM
 import {pickVoice} from '../server/voice.mjs'
 
@@ -35,5 +35,23 @@ describe('radio voice', () => {
     expect(pickVoice('nonsense').voice).toBe('Samantha')
     const atcVoices = new Set(['KSFO Tower','KSFO Ground','NorCal Approach','KOAK Tower','Clearance'].map(s => pickVoice('atc',s).voice))
     expect(atcVoices.size).toBeGreaterThan(1)
+    // a controller must never sound like the first officer
+    for (const f of ['KSFO Tower','KSFO Ground','NorCal Approach','KOAK Tower','Clearance','Oakland Center','A','B','C','D','E','F']) expect(pickVoice('atc',f).voice).not.toBe(pickVoice('copilot').voice)
+  })
+  it('voices other aircraft, the ATIS and controllers each in their own role, defaulting to a controller',()=>{
+    expect(voiceRoleFor({text:'x',priority:0,speaker:'Skyhawk 123AB',role:'pilot'})).toBe('pilot')
+    expect(voiceRoleFor({text:'x',priority:0,speaker:'KSFO ATIS',role:'atis'})).toBe('atis')
+    expect(voiceRoleFor({text:'x',priority:0,speaker:'Palo Alto Tower',role:'atc'})).toBe('atc')
+    expect(voiceRoleFor({text:'x',priority:0})).toBe('atc')
+    expect(voiceRoleFor({text:'x',priority:1,speaker:'first-officer',role:'pilot'})).toBe('copilot')
+    expect(voiceRoleFor({text:'x',priority:3,role:'pilot'})).toBe('warning')
+  })
+  it('makes each aircraft a little different on the air, always the same way for the same one',()=>{
+    expect(chainFor('pilot','N77GA')).toEqual(chainFor('pilot','N77GA'))
+    const chains=Array.from({length:30},(_,i)=>chainFor('pilot',`Skyhawk ${i}AB`))
+    expect(new Set(chains.map(c=>c.noise.toFixed(4))).size).toBeGreaterThan(10)
+    const quiet=chainFor('atc','Palo Alto Tower')
+    for(const c of chains){expect(c.noise).toBeGreaterThan(quiet.noise*0.5);expect(c.lowpass).toBeLessThanOrEqual(2700);expect(c.gain).toBeLessThan(quiet.gain+0.05)}
+    expect(chainFor('atc','anyone')).toEqual(chainFor('atc','someone else'))
   })
 })

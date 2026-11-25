@@ -15,6 +15,8 @@ import { archetypeFor } from '../world/fleet-map'
 import { typeInfo, aircraftTypesLoaded } from '../world/aircraft-types'
 import { buildArchetype } from './fleet-mesh'
 import { beaconOn, strobeOn } from '../sim/lights'
+import { sharedTrafficModels, chooseTrafficModel, trafficConfiguration, type TrafficModelInstance } from './traffic-model'
+import { liveryFor } from './xplane-proxy'
 import { lightGlowTexture } from './light-glow'
 
 const FT = 0.3048
@@ -47,6 +49,11 @@ interface PoolEntry {
   prevTrkDeg: number
   trkRateDps: number
   phase: number // per-target light phase so strobes don't sync
+  /** The cheap archetype silhouette (always built; hidden while the X-Plane model is shown). */
+  body: THREE.Mesh
+  /** The X-Plane exterior standing in for it, when this target is near enough to be worth it. */
+  xp: TrafficModelInstance | null
+  xpKey: string
 }
 
 interface ProtoEntry {
@@ -55,7 +62,15 @@ interface ProtoEntry {
   anchors: { wingtipL: THREE.Vector3; wingtipR: THREE.Vector3; tail: THREE.Vector3 }
 }
 
+/** Targets this close (m) are drawn with the X-Plane exterior (up to the budget); a drawn one keeps it out to XP_KEEP_M. */
+const XP_NEAR_M = 6500
+const XP_KEEP_M = 8000
+/** At most this many X-Plane exteriors at once, and at most this many of the very large A330. */
+const XP_MAX = 8
+const XP_MAX_HEAVY = 2
+
 export class TrafficLayer {
+  private readonly models = sharedTrafficModels
   private readonly pool = new Map<string, PoolEntry>()
   private readonly protos = new Map<string, ProtoEntry>()
   private readonly canvas: HTMLCanvasElement
@@ -119,7 +134,7 @@ export class TrafficLayer {
     group.add(lights)
     this.scene.add(group)
     const entry: PoolEntry = {
-      group, lights: colors, typeKey: t.t || '?',
+      group, body, xp: null, xpKey: '', lights: colors, typeKey: t.t || '?',
       prevTrkDeg: t.trkDeg, trkRateDps: 0,
       phase: (parseInt(t.id, 16) % 997) / 997 * 3,
     }
@@ -139,7 +154,9 @@ export class TrafficLayer {
     if (!aircraftTypesLoaded()) return
     const seen = new Set<string>()
     const labels: Array<{ x: number; y: number; z: number; text: string }> = []
-    for (const t of targets) {
+    const list = [...targets]
+    const nearIds = this.pickXpTargets(list, toLocal, camera.position)
+    for (const t of list) {
       // Ops vehicles: on the ground with a type the registry doesn't
       // know — skip rather than draw a fake airplane (recorded).
       // N6: unknown-type GROUND targets used to be skipped entirely —
@@ -155,7 +172,9 @@ export class TrafficLayer {
       let e = this.pool.get(t.id)
       if (!e) e = this.spawn(t, unknownGnd)
       const terrainY = elevAtM(t.lat, t.lon)
-      const y = t.gnd ? terrainY + 0.8 : Math.max(t.altFt * FT, terrainY + 2)
+      this.syncXp(e, t, unknownGnd, nearIds.has(t.id), nearIds.get(t.id) ?? false)
+      const y = t.gnd ? terrainY + (e.xp ? e.xp.groundOffsetM : 0.8) : Math.max(t.altFt * FT, terrainY + 2)
+      if (e.xp) e.xp.pose(trafficConfiguration({ gnd: t.gnd, gsKt: t.gsKt, aglFt: (y - terrainY) / FT, vsFpm: t.vsFpm }))
       e.group.position.set(local.e, y, -local.n)
       // Track rate (smoothed) → cosmetic roll; heading from track.
       if (dtS > 0) {
@@ -205,6 +224,45 @@ export class TrafficLayer {
     this.drawLabels(labels, camera)
   }
 
+  /** The nearest targets (within budget) that should be drawn with an X-Plane model; value = may use the very large A330. */
+  private pickXpTargets(list: readonly LiveTarget[], toLocal: (lat: number, lon: number) => { n: number; e: number }, eye: THREE.Vector3): Map<string, boolean> {
+    // Nearest to where the viewer is looking from (any camera), not to the origin.
+    const ranked = list
+      .map((t) => { const l = toLocal(t.lat, t.lon); return { t, d: Math.hypot(l.e - eye.x, -l.n - eye.z) } })
+      .filter(({ t, d }) => d <= (this.pool.get(t.id)?.xp ? XP_KEEP_M : XP_NEAR_M))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, XP_MAX)
+    const out = new Map<string, boolean>()
+    let heavy = 0
+    for (const { t } of ranked) { out.set(t.id, heavy < XP_MAX_HEAVY); if (heavy < XP_MAX_HEAVY) heavy++ }
+    return out
+  }
+
+  /** Show the X-Plane exterior for a near target (once its model has loaded), the silhouette otherwise. */
+  private syncXp(e: PoolEntry, t: LiveTarget, unknownGnd: boolean, wantXp: boolean, allowHeavy: boolean): void {
+    if (!wantXp) {
+      if (e.xp) { e.group.remove(e.xp.group); e.xp = null; e.xpKey = '' }
+      e.body.visible = true
+      return
+    }
+    const des = unknownGnd ? 'A320' : t.t
+    const info = typeInfo(des)
+    const choice = chooseTrafficModel(archetypeFor(des, info.desc, info.wtc), des, { allowHeavy })
+    if (!choice) { e.body.visible = true; return }
+    if (!this.models.ensure(choice.key)) { e.body.visible = !e.xp; return }
+    // The airline's livery once it has loaded (the default paint until then, and for airlines without one).
+    const name = liveryFor(choice.key, t.cs)
+    const livery = name && this.models.ensureLivery(choice.key, name) ? name : undefined
+    const slot = livery ? `${choice.key}@${livery}` : choice.key
+    if (e.xp && e.xpKey === slot) return
+    const inst = this.models.create(choice, livery)
+    if (!inst) return
+    if (e.xp) e.group.remove(e.xp.group)
+    e.group.add(inst.group)
+    e.xp = inst; e.xpKey = slot
+    e.body.visible = false
+  }
+
   private drawLabels(labels: Array<{ x: number; y: number; z: number; text: string }>, camera: THREE.Camera): void {
     const w = window.innerWidth
     const h = window.innerHeight
@@ -214,24 +272,62 @@ export class TrafficLayer {
     }
     const ctx = this.ctx
     ctx.clearRect(0, 0, w, h)
-    ctx.font = '11px ui-monospace, monospace'
     ctx.textBaseline = 'middle'
     const camPos = (camera as THREE.PerspectiveCamera).position
+    const visible: Array<{ sx: number; sy: number; dist: number; text: string }> = []
     for (const l of labels) {
       const dx = l.x - camPos.x
       const dy = l.y - camPos.y
       const dz = l.z - camPos.z
-      if (dx * dx + dy * dy + dz * dz > 20_000 ** 2) continue // label range 20 km
+      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz)
+      if (dist > 20_000) continue // label range 20 km
       this.v.set(l.x, l.y, l.z).project(camera)
       if (this.v.z > 1 || this.v.z < -1) continue // behind/clipped
       const sx = ((this.v.x + 1) / 2) * w
       const sy = ((1 - this.v.y) / 2) * h
       if (sx < -80 || sx > w + 80 || sy < -20 || sy > h + 20) continue
-      ctx.fillStyle = 'rgba(0,10,16,0.55)'
-      const tw = ctx.measureText(l.text).width
-      ctx.fillRect(sx + 6, sy - 8, tw + 8, 16)
-      ctx.fillStyle = '#9fe8ff'
-      ctx.fillText(l.text, sx + 10, sy)
+      visible.push({ sx, sy, dist, text: l.text })
     }
+    // Nearest first, no stacking: a busy ramp shows its closest callsigns, not a smear.
+    const shown = declutterLabels(visible, 132, 22)
+    for (let i = shown.length - 1; i >= 0; i--) drawTrafficLabel(ctx, shown[i]!)
   }
+}
+
+/** Fade a label with distance (full inside 4 km, down to 35 % at 20 km). Pure. */
+export function labelAlpha(distM: number): number {
+  return distM <= 4000 ? 1 : Math.max(0.35, 1 - ((distM - 4000) / 16000) * 0.65)
+}
+
+/** Keep the nearest label of any group whose boxes would overlap. Pure. */
+export function declutterLabels<T extends { sx: number; sy: number; dist: number }>(items: readonly T[], boxW: number, boxH: number): T[] {
+  const kept: T[] = []
+  for (const it of [...items].sort((a, b) => a.dist - b.dist)) {
+    if (!kept.some((k) => Math.abs(k.sx - it.sx) < boxW && Math.abs(k.sy - it.sy) < boxH)) kept.push(it)
+  }
+  return kept
+}
+
+/** One traffic callout: a marker ring, a short leader and a slate pill with the callsign in bold. */
+function drawTrafficLabel(ctx: CanvasRenderingContext2D, l: { sx: number; sy: number; dist: number; text: string }): void {
+  const [call, ...rest] = l.text.split(' ')
+  const more = rest.join(' ')
+  const a = labelAlpha(l.dist)
+  ctx.save()
+  ctx.globalAlpha = a
+  ctx.font = '700 11px system-ui, -apple-system, "Segoe UI", sans-serif'
+  const w1 = ctx.measureText(call ?? '').width
+  ctx.font = '500 10.5px system-ui, -apple-system, "Segoe UI", sans-serif'
+  const w2 = more ? ctx.measureText(more).width + 8 : 0
+  const bx = l.sx + 12, by = l.sy - 26, bw = w1 + w2 + 18, bh = 20
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = 1.2
+  ctx.beginPath(); ctx.arc(l.sx, l.sy, 3.2, 0, Math.PI * 2); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(l.sx + 2.5, l.sy - 2.5); ctx.lineTo(bx, by + bh); ctx.stroke()
+  ctx.fillStyle = 'rgba(27,34,45,0.9)'
+  ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 2); ctx.fill()
+  ctx.strokeStyle = 'rgba(255,255,255,0.16)'; ctx.stroke()
+  ctx.fillStyle = '#2b7fd6'; ctx.fillRect(bx, by, 3, bh)
+  ctx.fillStyle = '#f3f6fb'; ctx.font = '700 11px system-ui, -apple-system, "Segoe UI", sans-serif'; ctx.fillText(call ?? '', bx + 9, by + bh / 2 + 0.5)
+  if (more) { ctx.fillStyle = '#aab6c8'; ctx.font = '500 10.5px system-ui, -apple-system, "Segoe UI", sans-serif'; ctx.fillText(more, bx + 9 + w1 + 8, by + bh / 2 + 0.5) }
+  ctx.restore()
 }

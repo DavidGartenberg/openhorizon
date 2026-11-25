@@ -1,20 +1,29 @@
 import * as THREE from 'three'
+import { materialDetailSettings, setMaterialDetailQuality, setMaterialFinishPreset, type MaterialFinishPreset } from '../render/material-packs'
+import type { FrameMode } from '../render/frame-pacer'
 
 export interface GraphicsActions {
   clearInput(): void
   quality(mode: 'performance' | 'high' | 'ultra'): void
-  camera(mode: 'chase' | 'orbit' | 'cockpit' | 'free'): void
+  camera(mode: 'chase' | 'orbit' | 'cockpit' | 'free' | 'wingL' | 'wingR' | 'tail'): void
   lighting(mode: 'day' | 'sunset' | 'night'): void
   weather(mode: 'live' | 'clear' | 'scattered' | 'overcast'): void
+  /** Frame pacing: 'uncapped' renders as fast as the machine allows (vsync off). */
+  frameMode(mode: FrameMode): void
+  /** Post effects: ambient occlusion and the lens set (ghosts, fringing, grain), and clouds shading the ground. */
+  effects(fx: { ao: boolean; lens: boolean; cloudShadows: boolean; buildings: boolean; trees: boolean }): void
 }
+
+export interface GraphicsInitial { frameMode: FrameMode; ao: boolean; lens: boolean; cloudShadows: boolean; buildings: boolean; trees: boolean }
 
 /** Small flight-view controls; labels describe visible choices, not GPU internals. */
 export class GraphicsPanel {
   private readonly stats: HTMLOutputElement
   private readonly view: HTMLSelectElement
   private lastStats = 0
+  private frames = 0
 
-  constructor(renderer: THREE.WebGLRenderer, actions: GraphicsActions) {
+  constructor(renderer: THREE.WebGLRenderer, actions: GraphicsActions, initial: GraphicsInitial = { frameMode: 'uncapped', ao: true, lens: true, cloudShadows: true, buildings: true, trees: true }) {
     const style = document.createElement('style')
     style.textContent = `
       #graphics-panel{position:fixed;bottom:18px;right:18px;z-index:30;width:244px;
@@ -32,19 +41,28 @@ export class GraphicsPanel {
       #graphics-panel button:hover{background:#3a505f;} #graphics-panel button:focus-visible,
       #graphics-panel select:focus-visible{outline:2px solid #a9dbe5;outline-offset:2px;}
       #graphics-panel output{display:block;color:#9eafb9;font:10px/1.5 ui-monospace,monospace;margin-top:12px;}
+      #graphics-panel .credit{display:block;color:#7f909a;font-size:10px;margin-top:8px;}
       @media(max-height:500px){#graphics-panel{bottom:6px;right:6px}.controls{max-height:280px;overflow:auto}}
     `
     document.head.appendChild(style)
     const panel = document.createElement('details')
     panel.id = 'graphics-panel'
     panel.innerHTML = `<summary>View & graphics</summary><div class="controls">
-      <label>Camera<select aria-label="Camera view"><option value="chase">Chase</option><option value="cockpit">Cockpit</option><option value="orbit">Orbit</option><option value="free">Free camera</option></select></label>
+      <label>Camera<select aria-label="Camera view"><option value="chase">Chase</option><option value="cockpit">Cockpit</option><option value="wingL">Wing (left window)</option><option value="wingR">Wing (right window)</option><option value="tail">Tail camera</option><option value="orbit">Orbit</option><option value="free">Free camera</option></select></label>
       <label>Quality<select aria-label="Graphics quality"><option value="1">Performance</option><option value="1.5" selected>High</option><option value="2">Ultra</option></select></label>
+      <label>Material finish<select aria-label="Material finish"><option value="factory">Factory fresh</option><option value="in-service" selected>In service</option><option value="weathered">Weathered</option></select></label>
+      <label>Frame rate<select aria-label="Frame rate"><option value="uncapped">Uncapped (vsync off)</option><option value="vsync">Display synced</option></select></label>
+      <label>Ambient occlusion<input aria-label="Ambient occlusion" type="checkbox"></label>
+      <label>Lens effects<input aria-label="Lens effects" type="checkbox"></label>
+      <label>Cloud shadows<input aria-label="Cloud shadows" type="checkbox"></label>
+      <label>3D buildings<input aria-label="3D buildings" type="checkbox"></label>
+      <label>Trees<input aria-label="Trees" type="checkbox"></label>
       <label>Exposure<input aria-label="Exposure" type="range" min="0.4" max="1.2" step="0.05" value="0.8"></label>
       <label>Weather<select aria-label="Weather"><option value="live">Live weather</option><option value="clear">Clear</option><option value="scattered">Scattered</option><option value="overcast">Overcast</option></select></label>
       <div class="time"><button type="button" data-light="day">Daylight</button><button type="button" data-light="sunset">Sunset</button><button type="button" data-light="night">Night</button></div>
-      <label>Flight overlay<input aria-label="Flight overlay" type="checkbox" checked></label>
+      <label>Traffic labels<input aria-label="Traffic labels" type="checkbox" checked></label>
       <output aria-label="Rendering statistics"></output>
+      <small class="credit">Buildings © OpenStreetMap contributors, tiles by OpenFreeMap</small>
     </div>`
     // Let native controls consume keys without also flying the airplane.
     panel.addEventListener('keydown', e => e.stopPropagation())
@@ -53,6 +71,7 @@ export class GraphicsPanel {
     this.view.onchange = () => actions.camera(this.view.value as Parameters<GraphicsActions['camera']>[0])
     const quality = panel.querySelector<HTMLSelectElement>('[aria-label="Graphics quality"]')!
     quality.onchange = () => {
+      setMaterialDetailQuality(quality.value === '1' ? 'performance' : quality.value === '2' ? 'ultra' : 'high')
       actions.quality(quality.value === '1' ? 'performance' : quality.value === '2' ? 'ultra' : 'high')
       renderer.setPixelRatio(Math.min(window.devicePixelRatio,Number(quality.value)))
       renderer.setSize(window.innerWidth,window.innerHeight)
@@ -60,16 +79,36 @@ export class GraphicsPanel {
     panel.querySelector<HTMLInputElement>('[aria-label="Exposure"]')!.oninput = e => {
       renderer.toneMappingExposure = Number((e.target as HTMLInputElement).value)
     }
+    const rate = panel.querySelector<HTMLSelectElement>('[aria-label="Frame rate"]')!
+    rate.value = initial.frameMode
+    rate.onchange = () => actions.frameMode(rate.value === 'vsync' ? 'vsync' : 'uncapped')
+    const ao = panel.querySelector<HTMLInputElement>('[aria-label="Ambient occlusion"]')!
+    const lens = panel.querySelector<HTMLInputElement>('[aria-label="Lens effects"]')!
+    const shadows = panel.querySelector<HTMLInputElement>('[aria-label="Cloud shadows"]')!
+    const buildings = panel.querySelector<HTMLInputElement>('[aria-label="3D buildings"]')!
+    const trees = panel.querySelector<HTMLInputElement>('[aria-label="Trees"]')!
+    ao.checked = initial.ao; lens.checked = initial.lens; shadows.checked = initial.cloudShadows
+    buildings.checked = initial.buildings; trees.checked = initial.trees
+    ao.onchange = lens.onchange = shadows.onchange = buildings.onchange = trees.onchange = () => actions.effects({ ao: ao.checked, lens: lens.checked, cloudShadows: shadows.checked, buildings: buildings.checked, trees: trees.checked })
     const weather = panel.querySelector<HTMLSelectElement>('[aria-label="Weather"]')!
+    const finish = panel.querySelector<HTMLSelectElement>('[aria-label="Material finish"]')!
+    try {
+      const saved = localStorage.getItem('oh-material-finish')
+      if (saved === 'factory' || saved === 'in-service' || saved === 'weathered') setMaterialFinishPreset(saved)
+    } catch { /* private storage */ }
+    finish.value = materialDetailSettings().finish
+    finish.onchange = () => {
+      setMaterialFinishPreset(finish.value as MaterialFinishPreset)
+      try { localStorage.setItem('oh-material-finish', finish.value) } catch { /* private storage */ }
+    }
     weather.onchange = () => actions.weather(weather.value as Parameters<GraphicsActions['weather']>[0])
     panel.querySelectorAll<HTMLButtonElement>('[data-light]').forEach(b => {
       b.onclick = () => actions.lighting(b.dataset.light as Parameters<GraphicsActions['lighting']>[0])
     })
-    panel.querySelector<HTMLInputElement>('[aria-label="Flight overlay"]')!.onchange = e => {
-      const display = (e.target as HTMLInputElement).checked ? '' : 'none'
-      document.getElementById('hud')!.style.display = display
+    // Flight info has its own toolbar button; this hides the traffic tags.
+    panel.querySelector<HTMLInputElement>('[aria-label="Traffic labels"]')!.onchange = e => {
       const labels = document.getElementById('traffic-labels')
-      if (labels) labels.style.display = display
+      if (labels) labels.style.display = (e.target as HTMLInputElement).checked ? '' : 'none'
     }
     this.stats = panel.querySelector('output')!
     document.body.appendChild(panel)
@@ -77,8 +116,11 @@ export class GraphicsPanel {
 
   update(now: number, camera: string, frameMs: number, renderer: THREE.WebGLRenderer): void {
     this.view.value = camera
+    this.frames++
     if (now-this.lastStats < 1000) return
+    const fps = this.lastStats > 0 ? (this.frames * 1000) / (now - this.lastStats) : 0
+    this.frames = 0
     this.lastStats = now
-    this.stats.value = `${frameMs.toFixed(1)} ms CPU · ${renderer.info.render.calls} draws · ${renderer.getPixelRatio().toFixed(1)}× resolution`
+    this.stats.value = `${fps > 0 ? fps.toFixed(0) + ' fps · ' : ''}${frameMs.toFixed(1)} ms CPU · ${renderer.info.render.calls} draws · ${renderer.getPixelRatio().toFixed(1)}× resolution`
   }
 }

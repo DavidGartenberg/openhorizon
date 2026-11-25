@@ -5,6 +5,8 @@ import {
   findTunedVor,
   vorCdiFraction,
   ilsRefFromRunwayThreshold,
+  runwayOffsets,
+  glidepathHeightFt,
   localizerFraction,
   glideslopeFraction,
   findKnownIls,
@@ -173,5 +175,65 @@ describe('ilsOnFinal (15a Mode-5 gate)', () => {
   })
   it('is false crossing the beam 90° off course', () => {
     expect(ilsOnFinal(0.2, 28, 298)).toBe(false)
+  })
+})
+
+describe('localizer antenna at the far runway end + runwayOffsets', () => {
+  const t = {
+    thresholdLat: 37.6, thresholdLon: -122.0, thresholdElevFt: 13,
+    oppositeLat: 37.637, oppositeLon: -122.0, // ~4.1 km north
+  }
+  const ils = ilsRefFromRunwayThreshold(t)
+  const mLat = 111_319.5
+  const at = (alongM: number, crossRightM: number): LatLon => ({
+    lat: 37.6 + alongM / mLat,
+    lon: -122.0 + crossRightM / (mLat * Math.cos((37.6 * Math.PI) / 180)),
+  })
+
+  it('keeps the beam sane past the threshold (the old bearing-from-threshold geometry flipped there)', () => {
+    // 600 m down the runway, 5 m right of centerline: a tiny, correctly
+    // signed deflection — not a full-scale garbage reading.
+    const f = localizerFraction(ils, at(600, 5)).deflectionFraction
+    expect(Math.abs(f)).toBeLessThan(0.1)
+    expect(f).toBeLessThan(0) // right of course = negative needle (see sign contract)
+    expect(localizerFraction(ils, at(600, 0)).deflectionFraction).toBeCloseTo(0, 4)
+  })
+
+  it('reads the same side on final as down the runway', () => {
+    expect(Math.sign(localizerFraction(ils, at(-3000, 40)).deflectionFraction)).toBe(Math.sign(localizerFraction(ils, at(1500, 40)).deflectionFraction))
+  })
+
+  it('runwayOffsets: along-track from the threshold, cross-track right-positive', () => {
+    const a = runwayOffsets(ils, at(-3000, 0))
+    expect(a.alongM).toBeCloseTo(-3000, -1) // within ~5 m (flat-earth test helper vs the sim's metres/deg)
+    expect(a.crossM).toBeCloseTo(0, 0)
+    const b = runwayOffsets(ils, at(800, 12))
+    expect(b.alongM).toBeCloseTo(800, -1)
+    expect(b.crossM).toBeCloseTo(12, 0)
+    expect(runwayOffsets(ils, at(100, -7)).crossM).toBeCloseTo(-7, 0)
+  })
+})
+
+describe('glidepathHeightFt', () => {
+  const t = { thresholdLat: 37.6, thresholdLon: -122.0, thresholdElevFt: 13, oppositeLat: 37.637, oppositeLon: -122.0 }
+  const ils = ilsRefFromRunwayThreshold(t)
+
+  it('crosses the threshold at the standard ~52 ft and touches down at the antenna', () => {
+    expect(glidepathHeightFt(ils, 0)).toBeGreaterThan(48)
+    expect(glidepathHeightFt(ils, 0)).toBeLessThan(56)
+    expect(glidepathHeightFt(ils, 300)).toBeLessThan(1)
+    expect(glidepathHeightFt(ils, 800)).toBe(0) // never negative past the antenna
+  })
+
+  it('rises 3° per unit run back up the approach (≈ 318 ft per nm)', () => {
+    const a = glidepathHeightFt(ils, -1852)
+    const b = glidepathHeightFt(ils, 0)
+    expect(a - b).toBeGreaterThan(300)
+    expect(a - b).toBeLessThan(335)
+  })
+
+  it('honors a different glidepath angle', () => {
+    const steep = ilsRefFromRunwayThreshold(t, 3.5)
+    expect(glidepathHeightFt(steep, -1000)).toBeGreaterThan(glidepathHeightFt(ils, -1000))
   })
 })

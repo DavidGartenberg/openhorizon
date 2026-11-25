@@ -16,7 +16,7 @@ export type BindableButton =
   | 'gear' | 'flapsUp' | 'flapsDown' | 'trimUp' | 'trimDown'
   | 'apDisconnect' | 'brakes' | 'reverse' | 'reverse2' | 'ptt'
   | 'parkingBrake' | 'engineMaster1' | 'engineMaster2' | 'ignitionCrank' | 'ignitionNorm' | 'ignitionStart'
-  | 'gearDown' | 'gearUp' | 'autobrakeOff' | 'autobrakeLow' | 'autobrakeMedium' | 'autobrakeMax' | 'autobrakeRto'
+  | 'gearDown' | 'gearUp' | 'gearLever' | 'autobrakeOff' | 'autobrakeLow' | 'autobrakeMedium' | 'autobrake3' | 'autobrakeMax' | 'autobrakeRto'
   | 'rudderTrimLeft' | 'rudderTrimRight' | 'rudderTrimReset' | 'speedbrakeArm'
   | 'flaps0' | 'flaps1' | 'flaps2' | 'flaps3' | 'flapsFull' | 'speedbrakeDown' | 'speedbrakeFull'
 
@@ -27,7 +27,11 @@ export interface ButtonBinding {
   btn: number
 }
 
-export interface AxisCalibration { min: number; max: number; idle?: number; cl?: number; flex?: number }
+export interface AxisCalibration {
+  min: number; max: number; idle?: number; cl?: number; flex?: number
+  /** IDLE was taken at the lever's real idle detent by the guided detent calibration: below it is reverse, and it is kept. */
+  measuredIdle?: boolean
+}
 export interface AxisBinding {
   deviceId?: string
   source?: 'preset' | 'user'
@@ -51,7 +55,9 @@ export type GamepadMap = Partial<Record<BindableAxis, AxisBinding>> & {
   unverifiedBtnKeys?: Record<string, string>
 }
 
-export const TCA_PRESET_VERSION = 7
+/** v9: the gear lever is one latched switch (`gearLever`: ON = gear UP, OFF = gear DOWN); a `gearDown` binding from before moves to it. */
+/** v10: with a gear lever switch bound, a separate gear UP button on the same unit is dropped (it was a stray capture). */
+export const TCA_PRESET_VERSION = 10
 
 /** Key aliases that act while HELD (everything else is edge-triggered). */
 export const HELD_ALIASES: ReadonlySet<string> = new Set(['KeyT', 'KeyB', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'Comma', 'Period'])
@@ -175,13 +181,14 @@ export interface LeverCommand { power: number; reverse: boolean }
 /** One common thrust/reverser model: opposing levers command idle, never
  * convert reverse power into forward thrust. Individual readings remain visible. */
 export function combineLevers(levers: LeverCommand[]): LeverCommand & { mixed: boolean } {
-  const powered = levers.filter(l => l.power > .02)
+  // A lever a hair above its idle detent is at idle, not opposing the other one's reverse (two levers are never pulled back exactly together).
+  const powered = levers.filter(l => l.power > .08)
   const mixed = levers.some(l => l.reverse) && powered.some(l => !l.reverse)
   return { power: mixed || !levers.length ? 0 : levers.reduce((s,l)=>s+l.power,0)/levers.length,
     reverse: !mixed && levers.some(l=>l.reverse), mixed }
 }
 export const AXIS_FUNCTIONS: BindableAxis[] = ['pitch','roll','yaw','throttle','throttle2','mixture','brakes','flaps','speedbrake']
-export const BUTTON_FUNCTIONS: BindableButton[] = ['gear','flapsUp','flapsDown','trimUp','trimDown','apDisconnect','brakes','reverse','reverse2','ptt','parkingBrake','engineMaster1','engineMaster2','ignitionCrank','ignitionNorm','ignitionStart','gearDown','gearUp','autobrakeOff','autobrakeLow','autobrakeMedium','autobrakeMax','autobrakeRto','rudderTrimLeft','rudderTrimRight','rudderTrimReset','speedbrakeArm','flaps0','flaps1','flaps2','flaps3','flapsFull','speedbrakeDown','speedbrakeFull']
+export const BUTTON_FUNCTIONS: BindableButton[] = ['gear','flapsUp','flapsDown','trimUp','trimDown','apDisconnect','brakes','reverse','reverse2','ptt','parkingBrake','engineMaster1','engineMaster2','ignitionCrank','ignitionNorm','ignitionStart','gearDown','gearUp','autobrakeOff','autobrakeLow','autobrakeMedium','autobrakeMax','autobrakeRto','rudderTrimLeft','rudderTrimRight','rudderTrimReset','speedbrakeArm','flaps0','flaps1','flaps2','flaps3','flapsFull','speedbrakeDown','speedbrakeFull','gearLever','autobrake3']
 const validIndex = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0 && n < 256
 const record = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
 export function validCalibration(c: unknown): c is AxisCalibration {
@@ -239,6 +246,64 @@ export function calibratedUnipolar(raw:number,b?:AxisBinding):number {
   const c=b?.calibration
   return c ? clamp((raw-c.min)/(c.max-c.min)) : axisToUnipolar(raw)
 }
+/** Share of a throttle lever's travel, measured from its idle end, that commands reverse thrust. */
+export const REVERSE_ZONE = 0.25
+const zoneIdle = (c: AxisCalibration, zone: number): number => c.min + zone * (c.max - c.min)
+/**
+ * The calibration a thrust lever is read with. Everything below a quadrant lever's IDLE is reverse thrust. IDLE is where the
+ * pilot's guided detent calibration found the lever's idle detent; without one it is a quarter of the way up the travel
+ * (REVERSE_ZONE), whatever a capture, a preset or a toggle left in the saved binding: the pilot asked for that and for it never
+ * to be lost again. Other throttles (a stick's slider) keep their own calibration.
+ */
+export function throttleCalibration(b: AxisBinding | undefined): AxisCalibration | undefined {
+  if (!b) return undefined
+  if (!TCA_QUADRANT.test(b.deviceId ?? '')) return b.calibration
+  // The pilot's own detent calibration (IDLE taken where the lever really idles) is kept as it is; anything else idles at 25%.
+  if (b.calibration?.measuredIdle && validCalibration(b.calibration)) return b.calibration
+  return withReverseZone(b).calibration
+}
+/** Whether a lever's reverse comes from its own travel (so a reverse-lift button adds nothing and is not read). */
+export function leverReversesByTravel(b: AxisBinding | undefined): boolean {
+  const c = throttleCalibration(b)
+  return !!c && c.idle !== undefined && c.idle > c.min + 0.05
+}
+/** True when the lever's IDLE sits `zone` of the way along its travel, so everything below it is reverse. */
+export function hasReverseZone(b: AxisBinding | undefined, zone = REVERSE_ZONE): boolean {
+  const c = b?.calibration
+  return !!c && Math.abs((c.idle ?? c.min) - zoneIdle(c, zone)) < 0.01
+}
+/** Put IDLE `zone` of the way along the lever's travel (0 puts it back at the end, no reverse). Detents that would fall inside
+ *  the reverse zone are dropped. The result is a user binding, so a preset re-applied on reconnect never undoes it. */
+export function withReverseZone(b: AxisBinding, zone = REVERSE_ZONE): AxisBinding {
+  const c = b.calibration ?? { min: -1, max: 1 }
+  const idle = zoneIdle(c, zone)
+  const cal: AxisCalibration = { min: c.min, max: c.max }
+  if (zone > 0) cal.idle = idle
+  for (const k of ['cl', 'flex'] as const) if (c[k] !== undefined && c[k]! >= idle) cal[k] = c[k]
+  return { ...b, calibration: cal, source: 'user' }
+}
+
+/** Swap which physical end of a lever is IDLE and which is full power. The sign flips, and the calibration (kept in signed
+ *  coordinates with full power at max) is re-expressed so the old full-power end becomes IDLE and the old idle end becomes TOGA.
+ *  A reverse zone follows IDLE to its new end; other reverse travel below the old idle is lost: it would now sit beyond TOGA.
+ *  The result is a user binding, so a preset re-applied on reconnect never undoes it. */
+export function reverseAxisBinding(b: AxisBinding): AxisBinding {
+  const swapped = swapEnds(b)
+  return hasReverseZone(b) ? withReverseZone(swapped) : swapped
+}
+function swapEnds(b: AxisBinding): AxisBinding {
+  const out: AxisBinding = { ...b, sign: b.sign === 1 ? -1 : 1, source: 'user' }
+  const c = b.calibration
+  if (!c) return out
+  const idle = c.idle ?? c.min
+  const cal: AxisCalibration = { min: -c.max, max: -idle, idle: -c.max }
+  // Detents keep their physical places, so with both set the CL/FLEX labels swap to stay in ascending order.
+  if (c.cl !== undefined && c.flex !== undefined) { cal.cl = -c.flex; cal.flex = -c.cl }
+  else if (c.cl !== undefined) cal.cl = -c.cl
+  else if (c.flex !== undefined) cal.flex = -c.flex
+  out.calibration = cal
+  return out
+}
 export function mergePreset(saved: GamepadMap, incoming: GamepadMap): GamepadMap {
   const devices={...saved.devices}
   const slots=new Map<number,number>()
@@ -264,12 +329,34 @@ export function mergePreset(saved: GamepadMap, incoming: GamepadMap): GamepadMap
   }
   for(const fn of AXIS_FUNCTIONS){
     const p=preset[fn],s=saved[fn]; if(!p)continue
+    const isLever=fn==='throttle'||fn==='throttle2'
     if(!s || fn==='throttle' && s.source==='preset' && !s.calibration && /q-eng|quadrant/i.test(p.deviceId??'')) out[fn]=p
+    // v8: the lower quarter of a quadrant lever is reverse. Levers bound to the quadrant before it (no calibration, so still a plain
+    // idle-at-the-end lever) get the zone once; a calibrated lever keeps its own IDLE, and a zone later toggled off stays off (the
+    // version is current by then).
+    else if(isLever && (saved.v??0)<8 && !s.calibration && /q-eng|quadrant/i.test(s.deviceId??'')) out[fn]=withReverseZone(s)
     else if(!s.deviceId && s.pad===p.pad && s.axis===p.axis){
       out[fn]={...s,deviceId:p.deviceId,sign:s.calibration?s.sign:(saved.v??0)<2?p.sign:s.sign}
     }
   }
   for(const fn of BUTTON_FUNCTIONS){const p=preset.btn?.[fn],s=saved.btn?.[fn];if(!p)continue;const occupied=Object.entries(saved.btn??{}).some(([other,b])=>other!==fn && b.deviceId===p.deviceId && b.btn===p.btn);if(!occupied && (!s || !s.deviceId && s.pad===p.pad && s.btn===p.btn))out.btn![fn]={...p,...s,deviceId:p.deviceId}}
+  // The throttle levers and reverse lifts are engines 1 and 2. A binding that an earlier preset left on the engines 3 & 4 unit
+  // (it was listed first) is moved to the engines 1 & 2 unit when that unit is connected; the lever calibration is the preset's.
+  for(const fn of ['throttle','throttle2'] as const){
+    const p=preset[fn],s=out[fn]
+    if(p && s && TCA_ENGINES_12.test(p.deviceId??'') && TCA_ENGINES_34.test(s.deviceId??''))out[fn]=p
+  }
+  for(const fn of ['reverse','reverse2'] as const){
+    const p=preset.btn?.[fn],s=out.btn![fn]
+    const occupied=Object.entries(out.btn??{}).some(([other,b])=>other!==fn && b.deviceId===p?.deviceId && b.btn===p?.btn)
+    if(p && s && !occupied && TCA_ENGINES_12.test(p.deviceId??'') && TCA_ENGINES_34.test(s.deviceId??''))out.btn![fn]=p
+  }
+  // v9: the quadrant's gear lever is a latched switch whose button is ON with the lever UP. Before, it was bound as `gearDown`
+  // (pressed = gear down), which left the gear where it was when the lever came back; the binding moves to `gearLever` once.
+  if((saved.v??0)<9 && out.btn!.gearDown && !out.btn!.gearLever){out.btn!.gearLever={...out.btn!.gearDown};delete out.btn!.gearDown}
+  // v10: the gear lever is one switch (ON = UP). A gear UP button on the same unit as it came from the old two-step capture, in
+  // which the pilot, seeing nothing happen for UP, moved some other control (on the live unit: the autobrake selector's 2).
+  if((saved.v??0)<10){const lever=out.btn!.gearLever,up=out.btn!.gearUp;if(lever&&up&&up.deviceId===lever.deviceId)delete out.btn!.gearUp}
   // Never give a captured physical button a second preset action on reconnect.
   for(const [k,v] of Object.entries(preset.btnKeys??{})){
     const [slot,btn]=k.split(':');const id=devices[slot!]
@@ -293,12 +380,18 @@ export function mergePreset(saved: GamepadMap, incoming: GamepadMap): GamepadMap
  *  J wizard rebinds from real movement if they weren't. */
 export const TCA_DEVICE = /(?:tca.*(?:sidestick|stick.*airbus|q-eng)|t\.a320)/i
 export const TCA_QUADRANT = /quadrant|q-eng|throttle/i
+/** The quadrant with the thrust levers for engines 1 and 2 (the base unit) and the one with levers 3 and 4 (the add-on). The
+ *  simulator's two throttle functions are engines 1 and 2, so with both connected the first is the one they belong on. */
+export const TCA_ENGINES_12 = /q-?eng\s*1\s*&\s*2/i
+export const TCA_ENGINES_34 = /q-?eng\s*3\s*&\s*4/i
 
 export function tcaPresetFor(pads: ReadonlyArray<{ id: string; axes: number; index: number }>): GamepadMap | null {
   const tca = pads.filter((p) => TCA_DEVICE.test(p.id))
   if (!tca.length) return null
-  const quadrant = tca.find((p) => TCA_QUADRANT.test(p.id)) ?? tca.find((p) => p.axes <= 3 && p.axes >= 2)
-  const stick = tca.find((p) => p !== quadrant && p.axes >= 4) ?? tca.find((p) => p !== quadrant)
+  // With two quadrant units connected the throttles belong on the engines 1 & 2 unit, whatever order the browser lists them in
+  // (the first listed used to win, which put the throttle and reverse lifts on the engines 3 & 4 add-on).
+  const quadrant = tca.find((p) => TCA_ENGINES_12.test(p.id)) ?? tca.find((p) => TCA_QUADRANT.test(p.id)) ?? tca.find((p) => p.axes <= 3 && p.axes >= 2)
+  const stick = tca.find((p) => p !== quadrant && !TCA_QUADRANT.test(p.id) && p.axes >= 4) ?? tca.find((p) => p !== quadrant && !TCA_QUADRANT.test(p.id)) ?? tca.find((p) => p !== quadrant && p.axes >= 4) ?? tca.find((p) => p !== quadrant)
   const map: GamepadMap = {}
   if (stick) {
     map.roll = { pad: stick.index, axis: 0, sign: 1 }
@@ -313,8 +406,9 @@ export function tcaPresetFor(pads: ReadonlyArray<{ id: string; axes: number; ind
     // unverified guess and shipped a real regression — reported by the
     // user as "push forward, throttle % goes DOWN". Do not flip this
     // again without a live axis reading at both idle and TOGA.
-    map.throttle = { pad: quadrant.index, axis: 0, sign: 1 }
-    map.throttle2 = { pad: quadrant.index, axis: 1, sign: 1 }
+    // v8: IDLE sits a quarter of the way up the travel and everything below it is reverse (REVERSE_ZONE).
+    map.throttle = withReverseZone({ pad: quadrant.index, axis: 0, sign: 1 })
+    map.throttle2 = withReverseZone({ pad: quadrant.index, axis: 1, sign: 1 })
   }
   if (!Object.keys(map).length) return null
   const btns = tcaButtonPreset(stick ? stick.index : null, quadrant ? quadrant.index : null)

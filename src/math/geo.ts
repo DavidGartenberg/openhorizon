@@ -141,6 +141,38 @@ export function bearingDeg(a: LatLon, b: LatLon): number {
 }
 
 /**
+ * Close the small pits an airport's level area leaves in the sea at the shore: a sea cell (sea = 1) with a levelled
+ * neighbour on two perpendicular sides (west or east, and north or south) takes the mean of its levelled neighbours.
+ * Done a few passes from the snapshot of the one before, so a shoreline rounds off by a cell or two but a channel one cell
+ * wide (levelled on opposite sides only) and open water stay open. Changes `heights`, `sea` and `levelled` in place.
+ * @param levelled 1 where the airport's levelling moved the height
+ */
+export function fillShorePits(heights: Float32Array, sea: Uint8Array, levelled: Uint8Array, size: number, passes = 6): number {
+  let filled = 0
+  for (let pass = 0; pass < passes; pass++) {
+    const snap = levelled.slice()
+    let any = false
+    for (let j = 0; j < size; j++) {
+      for (let i = 0; i < size; i++) {
+        const k = j * size + i
+        if (!sea[k]) continue
+        const w = i > 0 && snap[k - 1] === 1, e = i < size - 1 && snap[k + 1] === 1
+        const n = j > 0 && snap[k - size] === 1, so = j < size - 1 && snap[k + size] === 1
+        if (!((w || e) && (n || so))) continue
+        let sum = 0, count = 0
+        if (w) { sum += heights[k - 1]!; count++ }
+        if (e) { sum += heights[k + 1]!; count++ }
+        if (n) { sum += heights[k - size]!; count++ }
+        if (so) { sum += heights[k + size]!; count++ }
+        heights[k] = sum / count; sea[k] = 0; levelled[k] = 1; filled++; any = true
+      }
+    }
+    if (!any) break
+  }
+  return filled
+}
+
+/**
  * Runway flattening: blend a terrain height toward the runway plane when
  * within the runway footprint + apron margin. Returns blended height.
  */

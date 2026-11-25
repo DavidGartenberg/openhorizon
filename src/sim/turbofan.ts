@@ -29,6 +29,9 @@ export interface JetParams {
   machB: number
   /** Windmilling drag: CD·A (m²) of the dead fan disc. */
   windmillCdA: number
+  /** Lateral distance of each side's thrust line from the centreline, m (engines on the left wing vs the right, or the two
+   *  sides of a rear fuselage). Thrust that differs between the sides yaws the airplane by this arm. 0 / absent = none. */
+  armM?: number
 }
 
 export const CFM56_7B26: JetParams = {

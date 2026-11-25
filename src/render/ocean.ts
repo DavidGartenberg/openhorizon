@@ -1,10 +1,14 @@
 import * as THREE from 'three'
 import { seaState } from '../sim/weather/sea-state'
 import { SKY_LOOKUP } from './atmosphere-shader'
+import { cloudShadowUniforms, CLOUD_SHADOW_GLSL } from './cloud-shadows'
 
 /** Wind-driven deep-water wave spectrum with filtered normals, dielectric
  * Fresnel and the same HDR atmosphere used by the sky and aircraft reflections.
  * Sea remains a flat visual surface: no bathymetry or water-landing dynamics. */
+/** Most sea cut-outs at once (fields that lie below sea level near the camera). */
+export const OCEAN_HOLES = 8
+
 export class Ocean {
   private readonly material: THREE.ShaderMaterial
 
@@ -17,7 +21,9 @@ export class Ocean {
         uWhitecap: { value: 0 }, uWind: { value: new THREE.Vector2(1, 0) },
         uWorldOffset: { value: new THREE.Vector2() }, uFogDensity: { value: 9e-6 },
         uSunTransmission: { value: 1 },
+        ...cloudShadowUniforms,
         uCloudDensity: { value: 0 }, uCloudColor: { value: new THREE.Color(0xc8ccd2) },
+        uHoles: { value: Array.from({ length: OCEAN_HOLES }, () => new THREE.Vector3(0, 0, -1)) },
       },
       vertexShader: /* glsl */ `
         varying vec3 vWorldPos;
@@ -33,12 +39,18 @@ export class Ocean {
         uniform sampler2D uSky;
         uniform float uTime, uDayness, uSlopeScale, uWhitecap, uFogDensity, uSunTransmission, uCloudDensity;
         uniform vec3 uCloudColor;
+        uniform vec3 uHoles[${OCEAN_HOLES}];
         uniform vec3 uSunDir;
         uniform vec2 uWind, uWorldOffset;
         varying vec3 vWorldPos;
         varying float vCloudDepth;
         ${SKY_LOOKUP}
+        ${CLOUD_SHADOW_GLSL}
         void main() {
+          // Land below sea level (a polder, Death Valley) is a hole in the sea: x, z and radius of each.
+          for (int h = 0; h < ${OCEAN_HOLES}; h++) {
+            if (uHoles[h].z > 0.0 && distance(vWorldPos.xz, uHoles[h].xy) < uHoles[h].z) discard;
+          }
           vec2 p = vWorldPos.xz + uWorldOffset;
           float footprint = max(length(dFdx(p)), length(dFdy(p)));
           vec2 slope = vec2(0.0);
@@ -81,7 +93,7 @@ export class Ocean {
           float f = 0.0204+0.9796*pow(1.0-vh,5.0);
           float spec = min(20.0, distribution*geometry*f/(4.0*nv+0.001));
           float low = 1.0-smoothstep(0.0,0.4,l.y);
-          color += vec3(1.0,1.0-0.35*low,1.0-0.65*low)*spec*3.2*uDayness*uSunTransmission;
+          color += vec3(1.0,1.0-0.35*low,1.0-0.65*low)*spec*3.2*uDayness*cloudShadowAt(vWorldPos);
           float crest = smoothstep(0.24,0.5,length(slope));
           float breakup = 0.5+0.5*sin(dot(p,vec2(0.37,0.61))+uTime*0.8);
           float foam = uWhitecap*crest*breakup*exp(-footprint*0.2);
@@ -108,6 +120,12 @@ export class Ocean {
   setCloudFog(fog: THREE.FogExp2): void {
     this.material.uniforms.uCloudDensity!.value = fog.density
     ;(this.material.uniforms.uCloudColor!.value as THREE.Color).copy(fog.color)
+  }
+
+  /** Cut the sea away over land that lies below sea level: centre (render-space x, z) and radius in metres, nearest first; at most OCEAN_HOLES. */
+  setHoles(holes: ReadonlyArray<{ x: number; z: number; r: number }>): void {
+    const list = this.material.uniforms.uHoles!.value as THREE.Vector3[]
+    for (let i = 0; i < list.length; i++) { const h = holes[i]; list[i]!.set(h ? h.x : 0, h ? h.z : 0, h ? h.r : -1) }
   }
 
   update(timeSeconds: number, sunDir: THREE.Vector3, dayness: number, windMs: number,

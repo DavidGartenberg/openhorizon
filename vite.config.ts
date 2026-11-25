@@ -21,6 +21,17 @@ function dataServer(): Plugin {
 
 export default defineConfig({
   plugins: [dataServer()],
+  build: {
+    rollupOptions: {
+      output: {
+        // The 3D engine is a large, rarely-changing dependency: its own chunk is
+        // cached across app updates, and the app's entry chunk stays small.
+        manualChunks: { three: ['three'] },
+      },
+    },
+    // Each chunk (engine ~530 kB, app ~740 kB) is expected; warn if either grows past this.
+    chunkSizeWarningLimit: 850,
+  },
   server: {
     // autoPort: the harness assigns a free port via PORT (5173 may be
     // held by another project's dev server); 5173 stays the fallback.
@@ -32,5 +43,11 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts'],
     environment: 'node',
+    // Bound CPU-heavy fleet geometry suites so parallel workers cannot starve
+    // one another and exceed their per-test timeouts on small CI runners.
+    maxWorkers: 4,
+    // The mesh-building suites are CPU-heavy: a cold cache on a small CI runner
+    // pushed single tests past the 5 s default (found in a fresh-clone run).
+    testTimeout: 30_000,
   },
 })

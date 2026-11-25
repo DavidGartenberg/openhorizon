@@ -91,7 +91,7 @@ describe('autopilot disconnect wailer', () => {
 
 describe('altitude alert tone', () => {
   it('fires once on a >300 ft deviation after capture, re-arms on recapture or a new selection', () => {
-    const L = makeAuralLatches(), air = {onGround:false,selectedAltFt:10000}
+    const L = makeAuralLatches(), air = {onGround:false,selectedAltFt:10000,gearDownLocked:false} // cruising, gear up
     expect(run({...air,altitudeFt:8000},L).oneShots).toEqual([]) // climbing toward it: no capture yet
     expect(run({...air,altitudeFt:9950},L).oneShots).toEqual([]) // captured
     expect(run({...air,altitudeFt:10250},L).oneShots).toEqual([])
@@ -100,5 +100,22 @@ describe('altitude alert tone', () => {
     run({...air,altitudeFt:10100},L) // recaptured
     expect(run({...air,altitudeFt:9600},L).oneShots).toEqual(['altAlert'])
     expect(run({...air,selectedAltFt:20000,altitudeFt:9600},L).oneShots).toEqual([]) // new selection
+  })
+})
+
+describe('no false warnings on the landing roll and the approach', () => {
+  it('reverse thrust with the speedbrake out never sounds the takeoff configuration horn; the same lever forward does', () => {
+    for (const depth of [0.6, 0.8, 1]) expect(run({ throttle: depth, reverse: true, speedbrakeStowed: false, flapsDeg: 30 }).continuous.has('configHorn')).toBe(false)
+    expect(run({ throttle: 0.8, reverse: false, speedbrakeStowed: false, flapsDeg: 5 }).continuous.has('configHorn')).toBe(true)
+  })
+  it('leaving the selected altitude down the glidepath does not chime: gear down and locked, or glideslope captured', () => {
+    const fly = (o: Partial<AuralObs>): boolean => {
+      const L = makeAuralLatches()
+      run({ onGround: false, altitudeFt: 3000, selectedAltFt: 3000, gearDownLocked: false, ...o }, L)                 // captured 3000
+      return run({ onGround: false, altitudeFt: 2500, selectedAltFt: 3000, gearDownLocked: false, ...o }, L).oneShots.includes('altAlert')
+    }
+    expect(fly({ gearDownLocked: true })).toBe(false)
+    expect(fly({ gsCaptured: true })).toBe(false)
+    expect(fly({})).toBe(true)                                                                                       // clean, gear up: still alerts
   })
 })

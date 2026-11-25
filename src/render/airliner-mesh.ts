@@ -6,10 +6,12 @@ import { jetProfileFor, type JetProfile } from './jet-profiles'
 import { profiledPanel as taperedPanel, buildTurbofan, buildAircraftWheel } from './aircraft-components'
 import { aircraftPaint, aircraftMetal } from './aircraft-materials'
 import { fowlerPose, spoileronRise } from './fowler'
+import { SPOILER_LAYOUTS, panelAngleAt, spoilerFamilyFor } from '../sim/spoilers'
 import { standardGearZ } from '../sim/aircraft/derive'
 import type { AircraftMesh, SurfaceState } from './aircraft-mesh'
 import { createHingeFrame, attachSkin, cutSkin, type HingeFrame } from './procedural-surfaces'
 import { profiledPanelGeometry } from './aircraft-components'
+import { markBoeingNacelle, markBoeingSurface, markBoeingWheel } from './boeing-surface-fit'
 
 /**
  * Config-driven airliner exteriors (night-shift N2): the study 737's
@@ -63,6 +65,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   const R = cfg.fuseRadiusM
   const halfSpan = cfg.spanM / 2
   const sweep = (cfg.sweepDeg * Math.PI) / 180
+  const boeing = /^B[37]/.test(cfg.designator ?? '')
 
   // One fair loft from radome to tail, including any upper deck.
   const profile = cfg.profile
@@ -98,10 +101,12 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     const chordAt = (fy: number): number => rootChord - (rootChord - tipChord) * (fy - y0) / (y1 - y0)
     const teXAt = (fy: number): number => wingRootX - Math.tan(sweep) * (fy - y0) - chordAt(fy)
     const panel = taperedPanel(wingRootX, rootChord, tipLeX, tipChord, side * y0, side * y1, R * 0.16, BELLY)
+    if (boeing) markBoeingSurface(panel,'wing',side)
     panel.position.y = -wingDrop
     wingGroup.add(panel)
     if (cfg.winglet === 'raked') {
       const tip = taperedPanel(tipLeX, tipChord, tipLeX - tipChord*.65, tipChord*.18, side*y1, side*halfSpan, R*.045, BELLY)
+      if (boeing) markBoeingSurface(tip,'wing',side,'panel',false,[.9,1])
       tip.position.y = -wingDrop
       wingGroup.add(tip)
     } else if (cfg.winglet !== 'none') {
@@ -116,6 +121,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
         wlShape.closePath()
         const geo = new THREE.ExtrudeGeometry(wlShape,{depth:R*.035,bevelEnabled:false});geo.rotateY(-Math.PI/2)
         const wl = new THREE.Mesh(geo,BELLY);wl.name='winglet';wl.castShadow=true
+        if (boeing) markBoeingSurface(wl,'winglet',side,'box')
         wl.position.set(side*y1,-wingDrop,0)
         wl.rotation.z = -side * .15
         wingGroup.add(wl)
@@ -156,6 +162,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       const pivot = new THREE.Group()
       placeBody(pivot, leX, 0, wingDrop * 0.82)
       const flap = taperedPanel(0, chord, teXAt(fy1) - teXAt(fy0), chord * 0.85, side * fy0, side * fy1, R * 0.085, SURFACE)
+      if (boeing) markBoeingSurface(flap,'flap',side)
       flap.position.y = -R * 0.16
       pivot.add(flap)
       // Aft canoe halves ride the flap.
@@ -171,15 +178,29 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       wingGroup.add(pivot)
       flapPivots.push(pivot)
     }
-    for (let i = 0; i < 1; i++) {
-      const sy = y0 + (y1 - y0) * 0.41 // single panel centered over the flap span
+    // A row of spoiler panels along the wing top ahead of the flap's trailing edge, as many as the type has (sim/spoilers.ts):
+    // each panel follows the wing's chord and sweep and is raised by its own angle, so a ground-spoiler cascade runs root to tip.
+    const spoilerCount = cfg.designator ? SPOILER_LAYOUTS[spoilerFamilyFor(cfg.designator, cfg.engines.count)].panels.length : 5
+    const spanFrom = 0.14, spanTo = 0.68
+    for (let i = 0; i < spoilerCount; i++) {
+      const sy0 = y0 + (y1 - y0) * (spanFrom + (spanTo - spanFrom) * (i / spoilerCount))
+      const sy1 = y0 + (y1 - y0) * (spanFrom + (spanTo - spanFrom) * ((i + 1) / spoilerCount))
+      const sy = (sy0 + sy1) / 2
       const pivot = new THREE.Group()
-      const leX = wingRootX - Math.tan(sweep) * (sy - y0) - rootChord * 0.55
-      placeBody(pivot, leX, side * sy, wingDrop * 0.7)
-      const panel = new THREE.Mesh(new THREE.BoxGeometry((y1 - y0) * 0.5, 0.05, rootChord * 0.13), SURFACE)
-      panel.position.set(0, 0.05, rootChord * 0.065)
+      const chord = chordAt(sy)
+      const leX = wingRootX - Math.tan(sweep) * (sy - y0) - chord * 0.78
+      // The hinge sits on the wing's top surface there: the wing's airfoil section is R·0.16 deep and, over the aft fifth of the
+      // chord where the panels are, its top is about 0.7 of that above the wing's lower face.
+      placeBody(pivot, leX, side * sy, wingDrop - R * 0.16 * 0.7)
+      const depth = chord * 0.19
+      const panel = new THREE.Mesh(new THREE.BoxGeometry(Math.max(sy1 - sy0 - 0.1, 0.2), 0.05, depth), SURFACE)
+      panel.name = `spoilerPanel-${side < 0 ? 'left' : 'right'}-${i + 1}`
+      if (boeing) markBoeingSurface(panel, 'spoiler', side, 'box')
+      panel.position.set(0, 0.02, depth / 2)
       panel.castShadow = true
       pivot.add(panel)
+      pivot.userData.sideIndex = side < 0 ? 0 : 1
+      pivot.userData.rank = spoilerCount === 1 ? 0.5 : i / (spoilerCount - 1)
       wingGroup.add(pivot)
       spoilerPivots.push(pivot)
     }
@@ -201,6 +222,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
         // were tuned for gear twice as tall — pods touched the ground).
         const engZ = wingDrop * 0.35 + engR * 0.45
         const eng = buildTurbofan(engR, engLen * .92, WHITE)
+        if (boeing) markBoeingNacelle(eng,side)
         eng.scale.y = .92
         eng.userData.jetEngine = true
         add(eng, ex, side * ey, engZ)
@@ -271,10 +293,12 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     return geo
   }
   const fin = new THREE.Mesh(restoreUv(cutSkin(finGeo, cutPlane.clone().negate())), finMat)
+  if (boeing) markBoeingSurface(fin,'fin',1)
   fin.name = 'verticalFin'
   fin.castShadow = fin.receiveShadow = true
   finGroup.add(fin)
   const rudderSkin = new THREE.Mesh(restoreUv(cutSkin(finGeo, cutPlane)), finMat)
+  if (boeing) markBoeingSurface(rudderSkin,'fin',1)
   rudderSkin.name = 'rudder'
   rudderSkin.castShadow = rudderSkin.receiveShadow = true
   finGroup.add(rudderSkin)
@@ -293,6 +317,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
   const stabX = tailHeight ? finRootX-L*.065*tailHeight/.92 : -L*.36
   for (const side of [-1, 1]) {
     const stab = taperedPanel(stabX, L * 0.085, stabX - L * 0.075, L * 0.032, side * R * 0.2, side * halfSpan * 0.38, R * 0.09, BELLY)
+    if (boeing) markBoeingSurface(stab,'stabilizer',side)
     stab.position.y = -stabZ
     g.add(stab)
   }
@@ -326,6 +351,7 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
     grp.add(strut)
     for (let axle=0;axle<leg.axles;axle++) for (const wy of leg.nose ? [-R * 0.13, R * 0.13] : [-R * 0.16, R * 0.16]) {
       const wheel = buildAircraftWheel(wheelR, R * .18)
+      if (boeing) markBoeingWheel(wheel)
       wheel.position.set(wy, -wheelArm, (axle-(leg.axles-1)/2)*wheelR*2.3)
       wheel.castShadow = true
       grp.add(wheel)
@@ -394,8 +420,12 @@ export function buildAirliner(cfg: AirlinerCfg): AircraftMesh {
       p.position.y = (p.userData.y0 as number) - fp.drop * R * 0.04
       p.rotation.x = fp.rot * 0.5
     }
-    spoilerPivots.forEach((p, i) => {
-      p.rotation.x = -spoileronRise(s.spoilerFrac, s.roll ?? 0, i === 0 ? 0 : 1) * 1.05
+    spoilerPivots.forEach((p) => {
+      const sideIndex = p.userData.sideIndex as 0 | 1
+      // Each panel at its own angle when the airplane has them; otherwise the old single actuator, with roll mixed in.
+      p.rotation.x = s.spoilerPanels
+        ? -THREE.MathUtils.degToRad(panelAngleAt(sideIndex === 0 ? s.spoilerPanels.left : s.spoilerPanels.right, p.userData.rank as number))
+        : -spoileronRise(s.spoilerFrac, s.roll ?? 0, sideIndex) * 1.05
     })
     for (const sl of reverserSleeves) sl.position.z = (sl.userData.stowZ as number) + (s.reverseFrac ?? 0) * 0.85
     for (const { grp, nose, fold } of gearGroups) {

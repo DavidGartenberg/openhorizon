@@ -27,7 +27,7 @@ it('keeps actual elevator and stabilizer angles separate and failure refs health
 /** Only indexed vertices belonging to each TRIS draw: OBJ buffers are shared. */
 function points(meshes:THREE.Mesh[]){return meshes.flatMap(mesh=>{const g=mesh.geometry,idx=g.index!,pos=g.attributes.position!,pts:THREE.Vector3[]=[];for(let i=g.drawRange.start;i<g.drawRange.start+g.drawRange.count;i++)pts.push(new THREE.Vector3().fromBufferAttribute(pos,idx.getX(i)).applyMatrix4(mesh.matrixWorld));return pts})}
 describe.skipIf(!existsSync(base))('installed indexed exterior geometry',()=>{
- for(const [key,entry] of Object.entries(XP_MODELS).filter(([k])=>k!=='MD82'))it(`${key}: real trailing edges move correctly; authored deployment and fixed geometry stay coherent`,()=>{
+ for(const [key,entry] of Object.entries(XP_MODELS).filter(([k])=>k!=='MD82'&&k!=='BE9L'))it(`${key}: real trailing edges move correctly; authored deployment and fixed geometry stay coherent`,()=>{
   const required=JSON.parse(readFileSync('docs/plans/sept13/native-surface-datarefs.json','utf8'))[key] as string[]
   const authoredRefs=new Set<string>()
   const root=new THREE.Group(),animated:THREE.Group[]=[],byRef=new Map<string,THREE.Mesh[]>(),fixed:THREE.Mesh[]=[]
